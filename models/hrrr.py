@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import io
 import re
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Optional
@@ -47,17 +46,10 @@ WANTED_RECORDS = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Station metadata. For point extraction we need lat/lon (and elevation if
-# we want HGT-above-MSL converted to AGL). Keep this minimal here; the
-# notebook can pass in a richer station table later.
-# ---------------------------------------------------------------------------
-@dataclass(frozen=True)
-class Station:
-    icao: str
-    lat: float
-    lon: float        # positive east, negative west (standard convention)
-    elev_ft: float    # field elevation in feet MSL
+# Use the canonical Station from core.stations so all modules speak the
+# same dataclass. Re-export here for backward compatibility with any code
+# that imported Station from models.hrrr or models.
+from core.stations import Station  # noqa: F401  (re-export)
 
 
 class Hrrr(ModelSource):
