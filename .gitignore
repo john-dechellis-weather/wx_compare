@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# Project caches
+wx_compare_cache/
+*.grib2
+*.idx
+
+# OS
+.DS_Store

@@ -76,7 +76,10 @@ class GfsMos(ModelSource):
         stations: Iterable[str],
         cycle: datetime,
     ) -> pd.DataFrame:
-        text = path.read_text()
+        raw = path.read_text()
+        # NOMADS MAV bulletins have a leading space on every line; strip it.
+        text = "\n".join(line[1:] if line.startswith(" ") else line
+                          for line in raw.splitlines())
         station_set = {s.upper() for s in stations}
         records: list[ForecastRecord] = []
         for block in _split_station_blocks(text):
