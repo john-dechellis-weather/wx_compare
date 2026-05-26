@@ -110,6 +110,17 @@ def pivot_for_plot(
             .sort_index())
 
 
+# Dark-theme color scheme used across all plots.
+_DARK_BG = "#000000"
+_DARK_FG = "#ffffff"
+_DARK_GRID = "#3a3a3a"
+_MODEL_COLORS = {
+    "HRRR":    "#5ec1ea",
+    "GFS_MOS": "#ff8a3d",
+    # New models: add here. Anything not in this dict falls back to FG (white).
+}
+
+
 def plot_comparison(
     df: pd.DataFrame,
     station_id: str,
@@ -129,7 +140,8 @@ def plot_comparison(
     import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
 
-    fig, axes = plt.subplots(2, 1, figsize=(11, 7.5), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(11, 7.5), sharex=True,
+                             facecolor=_DARK_BG)
 
     sub = df[df["station_id"] == station_id]
     if cycle is None and len(sub) > 0:
@@ -149,7 +161,7 @@ def plot_comparison(
         title="Ceiling", ylim=ceiling_ylim,
     )
 
-    axes[1].set_xlabel("Valid time (UTC)")
+    axes[1].set_xlabel("Valid time (UTC)", color=_DARK_FG)
     axes[1].xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %HZ"))
     axes[1].xaxis.set_major_locator(mdates.AutoDateLocator(minticks=4, maxticks=10))
     fig.autofmt_xdate(rotation=0, ha="center")
@@ -162,29 +174,38 @@ def plot_comparison(
         fig.suptitle(
             f"{station_id} — VIS/CIG forecast comparison\n"
             f"Model run: {cycle_str}",
-            fontsize=12, y=0.995
+            fontsize=12, y=0.995, color=_DARK_FG
         )
     else:
-        fig.suptitle(f"{station_id} — VIS/CIG forecast comparison", fontsize=12)
+        fig.suptitle(f"{station_id} — VIS/CIG forecast comparison", fontsize=12, color=_DARK_FG)
 
     fig.tight_layout()
     return fig
 
 
 def _plot_panel(ax, sub_df, value_col, ylabel, title, ylim):
-    """Plot one model-per-line panel with consistent styling."""
+    """Plot one model-per-line panel with consistent dark-theme styling."""
+    import matplotlib.pyplot as plt
+    ax.set_facecolor(_DARK_BG)
     if len(sub_df) == 0:
         return
     for model_name, group in sub_df.groupby("model", sort=True):
         g = group.sort_values("valid_time")
-        # Convert valid_time -> pure Python datetimes for matplotlib.
         xs = pd.to_datetime(g["valid_time"]).dt.to_pydatetime()
-        ax.plot(xs, g[value_col].values, marker="o", label=str(model_name))
-    ax.set_ylabel(ylabel)
-    ax.set_title(title)
+        color = _MODEL_COLORS.get(str(model_name), _DARK_FG)
+        ax.plot(xs, g[value_col].values, marker="o", markersize=6,
+                linewidth=2.2, color=color, label=str(model_name))
+    ax.set_ylabel(ylabel, color=_DARK_FG)
+    ax.set_title(title, color=_DARK_FG)
     ax.set_ylim(*ylim)
-    ax.grid(True, alpha=0.3)
-    ax.legend(title="Model", loc="best")
+    ax.grid(True, alpha=0.6, color=_DARK_GRID, linewidth=0.6)
+    ax.tick_params(colors=_DARK_FG, which="both")
+    for spine in ax.spines.values():
+        spine.set_color(_DARK_FG)
+        spine.set_linewidth(0.8)
+    leg = ax.legend(title="Model", loc="best",
+                    facecolor=_DARK_BG, edgecolor=_DARK_FG, labelcolor=_DARK_FG)
+    plt.setp(leg.get_title(), color=_DARK_FG)
 
 
 def _add_forecast_hour_axis(ax_lower, cycle: datetime) -> None:
@@ -205,6 +226,8 @@ def _add_forecast_hour_axis(ax_lower, cycle: datetime) -> None:
     secax.set_xticks(lower_ticks)
     secax.set_xticklabels([
         f"f+{int(round(h))}" if h >= 0 else "" for h in fhours
-    ])
-    secax.set_xlabel("Forecast hour")
-    secax.tick_params(axis="x", which="both", length=3)
+    ], color=_DARK_FG)
+    secax.set_xlabel("Forecast hour", color=_DARK_FG)
+    secax.tick_params(axis="x", which="both", length=3, colors=_DARK_FG)
+    for spine in secax.spines.values():
+        spine.set_color(_DARK_FG)
