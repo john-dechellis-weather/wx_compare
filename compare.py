@@ -115,8 +115,9 @@ _DARK_BG = "#000000"
 _DARK_FG = "#ffffff"
 _DARK_GRID = "#3a3a3a"
 _MODEL_COLORS = {
-    "HRRR":    "#5ec1ea",
-    "GFS_MOS": "#ff8a3d",
+    "HRRR":    "#5ec1ea",   # cyan
+    "GFS_MOS": "#ff8a3d",   # orange
+    "NBM":     "#a4e857",   # bright green
     # New models: add here. Anything not in this dict falls back to FG (white).
 }
 
