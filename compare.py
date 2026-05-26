@@ -18,6 +18,18 @@ if TYPE_CHECKING:
     import matplotlib
 
 
+# Dark-theme color scheme shared by both the static and interactive plots.
+_DARK_BG = "#000000"
+_DARK_FG = "#ffffff"
+_DARK_GRID = "#3a3a3a"
+_MODEL_COLORS = {
+    "HRRR":    "#5ec1ea",   # cyan
+    "GFS_MOS": "#ff8a3d",   # orange
+    "NBM":     "#a4e857",   # bright green
+    # New models: add here. Anything not in this dict falls back to FG (white).
+}
+
+
 def run_comparison(
     sources: list[ModelSource],
     cycle: datetime,
@@ -110,18 +122,6 @@ def pivot_for_plot(
             .sort_index())
 
 
-# Dark-theme color scheme used across all plots.
-_DARK_BG = "#000000"
-_DARK_FG = "#ffffff"
-_DARK_GRID = "#3a3a3a"
-_MODEL_COLORS = {
-    "HRRR":    "#5ec1ea",   # cyan
-    "GFS_MOS": "#ff8a3d",   # orange
-    "NBM":     "#a4e857",   # bright green
-    # New models: add here. Anything not in this dict falls back to FG (white).
-}
-
-
 def plot_comparison(
     df: pd.DataFrame,
     station_id: str,
@@ -141,8 +141,7 @@ def plot_comparison(
     import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
 
-    fig, axes = plt.subplots(2, 1, figsize=(11, 7.5), sharex=True,
-                             facecolor=_DARK_BG)
+    fig, axes = plt.subplots(2, 1, figsize=(11, 7.5), sharex=True)
 
     sub = df[df["station_id"] == station_id]
     if cycle is None and len(sub) > 0:
@@ -162,7 +161,7 @@ def plot_comparison(
         title="Ceiling", ylim=ceiling_ylim,
     )
 
-    axes[1].set_xlabel("Valid time (UTC)", color=_DARK_FG)
+    axes[1].set_xlabel("Valid time (UTC)")
     axes[1].xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %HZ"))
     axes[1].xaxis.set_major_locator(mdates.AutoDateLocator(minticks=4, maxticks=10))
     fig.autofmt_xdate(rotation=0, ha="center")
@@ -175,38 +174,29 @@ def plot_comparison(
         fig.suptitle(
             f"{station_id} — VIS/CIG forecast comparison\n"
             f"Model run: {cycle_str}",
-            fontsize=12, y=0.995, color=_DARK_FG
+            fontsize=12, y=0.995
         )
     else:
-        fig.suptitle(f"{station_id} — VIS/CIG forecast comparison", fontsize=12, color=_DARK_FG)
+        fig.suptitle(f"{station_id} — VIS/CIG forecast comparison", fontsize=12)
 
     fig.tight_layout()
     return fig
 
 
 def _plot_panel(ax, sub_df, value_col, ylabel, title, ylim):
-    """Plot one model-per-line panel with consistent dark-theme styling."""
-    import matplotlib.pyplot as plt
-    ax.set_facecolor(_DARK_BG)
+    """Plot one model-per-line panel with consistent styling."""
     if len(sub_df) == 0:
         return
     for model_name, group in sub_df.groupby("model", sort=True):
         g = group.sort_values("valid_time")
+        # Convert valid_time -> pure Python datetimes for matplotlib.
         xs = pd.to_datetime(g["valid_time"]).dt.to_pydatetime()
-        color = _MODEL_COLORS.get(str(model_name), _DARK_FG)
-        ax.plot(xs, g[value_col].values, marker="o", markersize=6,
-                linewidth=2.2, color=color, label=str(model_name))
-    ax.set_ylabel(ylabel, color=_DARK_FG)
-    ax.set_title(title, color=_DARK_FG)
+        ax.plot(xs, g[value_col].values, marker="o", label=str(model_name))
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
     ax.set_ylim(*ylim)
-    ax.grid(True, alpha=0.6, color=_DARK_GRID, linewidth=0.6)
-    ax.tick_params(colors=_DARK_FG, which="both")
-    for spine in ax.spines.values():
-        spine.set_color(_DARK_FG)
-        spine.set_linewidth(0.8)
-    leg = ax.legend(title="Model", loc="best",
-                    facecolor=_DARK_BG, edgecolor=_DARK_FG, labelcolor=_DARK_FG)
-    plt.setp(leg.get_title(), color=_DARK_FG)
+    ax.grid(True, alpha=0.3)
+    ax.legend(title="Model", loc="best")
 
 
 def _add_forecast_hour_axis(ax_lower, cycle: datetime) -> None:
@@ -227,8 +217,157 @@ def _add_forecast_hour_axis(ax_lower, cycle: datetime) -> None:
     secax.set_xticks(lower_ticks)
     secax.set_xticklabels([
         f"f+{int(round(h))}" if h >= 0 else "" for h in fhours
-    ], color=_DARK_FG)
-    secax.set_xlabel("Forecast hour", color=_DARK_FG)
-    secax.tick_params(axis="x", which="both", length=3, colors=_DARK_FG)
-    for spine in secax.spines.values():
-        spine.set_color(_DARK_FG)
+    ])
+    secax.set_xlabel("Forecast hour")
+    secax.tick_params(axis="x", which="both", length=3)
+
+
+# ---------------------------------------------------------------------------
+# Interactive Plotly version
+# ---------------------------------------------------------------------------
+def plot_comparison_interactive(
+    df: pd.DataFrame,
+    station_id: str,
+    cycle: Optional[datetime] = None,
+    vis_ylim: tuple[float, float] = (0, 10),
+    ceiling_ylim: tuple[float, float] = (0, 5000),
+):
+    """Interactive Plotly version of the comparison plot.
+
+    Features the static plot_comparison() doesn't have:
+      - Hover any point for a tooltip with model, valid time, forecast hour,
+        vis, and ceiling
+      - Box-zoom (drag a rectangle), pan, wheel zoom — both panels share the
+        x-axis so zooming one zooms the other
+      - Click a model in the legend to hide/show its lines
+      - Double-click to reset zoom
+      - Save-as-PNG button in the modebar (top-right)
+
+    Returns a plotly.graph_objects.Figure. In Colab/Jupyter, the returned
+    figure renders inline automatically when it's the last expression in
+    a cell. Or call fig.show() explicitly.
+    """
+    # Import is local so the rest of the library doesn't pull in plotly.
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    sub = df[df["station_id"] == station_id].copy()
+    if cycle is None and len(sub) > 0:
+        cycle = pd.to_datetime(sub["cycle"].iloc[0]).to_pydatetime()
+
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True,
+        subplot_titles=("Visibility", "Ceiling"),
+        vertical_spacing=0.09,
+    )
+
+    for model_name, group in sub.groupby("model", sort=True):
+        g = group.sort_values("valid_time")
+        color = _MODEL_COLORS.get(str(model_name), _DARK_FG)
+        valid_times = pd.to_datetime(g["valid_time"])
+        forecast_hours = g["forecast_hour"].tolist()
+
+        hover_text = [
+            _format_hover(model_name, vt, fh, vis, cig, unlim)
+            for vt, fh, vis, cig, unlim in zip(
+                valid_times, forecast_hours,
+                g["vsby_sm"], g["ceiling_ft"], g["ceiling_unlimited"],
+            )
+        ]
+
+        # Top panel: visibility
+        fig.add_trace(
+            go.Scatter(
+                x=valid_times, y=g["vsby_sm"],
+                mode="lines+markers", name=str(model_name),
+                line=dict(color=color, width=2.5),
+                marker=dict(size=8, color=color),
+                hovertext=hover_text, hoverinfo="text",
+                legendgroup=str(model_name),
+            ),
+            row=1, col=1,
+        )
+
+        # Bottom panel: ceiling. Share legendgroup so toggling hides both panels.
+        fig.add_trace(
+            go.Scatter(
+                x=valid_times, y=g["ceiling_ft"],
+                mode="lines+markers", name=str(model_name),
+                line=dict(color=color, width=2.5),
+                marker=dict(size=8, color=color),
+                hovertext=hover_text, hoverinfo="text",
+                legendgroup=str(model_name), showlegend=False,
+            ),
+            row=2, col=1,
+        )
+
+    # Layout — dark theme to match the static plot
+    title_text = f"{station_id} — VIS/CIG forecast comparison"
+    if cycle is not None:
+        title_text += (
+            f"<br><sub>Model run: "
+            f"{pd.to_datetime(cycle).strftime('%Y-%m-%d %HZ')}</sub>"
+        )
+
+    fig.update_layout(
+        paper_bgcolor=_DARK_BG,
+        plot_bgcolor=_DARK_BG,
+        font=dict(color=_DARK_FG, size=12),
+        title=dict(text=title_text, font=dict(color=_DARK_FG, size=14), x=0.5),
+        hovermode="closest",
+        height=620,
+        margin=dict(l=70, r=30, t=90, b=60),
+        legend=dict(
+            bgcolor="rgba(0,0,0,0.4)", bordercolor="#888", borderwidth=1,
+            font=dict(color=_DARK_FG), title=dict(text="Model"),
+        ),
+    )
+
+    # Axes
+    fig.update_xaxes(
+        color=_DARK_FG, gridcolor=_DARK_GRID,
+        row=1, col=1,
+    )
+    fig.update_xaxes(
+        title_text="Valid time (UTC)",
+        color=_DARK_FG, gridcolor=_DARK_GRID,
+        tickformat="%m-%d %HZ",
+        row=2, col=1,
+    )
+    fig.update_yaxes(
+        title_text="Visibility (statute miles)",
+        range=list(vis_ylim),
+        color=_DARK_FG, gridcolor=_DARK_GRID,
+        row=1, col=1,
+    )
+    fig.update_yaxes(
+        title_text="Ceiling (feet AGL)",
+        range=list(ceiling_ylim),
+        color=_DARK_FG, gridcolor=_DARK_GRID,
+        row=2, col=1,
+    )
+
+    # Color the subplot titles to match
+    for ann in fig["layout"]["annotations"]:
+        ann["font"] = dict(color=_DARK_FG, size=12)
+
+    return fig
+
+
+def _format_hover(model, vt, fh, vis, cig, unlim) -> str:
+    """Build a multi-line hover tooltip with all the context a forecaster
+    would want about one data point."""
+    vt_str = pd.to_datetime(vt).strftime("%Y-%m-%d %HZ")
+    if unlim:
+        cig_str = "unlimited"
+    elif pd.notna(cig):
+        cig_str = f"{cig:.0f} ft"
+    else:
+        cig_str = "—"
+    vis_str = f"{vis:.1f} sm" if pd.notna(vis) else "—"
+    return (
+        f"<b>{model}</b><br>"
+        f"{vt_str}  (f+{int(fh)})<br>"
+        f"Visibility: {vis_str}<br>"
+        f"Ceiling: {cig_str}"
+    )
