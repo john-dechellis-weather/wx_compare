@@ -277,9 +277,12 @@ def _build_valid_times(
         return []
     result: list[Optional[datetime]] = []
     current = cycle.replace(minute=0, second=0, microsecond=0)
-    prev_hr: Optional[int] = None
+    # Seed prev_hr with the cycle hour so the first column triggers a
+    # day-bump if it represents a forecast hour earlier in the day than
+    # the cycle (e.g., 18Z cycle, first forecast column at 00Z).
+    prev_hr: int = cycle.hour
     for hr in hours:
-        if prev_hr is not None and hr <= prev_hr:
+        if hr <= prev_hr:
             current = current + timedelta(days=1)
         current = current.replace(hour=hr)
         result.append(current)
