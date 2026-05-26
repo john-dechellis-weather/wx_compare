@@ -62,6 +62,19 @@ class ModelSource(ABC):
         ...
 
     # ------------------------------------------------------------------
+    # Optional override — used by core.cycle_select.find_latest_complete()
+    # ------------------------------------------------------------------
+    def is_cycle_complete(self, cycle: datetime) -> bool:
+        """Return True if NOMADS has fully posted this cycle's data.
+
+        Default implementation raises NotImplementedError to signal "no opinion";
+        find_latest_complete() will treat that as "assume complete." Subclasses
+        should override with cheap HTTP HEAD probes — never download bodies
+        from this method.
+        """
+        raise NotImplementedError
+
+    # ------------------------------------------------------------------
     # Convenience: one call to do the whole thing
     # ------------------------------------------------------------------
     def get_forecast(

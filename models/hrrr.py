@@ -85,6 +85,21 @@ class Hrrr(ModelSource):
             f"hrrr.{cycle:%Y%m%d.%H}z.f{fhour:02d}.subset.grib2"
         )
 
+    # --- cycle completeness probe ------------------------------------------
+    def is_cycle_complete(self, cycle: datetime) -> bool:
+        """HRRR posts files incrementally as the run progresses. Probe the
+        .idx of the highest forecast hour we care about — if that exists,
+        every earlier hour exists too. Using .idx not the grib itself
+        because idx files are tiny (~kilobytes) and one HEAD is enough.
+        """
+        last_fhour = max(self.fhours) if self.fhours else 0
+        url = self._idx_url(cycle, last_fhour)
+        try:
+            r = requests.head(url, timeout=15, allow_redirects=True)
+            return r.status_code == 200
+        except requests.RequestException:
+            return False
+
     # --- fetch -------------------------------------------------------------
     def fetch(self, cycle: datetime, stations: Iterable[str]) -> Optional[Path]:
         """Fetch is per-cycle but HRRR has one file per forecast hour. We

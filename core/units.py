@@ -46,7 +46,7 @@ VIS_CATEGORY_MIDPOINTS_SM: dict[int, float] = {
     4: 2.5,
     5: 4.0,
     6: 5.5,
-    7: 7.0,
+    7: 10.0,  # >6 sm in MOS == "unrestricted"; plot at top of 0-10 axis
 }
 
 # ---------------------------------------------------------------------------

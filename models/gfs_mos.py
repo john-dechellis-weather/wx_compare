@@ -45,7 +45,7 @@ class GfsMos(ModelSource):
         d = date.astimezone(timezone.utc) if date.tzinfo else date.replace(tzinfo=timezone.utc)
         return [d.replace(hour=h, minute=0, second=0, microsecond=0) for h in CYCLE_HOURS]
 
-    # --- fetch -------------------------------------------------------------
+    # --- url helpers --------------------------------------------------------
     def _url(self, cycle: datetime) -> str:
         ymd = cycle.strftime("%Y%m%d")
         return f"{NOMADS_BASE}/gfs_mos.{ymd}/mdl_gfsmav.t{cycle:%H}z"
@@ -53,6 +53,18 @@ class GfsMos(ModelSource):
     def _cache_path(self, cycle: datetime) -> Path:
         return self.cache_dir / f"mdl_gfsmav.{cycle:%Y%m%d.%H}z.txt"
 
+    # --- cycle completeness probe ------------------------------------------
+    def is_cycle_complete(self, cycle: datetime) -> bool:
+        """The MAV bulletin is one file containing all forecast hours for
+        all stations, so 'complete' simply means 'the file exists.'"""
+        url = self._url(cycle)
+        try:
+            r = requests.head(url, timeout=15, allow_redirects=True)
+            return r.status_code == 200
+        except requests.RequestException:
+            return False
+
+    # --- fetch -------------------------------------------------------------
     def fetch(self, cycle: datetime, stations: Iterable[str]) -> Optional[Path]:
         # The MAV bulletin is small (~few MB) and contains all stations, so
         # caching the whole file is fine. Station filtering happens in parse().

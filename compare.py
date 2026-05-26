@@ -1,17 +1,35 @@
-"""Comparison and visualization."""
+"""Comparison and visualization.
+
+This is the join point. Every model produces rows in the same schema
+(see core/schema.py), so comparison is just concat + groupby.
+"""
 from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Optional, Sequence
+from typing import Iterable, Optional, Sequence, TYPE_CHECKING
 
 import pandas as pd
 
 from core.stations import StationResolver, Station
 from models.base import ModelSource
 
+if TYPE_CHECKING:
+    import matplotlib
 
-def run_comparison(sources, cycle, stations):
+
+def run_comparison(
+    sources: list[ModelSource],
+    cycle: datetime,
+    stations: Iterable[str],
+) -> pd.DataFrame:
+    """Fetch + parse for one cycle across all sources. Returns a long-form
+    DataFrame ready for pivoting or plotting.
+
+    Low-level entry point: callers must have already constructed every
+    source (including any station-aware ones like HRRR). For the simpler
+    'I just have a list of ICAOs' workflow, use compare_icaos() instead.
+    """
     frames = []
     for src in sources:
         df = src.get_forecast(cycle, stations)
@@ -23,51 +41,170 @@ def run_comparison(sources, cycle, stations):
     return pd.concat(frames, ignore_index=True)
 
 
-def compare_icaos(icaos, cycle, cache_root, model_classes=None, hrrr_fhours=range(0, 19)):
+def compare_icaos(
+    icaos: Sequence[str],
+    cycle: datetime,
+    cache_root: Path,
+    model_classes: Optional[Sequence[type]] = None,
+    hrrr_fhours: Iterable[int] = range(0, 19),
+) -> tuple[pd.DataFrame, list[Station], list[str]]:
+    """High-level entry point. Takes only ICAOs and a cycle; handles all
+    station resolution and source construction internally.
+
+    Returns:
+        df: long-form comparison DataFrame (may be empty)
+        resolved: Station objects for ICAOs that were recognized
+        unresolved: ICAO strings that the resolver couldn't find
+
+    Adding a new model: include its class in model_classes (defaults to
+    ALL_MODEL_CLASSES from models/__init__.py). The dispatch below decides
+    whether it needs Station metadata or just ICAO strings.
+    """
+    # Late import to avoid a circular dependency: models/__init__ imports
+    # nothing from compare, but tests sometimes import compare first.
     from models import GfsMos, Hrrr, ALL_MODEL_CLASSES
+
     if model_classes is None:
         model_classes = ALL_MODEL_CLASSES
+
     cache_root = Path(cache_root)
     resolver = StationResolver(cache_dir=cache_root / "stations")
     resolved, unresolved = resolver.resolve_many(list(icaos))
     if not resolved:
         from core.schema import empty_df
         return empty_df(), [], unresolved
+
     resolved_icaos = [s.icao for s in resolved]
-    sources = []
+
+    # Construct each source. Some need Station objects (HRRR — for point
+    # extraction), others only need ICAOs (MOS — looks up by string in
+    # the bulletin). New gridded models go in the station-aware branch;
+    # new text/bulletin models go in the simple branch.
+    sources: list[ModelSource] = []
     for cls in model_classes:
         if cls is Hrrr:
-            sources.append(Hrrr(cache_dir=cache_root / "hrrr",
-                                stations=resolved, fhours=hrrr_fhours))
+            sources.append(Hrrr(
+                cache_dir=cache_root / "hrrr",
+                stations=resolved,
+                fhours=hrrr_fhours,
+            ))
         else:
+            # Default: assume the source's constructor takes just cache_dir.
             sources.append(cls(cache_dir=cache_root / cls.name.lower()))
+
     df = run_comparison(sources, cycle, resolved_icaos)
     return df, resolved, unresolved
 
 
-def pivot_for_plot(df, station_id, variable):
+def pivot_for_plot(
+    df: pd.DataFrame,
+    station_id: str,
+    variable: str,  # 'vsby_sm' or 'ceiling_ft'
+) -> pd.DataFrame:
+    """One column per model, indexed by valid_time. Easy to plot."""
     sub = df[df["station_id"] == station_id]
     if len(sub) == 0:
         return pd.DataFrame()
-    return (sub.pivot_table(index="valid_time", columns="model",
-                            values=variable, aggfunc="first").sort_index())
+    return (sub
+            .pivot_table(index="valid_time", columns="model", values=variable, aggfunc="first")
+            .sort_index())
 
 
-def plot_comparison(df, station_id, ax=None):
+def plot_comparison(
+    df: pd.DataFrame,
+    station_id: str,
+    cycle: Optional[datetime] = None,
+    vis_ylim: tuple[float, float] = (0, 10),
+    ceiling_ylim: tuple[float, float] = (0, 5000),
+) -> "matplotlib.figure.Figure":
+    """Two-panel plot for one station: visibility on top, ceiling on bottom.
+
+    Parameters:
+        df: long-form comparison DataFrame from run_comparison / compare_icaos
+        station_id: ICAO to plot
+        cycle: model run cycle (UTC). If omitted, inferred from df['cycle'].
+        vis_ylim: visibility axis range in statute miles (default 0-10)
+        ceiling_ylim: ceiling axis range in feet AGL (default 0-5000)
+    """
     import matplotlib.pyplot as plt
-    fig, axes = plt.subplots(2, 1, figsize=(11, 7), sharex=True)
-    vis = pivot_for_plot(df, station_id, "vsby_sm")
-    cig = pivot_for_plot(df, station_id, "ceiling_ft")
-    if not vis.empty:
-        vis.plot(ax=axes[0], marker="o")
-        axes[0].set_ylabel("Visibility (sm)")
-        axes[0].set_title(f"{station_id} — Visibility forecast comparison")
-        axes[0].grid(True, alpha=0.3); axes[0].legend(title="Model")
-    if not cig.empty:
-        cig.plot(ax=axes[1], marker="o")
-        axes[1].set_ylabel("Ceiling (ft AGL)")
-        axes[1].set_title(f"{station_id} — Ceiling forecast comparison")
-        axes[1].grid(True, alpha=0.3); axes[1].legend(title="Model")
+    import matplotlib.dates as mdates
+
+    fig, axes = plt.subplots(2, 1, figsize=(11, 7.5), sharex=True)
+
+    sub = df[df["station_id"] == station_id]
+    if cycle is None and len(sub) > 0:
+        cycle = pd.to_datetime(sub["cycle"].iloc[0]).to_pydatetime()
+
+    # Use direct ax.plot() so the x-axis stays in matplotlib's standard
+    # date2num space — required for the secondary forecast-hour axis math
+    # below to come out right.
+    _plot_panel(
+        axes[0], sub, "vsby_sm",
+        ylabel="Visibility (statute miles)",
+        title="Visibility", ylim=vis_ylim,
+    )
+    _plot_panel(
+        axes[1], sub, "ceiling_ft",
+        ylabel="Ceiling (feet AGL)",
+        title="Ceiling", ylim=ceiling_ylim,
+    )
+
     axes[1].set_xlabel("Valid time (UTC)")
+    axes[1].xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %HZ"))
+    axes[1].xaxis.set_major_locator(mdates.AutoDateLocator(minticks=4, maxticks=10))
+    fig.autofmt_xdate(rotation=0, ha="center")
+
+    if cycle is not None:
+        _add_forecast_hour_axis(axes[0], cycle)
+
+    if cycle is not None:
+        cycle_str = pd.to_datetime(cycle).strftime("%Y-%m-%d %HZ")
+        fig.suptitle(
+            f"{station_id} — VIS/CIG forecast comparison\n"
+            f"Model run: {cycle_str}",
+            fontsize=12, y=0.995
+        )
+    else:
+        fig.suptitle(f"{station_id} — VIS/CIG forecast comparison", fontsize=12)
+
     fig.tight_layout()
     return fig
+
+
+def _plot_panel(ax, sub_df, value_col, ylabel, title, ylim):
+    """Plot one model-per-line panel with consistent styling."""
+    if len(sub_df) == 0:
+        return
+    for model_name, group in sub_df.groupby("model", sort=True):
+        g = group.sort_values("valid_time")
+        # Convert valid_time -> pure Python datetimes for matplotlib.
+        xs = pd.to_datetime(g["valid_time"]).dt.to_pydatetime()
+        ax.plot(xs, g[value_col].values, marker="o", label=str(model_name))
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.set_ylim(*ylim)
+    ax.grid(True, alpha=0.3)
+    ax.legend(title="Model", loc="best")
+
+
+def _add_forecast_hour_axis(ax_lower, cycle: datetime) -> None:
+    """Attach a secondary x-axis at the top showing forecast hours (f+N)
+    aligned with the lower axis's valid-time ticks."""
+    import matplotlib.dates as mdates
+
+    secax = ax_lower.twiny()
+    # Mirror the lower axis x-limits exactly so ticks align.
+    secax.set_xlim(ax_lower.get_xlim())
+
+    # cycle needs to be in the same numeric space (days since matplotlib
+    # epoch) as the lower-axis tick positions.
+    cycle_num = mdates.date2num(pd.to_datetime(cycle))
+    lower_ticks = ax_lower.get_xticks()
+    # (tick - cycle_num) is in days; multiply by 24 for hours.
+    fhours = [(t - cycle_num) * 24.0 for t in lower_ticks]
+    secax.set_xticks(lower_ticks)
+    secax.set_xticklabels([
+        f"f+{int(round(h))}" if h >= 0 else "" for h in fhours
+    ])
+    secax.set_xlabel("Forecast hour")
+    secax.tick_params(axis="x", which="both", length=3)
