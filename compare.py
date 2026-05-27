@@ -231,6 +231,8 @@ def plot_comparison_interactive(
     cycle: Optional[datetime] = None,
     vis_ylim: tuple[float, float] = (0, 10),
     ceiling_ylim: tuple[float, float] = (0, 5000),
+    hours_ahead: float = 48,
+    width: int = 1000,
 ):
     """Interactive Plotly version of the comparison plot.
 
@@ -316,6 +318,7 @@ def plot_comparison_interactive(
         title=dict(text=title_text, font=dict(color=_DARK_FG, size=14), x=0.5),
         hovermode="closest",
         height=620,
+        width=width,
         margin=dict(l=70, r=30, t=90, b=60),
         legend=dict(
             bgcolor="rgba(0,0,0,0.4)", bordercolor="#888", borderwidth=1,
@@ -328,10 +331,19 @@ def plot_comparison_interactive(
         color=_DARK_FG, gridcolor=_DARK_GRID,
         row=1, col=1,
     )
+    # Initial x-axis range: cycle to cycle + hours_ahead. User can still
+    # zoom out via the Plotly toolbar to see data further out.
+    x_range = None
+    if cycle is not None and hours_ahead is not None:
+        from datetime import timedelta as _td
+        c = pd.to_datetime(cycle)
+        x_range = [c, c + _td(hours=hours_ahead)]
+
     fig.update_xaxes(
         title_text="Valid time (UTC)",
         color=_DARK_FG, gridcolor=_DARK_GRID,
         tickformat="%m-%d %HZ",
+        range=x_range,
         row=2, col=1,
     )
     fig.update_yaxes(
