@@ -23,10 +23,11 @@ _DARK_BG = "#000000"
 _DARK_FG = "#ffffff"
 _DARK_GRID = "#3a3a3a"
 _MODEL_COLORS = {
-    "HRRR":     "#5ec1ea",   # cyan
-    "GFS_MOS":  "#ff8a3d",   # orange
-    "NBM":      "#a4e857",   # bright green
-    "GFS_LAMP": "#ffd23d",   # yellow
+    "HRRR":         "#5ec1ea",   # cyan
+    "GFS_MOS":      "#ff8a3d",   # orange
+    "NBM":          "#a4e857",   # bright green
+    "GFS_LAMP":     "#ffd23d",   # yellow
+    "TOMORROW_IO":  "#ff5fb5",   # magenta
     # New models: add here. Anything not in this dict falls back to FG (white).
 }
 
@@ -75,7 +76,7 @@ def compare_icaos(
     """
     # Late import to avoid a circular dependency: models/__init__ imports
     # nothing from compare, but tests sometimes import compare first.
-    from models import GfsMos, Hrrr, ALL_MODEL_CLASSES
+    from models import GfsMos, Hrrr, TomorrowIO, ALL_MODEL_CLASSES
 
     if model_classes is None:
         model_classes = ALL_MODEL_CLASSES
@@ -100,6 +101,12 @@ def compare_icaos(
                 cache_dir=cache_root / "hrrr",
                 stations=resolved,
                 fhours=hrrr_fhours,
+            ))
+        elif cls is TomorrowIO:
+            # Tomorrow.io needs a resolver to convert ICAOs to lat/lon.
+            sources.append(TomorrowIO(
+                cache_dir=cache_root / cls.name.lower(),
+                station_resolver=resolver,
             ))
         else:
             # Default: assume the source's constructor takes just cache_dir.
