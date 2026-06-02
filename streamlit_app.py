@@ -23,8 +23,7 @@ import streamlit as st
 
 # Page config — must be first Streamlit command
 st.set_page_config(
-    page_title="wx_compare — VIS/CIG forecast comparison",
-    page_icon="🛬",
+    page_title="wx_compare — Aviation Model Comparison",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -214,9 +213,11 @@ if run_button:
             cycle=cycle,
             hours_ahead=hours_ahead,
         )
-        # Streamlit will handle width — override the function's default
         fig.update_layout(width=None, autosize=True)
-        st.plotly_chart(fig, use_container_width=True)
+        # Plot takes the left 60% of page width; padding column on the right
+        pad_left, plot_col, pad_right = st.columns([1, 3, 1])
+        with plot_col:
+            st.plotly_chart(fig, use_container_width=True)
 
     # Raw data download (optional but nice for power users)
     with st.expander("Raw data", expanded=False):
