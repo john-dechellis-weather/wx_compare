@@ -98,7 +98,7 @@ def cached_latest_cycle(icaos_tuple: tuple[str, ...]) -> str | None:
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
-st.title("🛬 VIS/CIG Forecast Comparison")
+st.title("Aviation Model Comparison")
 st.caption(
     "Compare visibility and ceiling forecasts from HRRR, GFS MOS, "
     "GFS LAMP, NBM, and (optionally) Tomorrow.io."
