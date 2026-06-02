@@ -11,3 +11,4 @@ wx_compare_cache/
 
 # OS
 .DS_Store
+.streamlit/secrets.toml
