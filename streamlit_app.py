@@ -232,23 +232,22 @@ if run_button:
 
 else:
     # Initial state — landing message
-    st.info("👈 Enter ICAO codes in the sidebar and click **Run comparison**.")
+    st.info("Enter ICAO codes in the sidebar and click **Run comparison**.")
     st.markdown(
         """
-        ### What this does
+        ### Notes:
 
-        Fetches the latest VIS and ceiling forecasts from up to five sources,
-        aligns them to the same time axis, and shows you where they agree
-        and disagree.
+        Fetches the latest visibility and ceiling forecasts from NBM, GFS, HRRR,
+        and tomorrow.io for comparison plot
 
         ### Models
 
-        | Source | Hours | Resolution |
-        | --- | --- | --- |
-        | HRRR | f+0 to f+18 | hourly |
-        | GFS MOS (MAV) | f+6 to f+72 | 3-hourly |
-        | GFS LAMP (LAV) | f+1 to f+25 | hourly |
-        | NBM (NBH + NBS) | f+1 to f+72 | hourly + 3-hourly |
-        | Tomorrow.io | f+1 to ~120 | hourly (optional) |
+        | Source | Hours | 
+        | --- | --- | 
+        | HRRR | 0-18  | 
+        | GFS MOS (MAV) | 6-72 | 
+        | GFS LAMP (LAV) | 1-25 | 
+        | NBM (NBH + NBS) | 1-72 | 
+        | Tomorrow.io | 1-120 | 
         """
     )
