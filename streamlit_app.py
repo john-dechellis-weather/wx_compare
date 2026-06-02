@@ -215,7 +215,7 @@ if run_button:
         )
         fig.update_layout(width=None, autosize=True)
         # Plot takes the left 60% of page width; padding column on the right
-        pad_left, plot_col, pad_right = st.columns([1, 3, 1])
+        pad_left, plot_col, pad_right = st.columns([1, 4, 1])
         with plot_col:
             st.plotly_chart(fig, use_container_width=True)
 
