@@ -16,17 +16,20 @@ import pandas as pd
 # Canonical column order. Use this when constructing DataFrames so every
 # model's output looks identical and joins/concats are painless.
 COLUMNS = [
-    "station_id",       # ICAO, e.g. "KJFK"
-    "model",            # "GFS_MOS", "HRRR", "NBM", ...
-    "cycle",            # model run time (UTC, tz-aware)
-    "valid_time",       # forecast valid time (UTC, tz-aware)
-    "forecast_hour",    # int, valid_time - cycle in hours
-    "vsby_sm",          # statute miles, float, NaN if missing
-    "vsby_category",    # MOS-style 1-7 code if applicable, else pd.NA
-    "ceiling_ft",       # feet AGL, float, NaN if missing or unlimited
-    "ceiling_category", # MOS-style 1-8 code if applicable, else pd.NA
-    "ceiling_unlimited",# bool — True when model reports clear/unlimited
-    "source_file",      # provenance: filename or URL fragment
+    "station_id",        # ICAO, e.g. "KJFK"
+    "model",             # "GFS_MOS", "HRRR", "NBM", ...
+    "cycle",             # model run time (UTC, tz-aware)
+    "valid_time",        # forecast valid time (UTC, tz-aware)
+    "forecast_hour",     # int, valid_time - cycle in hours
+    "vsby_sm",           # statute miles, float, NaN if missing
+    "vsby_category",     # MOS-style 1-7 code if applicable, else pd.NA
+    "ceiling_ft",        # feet AGL, float, NaN if missing or unlimited
+    "ceiling_category",  # MOS-style 1-8 code if applicable, else pd.NA
+    "ceiling_unlimited", # bool — True when model reports clear/unlimited
+    "wind_speed_kt",     # knots, float, NaN if missing
+    "wind_dir_deg",      # degrees true (0-360), float, NaN if missing or variable
+    "wind_gust_kt",      # knots, float, NaN if no gust reported
+    "source_file",       # provenance: filename or URL fragment
 ]
 
 
@@ -47,6 +50,9 @@ class ForecastRecord:
     ceiling_ft: Optional[float] = None
     ceiling_category: Optional[int] = None
     ceiling_unlimited: bool = False
+    wind_speed_kt: Optional[float] = None
+    wind_dir_deg: Optional[float] = None
+    wind_gust_kt: Optional[float] = None
     source_file: str = ""
 
 
@@ -77,6 +83,9 @@ def _enforce_dtypes(df: pd.DataFrame) -> pd.DataFrame:
             "ceiling_ft": "float64",
             "ceiling_category": "Int64",
             "ceiling_unlimited": "boolean",
+            "wind_speed_kt": "float64",
+            "wind_dir_deg": "float64",
+            "wind_gust_kt": "float64",
             "source_file": "string",
         })
     df = df.copy()
@@ -90,5 +99,8 @@ def _enforce_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     df["ceiling_ft"] = pd.to_numeric(df["ceiling_ft"], errors="coerce")
     df["ceiling_category"] = df["ceiling_category"].astype("Int64")
     df["ceiling_unlimited"] = df["ceiling_unlimited"].astype("boolean")
+    df["wind_speed_kt"] = pd.to_numeric(df["wind_speed_kt"], errors="coerce")
+    df["wind_dir_deg"] = pd.to_numeric(df["wind_dir_deg"], errors="coerce")
+    df["wind_gust_kt"] = pd.to_numeric(df["wind_gust_kt"], errors="coerce")
     df["source_file"] = df["source_file"].astype("string")
     return df

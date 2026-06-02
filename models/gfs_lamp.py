@@ -48,10 +48,9 @@ class GfsLamp(ModelSource):
 
     name = "GFS_LAMP"
 
-    # The number of forecast hours we extract. Standard LAV bulletin covers
-    # f+1 .. f+25. The 26-38 extended bulletin (lmp_lavtxt_ext) is a separate
-    # file we could fetch later (similar pattern to NBM merging NBH + NBS).
-    MAX_FHOUR = 25
+    # The number of forecast hours we extract. Bulletin covers f+1 .. f+38
+    # for VIS/CIG; older params end at f+25. We only care about VIS/CIG.
+    MAX_FHOUR = 38
 
     def __init__(self, cache_dir: Path):
         super().__init__(cache_dir)
@@ -63,27 +62,20 @@ class GfsLamp(ModelSource):
                 for h in LAMP_CYCLE_HOURS]
 
     # --- URL helpers --------------------------------------------------------
+    def _cycle_30(self, cycle: datetime) -> datetime:
+        """Caller passes the hour-boundary cycle (HH:00). LAMP's real cycle
+        time is HH:30 — that's what gets stored on records."""
+        return cycle.replace(minute=30)
 
     def _url(self, cycle: datetime) -> str:
-        """Build the LAMP URL.
-
-        Filename quirk: the LAV bulletin (25-hour hourly forecast) is only
-        produced at HH:30. The HH:00, :15, :45 runs publish a different file
-        with only ~3 hours of forecast. So we always fetch the :30 file,
-        regardless of what cycle minute the caller passed.
-
-        cycle.minute is expected to be 0 (the standard cycle-detect passes
-        hour-boundary datetimes). Records will be tagged with HH:00 cycle
-        (see parse()) so LAMP aligns with HRRR/MOS/NBM on the plot.
-        """
+        """Build the LAMP URL. cycle is the HH:00 datetime; URL uses HH30z."""
         ymd = cycle.strftime("%Y%m%d")
         cc = f"{cycle.hour:02d}"
-        return f"{NOMADS_BASE}/lmp.{ymd}/lmp.t{cc}30z.lavtxt.ascii"
-
+        return (f"{NOMADS_BASE}/lmp.{ymd}/"
+                f"lmp.t{cc}30z.simpbull.f001-f038.txt")
 
     def _cache_path(self, cycle: datetime) -> Path:
-        return self.cache_dir / f"lmp.{cycle:%Y%m%d.%H}30z.lavtxt.ascii"
-
+        return self.cache_dir / f"lmp.{cycle:%Y%m%d.%H}30z.simpbull.txt"
 
     # --- cycle completeness probe ------------------------------------------
     def is_cycle_complete(self, cycle: datetime) -> bool:
@@ -124,8 +116,9 @@ class GfsLamp(ModelSource):
         )
         station_set = {s.upper() for s in stations}
 
-        # Cycle is stored as HH:00 (matches other models' alignment).
-        # The :30 minute is purely a filename detail handled in _url().
+        # Caller passed HH:00, but LAMP's actual cycle time is HH:30.
+        lamp_cycle = self._cycle_30(cycle)
+
         records: list[ForecastRecord] = []
         for block in _split_station_blocks(text):
             station_id = _extract_station_id(block)
@@ -133,7 +126,7 @@ class GfsLamp(ModelSource):
                 continue
             try:
                 records.extend(_parse_station_block(
-                    block, station_id, cycle, path.name
+                    block, station_id, lamp_cycle, path.name
                 ))
             except Exception as e:
                 print(f"[{self.name}] parse error for {station_id}: {e}")
@@ -247,8 +240,12 @@ def _parse_station_block(
 
     vis_row = _extract_row(block, "VIS")
     cig_row = _extract_row(block, "CIG")
+    wdr_row = _extract_row(block, "WDR")
+    wsp_row = _extract_row(block, "WSP")
     vis_fields = _slice_fields(vis_row, n_hours) if vis_row else [""] * n_hours
     cig_fields = _slice_fields(cig_row, n_hours) if cig_row else [""] * n_hours
+    wdr_fields = _slice_fields(wdr_row, n_hours) if wdr_row else [""] * n_hours
+    wsp_fields = _slice_fields(wsp_row, n_hours) if wsp_row else [""] * n_hours
 
     records: list[ForecastRecord] = []
     for i, vt in enumerate(valid_times):
@@ -274,10 +271,24 @@ def _parse_station_block(
             except ValueError:
                 cig_code = None
 
+        # Decode wind direction (tens of degrees) and speed (knots)
+        wdr_deg: Optional[float] = None
+        if i < len(wdr_fields) and wdr_fields[i]:
+            try:
+                wdr_deg = float(int(wdr_fields[i])) * 10.0
+            except ValueError:
+                pass
+        wsp_kt: Optional[float] = None
+        if i < len(wsp_fields) and wsp_fields[i]:
+            try:
+                wsp_kt = float(int(wsp_fields[i]))
+            except ValueError:
+                pass
+
         records.append(ForecastRecord(
             station_id=station_id,
             model=GfsLamp.name,
-            cycle=fallback_cycle,  # HH:00 from caller, not LAMP's actual HH:30
+            cycle=header_dt,
             valid_time=vt,
             forecast_hour=fhour,
             vsby_sm=units.vis_category_to_sm(vis_code),
@@ -285,6 +296,9 @@ def _parse_station_block(
             ceiling_ft=units.ceiling_category_to_ft(cig_code),
             ceiling_category=cig_code,
             ceiling_unlimited=(cig_code == 8),
+            wind_dir_deg=wdr_deg,
+            wind_speed_kt=wsp_kt,
+            wind_gust_kt=None,  # LAMP doesn't publish gust
             source_file=source_file,
         ))
     return records

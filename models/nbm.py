@@ -128,13 +128,7 @@ class Nbm(ModelSource):
             if not p.exists():
                 continue
             try:
-                raw = p.read_text()
-                # NBM bulletins have a leading space on every line; strip them
-                # before pattern-matching against headers and row labels.
-                text = "\n".join(
-                    line[1:] if line.startswith(" ") else line
-                    for line in raw.splitlines()
-                )
+                text = p.read_text()
             except Exception as e:
                 print(f"[{self.name}] cannot read {p}: {e}")
                 continue
@@ -283,8 +277,14 @@ def _parse_block(
     # Pull VIS and CIG rows
     vis_row = _extract_row(block, "VIS")
     cig_row = _extract_row(block, "CIG")
+    wdr_row = _extract_row(block, "WDR")
+    wsp_row = _extract_row(block, "WSP")
+    gst_row = _extract_row(block, "GST")
     vis_fields = _slice_fields(vis_row, n_hours) if vis_row else [""] * n_hours
     cig_fields = _slice_fields(cig_row, n_hours) if cig_row else [""] * n_hours
+    wdr_fields = _slice_fields(wdr_row, n_hours) if wdr_row else [""] * n_hours
+    wsp_fields = _slice_fields(wsp_row, n_hours) if wsp_row else [""] * n_hours
+    gst_fields = _slice_fields(gst_row, n_hours) if gst_row else [""] * n_hours
 
     records: list[ForecastRecord] = []
     for i, vt in enumerate(valid_times):
@@ -308,6 +308,14 @@ def _parse_block(
             elif cig_raw >= 0:
                 ceiling_ft = float(cig_raw) * 100.0
 
+        # Wind: WDR in tens of degrees, WSP and GST in knots.
+        wdr_raw = _parse_int_field(wdr_fields[i]) if i < len(wdr_fields) else None
+        wsp_raw = _parse_int_field(wsp_fields[i]) if i < len(wsp_fields) else None
+        gst_raw = _parse_int_field(gst_fields[i]) if i < len(gst_fields) else None
+        wind_dir_deg = float(wdr_raw) * 10.0 if wdr_raw is not None else None
+        wind_speed_kt = float(wsp_raw) if wsp_raw is not None else None
+        wind_gust_kt = float(gst_raw) if gst_raw is not None else None
+
         records.append(ForecastRecord(
             station_id=station_id,
             model=f"NBM_{kind}",   # tag with sub-product; merger relabels to NBM
@@ -321,6 +329,9 @@ def _parse_block(
                 ceiling_ft, unlimited=ceiling_unlimited
             ),
             ceiling_unlimited=ceiling_unlimited,
+            wind_dir_deg=wind_dir_deg,
+            wind_speed_kt=wind_speed_kt,
+            wind_gust_kt=wind_gust_kt,
             source_file=source_file,
         ))
     return records

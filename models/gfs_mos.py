@@ -88,10 +88,7 @@ class GfsMos(ModelSource):
         stations: Iterable[str],
         cycle: datetime,
     ) -> pd.DataFrame:
-        raw = path.read_text()
-        # NOMADS MAV bulletins have a leading space on every line; strip it.
-        text = "\n".join(line[1:] if line.startswith(" ") else line
-                          for line in raw.splitlines())
+        text = path.read_text()
         station_set = {s.upper() for s in stations}
         records: list[ForecastRecord] = []
         for block in _split_station_blocks(text):
@@ -172,7 +169,7 @@ def _parse_station_block(
         # Row label is the first token (3 chars typically). Use first 4 chars
         # then strip — robust to "HR " vs "HR  ".
         label = line[:4].strip()
-        if label in {"DT", "HR", "CIG", "VIS"}:
+        if label in {"DT", "HR", "CIG", "VIS", "WDR", "WSP"}:
             rows[label] = line
             if label == "DT":
                 current_dt_row = line
@@ -187,6 +184,10 @@ def _parse_station_block(
 
     cigs = _extract_category_fields(rows.get("CIG", ""), n=len(hours))
     viss = _extract_category_fields(rows.get("VIS", ""), n=len(hours))
+    # WDR in MOS is reported in tens of degrees (e.g. 27 = 270°)
+    wdrs = _extract_category_fields(rows.get("WDR", ""), n=len(hours))
+    # WSP in MOS is in knots
+    wsps = _extract_category_fields(rows.get("WSP", ""), n=len(hours))
 
     records: list[ForecastRecord] = []
     for i, hr in enumerate(hours):
@@ -196,6 +197,8 @@ def _parse_station_block(
         fhour = int(round((valid_time - header_dt).total_seconds() / 3600))
         cig_code = cigs[i] if i < len(cigs) else None
         vis_code = viss[i] if i < len(viss) else None
+        wdr_code = wdrs[i] if i < len(wdrs) else None
+        wsp_code = wsps[i] if i < len(wsps) else None
         records.append(ForecastRecord(
             station_id=station_id,
             model=GfsMos.name,
@@ -207,6 +210,9 @@ def _parse_station_block(
             ceiling_ft=units.ceiling_category_to_ft(cig_code),
             ceiling_category=cig_code,
             ceiling_unlimited=(cig_code == 8),
+            wind_dir_deg=(float(wdr_code) * 10.0) if wdr_code is not None else None,
+            wind_speed_kt=float(wsp_code) if wsp_code is not None else None,
+            wind_gust_kt=None,  # MOS does not report gust
             source_file=source_file,
         ))
     return records
@@ -277,12 +283,9 @@ def _build_valid_times(
         return []
     result: list[Optional[datetime]] = []
     current = cycle.replace(minute=0, second=0, microsecond=0)
-    # Seed prev_hr with the cycle hour so the first column triggers a
-    # day-bump if it represents a forecast hour earlier in the day than
-    # the cycle (e.g., 18Z cycle, first forecast column at 00Z).
-    prev_hr: int = cycle.hour
+    prev_hr: Optional[int] = None
     for hr in hours:
-        if hr <= prev_hr:
+        if prev_hr is not None and hr <= prev_hr:
             current = current + timedelta(days=1)
         current = current.replace(hour=hr)
         result.append(current)

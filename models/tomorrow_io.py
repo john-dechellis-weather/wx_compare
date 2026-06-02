@@ -196,12 +196,6 @@ def _parse_hourly_entry(
     delta = valid_time - cycle
     fhour = int(round(delta.total_seconds() / 3600))
 
-    # Drop the f+0 ("nowcast") hour. Tomorrow.io anchors this to observations
-    # in a way that often diverges from both the actual METAR and the
-    # subsequent forecast hours. Skip it so the plot starts at f+1.
-    if fhour <= 0:
-        return None
-
     # Visibility — already in statute miles via units=imperial. Clamp to 10
     # to match our existing convention (cat 7 == "unlimited" displayed at 10).
     vis = values.get("visibility")
@@ -224,6 +218,28 @@ def _parse_hourly_entry(
         except (TypeError, ValueError):
             ceiling_unlimited = True
 
+    # Wind: imperial mode gives windSpeed in mph; convert to knots (× 0.868976).
+    # Direction is in degrees true. Gust is windGust in mph.
+    MPH_TO_KT = 0.868976
+    wind_speed_kt: Optional[float] = None
+    if values.get("windSpeed") is not None:
+        try:
+            wind_speed_kt = float(values["windSpeed"]) * MPH_TO_KT
+        except (TypeError, ValueError):
+            pass
+    wind_dir_deg: Optional[float] = None
+    if values.get("windDirection") is not None:
+        try:
+            wind_dir_deg = float(values["windDirection"])
+        except (TypeError, ValueError):
+            pass
+    wind_gust_kt: Optional[float] = None
+    if values.get("windGust") is not None:
+        try:
+            wind_gust_kt = float(values["windGust"]) * MPH_TO_KT
+        except (TypeError, ValueError):
+            pass
+
     return ForecastRecord(
         station_id=station_id,
         model=TomorrowIO.name,
@@ -237,5 +253,8 @@ def _parse_hourly_entry(
             ceiling_ft, unlimited=ceiling_unlimited
         ),
         ceiling_unlimited=ceiling_unlimited,
+        wind_speed_kt=wind_speed_kt,
+        wind_dir_deg=wind_dir_deg,
+        wind_gust_kt=wind_gust_kt,
         source_file=source_file,
     )

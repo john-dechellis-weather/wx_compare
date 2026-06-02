@@ -43,6 +43,11 @@ NOMADS_BASE = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod"
 WANTED_RECORDS = {
     "vsby": re.compile(r":VIS:surface:"),
     "ceiling_hgt": re.compile(r":HGT:cloud ceiling:"),
+    # Wind at 10m AGL. The component values are in m/s; we compute speed and
+    # direction in parse_point_subset(). Note: ":UGRD:10 m above ground:" matches
+    # only that record, not other UGRD layers like 80m or top of atmosphere.
+    "ugrd_10m": re.compile(r":UGRD:10 m above ground:"),
+    "vgrd_10m": re.compile(r":VGRD:10 m above ground:"),
 }
 
 
@@ -198,12 +203,21 @@ class Hrrr(ModelSource):
         hgt_ds = _open_grib(subset_path, filter_by_keys={
             "shortName": "gh", "typeOfLevel": "cloudCeiling",
         })
+        # Wind U/V at 10m AGL — heightAboveGround=10 disambiguates from other layers
+        u_ds = _open_grib(subset_path, filter_by_keys={
+            "shortName": "u10", "typeOfLevel": "heightAboveGround",
+        })
+        v_ds = _open_grib(subset_path, filter_by_keys={
+            "shortName": "v10", "typeOfLevel": "heightAboveGround",
+        })
 
         valid_time = cycle + timedelta(hours=fhour)
         records: list[ForecastRecord] = []
         for stn in stations:
             vis_m = _nearest_point(vis_ds, "vis", stn.lat, stn.lon) if vis_ds is not None else np.nan
             hgt_m_msl = _nearest_point(hgt_ds, "gh", stn.lat, stn.lon) if hgt_ds is not None else np.nan
+            u_ms = _nearest_point(u_ds, "u10", stn.lat, stn.lon) if u_ds is not None else np.nan
+            v_ms = _nearest_point(v_ds, "v10", stn.lat, stn.lon) if v_ds is not None else np.nan
 
             vsby_sm = units.hrrr_vis_meters_to_sm(float(vis_m)) if np.isfinite(vis_m) else None
             # Convert MSL height to AGL using the station's field elevation.
@@ -220,6 +234,19 @@ class Hrrr(ModelSource):
             else:
                 ceiling_unlimited = True
 
+            # Wind speed = sqrt(u² + v²), m/s → knots × 1.94384
+            # Direction (meteorological): atan2(-u, -v) gives the direction the
+            # wind is COMING FROM, in radians, then convert to degrees [0, 360).
+            wind_speed_kt = None
+            wind_dir_deg = None
+            if np.isfinite(u_ms) and np.isfinite(v_ms):
+                speed_ms = float(np.hypot(u_ms, v_ms))
+                wind_speed_kt = speed_ms * 1.94384
+                # Calm winds: direction is undefined; leave as None
+                if speed_ms > 0.1:
+                    raw_deg = float(np.degrees(np.arctan2(-u_ms, -v_ms)))
+                    wind_dir_deg = raw_deg % 360.0
+
             records.append(ForecastRecord(
                 station_id=stn.icao,
                 model=self.name,
@@ -233,6 +260,9 @@ class Hrrr(ModelSource):
                     ceiling_ft, unlimited=ceiling_unlimited
                 ),
                 ceiling_unlimited=ceiling_unlimited,
+                wind_speed_kt=wind_speed_kt,
+                wind_dir_deg=wind_dir_deg,
+                wind_gust_kt=None,  # HRRR provides GUST but at surface, separate record
                 source_file=subset_path.name,
             ))
         return records
