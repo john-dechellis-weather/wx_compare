@@ -140,7 +140,7 @@ if run_button:
     # Render per station
     from compare import plot_wind_comparison_interactive
 
-    tab_plots, tab_data = st.tabs(["📊 Plots", "📋 Raw data"])
+    tab_plots, tab_data = st.tabs(["Plots", "Raw data"])
 
     with tab_plots:
         for s in resolved:
@@ -152,9 +152,7 @@ if run_button:
                 hours_ahead=hours_ahead,
             )
             fig.update_layout(width=None, autosize=True)
-            plot_col, pad_right = st.columns([3, 2])
-            with plot_col:
-                st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True)
 
     with tab_data:
         wind_cols = ["station_id", "model", "valid_time", "forecast_hour",
