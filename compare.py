@@ -344,11 +344,14 @@ def plot_comparison_interactive(
         range=x_range,
         row=2, col=1,
     )
-    fig.update_yaxes(
-        title_text="Visibility (statute miles)",
-        range=list(vis_ylim),
+    fig.update_xaxes(
+        title_text="Valid time (UTC)",
         color=_DARK_FG, gridcolor=_DARK_GRID,
-        row=1, col=1,
+        tickformat="%m-%d %HZ",
+        range=x_range,
+        dtick=3 * 3600 * 1000,    # 3 hours in milliseconds
+        tickangle=-45,             # angle labels for readability
+        row=2, col=1,
     )
     fig.update_yaxes(
         title_text="Ceiling (feet AGL)",
@@ -504,7 +507,11 @@ def plot_wind_comparison_interactive(
     fig.update_xaxes(
         title_text="Valid time (UTC)",
         color=_DARK_FG, gridcolor=_DARK_GRID,
-        tickformat="%m-%d %HZ", range=x_range, row=2, col=1,
+        tickformat="%m-%d %HZ",
+        range=x_range,
+        dtick=3 * 3600 * 1000,    # 3 hours in milliseconds
+        tickangle=-45,             # angle labels for readability
+        row=2, col=1,
     )
     fig.update_yaxes(
         title_text="Speed (kt)", range=list(speed_ylim),
