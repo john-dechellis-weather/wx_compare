@@ -17,20 +17,20 @@ st.markdown(
     """
     ### Available tools
 
-    - **VIS / CIG Comparison** — Visibility and ceiling forecasts from five models
-    - **Wind Comparison** — Wind speed, direction, and gust forecasts from five models
+    - **VIS/CIG Comparison Tool** — Visibility and ceiling forecast data from the five models below 
+    - **Wind Comparison Tool** — Wind speed, direction, and gust forecast data from the five models below
 
-    Select a tool from the sidebar to get started.
+    Select a tool from the sidebar to start. Do not share this site URL outside of the SOC team. 
 
     ### Models compared
 
     | Source | Forecast Range | Resolution |
     | --- | --- | --- |
-    | HRRR | f+0 to f+18 | hourly |
-    | GFS MOS (MAV) | f+6 to f+72 | 3-hourly |
-    | GFS LAMP (LAV) | f+1 to f+25 | hourly |
-    | NBM (NBH + NBS) | f+1 to f+72 | hourly + 3-hourly |
-    | Tomorrow.io | f+1 to ~120 | hourly (optional) |
+    | HRRR | 0-18 | hourly |
+    | GFS MOS (MAV) | 6-72 | 3-hourly |
+    | GFS LAMP (LAV) | 1-25 | hourly |
+    | NBM (NBH + NBS) | 1-72 | hourly + 3-hourly |
+    | Tomorrow.io | 1-120 | hourly (optional) |
 
     All NOAA models are pulled live from NOMADS. Tomorrow.io is included when an
     API key is configured by the site operator.
