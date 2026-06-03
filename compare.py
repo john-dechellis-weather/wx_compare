@@ -510,6 +510,9 @@ def plot_wind_comparison_interactive(
     fig.update_xaxes(
         color=_DARK_FG, 
         gridcolor=_DARK_GRID, 
+        tickformat="%m-%d %HZ",
+        range=x_range,
+        dtick=3 * 3600 * 1000,
         showgrid=True,
         gridwidth=0.5,
         row=1, col=1
