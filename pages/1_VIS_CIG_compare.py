@@ -232,8 +232,8 @@ else:
         """
         ### Plot Description
 
-        Fetches the latest visibility and ceiling forecast data from the models below
-        The forecast horizon slider adjusts the end range of the model data 
+        - Fetches the latest visibility and ceiling forecast data from the models below
+        - The forecast horizon slider adjusts the end range of the model data 
 
         ### Models
 
