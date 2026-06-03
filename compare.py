@@ -350,7 +350,9 @@ def plot_comparison_interactive(
         tickformat="%m-%d %HZ",
         range=x_range,
         dtick=3 * 3600 * 1000,    # 3 hours in milliseconds
-        tickangle=-45,             # angle labels for readability
+        #tickangle=-45,             # angle labels for readability
+        showgrid=True,
+        gridwidth=0.5,
         row=2, col=1,
     )
     fig.update_yaxes(
@@ -511,6 +513,8 @@ def plot_wind_comparison_interactive(
         range=x_range,
         dtick=3 * 3600 * 1000,    # 3 hours in milliseconds
         #tickangle=-45,             # angle labels for readability
+        showgrid=True,
+        gridwidth=0.5,
         row=2, col=1,
     )
     fig.update_yaxes(
