@@ -11,18 +11,18 @@ st.set_page_config(
 )
 
 st.title("Aviation Forecast Tools")
-st.caption("Multi-model comparison of forecast variables for any US airport.")
+st.caption("Multi-model comparison for CONUS airports.")
 
 st.markdown(
     """
     ### Available tools
 
-    - **VIS/CIG Comparison Tool** — Visibility and ceiling forecast data from the five models below 
-    - **Wind Comparison Tool** — Wind speed, direction, and gust forecast data from the five models below
+    - **VIS/CIG Comparison Tool** — visibility and ceiling model data 
+    - **Wind Comparison Tool** — wind speed, direction, and wind gust model data
 
     Select a tool from the sidebar to start. Do not share this site URL outside of the SOC team. 
 
-    ### Models compared
+    ### Models Included
 
     | Source | Forecast Range | Resolution |
     | --- | --- | --- |
