@@ -233,9 +233,9 @@ else:
     st.info("Enter ICAO codes in the sidebar and click **Run comparison**.")
     st.markdown(
         """
-        ### What this does
+        ### Plot Description
 
-        Fetches the latest visibility and ceiling forecasts 
+        Fetches the latest visibility and ceiling forecast data from the models below
 
         ### Models
 
