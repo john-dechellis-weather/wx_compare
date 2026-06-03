@@ -23,8 +23,7 @@ import streamlit as st
 
 # Page config — must be first Streamlit command
 st.set_page_config(
-    page_title="wx_compare — VIS/CIG forecast comparison",
-    page_icon="🛬",
+    page_title="wx_compare — VIS/CIG Model Comparison",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -99,7 +98,7 @@ def cached_latest_cycle(icaos_tuple: tuple[str, ...]) -> str | None:
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
-st.title("🛬 VIS/CIG Forecast Comparison")
+st.title("VIS/CIG Model Comparison")
 st.caption(
     "Compare visibility and ceiling forecasts from HRRR, GFS MOS, "
     "GFS LAMP, NBM, and (optionally) Tomorrow.io."
@@ -231,23 +230,21 @@ if run_button:
 
 else:
     # Initial state — landing message
-    st.info("👈 Enter ICAO codes in the sidebar and click **Run comparison**.")
+    st.info("Enter ICAO codes in the sidebar and click **Run comparison**.")
     st.markdown(
         """
         ### What this does
 
-        Fetches the latest VIS and ceiling forecasts from up to five sources,
-        aligns them to the same time axis, and shows you where they agree
-        and disagree.
+        Fetches the latest visibility and ceiling forecasts 
 
         ### Models
 
-        | Source | Hours | Resolution |
-        | --- | --- | --- |
-        | HRRR | f+0 to f+18 | hourly |
-        | GFS MOS (MAV) | f+6 to f+72 | 3-hourly |
-        | GFS LAMP (LAV) | f+1 to f+25 | hourly |
-        | NBM (NBH + NBS) | f+1 to f+72 | hourly + 3-hourly |
-        | Tomorrow.io | f+1 to ~120 | hourly (optional) |
+        | Source | Hours | 
+        | --- | --- | 
+        | HRRR | 0-18 | 
+        | GFS MOS (MAV) | 6-72 |
+        | GFS LAMP (LAV) | 1-25 | 
+        | NBM (NBH + NBS) | 1-72 | 
+        | Tomorrow.io | 1-120 | 
         """
     )

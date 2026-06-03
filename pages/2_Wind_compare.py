@@ -172,12 +172,12 @@ else:
     st.info("👈 Enter ICAO codes in the sidebar and click **Run comparison**.")
     st.markdown(
         """
-        ### What this shows
+        ### Plot Description
 
         - **Top panel**: sustained wind speed (kt). Gust values (where reported) appear as dotted lines on the same panel.
         - **Bottom panel**: wind direction (degrees true, the direction wind is *coming from*). Markers only — no connecting lines — so 360° → 0° wraps don't create misleading jumps.
 
-        ### Reading the direction panel
+        ### Reading Direction panel
 
         - 0° = North, 90° = East, 180° = South, 270° = West
         - Hover over any marker for cardinal direction (e.g. "WSW")
