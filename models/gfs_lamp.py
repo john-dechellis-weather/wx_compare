@@ -68,14 +68,18 @@ class GfsLamp(ModelSource):
         return cycle.replace(minute=30)
 
     def _url(self, cycle: datetime) -> str:
-        """Build the LAMP URL. cycle is the HH:00 datetime; URL uses HH30z."""
+        """Build the LAMP URL. cycle is the HH:00 datetime; URL uses HH30z.
+
+        Filename quirk: the full LAV bulletin (25-hour hourly forecast) is only
+        produced at HH:30. The HH:00, :15, :45 sub-hourly runs publish a
+        different file with only ~3 hours of forecast.
+        """
         ymd = cycle.strftime("%Y%m%d")
         cc = f"{cycle.hour:02d}"
-        return (f"{NOMADS_BASE}/lmp.{ymd}/"
-                f"lmp.t{cc}30z.simpbull.f001-f038.txt")
+        return f"{NOMADS_BASE}/lmp.{ymd}/lmp.t{cc}30z.lavtxt.ascii"
 
     def _cache_path(self, cycle: datetime) -> Path:
-        return self.cache_dir / f"lmp.{cycle:%Y%m%d.%H}30z.simpbull.txt"
+        return self.cache_dir / f"lmp.{cycle:%Y%m%d.%H}30z.lavtxt.ascii"
 
     # --- cycle completeness probe ------------------------------------------
     def is_cycle_complete(self, cycle: datetime) -> bool:

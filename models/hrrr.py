@@ -203,13 +203,11 @@ class Hrrr(ModelSource):
         hgt_ds = _open_grib(subset_path, filter_by_keys={
             "shortName": "gh", "typeOfLevel": "cloudCeiling",
         })
-        # Wind U/V at 10m AGL — heightAboveGround=10 disambiguates from other layers
-        u_ds = _open_grib(subset_path, filter_by_keys={
-            "shortName": "u10", "typeOfLevel": "heightAboveGround",
-        })
-        v_ds = _open_grib(subset_path, filter_by_keys={
-            "shortName": "v10", "typeOfLevel": "heightAboveGround",
-        })
+        # Wind U/V at 10m AGL. paramId is universal across GRIB sources;
+        # shortName+typeOfLevel filters proved unreliable across cfgrib versions.
+        # 165 = 10m U-component, 166 = 10m V-component.
+        u_ds = _open_grib(subset_path, filter_by_keys={"paramId": 165})
+        v_ds = _open_grib(subset_path, filter_by_keys={"paramId": 166})
 
         valid_time = cycle + timedelta(hours=fhour)
         records: list[ForecastRecord] = []

@@ -88,7 +88,13 @@ class GfsMos(ModelSource):
         stations: Iterable[str],
         cycle: datetime,
     ) -> pd.DataFrame:
-        text = path.read_text()
+        raw = path.read_text()
+        # MAV bulletins prefix every line with a space; strip them so header
+        # regexes and row labels anchor correctly.
+        text = "\n".join(
+            line[1:] if line.startswith(" ") else line
+            for line in raw.splitlines()
+        )
         station_set = {s.upper() for s in stations}
         records: list[ForecastRecord] = []
         for block in _split_station_blocks(text):
@@ -283,9 +289,12 @@ def _build_valid_times(
         return []
     result: list[Optional[datetime]] = []
     current = cycle.replace(minute=0, second=0, microsecond=0)
-    prev_hr: Optional[int] = None
+    # Seed prev_hr with the cycle hour so an 18Z cycle's first column at 00Z
+    # correctly bumps the day. Otherwise the first valid time lands on the
+    # same day, producing negative forecast_hour values.
+    prev_hr: int = cycle.hour
     for hr in hours:
-        if prev_hr is not None and hr <= prev_hr:
+        if hr <= prev_hr:
             current = current + timedelta(days=1)
         current = current.replace(hour=hr)
         result.append(current)

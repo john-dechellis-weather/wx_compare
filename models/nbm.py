@@ -128,7 +128,13 @@ class Nbm(ModelSource):
             if not p.exists():
                 continue
             try:
-                text = p.read_text()
+                raw = p.read_text()
+                # NBM bulletins prefix every line with a space; strip them
+                # before pattern-matching against headers and row labels.
+                text = "\n".join(
+                    line[1:] if line.startswith(" ") else line
+                    for line in raw.splitlines()
+                )
             except Exception as e:
                 print(f"[{self.name}] cannot read {p}: {e}")
                 continue
