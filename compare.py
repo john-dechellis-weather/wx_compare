@@ -328,6 +328,8 @@ def plot_comparison_interactive(
     # Axes
     fig.update_xaxes(
         color=_DARK_FG, gridcolor=_DARK_GRID,
+        showgrid=True,
+        gridwidth=0.5,
         row=1, col=1,
     )
     # Initial x-axis range: cycle to cycle + hours_ahead.
@@ -505,7 +507,14 @@ def plot_wind_comparison_interactive(
         c = pd.to_datetime(cycle)
         x_range = [c, c + _td(hours=hours_ahead)]
 
-    fig.update_xaxes(color=_DARK_FG, gridcolor=_DARK_GRID, row=1, col=1)
+    fig.update_xaxes(
+        color=_DARK_FG, 
+        gridcolor=_DARK_GRID, 
+        showgrid=True,
+        gridwidth=0.5,
+        row=1, col=1
+    )
+    
     fig.update_xaxes(
         title_text="Valid time (UTC)",
         color=_DARK_FG, gridcolor=_DARK_GRID,
