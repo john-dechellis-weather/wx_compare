@@ -46,8 +46,9 @@ h2 {
     font-family: "Times New Roman", Times, serif !important;
     font-size: 16px !important;
     font-weight: bold !important;
-    background: #003366 !important;
-    color: #FFFFFF !important;
+    background: #E0E0E0 !important;
+    color: #000000 !important;
+    border: 1px solid #000000 !important;
     padding: 3px 8px !important;
     margin: 16px 0 8px 0 !important;
 }
@@ -194,12 +195,13 @@ input[type="text"], .stTextInput input {
     padding: 3px 8px !important;
     font-weight: bold !important;
 }
-[data-testid="stDataFrame"] td,
-[data-testid="stTable"] td {
-    background: #FFFFFF !important;
+[data-testid="stDataFrame"] th,
+[data-testid="stTable"] th {
+    background: #E0E0E0 !important;
     color: #000000 !important;
     border: 1px solid #000000 !important;
-    padding: 2px 8px !important;
+    padding: 3px 8px !important;
+    font-weight: bold !important;
 }
 
 /* Metric boxes (the counters at the top) — make them look boxy */
