@@ -126,10 +126,6 @@ if run_button:
 
     st.info(f"Using cycle: **{cycle:%Y-%m-%d %H:%M UTC}**")
 
-    for s in resolved:
-        st.markdown(f"**{s.icao}** — {s.name}")
-    st.markdown("---")
-
     with st.spinner("Fetching forecasts..."):
         df, resolved, unresolved = cached_compare(tuple(icaos), cycle_iso)
 
@@ -143,6 +139,10 @@ if run_button:
     if len(df) == 0:
         st.warning("Comparison returned no data.")
         st.stop()
+     
+    for s in resolved:
+        st.markdown(f"**{s.icao}** — {s.name}")
+    st.markdown("---")
 
     # Render per station
     from compare import plot_wind_comparison_interactive
