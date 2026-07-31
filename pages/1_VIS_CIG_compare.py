@@ -26,6 +26,8 @@ st.set_page_config(
     page_title="wx_compare — VIS/CIG Model Comparison",
     layout="wide",
     initial_sidebar_state="expanded",
+    from retro_theme import apply_retro_theme
+    apply_retro_theme()
 )
 
 
