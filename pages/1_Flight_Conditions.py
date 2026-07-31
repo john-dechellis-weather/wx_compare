@@ -185,14 +185,6 @@ if run_button:
         st.error("No stations could be resolved. Check your ICAO codes.")
         st.stop()
 
-    # Show resolved stations
-    with st.expander("Resolved stations", expanded=False):
-        for s in resolved:
-            st.write(
-                f"**{s.icao}** — {s.name}  "
-                f"({s.lat:.2f}, {s.lon:.2f}, {s.elev_ft:.0f} ft MSL)"
-            )
-
     # Show model counts
     if len(df) > 0:
         cols = st.columns(len(df["model"].unique()))
