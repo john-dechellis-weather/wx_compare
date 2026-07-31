@@ -29,7 +29,7 @@ st.set_page_config(
 )
 
 from retro_theme import apply_retro_theme
-    apply_retro_theme()
+apply_retro_theme()
 
 # ---------------------------------------------------------------------------
 # Cache directory: persist between Streamlit reruns within a session.
