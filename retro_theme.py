@@ -193,8 +193,8 @@ input[type="text"], .stTextInput input {
 }
 [data-testid="stDataFrame"] th,
 [data-testid="stTable"] th {
-    background: #003366 !important;
-    color: #FFFFFF !important;
+    background: #E0E0E0 !important;
+    color: #000000 !important;
     border: 1px solid #000000 !important;
     padding: 3px 8px !important;
     font-weight: bold !important;
