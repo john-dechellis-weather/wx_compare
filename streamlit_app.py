@@ -5,7 +5,7 @@ The actual tools live in pages/ and Streamlit auto-discovers them.
 import streamlit as st
 
 st.set_page_config(
-    page_title="wx_compare — aviation forecast tools",
+    page_title="Homepage",
     layout="wide",
     initial_sidebar_state="expanded",
 )
