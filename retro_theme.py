@@ -13,6 +13,10 @@ RETRO_CSS = """
     background: #C0C0C0 !important;
 }
 
+* {
+    color: #000000 !important;
+}
+
 /* Main content area gets a white box with a black border, centered */
 .main .block-container {
     background: #8F8482 !important;
