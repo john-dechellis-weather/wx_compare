@@ -23,7 +23,7 @@ import streamlit as st
 
 # Page config — must be first Streamlit command
 st.set_page_config(
-    page_title="wx_compare — VIS/CIG Model Comparison",
+    page_title="wx_compare — Flight Conditions",
     layout="wide",
     initial_sidebar_state="expanded",
 )
