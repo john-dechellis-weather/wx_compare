@@ -240,7 +240,7 @@ input[type="text"], .stTextInput input {
     font-weight: bold !important;
 }
 .stTabs [aria-selected="true"] {
-    background: #FFFFFF !important;
+    background: #8F8482 !important;
     color: #000000 !important;
 }
 
