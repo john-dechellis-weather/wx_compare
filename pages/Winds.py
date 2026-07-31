@@ -126,6 +126,10 @@ if run_button:
 
     st.info(f"Using cycle: **{cycle:%Y-%m-%d %H:%M UTC}**")
 
+    for s in resolved:
+        st.markdown(f"**{s.icao}** — {s.name}")
+    st.markdown("---")
+
     with st.spinner("Fetching forecasts..."):
         df, resolved, unresolved = cached_compare(tuple(icaos), cycle_iso)
 
