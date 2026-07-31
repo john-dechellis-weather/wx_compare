@@ -15,7 +15,7 @@ RETRO_CSS = """
 
 /* Main content area gets a white box with a black border, centered */
 .main .block-container {
-    background: #FFFFFF !important;
+    background: #8F8482 !important;
     border: 2px solid #000000 !important;
     max-width: 800px !important;
     padding: 20px 24px !important;
