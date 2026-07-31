@@ -100,7 +100,7 @@ def cached_latest_cycle(icaos_tuple: tuple[str, ...]) -> str | None:
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
-st.title("VIS/CIG Model Comparison")
+st.title("Flight Conditions")
 
 
 with st.sidebar:
