@@ -11,10 +11,10 @@ import streamlit as st
 st.set_page_config(
     page_title="Wind Comparison",
     layout="wide",
-    from retro_theme import apply_retro_theme
-    apply_retro_theme()
-
 )
+
+from retro_theme import apply_retro_theme
+apply_retro_theme()
 
 
 CACHE_ROOT = Path("/tmp/wx_compare_cache")

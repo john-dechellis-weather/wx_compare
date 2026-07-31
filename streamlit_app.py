@@ -8,10 +8,10 @@ st.set_page_config(
     page_title="wx_compare — aviation forecast tools",
     layout="wide",
     initial_sidebar_state="expanded",
+)
 
 from retro_theme import apply_retro_theme
 apply_retro_theme()
-)
 
 st.title("Aviation Forecast Tools")
 st.caption("Multi-model comparison for CONUS airports.")
