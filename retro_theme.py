@@ -213,7 +213,7 @@ input[type="text"], .stTextInput input {
     font-family: "Courier New", Courier, monospace !important;
     font-size: 18px !important;
     font-weight: bold !important;
-    color: #000000 !important;
+    color: #A3A379 !important;
 }
 [data-testid="stMetricLabel"] {
     font-family: "Times New Roman", Times, serif !important;
