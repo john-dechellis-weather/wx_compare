@@ -26,7 +26,7 @@ _MODEL_COLORS = {
     "HRRR":    "#5ec1ea",   # cyan
     "GFS_MOS": "#ff8a3d",   # orange
     "NBM":     "#a4e857",   # bright green
-    "tomorrow_io" : "#0100FF", # tomorrow io official blue
+    "TOMORROW_IO" : "#0100FF", # tomorrow io official blue
     # New models: add here. Anything not in this dict falls back to FG (white).
 }
 
