@@ -234,6 +234,7 @@ def plot_comparison_interactive(
     ceiling_ylim: tuple[float, float] = (0, 5000),
     hours_ahead: float = 48,
     width: int = 1000,
+    metars_df: Optional[pd.DataFrame] = None,
 ):
     """Interactive Plotly version of the comparison plot.
 
@@ -303,6 +304,50 @@ def plot_comparison_interactive(
             ),
             row=2, col=1,
         )
+
+    # METAR observations overlay — red markers, ground truth
+    if metars_df is not None and len(metars_df) > 0:
+        obs = metars_df[metars_df["station_id"] == station_id].sort_values("obs_time")
+        if len(obs) > 0:
+            obs_times = pd.to_datetime(obs["obs_time"])
+            # Top panel: visibility observations
+            vis_hover = [
+                f"<b>METAR</b><br>{t.strftime('%Y-%m-%d %HZ')}<br>Vis: {v} sm"
+                for t, v in zip(obs_times, obs["vsby_sm"])
+            ]
+            fig.add_trace(
+                go.Scatter(
+                    x=obs_times, y=obs["vsby_sm"],
+                    mode="markers", name="METAR obs",
+                    marker=dict(size=10, color="#FF3333", symbol="circle",
+                                line=dict(color="#FFFFFF", width=1)),
+                    hovertext=vis_hover, hoverinfo="text",
+                    legendgroup="METAR",
+                ),
+                row=1, col=1,
+            )
+            # Bottom panel: ceiling observations
+            # Clamp unlimited ceilings to the top of the y-axis so they're visible
+            ceil_plot = obs.apply(
+                lambda r: ceiling_ylim[1] if r["ceiling_unlimited"] else r["ceiling_ft"],
+                axis=1,
+            )
+            ceil_hover = [
+                f"<b>METAR</b><br>{t.strftime('%Y-%m-%d %HZ')}<br>"
+                f"Ceiling: {'UNL' if u else f'{c:.0f} ft'}"
+                for t, c, u in zip(obs_times, obs["ceiling_ft"], obs["ceiling_unlimited"])
+            ]
+            fig.add_trace(
+                go.Scatter(
+                    x=obs_times, y=ceil_plot,
+                    mode="markers", name="METAR obs",
+                    marker=dict(size=10, color="#FF3333", symbol="circle",
+                                line=dict(color="#FFFFFF", width=1)),
+                    hovertext=ceil_hover, hoverinfo="text",
+                    legendgroup="METAR", showlegend=False,
+                ),
+                row=2, col=1,
+            )
 
     # Layout — dark theme to match the static plot
     title_text = f"{station_id} — VIS/CIG forecast comparison"
@@ -395,7 +440,7 @@ def _format_hover(model, vt, fh, vis, cig, unlim) -> str:
 # ---------------------------------------------------------------------------
 # Wind comparison plot (interactive Plotly version)
 # ---------------------------------------------------------------------------
-def plot_wind_comparison_interactive(
+ç
     df: pd.DataFrame,
     station_id: str,
     cycle: Optional[datetime] = None,
@@ -403,7 +448,10 @@ def plot_wind_comparison_interactive(
     hours_ahead: float = 48,
     width: int = 1000,
     height: int = 720,
+    metars_df: Optional[pd.DataFrame] = None,
 ):
+
+
     """Two stacked panels: wind speed (top) and wind direction (bottom).
 
     Speed panel renders as lines + markers — standard time series.
@@ -481,6 +529,185 @@ def plot_wind_comparison_interactive(
             row=2, col=1,
         )
 
+    # METAR observations overlay — red markers, ground truth
+    if metars_df is not None and len(metars_df) > 0:
+        obs = metars_df[metars_df["station_id"] == station_id].sort_values("obs_time")
+        if len(obs) > 0:
+            obs_times = pd.to_datetime(obs["obs_time"])
+
+            def _obs_hover(t, s, d, g):
+                spd = f"{s:.0f} kt" if pd.notna(s) else "—"
+                if pd.notna(d):
+                    dir_str = f"{int(d):03d}° ({_deg_to_cardinal(d)})"
+                else:
+                    dir_str = "—"
+                gst = f"<br>Gust: {g:.0f} kt" if pd.notna(g) else ""
+                return (f"<b>METAR</b><br>{t.strftime('%Y-%m-%d %HZ')}<br>"
+                        f"Wind: {dir_str} @ {spd}{gst}")
+
+            wind_hover = [
+                _obs_hover(t, s, d, g)
+                for t, s, d, g in zip(
+                    obs_times, obs["wind_speed_kt"],
+                    obs["wind_dir_deg"], obs["wind_gust_kt"],
+                )
+            ]
+            # Top: speed
+            fig.add_trace(
+                go.Scatter(
+                    x=obs_times, y=obs["wind_speed_kt"],
+                    mode="markers", name="METAR obs",
+                    marker=dict(size=10, color="#FF3333", symbol="circle",
+                                line=dict(color="#FFFFFF", width=1)),
+                    hovertext=wind_hover, hoverinfo="text",
+                    legendgroup="METAR",
+                ),
+                row=1, col=1,
+            )
+            # Bottom: direction
+            fig.add_trace(
+                go.Scatter(
+                    x=obs_times, y=obs["wind_dir_deg"],
+                    mode="markers", name="METAR obs",
+                    marker=dict(size=10, color="#FF3333", symbol="circle",
+                                line=dict(color="#FFFFFF", width=1)),
+                    hovertext=wind_hover, hoverinfo="text",
+                    legendgroup="METAR", showlegend=False,
+                ),
+                row=2, col=1,
+            )
+
+ def plot_wind_comparison_interactive(
+    df: pd.DataFrame,
+    station_id: str,
+    cycle: Optional[datetime] = None,
+    speed_ylim: tuple[float, float] = (0, 40),
+    hours_ahead: float = 48,
+    width: int = 1000,
+    height: int = 720,
+    metars_df: Optional[pd.DataFrame] = None,
+):
+    """Two stacked panels: wind speed (top) and wind direction (bottom).
+
+    Speed panel renders as lines + markers.
+    Direction panel uses MARKERS ONLY (no lines) to avoid 360°/0° wrap artifacts.
+    Gust shown as dotted line on the speed panel when available.
+    METAR observations overlay as red markers when metars_df is provided.
+    """
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    sub = df[df["station_id"] == station_id].copy()
+    if cycle is None and len(sub) > 0:
+        cycle = pd.to_datetime(sub["cycle"].iloc[0]).to_pydatetime()
+
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True,
+        subplot_titles=("Wind speed (kt)", "Wind direction (° from)"),
+        vertical_spacing=0.09,
+    )
+
+    for model_name, group in sub.groupby("model", sort=True):
+        g = group.sort_values("valid_time")
+        color = _MODEL_COLORS.get(str(model_name), _DARK_FG)
+        valid_times = pd.to_datetime(g["valid_time"])
+        forecast_hours = g["forecast_hour"].tolist()
+
+        hover_text = [
+            _format_wind_hover(model_name, vt, fh, s, d, gu)
+            for vt, fh, s, d, gu in zip(
+                valid_times, forecast_hours,
+                g["wind_speed_kt"], g["wind_dir_deg"], g["wind_gust_kt"],
+            )
+        ]
+
+        # Speed panel — sustained wind
+        fig.add_trace(
+            go.Scatter(
+                x=valid_times, y=g["wind_speed_kt"],
+                mode="lines+markers", name=str(model_name),
+                line=dict(color=color, width=2.5),
+                marker=dict(size=8, color=color),
+                hovertext=hover_text, hoverinfo="text",
+                legendgroup=str(model_name),
+            ),
+            row=1, col=1,
+        )
+
+        # Speed panel — gust overlay (dashed, only models that report it)
+        if g["wind_gust_kt"].notna().any():
+            fig.add_trace(
+                go.Scatter(
+                    x=valid_times, y=g["wind_gust_kt"],
+                    mode="lines", name=f"{model_name} gust",
+                    line=dict(color=color, width=1.5, dash="dot"),
+                    hoverinfo="skip",
+                    legendgroup=str(model_name),
+                    showlegend=False,
+                ),
+                row=1, col=1,
+            )
+
+        # Direction panel — MARKERS ONLY to avoid 360°/0° wrap artifacts
+        fig.add_trace(
+            go.Scatter(
+                x=valid_times, y=g["wind_dir_deg"],
+                mode="markers", name=str(model_name),
+                marker=dict(size=8, color=color),
+                hovertext=hover_text, hoverinfo="text",
+                legendgroup=str(model_name), showlegend=False,
+            ),
+            row=2, col=1,
+        )
+
+    # METAR observations overlay — red markers, ground truth
+    if metars_df is not None and len(metars_df) > 0:
+        obs = metars_df[metars_df["station_id"] == station_id].sort_values("obs_time")
+        if len(obs) > 0:
+            obs_times = pd.to_datetime(obs["obs_time"])
+
+            def _obs_hover(t, s, d, g):
+                spd = f"{s:.0f} kt" if pd.notna(s) else "—"
+                if pd.notna(d):
+                    dir_str = f"{int(d):03d}° ({_deg_to_cardinal(d)})"
+                else:
+                    dir_str = "—"
+                gst = f"<br>Gust: {g:.0f} kt" if pd.notna(g) else ""
+                return (f"<b>METAR</b><br>{t.strftime('%Y-%m-%d %HZ')}<br>"
+                        f"Wind: {dir_str} @ {spd}{gst}")
+
+            wind_hover = [
+                _obs_hover(t, s, d, g)
+                for t, s, d, g in zip(
+                    obs_times, obs["wind_speed_kt"],
+                    obs["wind_dir_deg"], obs["wind_gust_kt"],
+                )
+            ]
+            # Top: speed
+            fig.add_trace(
+                go.Scatter(
+                    x=obs_times, y=obs["wind_speed_kt"],
+                    mode="markers", name="METAR obs",
+                    marker=dict(size=10, color="#FF3333", symbol="circle",
+                                line=dict(color="#FFFFFF", width=1)),
+                    hovertext=wind_hover, hoverinfo="text",
+                    legendgroup="METAR",
+                ),
+                row=1, col=1,
+            )
+            # Bottom: direction
+            fig.add_trace(
+                go.Scatter(
+                    x=obs_times, y=obs["wind_dir_deg"],
+                    mode="markers", name="METAR obs",
+                    marker=dict(size=10, color="#FF3333", symbol="circle",
+                                line=dict(color="#FFFFFF", width=1)),
+                    hovertext=wind_hover, hoverinfo="text",
+                    legendgroup="METAR", showlegend=False,
+                ),
+                row=2, col=1,
+            )
+
     title_text = f"{station_id} — Wind forecast comparison"
     if cycle is not None:
         title_text += (
@@ -501,6 +728,40 @@ def plot_wind_comparison_interactive(
             font=dict(color=_DARK_FG), title=dict(text="Model"),
         ),
     )
+
+    # Time range
+    x_range = None
+    if cycle is not None and hours_ahead is not None:
+        from datetime import timedelta as _td
+        c = pd.to_datetime(cycle)
+        x_range = [c, c + _td(hours=hours_ahead)]
+
+    fig.update_xaxes(color=_DARK_FG, gridcolor=_DARK_GRID, showgrid=True, gridwidth=0.5, row=1, col=1)
+    fig.update_xaxes(
+        title_text="Valid time (UTC)",
+        color=_DARK_FG, gridcolor=_DARK_GRID,
+        tickformat="%m-%d %HZ", range=x_range,
+        dtick=3 * 3600 * 1000, tickangle=-45,
+        showgrid=True, gridwidth=0.5,
+        row=2, col=1,
+    )
+    fig.update_yaxes(
+        title_text="Speed (kt)", range=list(speed_ylim),
+        color=_DARK_FG, gridcolor=_DARK_GRID, row=1, col=1,
+    )
+    fig.update_yaxes(
+        title_text="Direction (° from)",
+        range=[0, 360],
+        tickvals=[0, 90, 180, 270, 360],
+        ticktext=["N (0)", "E (90)", "S (180)", "W (270)", "N (360)"],
+        color=_DARK_FG, gridcolor=_DARK_GRID,
+        row=2, col=1,
+    )
+
+    for ann in fig["layout"]["annotations"]:
+        ann["font"] = dict(color=_DARK_FG, size=12)
+
+    return fig
 
     # Time range
     x_range = None
