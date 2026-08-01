@@ -199,7 +199,7 @@ if run_button:
             st.dataframe(df, use_container_width=True, hide_index=True)
         else:
             st.write("_No airports flagged._")
-
+    
     # TAF unavailable + parse errors — smaller notes at bottom
     st.divider()
     with st.expander(
