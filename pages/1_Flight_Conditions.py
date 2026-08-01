@@ -31,12 +31,10 @@ st.set_page_config(
 from retro_theme import apply_retro_theme
 apply_retro_theme()
 
-# ---------------------------------------------------------------------------
-# Cache directory: persist between Streamlit reruns within a session.
-# On Community Cloud this lives in the container filesystem and resets on
-# redeploy. That's fine for our use case.
-# ---------------------------------------------------------------------------
-CACHE_ROOT = Path("/tmp/wx_compare_cache")
+# -------------------------------- #
+# Persistent disk on Render; falls back to /tmp locally.
+_persistent = Path("/opt/render/project/src/cache")
+CACHE_ROOT = _persistent if _persistent.exists() else Path("/tmp/wx_compare_cache")
 CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 
 
