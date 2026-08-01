@@ -21,8 +21,8 @@ apply_retro_theme()
 
 st.title("Aviation Forecast Tools")
 st.markdown(
-    "<p style='color: red; font-size: 20px; font-weight: bold;'>"
-    "For internal use in the JetBlue SOC only or for Tomorrow.io"
+    "<p style='color: #B30000; font-size: 32px; font-weight: bold;'>"
+    "IMPORTANT: Use Prohbited outside of the JetBlue SOC or for Tomorrow.io employees"
     "</p>",
     unsafe_allow_html=True,
 )
