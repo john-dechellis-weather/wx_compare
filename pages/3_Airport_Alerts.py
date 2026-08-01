@@ -211,15 +211,7 @@ if run_button:
         else:
             st.write("All stations returned a TAF.")
 
-    # Surface parse errors if any occurred (should be rare)
-    if results.parse_errors:
-        st.divider()
-        with st.expander(
-            f"Parse errors on {len(results.parse_errors)} stations",
-            expanded=False,
-        ):
-            for icao, err in results.parse_errors.items():
-                st.write(f"**{icao}**: {err}")
+   
 
 else:
     st.info("Adjust thresholds and click **Refresh alerts** in the sidebar.")
