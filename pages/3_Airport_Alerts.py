@@ -18,6 +18,8 @@ st.set_page_config(
 from retro_theme import apply_retro_theme
 apply_retro_theme()
 
+from auth import check_password
+check_password()
 
 # ---------------------------------------------------------------------------
 # JetBlue destinations — static list

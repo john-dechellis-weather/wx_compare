@@ -31,6 +31,9 @@ st.set_page_config(
 from retro_theme import apply_retro_theme
 apply_retro_theme()
 
+from auth import check_password
+check_password()
+
 # -------------------------------- #
 # Persistent disk on Render; falls back to /tmp locally.
 _persistent = Path("/opt/render/project/src/cache")

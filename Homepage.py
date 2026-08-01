@@ -19,6 +19,9 @@ st.set_page_config(
 from retro_theme import apply_retro_theme
 apply_retro_theme()
 
+from auth import check_password
+check_password()
+
 st.title("Aviation Forecast Tools")
 st.markdown(
     "<p style='color: #B30000; font-size: 32px; font-weight: bold;'>"
