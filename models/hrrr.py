@@ -115,16 +115,38 @@ class Hrrr(ModelSource):
         cycle_dir = self.cache_dir / f"hrrr.{cycle:%Y%m%d.%H}z"
         cycle_dir.mkdir(parents=True, exist_ok=True)
         ok_any = False
+
+        # Separate cached hours (skip fetch) from missing ones (fetch in parallel).
+        to_fetch: list[tuple[int, Path]] = []
         for fhour in self.fhours:
             subset_path = cycle_dir / f"f{fhour:02d}.subset.grib2"
             if subset_path.exists() and subset_path.stat().st_size > 0:
                 ok_any = True
-                continue
-            try:
-                self._download_subset(cycle, fhour, subset_path)
-                ok_any = True
-            except Exception as e:
-                print(f"[{self.name}] f{fhour:02d} failed: {e}")
+            else:
+                to_fetch.append((fhour, subset_path))
+
+        # Parallel fetch of missing hours. 8 workers is a reasonable balance:
+        # enough to overlap NOMADS latency, few enough that we don't hammer
+        # the server or exhaust our container's connection pool.
+        if to_fetch:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            def _try_fetch(fhour: int, subset_path: Path) -> tuple[int, Optional[Exception]]:
+                try:
+                    self._download_subset(cycle, fhour, subset_path)
+                    return fhour, None
+                except Exception as e:
+                    return fhour, e
+
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                futures = [pool.submit(_try_fetch, fh, sp) for fh, sp in to_fetch]
+                for fut in as_completed(futures):
+                    fhour, err = fut.result()
+                    if err is None:
+                        ok_any = True
+                    else:
+                        print(f"[{self.name}] f{fhour:02d} failed: {err}")
+
         return cycle_dir if ok_any else None
 
     def _download_subset(self, cycle: datetime, fhour: int, out_path: Path) -> None:
