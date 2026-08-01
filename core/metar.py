@@ -217,8 +217,8 @@ def _parse_ceiling(clouds: list) -> tuple[Optional[float], bool]:
                 continue
     if not ceiling_bases:
         return None, True  # all layers are FEW/SCT/etc → unlimited ceiling
-    # Base is in hundreds of feet (per AWC convention)
-    return float(min(ceiling_bases) * 100), False
+     # AWC's JSON API returns base in feet directly (not hundreds like raw METAR)
+    return float(min(ceiling_bases)), False
 
 
 def _parse_wind_direction(w) -> Optional[float]:
