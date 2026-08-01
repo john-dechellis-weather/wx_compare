@@ -619,7 +619,7 @@ def plot_wind_comparison_interactive(
                 go.Scatter(
                     x=obs_times, y=obs["wind_speed_kt"],
                     mode="markers", name="METAR obs",
-                    marker=dict(size=10, color="#FF3333", symbol="circle",
+                    marker=dict(size=10, color="#FF3333", symbol="triangle-up",
                                 line=dict(color="#FFFFFF", width=1)),
                     hovertext=wind_hover, hoverinfo="text",
                     legendgroup="METAR",
@@ -680,7 +680,7 @@ def plot_wind_comparison_interactive(
                 go.Scatter(
                     x=obs_times, y=obs["wind_dir_deg"],
                     mode="markers", name="METAR obs",
-                    marker=dict(size=10, color="#FF3333", symbol="circle",
+                    marker=dict(size=10, color="#FF3333", symbol="triangle-up",
                                 line=dict(color="#FFFFFF", width=1)),
                     hovertext=wind_hover, hoverinfo="text",
                     legendgroup="METAR", showlegend=False,
