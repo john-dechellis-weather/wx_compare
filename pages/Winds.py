@@ -131,6 +131,17 @@ if run_button:
     with st.spinner("Fetching forecasts..."):
         df, resolved, unresolved = cached_compare(tuple(icaos), cycle_iso)
 
+    # Fetch METAR observations for ground truth overlay
+    from core.metar import fetch_metars, filter_since, metars_to_df
+    icao_list = [s.icao for s in resolved]
+    try:
+        raw_metars = fetch_metars(icao_list, hours_back=48)
+        filtered = filter_since(raw_metars, cycle)
+        metars_df = metars_to_df(filtered)
+    except Exception as e:
+        st.warning(f"METAR fetch failed: {e}")
+        metars_df = None
+
     if unresolved:
         st.warning(f"Could not resolve these ICAOs: {', '.join(unresolved)}")
 
@@ -159,6 +170,7 @@ if run_button:
                 cycle=cycle,
                 speed_ylim=(0, speed_max),
                 hours_ahead=hours_ahead,
+                metars_df=metars_df,
             )
             fig.update_layout(width=None, autosize=True)
             st.plotly_chart(fig, use_container_width=True)

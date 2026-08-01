@@ -415,6 +415,7 @@ def plot_comparison_interactive(
     for ann in fig["layout"]["annotations"]:
         ann["font"] = dict(color=_DARK_FG, size=12)
 
+    return fig
   
 
 
