@@ -548,7 +548,8 @@ def plot_wind_comparison_interactive(
                     obs["wind_dir_deg"], obs["wind_gust_kt"],
                 )
             ]
-            # Top: speed
+            
+            # Top: speed — sustained wind as circles
             fig.add_trace(
                 go.Scatter(
                     x=obs_times, y=obs["wind_speed_kt"],
@@ -560,6 +561,54 @@ def plot_wind_comparison_interactive(
                 ),
                 row=1, col=1,
             )
+
+            # Top: gust — thin vertical lines from sustained to gust value
+            # Build a scatter with x=[t, t, None, t, t, None, ...] and
+            # y=[speed, gust, None, speed, gust, None, ...] pattern.
+            # None values break the line, creating separate vertical segments.
+            gust_mask = obs["wind_gust_kt"].notna()
+            if gust_mask.any():
+                line_x = []
+                line_y = []
+                for t, s, g in zip(
+                    obs_times[gust_mask],
+                    obs.loc[gust_mask, "wind_speed_kt"],
+                    obs.loc[gust_mask, "wind_gust_kt"],
+                ):
+                    line_x.extend([t, t, None])
+                    line_y.extend([s, g, None])
+                fig.add_trace(
+                    go.Scatter(
+                        x=line_x, y=line_y,
+                        mode="lines", name="METAR gust line",
+                        line=dict(color="#FF3333", width=1.5),
+                        hoverinfo="skip",
+                        legendgroup="METAR", showlegend=False,
+                    ),
+                    row=1, col=1,
+                )
+
+            # Top: gust value — triangle-up markers
+            gust_hover = [
+                f"<b>METAR GUST</b><br>{t.strftime('%Y-%m-%d %HZ')}<br>Gust: {g:.0f} kt"
+                for t, g in zip(obs_times[gust_mask], obs.loc[gust_mask, "wind_gust_kt"])
+            ]
+            if gust_mask.any():
+                fig.add_trace(
+                    go.Scatter(
+                        x=obs_times[gust_mask],
+                        y=obs.loc[gust_mask, "wind_gust_kt"],
+                        mode="markers", name="METAR gust",
+                        marker=dict(size=11, color="#FF3333", symbol="triangle-up",
+                                    line=dict(color="#FFFFFF", width=1)),
+                        hovertext=gust_hover, hoverinfo="text",
+                        legendgroup="METAR", showlegend=False,
+                    ),
+                    row=1, col=1,
+                )
+
+            
+            
             # Bottom: direction
             fig.add_trace(
                 go.Scatter(
