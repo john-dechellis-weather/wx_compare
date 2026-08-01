@@ -415,7 +415,7 @@ def plot_comparison_interactive(
     for ann in fig["layout"]["annotations"]:
         ann["font"] = dict(color=_DARK_FG, size=12)
 
-    return fig
+  
 
 
 def _format_hover(model, vt, fh, vis, cig, unlim) -> str:
@@ -440,144 +440,8 @@ def _format_hover(model, vt, fh, vis, cig, unlim) -> str:
 # ---------------------------------------------------------------------------
 # Wind comparison plot (interactive Plotly version)
 # ---------------------------------------------------------------------------
-ç
-    df: pd.DataFrame,
-    station_id: str,
-    cycle: Optional[datetime] = None,
-    speed_ylim: tuple[float, float] = (0, 40),
-    hours_ahead: float = 48,
-    width: int = 1000,
-    height: int = 720,
-    metars_df: Optional[pd.DataFrame] = None,
-):
 
-
-    """Two stacked panels: wind speed (top) and wind direction (bottom).
-
-    Speed panel renders as lines + markers — standard time series.
-    Direction panel uses MARKERS ONLY (no connecting lines) because direction
-    wraps at 360°/0°. Drawing connecting lines would create huge jumps when
-    wind shifts through north. Markers-only lets the eye track the trend
-    without misleading lines.
-
-    Gust (NBM, Tomorrow.io) shown as dashed line on the speed panel when
-    available.
-    """
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
-
-    sub = df[df["station_id"] == station_id].copy()
-    if cycle is None and len(sub) > 0:
-        cycle = pd.to_datetime(sub["cycle"].iloc[0]).to_pydatetime()
-
-    fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True,
-        subplot_titles=("Wind speed (kt)", "Wind direction (° from)"),
-        vertical_spacing=0.09,
-    )
-
-    for model_name, group in sub.groupby("model", sort=True):
-        g = group.sort_values("valid_time")
-        color = _MODEL_COLORS.get(str(model_name), _DARK_FG)
-        valid_times = pd.to_datetime(g["valid_time"])
-        forecast_hours = g["forecast_hour"].tolist()
-
-        hover_text = [
-            _format_wind_hover(model_name, vt, fh, s, d, gu)
-            for vt, fh, s, d, gu in zip(
-                valid_times, forecast_hours,
-                g["wind_speed_kt"], g["wind_dir_deg"], g["wind_gust_kt"],
-            )
-        ]
-
-        # Speed panel — sustained wind
-        fig.add_trace(
-            go.Scatter(
-                x=valid_times, y=g["wind_speed_kt"],
-                mode="lines+markers", name=str(model_name),
-                line=dict(color=color, width=2.5),
-                marker=dict(size=8, color=color),
-                hovertext=hover_text, hoverinfo="text",
-                legendgroup=str(model_name),
-            ),
-            row=1, col=1,
-        )
-
-        # Speed panel — gust overlay (dashed, only models that report it)
-        if g["wind_gust_kt"].notna().any():
-            fig.add_trace(
-                go.Scatter(
-                    x=valid_times, y=g["wind_gust_kt"],
-                    mode="lines", name=f"{model_name} gust",
-                    line=dict(color=color, width=1.5, dash="dot"),
-                    hoverinfo="skip",
-                    legendgroup=str(model_name),
-                    showlegend=False,
-                ),
-                row=1, col=1,
-            )
-
-        # Direction panel — MARKERS ONLY to avoid 360°/0° wrap artifacts
-        fig.add_trace(
-            go.Scatter(
-                x=valid_times, y=g["wind_dir_deg"],
-                mode="markers", name=str(model_name),
-                marker=dict(size=8, color=color),
-                hovertext=hover_text, hoverinfo="text",
-                legendgroup=str(model_name), showlegend=False,
-            ),
-            row=2, col=1,
-        )
-
-    # METAR observations overlay — red markers, ground truth
-    if metars_df is not None and len(metars_df) > 0:
-        obs = metars_df[metars_df["station_id"] == station_id].sort_values("obs_time")
-        if len(obs) > 0:
-            obs_times = pd.to_datetime(obs["obs_time"])
-
-            def _obs_hover(t, s, d, g):
-                spd = f"{s:.0f} kt" if pd.notna(s) else "—"
-                if pd.notna(d):
-                    dir_str = f"{int(d):03d}° ({_deg_to_cardinal(d)})"
-                else:
-                    dir_str = "—"
-                gst = f"<br>Gust: {g:.0f} kt" if pd.notna(g) else ""
-                return (f"<b>METAR</b><br>{t.strftime('%Y-%m-%d %HZ')}<br>"
-                        f"Wind: {dir_str} @ {spd}{gst}")
-
-            wind_hover = [
-                _obs_hover(t, s, d, g)
-                for t, s, d, g in zip(
-                    obs_times, obs["wind_speed_kt"],
-                    obs["wind_dir_deg"], obs["wind_gust_kt"],
-                )
-            ]
-            # Top: speed
-            fig.add_trace(
-                go.Scatter(
-                    x=obs_times, y=obs["wind_speed_kt"],
-                    mode="markers", name="METAR obs",
-                    marker=dict(size=10, color="#FF3333", symbol="circle",
-                                line=dict(color="#FFFFFF", width=1)),
-                    hovertext=wind_hover, hoverinfo="text",
-                    legendgroup="METAR",
-                ),
-                row=1, col=1,
-            )
-            # Bottom: direction
-            fig.add_trace(
-                go.Scatter(
-                    x=obs_times, y=obs["wind_dir_deg"],
-                    mode="markers", name="METAR obs",
-                    marker=dict(size=10, color="#FF3333", symbol="circle",
-                                line=dict(color="#FFFFFF", width=1)),
-                    hovertext=wind_hover, hoverinfo="text",
-                    legendgroup="METAR", showlegend=False,
-                ),
-                row=2, col=1,
-            )
-
- def plot_wind_comparison_interactive(
+def plot_wind_comparison_interactive(
     df: pd.DataFrame,
     station_id: str,
     cycle: Optional[datetime] = None,
@@ -761,7 +625,6 @@ def _format_hover(model, vt, fh, vis, cig, unlim) -> str:
     for ann in fig["layout"]["annotations"]:
         ann["font"] = dict(color=_DARK_FG, size=12)
 
-    return fig
 
     # Time range
     x_range = None
