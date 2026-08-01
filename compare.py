@@ -392,7 +392,14 @@ def plot_comparison_interactive(
             fig.add_trace(
                 go.Scatter(
                     x=obs_times, y=ceil_plot,
-                    ...
+                    mode="markers", name="METAR obs",
+                    marker=dict(size=10, color="#FF3333", symbol="triangle-up",
+                                line=dict(color="#FFFFFF", width=0.75)),
+                    hovertext=ceil_hover, hoverinfo="text",
+                    legendgroup="METAR", showlegend=False,
+                ),
+                row=2, col=1,
+            )
 
 
             fig.add_trace(
