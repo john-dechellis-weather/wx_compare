@@ -28,6 +28,7 @@ st.markdown(
 
     - **VIS/CIG Comparison Tool** — visibility and ceiling model data 
     - **Wind Comparison Tool** — wind speed, direction, and wind gust model data
+    - **Situational Awarness Tool** — flags low ceilings, visibility, and TSRA based on NWS TAFs
 
     Select a tool from the sidebar to start. Do not share this site URL outside of the SOC team. 
 
