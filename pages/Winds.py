@@ -30,7 +30,7 @@ except Exception:
     pass
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False, max_entries=20)
 def cached_compare(icaos_tuple: tuple[str, ...], cycle_iso: str):
     from compare import compare_icaos
     cycle = datetime.fromisoformat(cycle_iso)
@@ -42,7 +42,7 @@ def cached_compare(icaos_tuple: tuple[str, ...], cycle_iso: str):
     return df, resolved, unresolved
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False, max_entries=10)
 def cached_latest_cycle(icaos_tuple: tuple[str, ...]) -> str | None:
     from core.stations import StationResolver
     from core.cycle_select import find_latest_complete

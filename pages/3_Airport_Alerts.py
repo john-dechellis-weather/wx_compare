@@ -66,7 +66,7 @@ JETBLUE_ICAOS = [
 # ---------------------------------------------------------------------------
 # Cached analysis — TAFs update every 6 hours; 15-min cache is fresh enough
 # ---------------------------------------------------------------------------
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=900, show_spinner=False, max_entries=10)
 def cached_analyze(
     icaos_tuple: tuple[str, ...],
     window_start_iso: str,

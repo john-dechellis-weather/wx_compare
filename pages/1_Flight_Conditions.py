@@ -55,7 +55,7 @@ except Exception:
 # ---------------------------------------------------------------------------
 # Heavy operations — cached so multiple users hitting the same cycle reuse work
 # ---------------------------------------------------------------------------
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False, max_entries=20)
 def cached_compare(icaos_tuple: tuple[str, ...], cycle_iso: str):
     """Run the comparison. Cached for 10 minutes so repeated identical queries
     don't re-fetch from NOMADS. Cache keys must be hashable, hence the tuples
@@ -72,7 +72,7 @@ def cached_compare(icaos_tuple: tuple[str, ...], cycle_iso: str):
     return df, resolved, unresolved
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False, max_entries=10)
 def cached_latest_cycle(icaos_tuple: tuple[str, ...]) -> str | None:
     """Find the latest complete cycle. Cached briefly — cycles update hourly
     so a 5-minute cache strikes the right balance."""
