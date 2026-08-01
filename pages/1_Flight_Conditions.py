@@ -187,23 +187,6 @@ if run_button:
         st.warning(f"METAR fetch failed: {e}")
         metars_df = None
     
-    # DEBUG: show METAR ceiling data
-    if metars_df is not None and len(metars_df) > 0:
-        st.write("DEBUG METAR data:")
-        st.dataframe(metars_df[["station_id", "obs_time", "vsby_sm", "ceiling_ft", "ceiling_unlimited"]])
-    
-    # DEBUG: show raw AWC response for KPIA
-    if "KPIA" in icao_list:
-        import requests
-        r = requests.get(
-            "https://aviationweather.gov/api/data/metar",
-            params={"ids": "KPIA", "hours": 6, "format": "json"},
-            headers={"User-Agent": "wx_compare/1.0"},
-            timeout=15,
-        )
-        st.write("DEBUG raw AWC KPIA response:")
-        st.json(r.json()[:2])  # Just first 2 METARs
-
     if unresolved:
         st.warning(f"Could not resolve these ICAOs: {', '.join(unresolved)}")
 
