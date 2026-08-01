@@ -9,7 +9,7 @@ import streamlit as st
 
 
 st.set_page_config(
-    page_title="Wind Comparison",
+    page_title="Wind Comparison (Active Readout and Drag Mouse to Zoom in)",
     layout="wide",
 )
 
