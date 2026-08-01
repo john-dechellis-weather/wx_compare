@@ -17,6 +17,11 @@ RETRO_CSS = """
     color: #000000 !important;
 }
 
+/* Hide broken sidebar toggle icon */
+[data-testid="stSidebarCollapseButton"] {
+    display: none !important;
+}
+
 /* Main content area gets a white box with a black border, centered */
 .main .block-container {
     background: #8F8482 !important;
