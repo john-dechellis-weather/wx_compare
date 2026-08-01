@@ -31,13 +31,13 @@ RETRO_CSS = """
 /* --- Typography --- */
 html, body, [class*="css"] {
     font-family: "Times New Roman", Times, serif !important;
-    font-size: 13px !important;
+    font-size: 15px !important;
     color: #000000 !important;
 }
 
 h1 {
     font-family: "Times New Roman", Times, serif !important;
-    font-size: 22px !important;
+    font-size: 25px !important;
     font-weight: bold !important;
     color: #000000 !important;
     margin: 0 0 4px 0 !important;
@@ -48,7 +48,7 @@ h1 {
 
 h2 {
     font-family: "Times New Roman", Times, serif !important;
-    font-size: 16px !important;
+    font-size: 18px !important;
     font-weight: bold !important;
     background: #E0E0E0 !important;
     color: #000000 !important;
@@ -59,7 +59,7 @@ h2 {
 
 h3 {
     font-family: "Times New Roman", Times, serif !important;
-    font-size: 14px !important;
+    font-size: 16px !important;
     font-weight: bold !important;
     color: #000000 !important;
     margin: 12px 0 4px 0 !important;
@@ -68,13 +68,13 @@ h3 {
 
 p, div, span, label {
     font-family: "Times New Roman", Times, serif !important;
-    font-size: 13px !important;
+    font-size: 16px !important;
 }
 
 /* Streamlit caption text (below titles) */
 [data-testid="stCaptionContainer"], .stCaption {
     font-family: "Times New Roman", Times, serif !important;
-    font-size: 12px !important;
+    font-size: 16px !important;
     font-style: italic !important;
     color: #444444 !important;
 }
@@ -111,7 +111,7 @@ a:hover { color: #FF0000 !important; }
 .stButton > button,
 .stDownloadButton > button {
     font-family: "Times New Roman", Times, serif !important;
-    font-size: 13px !important;
+    font-size: 16px !important;
     font-weight: bold !important;
     background: #C0C0C0 !important;
     color: #000000 !important;
@@ -133,7 +133,7 @@ a:hover { color: #FF0000 !important; }
 /* --- Text inputs --- */
 input[type="text"], .stTextInput input {
     font-family: "Courier New", Courier, monospace !important;
-    font-size: 13px !important;
+    font-size: 16px !important;
     background: #FFFFFF !important;
     color: #000000 !important;
     border: 1px solid #000000 !important;
@@ -144,7 +144,7 @@ input[type="text"], .stTextInput input {
 /* Select boxes / dropdowns */
 .stSelectbox [data-baseweb="select"] > div {
     font-family: "Times New Roman", Times, serif !important;
-    font-size: 13px !important;
+    font-size: 16px !important;
     background: #FFFFFF !important;
     color: #000000 !important;
     border: 1px solid #000000 !important;
@@ -155,7 +155,7 @@ input[type="text"], .stTextInput input {
 .stRadio > div { font-family: "Times New Roman", Times, serif !important; }
 .stRadio label {
     font-family: "Times New Roman", Times, serif !important;
-    font-size: 13px !important;
+    font-size: 15px !important;
     color: #000000 !important;
 }
 
@@ -166,7 +166,7 @@ input[type="text"], .stTextInput input {
     border: 1px solid #000000 !important;
     color: #000000 !important;
     border-radius: 0 !important;
-    padding: 8px 12px !important;
+    padding: 8px 15px !important;
 }
 
 /* Success box → light green */
@@ -187,7 +187,7 @@ input[type="text"], .stTextInput input {
 [data-testid="stDataFrame"] table,
 [data-testid="stTable"] table {
     font-family: "Courier New", Courier, monospace !important;
-    font-size: 12px !important;
+    font-size: 14px !important;
     border-collapse: collapse !important;
     border: 1px solid #000000 !important;
 }
@@ -212,18 +212,18 @@ input[type="text"], .stTextInput input {
 [data-testid="stMetric"] {
     background: #F0F0F0 !important;
     border: 2px inset #FFFFFF !important;
-    padding: 6px 10px !important;
+    padding: 6px 8px !important;
     font-family: "Times New Roman", Times, serif !important;
 }
 [data-testid="stMetricValue"] {
     font-family: "Courier New", Courier, monospace !important;
-    font-size: 18px !important;
+    font-size: 21px !important;
     font-weight: bold !important;
     color: #A3A379 !important;
 }
 [data-testid="stMetricLabel"] {
     font-family: "Times New Roman", Times, serif !important;
-    font-size: 12px !important;
+    font-size: 14px !important;
     color: #000000 !important;
 }
 
@@ -235,7 +235,7 @@ input[type="text"], .stTextInput input {
 }
 .stTabs [data-baseweb="tab"] {
     font-family: "Times New Roman", Times, serif !important;
-    font-size: 13px !important;
+    font-size: 15px !important;
     background: #C0C0C0 !important;
     color: #000000 !important;
     border: 1px solid #000000 !important;
