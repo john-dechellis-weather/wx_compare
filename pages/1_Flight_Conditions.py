@@ -234,12 +234,10 @@ else:
     st.info("Enter ICAO codes in the sidebar and click **Run comparison**.")
     st.markdown(
         """
-        ### Plot Description
-
-        - Fetches the latest visibility and ceiling forecast data from the models below
-        - The forecast horizon slider adjusts the end range of the model data 
 
         ### Models
+
+        - Hover over any marker for active readout
 
         | Source | Hours | 
         | --- | --- | 

@@ -194,15 +194,14 @@ else:
         ### Plot Description
 
         - **Top panel**: sustained wind speed (kt). Gust values (where reported) appear as dotted lines for forecast data.
-        - **Bottom panel**: wind direction (degrees true, the direction wind is *coming from*). Markers only — no connecting lines — so 360° → 0° wraps don't create misleading jumps.
+        - **Bottom panel**: wind direction (degrees true*). Markers only — no connecting lines — so 360° → 0° wraps don't create misleading jumps.
         - **Forecast Horizon Slider**: adjusts the end range of the model data
-        - **Max Wind Speed on Y-Axis**: adjusts the y-axis maximum wind value  (default is 40)
-        - **Vertical line with trianble represents observbed wind gust from the METAR
+        - **Max Wind Speed on Y-Axis**: adjusts the y-axis maximum wind value  (default is 40kts)
+        - **Vertical line with triangle represents observed wind gust from the hourly METARs
 
         ### Wind Direction Panel
 
-        - 0° = North, 90° = East, 180° = South, 270° = West
-        - Hover over any marker for cardinal direction (e.g. "WSW")
+        - Hover over any marker for cardinal direction (e.g. "WSW") and active readout
 
         ### Models With Gust (dashed line)
 
