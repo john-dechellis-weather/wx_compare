@@ -20,6 +20,12 @@ from retro_theme import apply_retro_theme
 apply_retro_theme()
 
 st.title("Aviation Forecast Tools")
+st.markdown(
+    "<p style='color: red; font-size: 20px; font-weight: bold;'>"
+    "For internal use in the JetBlue SOC only or for Tomorrow.io"
+    "</p>",
+    unsafe_allow_html=True,
+)
 st.caption("Multi-model comparison for CONUS airports.")
 
 st.markdown(
