@@ -98,7 +98,7 @@ def cached_latest_cycle(icaos_tuple: tuple[str, ...]) -> str | None:
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
-st.title("Flight Conditions (Active Readout and Drag Mouse to Zoom in)"
+st.title("Flight Conditions - Active Mouse Readout and Drag Box to Zoom in")
 
 
 with st.sidebar:
