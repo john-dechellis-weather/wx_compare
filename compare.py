@@ -333,7 +333,7 @@ def plot_comparison_interactive(
                     go.Scatter(
                         x=vis_line_x, y=vis_line_y,
                         mode="lines", name="METAR trend",
-                        line=dict(color="#FF3333", width=1.5, dash="dash"),
+                        line=dict(color="#FF3333", width=1.5),
                         hoverinfo="skip",
                         legendgroup="METAR", showlegend=False,
                     ),
@@ -382,7 +382,7 @@ def plot_comparison_interactive(
                     go.Scatter(
                         x=ceil_line_x, y=ceil_line_y,
                         mode="lines", name="METAR trend",
-                        line=dict(color="#FF3333", width=1.5, dash="dash"),
+                        line=dict(color="#FF3333", width=1.5),
                         hoverinfo="skip",
                         legendgroup="METAR", showlegend=False,
                     ),
