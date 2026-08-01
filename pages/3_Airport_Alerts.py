@@ -200,16 +200,7 @@ if run_button:
         else:
             st.write("_No airports flagged._")
     
-    # TAF unavailable + parse errors — smaller notes at bottom
-    st.divider()
-    with st.expander(
-        f"TAF unavailable for {len(results.unavailable_icaos)} stations",
-        expanded=False,
-    ):
-        if results.unavailable_icaos:
-            st.write(", ".join(results.unavailable_icaos))
-        else:
-            st.write("All stations returned a TAF.")
+   
 
    
 
