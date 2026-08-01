@@ -315,12 +315,39 @@ def plot_comparison_interactive(
                 f"<b>METAR</b><br>{t.strftime('%Y-%m-%d %HZ')}<br>Vis: {v} sm"
                 for t, v in zip(obs_times, obs["vsby_sm"])
             ]
+
+            # Visibility connector line — dashed red, only when vis <= 4 sm
+            vis_line_x = []
+            vis_line_y = []
+            for t, v in zip(obs_times, obs["vsby_sm"]):
+                if pd.notna(v) and v <= 4:
+                    vis_line_x.append(t)
+                    vis_line_y.append(v)
+                else:
+                    # Break the line at any point above threshold or missing
+                    if vis_line_x and vis_line_x[-1] is not None:
+                        vis_line_x.append(None)
+                        vis_line_y.append(None)
+            if any(x is not None for x in vis_line_x):
+                fig.add_trace(
+                    go.Scatter(
+                        x=vis_line_x, y=vis_line_y,
+                        mode="lines", name="METAR trend",
+                        line=dict(color="#FF3333", width=1.5, dash="dash"),
+                        hoverinfo="skip",
+                        legendgroup="METAR", showlegend=False,
+                    ),
+                    row=1, col=1,
+                )
+
+            # Top panel: visibility observations
+
             fig.add_trace(
                 go.Scatter(
                     x=obs_times, y=obs["vsby_sm"],
                     mode="markers", name="METAR obs",
                     marker=dict(size=10, color="#FF3333", symbol="triangle-up",
-                                line=dict(color="#FFFFFF", width=1)),
+                                line=dict(color="#FFFFFF", width=0.75)),
                     hovertext=vis_hover, hoverinfo="text",
                     legendgroup="METAR",
                 ),
@@ -337,12 +364,43 @@ def plot_comparison_interactive(
                 f"Ceiling: {'UNL' if u else f'{c:.0f} ft'}"
                 for t, c, u in zip(obs_times, obs["ceiling_ft"], obs["ceiling_unlimited"])
             ]
+
+            # Ceiling connector line — dashed red, only when ceiling <= 3000 ft
+            # Unlimited ceilings and > 3000 ft break the line
+            ceil_line_x = []
+            ceil_line_y = []
+            for t, c, u in zip(obs_times, obs["ceiling_ft"], obs["ceiling_unlimited"]):
+                if not u and pd.notna(c) and c <= 3000:
+                    ceil_line_x.append(t)
+                    ceil_line_y.append(c)
+                else:
+                    if ceil_line_x and ceil_line_x[-1] is not None:
+                        ceil_line_x.append(None)
+                        ceil_line_y.append(None)
+            if any(x is not None for x in ceil_line_x):
+                fig.add_trace(
+                    go.Scatter(
+                        x=ceil_line_x, y=ceil_line_y,
+                        mode="lines", name="METAR trend",
+                        line=dict(color="#FF3333", width=1.5, dash="dash"),
+                        hoverinfo="skip",
+                        legendgroup="METAR", showlegend=False,
+                    ),
+                    row=2, col=1,
+                )
+
+            fig.add_trace(
+                go.Scatter(
+                    x=obs_times, y=ceil_plot,
+                    ...
+
+
             fig.add_trace(
                 go.Scatter(
                     x=obs_times, y=ceil_plot,
                     mode="markers", name="METAR obs",
                     marker=dict(size=10, color="#FF3333", symbol="triangle-up",
-                                line=dict(color="#FFFFFF", width=1)),
+                                line=dict(color="#FFFFFF", width=0.75)),
                     hovertext=ceil_hover, hoverinfo="text",
                     legendgroup="METAR", showlegend=False,
                 ),
