@@ -330,19 +330,49 @@ if run_button:
         return styles
 
     styled = display.style.apply(_style_dataframe, axis=None)
-    styled = styled.set_properties(**{
-        "background-color": "#000000",
-        "color": "#00FF00",
-        "font-family": "Courier New, monospace",
-        "font-size": "9px",
-        "text-align": "center",
-        "padding": "1px 2px",
-        "white-space": "nowrap",
-        "min-width": "40px",
-        "max-width": "40px",
-    })
 
-    st.dataframe(styled, use_container_width=True, height=350)
+    # Wrap with CSS + render as HTML directly (bypasses Streamlit widget)
+    table_css = """
+    <style>
+    .mos-wrap {
+        overflow-x: auto;
+        background: #000000;
+        padding: 4px;
+        border: 1px solid #003300;
+    }
+    .mos-wrap table {
+        border-collapse: collapse;
+        font-family: 'Courier New', monospace;
+        font-size: 8px;
+        background: #000000;
+        color: #00FF00;
+        margin: 0;
+    }
+    .mos-wrap th, .mos-wrap td {
+        border: 1px solid #003300;
+        padding: 1px 2px;
+        text-align: center;
+        white-space: nowrap;
+        min-width: 32px;
+        max-width: 32px;
+        color: #00FF00;
+    }
+    .mos-wrap thead th {
+        background: #001100;
+        font-weight: bold;
+    }
+    .mos-wrap tbody th {
+        background: #001100;
+        text-align: left;
+        min-width: 60px;
+        padding: 1px 4px;
+    }
+    </style>
+    """
+
+    html = styled.to_html()
+    st.markdown(table_css + f'<div class="mos-wrap">{html}</div>',
+                unsafe_allow_html=True)
 
     csv = display.to_csv().encode("utf-8")
     st.download_button(
