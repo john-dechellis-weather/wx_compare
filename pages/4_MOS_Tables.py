@@ -97,16 +97,20 @@ def cached_mos_tables(icao: str, cycle_iso: str) -> pd.DataFrame:
 @st.cache_data(ttl=300, show_spinner=False, max_entries=10)
 def cached_latest_cycle_mos(icao: str) -> str | None:
     """Latest complete cycle for the ICAO across NBM + LAMP."""
+    from core.stations import StationResolver
     from core.cycle_select import find_latest_complete
     from models import Nbm, GfsLamp
 
-    now = datetime.now(timezone.utc)
-    cycle = find_latest_complete(
-        model_classes=[Nbm, GfsLamp],
-        now=now,
-        icaos=[icao],
-        cache_root=CACHE_ROOT,
-    )
+    resolver = StationResolver(cache_dir=CACHE_ROOT / "stations")
+    resolved_pre, _ = resolver.resolve_many([icao])
+    if not resolved_pre:
+        return None
+
+    probe_sources = [
+        Nbm(cache_dir=CACHE_ROOT / "nbm"),
+        GfsLamp(cache_dir=CACHE_ROOT / "gfs_lamp"),
+    ]
+    cycle = find_latest_complete(probe_sources, verbose=False)
     return cycle.isoformat() if cycle else None
 
 
