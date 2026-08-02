@@ -338,10 +338,8 @@ if run_button:
 
     def _cell_html(row_label, col_idx, value):
         style_str = _cell_style(row_label, col_idx)
-        # Default: green on black, use !important to beat retro theme
         base = (
             "background-color: #000000 !important; "
-            "color: #00FF00 !important; "
             "font-family: 'Courier New', monospace !important; "
             "font-size: 8px !important; "
             "padding: 1px 2px !important; "
@@ -351,14 +349,30 @@ if run_button:
             "min-width: 32px !important; "
             "max-width: 32px !important;"
         )
-        # Tier styles override the default bg/color with their own
+        # Default text color (green)
+        text_color = "#00FF00"
+        cell_bg = ""
+        # If tier violation, parse colors from _cell_style
         if style_str:
-            # Convert pandas Styler CSS to have !important
-            tier_important = style_str.replace(
-                ";", " !important;"
-            ).replace("!important !important", "!important")
-            return f'<td style="{base} {tier_important}">{escape(str(value))}</td>'
-        return f'<td style="{base}">{escape(str(value))}</td>'
+            # style_str looks like "background-color: #660000; color: #FF3333;"
+            for part in style_str.split(";"):
+                part = part.strip()
+                if part.startswith("background-color:"):
+                    cell_bg = part.split(":", 1)[1].strip()
+                elif part.startswith("color:"):
+                    text_color = part.split(":", 1)[1].strip()
+
+        # Cell background — either black or tier color
+        if cell_bg:
+            base = base.replace("background-color: #000000", f"background-color: {cell_bg}")
+
+        # Wrap text in a <span> with explicit color to defeat any inherited black
+        text_html = (
+            f'<span style="color: {text_color} !important; '
+            f'font-family: Courier New, monospace !important; '
+            f'font-size: 8px !important;">{escape(str(value))}</span>'
+        )
+        return f'<td style="{base}">{text_html}</td>'
 
     # Build the table row by row
     header_style = (
@@ -387,24 +401,27 @@ if run_button:
         "min-width: 55px !important;"
     )
 
-    # Header row
     header_cells = "".join(
-        f'<th style="{header_style}">{escape(col)}</th>'
+        f'<th style="{header_style}"><span style="color: #00FF00 !important; '
+        f'font-family: Courier New, monospace !important;">{escape(col)}</span></th>'
         for col in display.columns
     )
-    header_row = f'<tr><th style="{row_label_style}">Field</th>{header_cells}</tr>'
+    header_row = (
+        f'<tr><th style="{row_label_style}">'
+        f'<span style="color: #00FF00 !important;">Field</span></th>{header_cells}</tr>'
+    )
 
-    # Data rows
     data_rows = []
-    for row_label in display.index:
+    for row_idx, row_label in enumerate(display.index):
+        row_values = display.iloc[row_idx].tolist()
         cells = "".join(
-            _cell_html(row_label, col_idx, display.iloc[
-                display.index.get_loc(row_label), col_idx
-            ])
-            for col_idx in range(len(display.columns))
+            _cell_html(row_label, col_idx, val)
+            for col_idx, val in enumerate(row_values)
         )
         data_rows.append(
-            f'<tr><th style="{row_label_style}">{escape(row_label)}</th>{cells}</tr>'
+            f'<tr><th style="{row_label_style}">'
+            f'<span style="color: #00FF00 !important;">{escape(row_label)}</span>'
+            f'</th>{cells}</tr>'
         )
 
     table_html = (
