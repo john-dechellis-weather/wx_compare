@@ -346,7 +346,7 @@ def plot_comparison_interactive(
                 go.Scatter(
                     x=obs_times, y=obs["vsby_sm"],
                     mode="markers", name="METAR obs",
-                    marker=dict(size=10, color="#FF3333", symbol="triangle-up",
+                    marker=dict(size=10, color="#FF3333", symbol="triangle-down",
                                 line=dict(color="#FFFFFF", width=0.75)),
                     hovertext=vis_hover, hoverinfo="text",
                     legendgroup="METAR",
@@ -393,7 +393,7 @@ def plot_comparison_interactive(
                 go.Scatter(
                     x=obs_times, y=ceil_plot,
                     mode="markers", name="METAR obs",
-                    marker=dict(size=10, color="#FF3333", symbol="triangle-up",
+                    marker=dict(size=10, color="#FF3333", symbol="triangle-down",
                                 line=dict(color="#FFFFFF", width=0.75)),
                     hovertext=ceil_hover, hoverinfo="text",
                     legendgroup="METAR", showlegend=False,
@@ -406,7 +406,7 @@ def plot_comparison_interactive(
                 go.Scatter(
                     x=obs_times, y=ceil_plot,
                     mode="markers", name="METAR obs",
-                    marker=dict(size=10, color="#FF3333", symbol="triangle-up",
+                    marker=dict(size=10, color="#FF3333", symbol="triangle-down",
                                 line=dict(color="#FFFFFF", width=0.75)),
                     hovertext=ceil_hover, hoverinfo="text",
                     legendgroup="METAR", showlegend=False,
