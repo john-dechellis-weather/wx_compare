@@ -236,7 +236,7 @@ with st.sidebar:
         max_chars=4,
         help="Single 4-letter ICAO (CONUS airports)",
     ).strip().upper()
-
+    
     st.divider()
     st.header("Highlight thresholds")
 
