@@ -1,4 +1,4 @@
-"""MOS Tables — hourly NBM + GFS LAMP for one airport."""
+"""MOS Tables — hourly NBM + GFS LAMP."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -178,6 +178,7 @@ def make_cell(text, bg="#ffffff", fg="#FFFFFF"):
         f'font-size:9px;'
         f'padding:2px 3px;'
         f'text-align:center;'
+        f'text = bold'
         f'border:1px solid #003300;'
         f'white-space:nowrap;'
         f'min-width:38px;'
@@ -220,7 +221,7 @@ def make_th(text, is_row_label=False):
 
 
 st.title("MOS Tables")
-st.caption("Side-by-side hourly NBM + GFS LAMP for one airport.")
+st.caption("Side-by-side hourly NBM + GFS LAMP.")
 
 with st.sidebar:
     st.header("Airport")
