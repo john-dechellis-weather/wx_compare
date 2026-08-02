@@ -664,7 +664,7 @@ def plot_wind_comparison_interactive(
                         x=obs_times[gust_mask],
                         y=obs.loc[gust_mask, "wind_gust_kt"],
                         mode="markers", name="METAR gust",
-                        marker=dict(size=12, symbol="triangle-open-up",
+                        marker=dict(size=12, symbol="triangle-up",
                                 color="#FF3333",
                                 line=dict(color="#FF3333", width=2)),
                         hovertext=gust_hover, hoverinfo="text",
