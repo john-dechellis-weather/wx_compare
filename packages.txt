@@ -1,2 +1,6 @@
 libeccodes0
 libeccodes-dev
+libgeos-dev
+libproj-dev
+proj-data
+proj-bin
