@@ -185,8 +185,8 @@ def make_cell(text, bg="#000000", fg="#00FF00"):
     """Return a <td> with fully specified inline styles."""
     return (
         f'<td style="'
-        f'background:{bg};'
-        f'color:{fg};'
+        f'background:{bg} !important;'
+        f'color:{fg} !important;'
         f'font-family:Courier New,monospace;'
         f'font-size:9px;'
         f'padding:2px 3px;'
@@ -205,8 +205,8 @@ def make_th(text, is_row_label=False):
     align = "left" if is_row_label else "center"
     return (
         f'<th style="'
-        f'background:#002200;'
-        f'color:#00FF00;'
+        f'background:#002200 !important;'
+        f'color:#00FF00 !important;'
         f'font-family:Courier New,monospace;'
         f'font-size:9px;'
         f'font-weight:bold;'
@@ -277,7 +277,7 @@ if run_button:
     for t in times:
         tstr = pd.to_datetime(t).strftime("%m/%d<br>%HZ")
         header_cells.append(
-            f'<th style="background:#002200;color:#00FF00;'
+            f'<th style="background:#002200 !important;color:#00FF00 !important;'
             f'font-family:Courier New,monospace;font-size:9px;font-weight:bold;'
             f'padding:2px 3px;text-align:center;border:1px solid #003300;'
             f'white-space:nowrap;min-width:38px;max-width:38px;">{tstr}</th>'
