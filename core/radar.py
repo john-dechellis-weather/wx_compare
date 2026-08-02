@@ -1,15 +1,19 @@
 """NEXRAD Level II radar fetching and plot rendering.
 
-Data source: AWS public archive (s3://noaa-nexrad-level2) accessed
-anonymously via s3fs — the same library/path the satellite page uses
-for the GOES buckets, proven to work on this deployment.
+Data discovery + download over plain HTTPS (no cloud SDKs):
 
-Each Level II volume contains BOTH reflectivity and velocity, so both
-plots come from the same downloaded file.
+  1. AWS public bucket  https://noaa-nexrad-level2.s3.amazonaws.com
+     (XML listing via ?list-type=2)
+  2. Fallback: Google Cloud public mirror gcp-public-data-nexrad-l2
+     (JSON listing via the GCS objects API)
 
-Decode: metpy Level2File (handles gzip transparently). Reflectivity
-from the lowest surveillance sweep (0.5° CS), velocity from the lowest
-Doppler sweep (0.5° CD), converted from m/s to knots.
+Both hold the full Level II archive with the same YYYY/MM/DD/SITE/
+key layout. If AWS denies anonymous listing (as it currently does for
+some callers), the GCS mirror is used automatically.
+
+Each Level II volume contains BOTH reflectivity and velocity.
+Decode: metpy Level2File (gzip handled transparently). Velocity is
+converted from m/s to knots.
 """
 from __future__ import annotations
 
@@ -18,21 +22,27 @@ import os
 import re
 import tempfile
 import shutil
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 import numpy as np
+import requests
 
-_BUCKET = "noaa-nexrad-level2"
+_AWS_BASE = "https://noaa-nexrad-level2.s3.amazonaws.com"
+_GCS_LIST = "https://storage.googleapis.com/storage/v1/b/gcp-public-data-nexrad-l2/o"
+_GCS_DL = "https://storage.googleapis.com/gcp-public-data-nexrad-l2"
+_S3_NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
 _MS_TO_KT = 1.94384
 _TIME_RE = re.compile(r"(\d{8})_(\d{6})")
+_HEADERS = {"User-Agent": "BlueMet/1.0 (aviation weather tool)"}
 
 
 @dataclass
 class _ScanRef:
-    key: str        # full s3 key including bucket, e.g. "noaa-nexrad-level2/2026/07/16/KMLB/KMLB2026..."
     filename: str
     scan_time: datetime
+    download_url: str
 
 
 # ---------------------------------------------------------------------------
@@ -46,10 +56,7 @@ def fetch_and_render_radar(
     station: str,
     zoom_deg: float,
 ) -> tuple[bytes, bytes, str, str]:
-    """Fetch the Level II volume nearest target_time, render REF + VEL.
-
-    Returns (reflectivity_png, velocity_png_or_empty, refl_time, vel_time).
-    """
+    """Fetch the Level II volume nearest target_time, render REF + VEL."""
     tgt = target_time.replace(tzinfo=None)
     scans = _find_scans(
         station, tgt - timedelta(minutes=20), tgt + timedelta(minutes=20)
@@ -81,11 +88,7 @@ def fetch_and_render_radar_loop(
     station: str,
     zoom_deg: float,
 ) -> tuple[list[tuple[bytes, str]], list[tuple[bytes, str]]]:
-    """Fetch all Level II volumes in [start, start+duration], render each.
-
-    Returns (refl_frames, vel_frames), each a list of
-    (png_bytes, name) sorted chronologically.
-    """
+    """Fetch all Level II volumes in [start, start+duration], render each."""
     start = start_time.replace(tzinfo=None)
     end = start + timedelta(minutes=duration_min)
 
@@ -118,37 +121,23 @@ def fetch_and_render_radar_loop(
 
 
 # ---------------------------------------------------------------------------
-# S3 access via s3fs (anonymous)
+# Discovery over HTTPS (AWS XML listing → GCS JSON fallback)
 # ---------------------------------------------------------------------------
 def _station4(station: str) -> str:
-    """Level II uses 4-letter IDs (KDIX). Re-add K if the page stripped it."""
     s = station.strip().upper()
     return s if len(s) == 4 else "K" + s
 
 
-def _get_fs():
-    import s3fs
-
-    return s3fs.S3FileSystem(anon=True)
-
-
 def _find_scans(station: str, start: datetime, end: datetime) -> list[_ScanRef]:
-    """List available Level II volumes for a station in a naive-UTC window."""
-    fs = _get_fs()
     st4 = _station4(station)
-
     scans: list[_ScanRef] = []
     day = start.date()
     while day <= end.date():
-        prefix = f"{_BUCKET}/{day:%Y/%m/%d}/{st4}/"
-        try:
-            keys = fs.ls(prefix)
-        except FileNotFoundError:
-            keys = []
-        for key in keys:
-            filename = key.rsplit("/", 1)[-1]
+        datepath = f"{day:%Y/%m/%d}"
+        entries = _list_day(datepath, st4)
+        for filename, url in entries:
             if "MDM" in filename:
-                continue  # metadata files, not volumes
+                continue
             m = _TIME_RE.search(filename)
             if not m:
                 continue
@@ -157,33 +146,77 @@ def _find_scans(station: str, start: datetime, end: datetime) -> list[_ScanRef]:
             except ValueError:
                 continue
             if start <= ts <= end:
-                scans.append(_ScanRef(key=key, filename=filename, scan_time=ts))
+                scans.append(
+                    _ScanRef(filename=filename, scan_time=ts, download_url=url)
+                )
         day += timedelta(days=1)
-
     return scans
+
+
+def _list_day(datepath: str, st4: str) -> list[tuple[str, str]]:
+    """List (filename, download_url) for one station-day. AWS first, GCS fallback."""
+    prefix = f"{datepath}/{st4}/"
+
+    # --- Try AWS anonymous XML listing ---
+    try:
+        r = requests.get(
+            f"{_AWS_BASE}/?list-type=2&prefix={prefix}",
+            headers=_HEADERS,
+            timeout=60,
+        )
+        if r.status_code == 200:
+            root = ET.fromstring(r.content)
+            out = []
+            for contents in root.findall(f"{_S3_NS}Contents"):
+                key = contents.find(f"{_S3_NS}Key").text
+                filename = key.rsplit("/", 1)[-1]
+                out.append((filename, f"{_AWS_BASE}/{key}"))
+            return out
+    except Exception:
+        pass
+
+    # --- Fallback: GCS public mirror JSON listing ---
+    out = []
+    params = {"prefix": prefix, "maxResults": "1000"}
+    while True:
+        r = requests.get(_GCS_LIST, params=params, headers=_HEADERS, timeout=60)
+        r.raise_for_status()
+        payload = r.json()
+        for item in payload.get("items", []):
+            name = item["name"]
+            filename = name.rsplit("/", 1)[-1]
+            out.append((filename, f"{_GCS_DL}/{name}"))
+        token = payload.get("nextPageToken")
+        if not token:
+            break
+        params["pageToken"] = token
+    return out
 
 
 def _download_and_render(
     scan: _ScanRef, aircraft_lat, aircraft_lon, callsign, station, zoom_deg
 ) -> tuple[bytes, bytes, str]:
-    """Download one volume, render REF and VEL. Returns (ref_png, vel_png, name)."""
+    """Download one volume over HTTPS, render REF and VEL."""
     from metpy.io import Level2File
 
-    fs = _get_fs()
     tmpdir = tempfile.mkdtemp(prefix="nexrad_l2_")
     try:
         local_path = os.path.join(tmpdir, scan.filename)
-        fs.get(scan.key, local_path)
+        with requests.get(
+            scan.download_url, headers=_HEADERS, stream=True, timeout=300
+        ) as r:
+            r.raise_for_status()
+            with open(local_path, "wb") as fh:
+                for chunk in r.iter_content(chunk_size=1 << 20):
+                    fh.write(chunk)
 
         f = Level2File(local_path)
 
-        # Radar location from the message-31 header of the first ray
         radar_lat = float(f.sweeps[0][0][1].lat)
         radar_lon = float(f.sweeps[0][0][1].lon)
 
         name = scan.filename
 
-        # Reflectivity — lowest sweep containing REF
         az, rng_m, data = _extract_moment(f, b"REF")
         refl_png = _render_sweep(
             az, rng_m, data, radar_lat, radar_lon,
@@ -192,7 +225,6 @@ def _download_and_render(
             cbar_label="Reflectivity (dBZ)", volume_name=name,
         )
 
-        # Velocity — lowest sweep containing VEL (converted to knots)
         vel_png = b""
         try:
             az_v, rng_v, data_v = _extract_moment(f, b"VEL")
@@ -258,7 +290,6 @@ def _render_sweep(
             "NWSStormClearReflectivity", -20, 0.5
         )
     else:
-        # ±64 kt span using the NWS velocity table
         norm, cmap = colortables.get_with_steps("NWS8bitVel", -64, 0.5)
 
     fig = plt.figure(figsize=(12, 10))
