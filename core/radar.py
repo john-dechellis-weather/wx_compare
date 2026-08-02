@@ -1,12 +1,10 @@
 """NEXRAD Level III radar fetching and plot rendering.
 
-Uses siphon to query UCAR's THREDDS server for archived radar data,
-metpy to decode the NIDS binary format, and matplotlib+cartopy for
-rendering.
+Uses siphon to query UCAR's THREDDS server, metpy to decode NIDS,
+and matplotlib+cartopy for rendering.
 
-Two products fetched per request:
-    - N0B: Base Reflectivity (tilt 1, 0.5° elevation) — dBZ
-    - N0U: Base Velocity (tilt 1, 0.5° elevation) — knots
+Fetches base reflectivity (N0B) and tries several velocity codes
+(N0U, N0V, NBU, N0S) since availability varies by radar site.
 """
 from __future__ import annotations
 
@@ -25,18 +23,10 @@ def fetch_and_render_radar(
     station: str,
     zoom_deg: float,
 ) -> tuple[bytes, bytes, str, str]:
-    """Fetch NEXRAD N0B (reflectivity) and N0U (velocity), render both.
+    """Fetch NEXRAD reflectivity + velocity, render both.
 
-    Args:
-        target_time: UTC datetime of the desired scan.
-        aircraft_lat, aircraft_lon: Aircraft position in decimal degrees.
-        callsign: Label to show next to aircraft marker.
-        station: 3-letter NEXRAD site code (e.g., 'DIX', 'FTG').
-        zoom_deg: Half-width of view in degrees.
-
-    Returns:
-        (reflectivity_png_bytes, velocity_png_bytes,
-         reflectivity_actual_time, velocity_actual_time)
+    Returns (reflectivity_png, velocity_png_or_empty, refl_time, vel_time)
+    Velocity may be b"" if no velocity product available.
     """
     from siphon.radarserver import RadarServer, get_radarserver_datasets
 
@@ -45,7 +35,7 @@ def fetch_and_render_radar(
     radar_ref = datasets["NEXRAD Level III Radar from IDD"]
     rs = RadarServer(radar_ref.follow().catalog_url)
 
-    # Fetch reflectivity
+    # Reflectivity — required
     refl_png, refl_time = _fetch_and_render_product(
         rs=rs,
         target_time=target_time,
@@ -59,10 +49,10 @@ def fetch_and_render_radar(
         cbar_label="Reflectivity (dBZ)",
     )
 
-    # Try multiple velocity product codes in order until one works
-    vel_png = None
+    # Velocity — try multiple product codes, fall back gracefully
+    vel_png = b""
     vel_time = "not available"
-    vel_error = None
+    last_error = None
     for vel_product in ["N0U", "N0V", "NBU", "N0S"]:
         try:
             vel_png, vel_time = _fetch_and_render_product(
@@ -77,16 +67,15 @@ def fetch_and_render_radar(
                 title_prefix=f"Base Velocity ({vel_product})",
                 cbar_label="Velocity (kt)",
             )
-            break  # Success, stop trying
+            print(f"[RADAR] Velocity succeeded with product {vel_product}")
+            break
         except Exception as e:
-            vel_error = str(e)
+            last_error = str(e)
+            print(f"[RADAR] Velocity {vel_product} failed: {e}")
             continue
 
-    if vel_png is None:
-        print(f"[RADAR] All velocity products failed. Last error: {vel_error}")
-        # Return placeholder — reflectivity still works
-        vel_png = b""
-        vel_time = f"Not available (tried N0U/N0V/NBU/N0S)"
+    if not vel_png:
+        vel_time = f"Not available (tried N0U/N0V/NBU/N0S). Last error: {last_error}"
 
     return refl_png, vel_png, refl_time, vel_time
 
@@ -103,7 +92,7 @@ def _fetch_and_render_product(
     title_prefix: str,
     cbar_label: str,
 ) -> tuple[bytes, str]:
-    """Fetch a single NEXRAD product and render its plot. Returns PNG bytes."""
+    """Fetch a single NEXRAD product and render its plot."""
     from io import BytesIO
     from urllib.request import urlopen
     from metpy.io import Level3File
@@ -128,7 +117,7 @@ def _fetch_and_render_product(
         )
 
     dataset = matches[0]
-    actual_time_str = dataset.name  # Contains time info
+    actual_time_str = dataset.name
 
     # Fetch NIDS file
     nids_url = dataset.access_urls["HTTPServer"]
@@ -137,9 +126,13 @@ def _fetch_and_render_product(
 
     f = Level3File(BytesIO(raw))
 
-    # Decode radar data
+    # Decode data
     datadict = f.sym_block[0][0]
     radar_data = f.map_data(datadict["data"])
+
+    print(f"[RADAR DEBUG] {product}: data shape {radar_data.shape}, "
+          f"dtype {radar_data.dtype}, "
+          f"has_mask {hasattr(radar_data, 'mask')}")
 
     az = units.Quantity(
         np.array(datadict["start_az"] + [datadict["end_az"][-1]]),
@@ -152,17 +145,14 @@ def _fetch_and_render_product(
 
     lon_grid, lat_grid = azimuth_range_to_lat_lon(az, rng, f.lon, f.lat)
 
-    # Select colortable per product
+    # Colortable selection
     if product == "N0B":
-        # Reflectivity: NWS storm-clear reflectivity table (-20 to 75 dBZ)
         norm, cmap = colortables.get_with_steps(
             "NWSStormClearReflectivity", -20, 0.5
         )
-    elif product == "N0U":
-        # Velocity: NWS8bitVel table (-64 to +64 kt)
+    elif product in ("N0U", "N0V", "NBU", "N0S"):
         norm, cmap = colortables.get_with_steps("NWS8bitVel", -64, 1.0)
     else:
-        # Fallback default
         norm, cmap = colortables.get_with_steps(
             "NWSStormClearReflectivity", -20, 0.5
         )
@@ -181,7 +171,7 @@ def _fetch_and_render_product(
         transform=ccrs.PlateCarree(),
     )
 
-    # Geographic features
+    # Features
     ax.coastlines(resolution="10m", color="black", linewidth=0.8)
     ax.add_feature(
         cfeature.BORDERS.with_scale("10m"),
@@ -230,7 +220,7 @@ def _fetch_and_render_product(
         weight="bold",
     )
 
-    # Zoom around aircraft
+    # Zoom
     ax.set_extent(
         [
             aircraft_lon - zoom_deg,
@@ -241,17 +231,14 @@ def _fetch_and_render_product(
         crs=ccrs.PlateCarree(),
     )
 
-    # Title
     ax.set_title(
         f"K{station} {title_prefix}\n"
         f"Radar: {f.lat:.2f}°, {f.lon:.2f}°  ·  "
         f"Requested: {target_time:%Y-%m-%d %H:%M UTC}"
     )
 
-    # Colorbar
     plt.colorbar(mesh, ax=ax, pad=0.02, label=cbar_label)
 
-    # Render to PNG bytes
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
     plt.close(fig)
