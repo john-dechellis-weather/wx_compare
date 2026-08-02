@@ -45,12 +45,17 @@ def fetch_goes_data(
     os.environ["GOES2GO_SAVE"] = str(cache_dir)
 
     from goes2go.data import goes_nearesttime
+    import pandas as pd
+
+    # Convert to naive pandas Timestamp — goes2go's internal date math
+    # can trip over tz-aware datetimes with certain pandas versions
+    target_pd = pd.Timestamp(target_time).tz_localize(None)
 
     ds = goes_nearesttime(
-        attime=target_time,
+        attime=target_pd,
         satellite=satellite,
         product="ABI-L2-MCMIP",
-        domain="F",  # Full disk
+        domain="F",
         return_as="xarray",
         download=True,
         overwrite=False,
@@ -69,10 +74,19 @@ def _extract_scan_time(ds, fallback: datetime) -> datetime:
         v = ds.attrs.get(attr_name)
         if v:
             try:
-                return pd.to_datetime(v).to_pydatetime()
+                # Handle both string timestamps and numpy datetime64
+                ts = pd.Timestamp(str(v)).tz_localize(None)
+                return ts.to_pydatetime()
             except Exception:
                 pass
-    # Fallback
+    # Fallback: try the dataset's time coordinate
+    try:
+        if "t" in ds.coords:
+            t_val = ds["t"].values
+            ts = pd.Timestamp(str(t_val)).tz_localize(None)
+            return ts.to_pydatetime()
+    except Exception:
+        pass
     return fallback
 
 
