@@ -211,11 +211,19 @@ def _render_plot(
         sweep_axis=sweep,
     )
 
-    # Transform aircraft lat/lon → GOES x/y meters
+   # Transform aircraft lat/lon → GOES x/y meters
     geos_proj = pyproj.Proj(proj="geos", h=sat_h, lon_0=lon_0, sweep=sweep)
     wgs84 = pyproj.Proj(proj="latlong", datum="WGS84")
     transformer = pyproj.Transformer.from_proj(wgs84, geos_proj, always_xy=True)
     aircraft_x, aircraft_y = transformer.transform(aircraft_lon, aircraft_lat)
+
+    # Guard: pyproj returns inf for points outside the projection's valid range
+    if not (np.isfinite(aircraft_x) and np.isfinite(aircraft_y)):
+        raise ValueError(
+            f"Aircraft position ({aircraft_lat}, {aircraft_lon}) is outside "
+            f"the satellite's projection range. Try a location closer to the "
+            f"satellite subpoint."
+        )
 
     # Set up figure
     fig = plt.figure(figsize=(12, 10))

@@ -217,6 +217,15 @@ if run_button:
 
     st.success(f"Actual satellite image time: **{actual_time_str}**")
 
+    # Warn about nighttime True Color
+    hour_utc = request_time.hour
+    is_night_conus = hour_utc < 11 or hour_utc >= 24
+    if is_night_conus:
+        st.warning(
+            "Note: True Color uses visible bands (needs sunlight). "
+            "At nighttime UTC over CONUS, this plot will appear mostly dark. "
+            "The IR plot below will still show useful data."
+        )
     st.subheader("True Color (Bands 1/2/3)")
     st.image(true_color_png, use_container_width=True)
 
