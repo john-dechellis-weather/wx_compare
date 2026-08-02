@@ -1,17 +1,13 @@
-"""MOS Tables — quick side-by-side hourly NBM + GFS LAMP for one airport.
+"""MOS Tables — hourly NBM + GFS LAMP for one airport.
 
-Simple table view: one row per valid hour, columns grouped by field:
-    Time | F+ | NBM VIS | LAMP VIS | NBM CIG | LAMP CIG | NBM Wind | LAMP Wind
-
-Both NBM (72 hr) and LAMP (25 hr) are hourly; times align cleanly.
-Rows below user-defined thresholds highlight red.
+Transposed layout: time runs across columns, fields run down rows.
+Aviation-category tiered color coding.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -27,23 +23,13 @@ from auth import check_password
 check_password()
 
 
-# ---------------------------------------------------------------------------
-# Cache dir (persistent disk on Render, /tmp locally)
-# ---------------------------------------------------------------------------
 _persistent = Path("/opt/render/project/src/cache")
 CACHE_ROOT = _persistent if _persistent.exists() else Path("/tmp/wx_compare_cache")
 CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 
 
-# ---------------------------------------------------------------------------
-# Cached fetch — reuse existing NBM + LAMP parsers
-# ---------------------------------------------------------------------------
 @st.cache_data(ttl=600, show_spinner=False, max_entries=20)
 def cached_mos_tables(icao: str, cycle_iso: str) -> pd.DataFrame:
-    """Fetch NBM and LAMP for one station, return a merged wide DataFrame.
-
-    Column layout: [time, fhr, NBM_vis, LAMP_vis, NBM_cig, LAMP_cig, NBM_wind, LAMP_wind]
-    """
     from compare import compare_icaos
     from models import Nbm, GfsLamp
 
@@ -57,14 +43,10 @@ def cached_mos_tables(icao: str, cycle_iso: str) -> pd.DataFrame:
     if not resolved or len(df_long) == 0:
         return pd.DataFrame()
 
-    # Filter to just this ICAO
     df = df_long[df_long["station_id"] == icao.upper()].copy()
-
-    # Split by model, then pivot to wide
     nbm = df[df["model"] == "NBM"].set_index("valid_time")
     lamp = df[df["model"] == "GFS_LAMP"].set_index("valid_time")
 
-    # Build the union of times, ascending
     all_times = sorted(set(nbm.index).union(set(lamp.index)))
     if not all_times:
         return pd.DataFrame()
@@ -90,13 +72,11 @@ def cached_mos_tables(icao: str, cycle_iso: str) -> pd.DataFrame:
             "LAMP_wind_spd": _safe_get(l, "wind_speed_kt"),
             "LAMP_wind_gst": _safe_get(l, "wind_gust_kt"),
         })
-    out = pd.DataFrame(rows)
-    return out
+    return pd.DataFrame(rows)
 
 
 @st.cache_data(ttl=300, show_spinner=False, max_entries=10)
 def cached_latest_cycle_mos(icao: str) -> str | None:
-    """Latest complete cycle for the ICAO across NBM + LAMP."""
     from core.stations import StationResolver
     from core.cycle_select import find_latest_complete
     from models import Nbm, GfsLamp
@@ -115,7 +95,6 @@ def cached_latest_cycle_mos(icao: str) -> str | None:
 
 
 def _safe_get(row, col):
-    """Return a scalar from a pandas Series row, or None."""
     if row is None:
         return None
     try:
@@ -127,21 +106,15 @@ def _safe_get(row, col):
     return v
 
 
-# ---------------------------------------------------------------------------
-# Display formatting
-# ---------------------------------------------------------------------------
 def _fmt_vis(v):
-    """Compact decimal visibility: '0.5', '1', '1.5', '3', '10'."""
     if v is None or pd.isna(v):
         return "—"
-    # Whole numbers show without decimal
     if v == int(v):
         return f"{int(v)}"
     return f"{v:g}"
 
 
 def _fmt_cig(cig, unl):
-    """Ceiling as 3-digit hundreds: '008', '025', '100', 'UNL'."""
     if unl is True:
         return "UNL"
     if cig is None or pd.isna(cig):
@@ -151,17 +124,13 @@ def _fmt_cig(cig, unl):
 
 
 def _fmt_wind(dir_deg, spd_kt, gst_kt):
-    """METAR-style wind: '18012KT' or '18012G26KT'."""
     if spd_kt is None or pd.isna(spd_kt):
         return "—"
-    # Direction
     if dir_deg is not None and not pd.isna(dir_deg):
         d = f"{int(dir_deg):03d}"
     else:
         d = "VRB"
-    # Sustained
     s = f"{int(spd_kt):02d}"
-    # Gust (optional)
     if gst_kt is not None and not pd.isna(gst_kt):
         g = f"G{int(gst_kt):02d}"
     else:
@@ -173,48 +142,33 @@ def _fmt_time(t):
     return pd.to_datetime(t).strftime("%m/%d %HZ")
 
 
-# ---------------------------------------------------------------------------
-# Row highlighting
-# ---------------------------------------------------------------------------
 def _row_needs_highlight(row) -> bool:
-    vis_thr = 3
-    cig_thr = 3000
-    wind_thr = 25
-    """A row triggers highlight if any product's field crosses a threshold."""
-    # Visibility
     for v in (row["NBM_vis_sm"], row["LAMP_vis_sm"]):
-        if v is not None and not pd.isna(v) and v < vis_thr:
+        if v is not None and not pd.isna(v) and v < 3:
             return True
-    # Ceiling (only real, non-unlimited values count)
     for cig, unl in [
         (row["NBM_cig_ft"], row["NBM_cig_unl"]),
         (row["LAMP_cig_ft"], row["LAMP_cig_unl"]),
     ]:
         if unl is True:
             continue
-        if cig is not None and not pd.isna(cig) and cig < cig_thr:
+        if cig is not None and not pd.isna(cig) and cig < 3000:
             return True
-    # Wind (sustained OR gust)
     for spd, gst in [
         (row["NBM_wind_spd"], row["NBM_wind_gst"]),
         (row["LAMP_wind_spd"], row["LAMP_wind_gst"]),
     ]:
         for w in (spd, gst):
-            if w is not None and not pd.isna(w) and w > wind_thr:
+            if w is not None and not pd.isna(w) and w >= 25:
                 return True
     return False
 
 
-# ---------------------------------------------------------------------------
-# Summary bar — find the next hour that triggers a highlight
-# ---------------------------------------------------------------------------
 def _build_summary(df_flags) -> str | None:
-    """Return a short summary of the next low-condition window, or None."""
     now = datetime.now(timezone.utc)
     upcoming = df_flags[df_flags["valid_time"] >= now]
     if len(upcoming) == 0:
         return None
-    # Find first row that triggers highlight
     hits = upcoming[upcoming["flagged"]]
     if len(hits) == 0:
         return "No low-condition periods forecast in the visible window."
@@ -225,9 +179,6 @@ def _build_summary(df_flags) -> str | None:
     )
 
 
-# ---------------------------------------------------------------------------
-# UI
-# ---------------------------------------------------------------------------
 st.title("MOS Tables")
 st.caption("Side-by-side hourly NBM + GFS LAMP for one airport.")
 
@@ -237,17 +188,21 @@ with st.sidebar:
         "ICAO code",
         value="KJFK",
         max_chars=4,
-        help="Single 4-letter ICAO (CONUS airports)",
     ).strip().upper()
-    
 
     st.divider()
     run_button = st.button("Refresh", type="primary", use_container_width=True)
 
+    st.divider()
+    st.caption(
+        "**Color coding:**\n\n"
+        "Yellow: vis < 3sm, cig < 3000ft, wind ≥ 25kt\n\n"
+        "Orange: vis < 2sm, cig ≤ 2000ft, wind ≥ 30kt\n\n"
+        "Red: vis < 1sm, cig ≤ 1000ft, wind ≥ 35kt\n\n"
+        "Pink: vis ≤ 0.5sm, cig < 400ft, wind ≥ 40kt"
+    )
 
-# ---------------------------------------------------------------------------
-# Main content
-# ---------------------------------------------------------------------------
+
 if run_button:
     if not icao_input or len(icao_input) != 4:
         st.error("Enter a 4-letter ICAO code.")
@@ -272,33 +227,25 @@ if run_button:
 
     df["flagged"] = df.apply(_row_needs_highlight, axis=1)
 
-    # Summary bar
-    ssummary = _build_summary(df)
+    summary = _build_summary(df)
     if summary:
         st.markdown(summary)
 
- # Clip to first 25 hours (overlap window where LAMP has data)
     df_clipped = df[df["fhr"] <= 25].copy()
 
     if len(df_clipped) == 0:
         st.warning("No data in the 0-25 hour overlap window.")
         st.stop()
 
-    # Build column headers as time strings
     time_cols = [f"{t:%m/%d %HZ}" for t in df_clipped["valid_time"]]
 
-    # Build each row of the transposed table
-    # Row 1: F+ hour
     row_fhr = [f"f+{int(f)}" for f in df_clipped["fhr"]]
-    # Row 2-3: Visibility
     row_nbm_vis = [_fmt_vis(v) for v in df_clipped["NBM_vis_sm"]]
     row_lamp_vis = [_fmt_vis(v) for v in df_clipped["LAMP_vis_sm"]]
-    # Row 4-5: Ceiling
     row_nbm_cig = [_fmt_cig(c, u) for c, u in zip(
         df_clipped["NBM_cig_ft"], df_clipped["NBM_cig_unl"])]
     row_lamp_cig = [_fmt_cig(c, u) for c, u in zip(
         df_clipped["LAMP_cig_ft"], df_clipped["LAMP_cig_unl"])]
-    # Row 6-7: Wind
     row_nbm_wind = [_fmt_wind(d, s, g) for d, s, g in zip(
         df_clipped["NBM_wind_dir"],
         df_clipped["NBM_wind_spd"],
@@ -323,8 +270,6 @@ if run_button:
         "NBM Wind", "LAMP Wind",
     ])
 
-    # Cell-level highlighting: track which (row, col) violate thresholds
-    # We iterate through df_clipped and mark cells red per-cell
     _PINK   = "background-color: #660066; color: #FF80FF;"
     _RED    = "background-color: #660000; color: #FF3333;"
     _ORANGE = "background-color: #663300; color: #FF8000;"
@@ -375,7 +320,6 @@ if run_button:
             return _wind_style(r["LAMP_wind_spd"], r["LAMP_wind_gst"])
         return ""
 
-    # Apply the styling
     def _style_dataframe(df_to_style):
         styles = pd.DataFrame(
             "", index=df_to_style.index, columns=df_to_style.columns
@@ -385,8 +329,6 @@ if run_button:
                 styles.loc[row_label, col_name] = _cell_style(row_label, col_idx)
         return styles
 
-    # Terminal aesthetic: green on black
-    # Highlighted cells use amber/red for contrast
     styled = display.style.apply(_style_dataframe, axis=None)
     styled = styled.set_properties(**{
         "background-color": "#000000",
@@ -399,56 +341,10 @@ if run_button:
         "min-width": "40px",
         "max-width": "40px",
     })
-    # Build styled HTML directly for full CSS control
-    styled = display.style.apply(_style_dataframe, axis=None)
 
-    # Get the HTML from pandas Styler
-    html = styled.to_html()
+    st.dataframe(styled, use_container_width=True, height=350)
 
-    # Wrap in a scrollable container with our custom CSS
-    css = """
-    <style>
-    .mos-table-container {
-        overflow-x: auto;
-        max-width: 100%;
-        background: #000000;
-        padding: 4px;
-        border: 1px solid #003300;
-    }
-    .mos-table-container table {
-        border-collapse: collapse;
-        background: #000000;
-        color: #00FF00;
-        font-family: 'Courier New', monospace;
-        font-size: 9px;
-        margin: 0;
-    }
-    .mos-table-container th,
-    .mos-table-container td {
-        border: 1px solid #003300;
-        padding: 1px 2px;
-        text-align: center;
-        white-space: nowrap;
-        min-width: 42px;
-        max-width: 42px;
-    }
-    .mos-table-container th {
-        background: #001100;
-        color: #00FF00;
-        font-weight: bold;
-    }
-    .mos-table-container tr:first-child th:first-child {
-        background: #000000;
-    }
-    </style>
-    """
-
-    st.markdown(css + f'<div class="mos-table-container">{html}</div>',
-                unsafe_allow_html=True)
-
-
-    # CSV download
-    csv = display.to_csv(index=False).encode("utf-8")
+    csv = display.to_csv().encode("utf-8")
     st.download_button(
         label="Download as CSV",
         data=csv,
@@ -458,18 +354,3 @@ if run_button:
 
 else:
     st.info("Enter an ICAO code in the sidebar and click **Refresh**.")
-    st.markdown(
-        """
-        ### About
-
-        This page shows **NBM** (hourly, out to 72 h) and **GFS LAMP**
-        (hourly, out to 25 h) side-by-side for one airport.
-
-        Rows are highlighted red when any product forecasts:
-        - Visibility below your threshold
-        - Ceiling below your threshold
-        - Wind speed or gust above your threshold
-
-        A summary at the top shows the next expected low-condition period.
-        """
-    )
