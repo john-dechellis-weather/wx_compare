@@ -1,8 +1,8 @@
 """NEXRAD Level II radar fetching and plot rendering.
 
 Data source: AWS public archive (s3://noaa-nexrad-level2) accessed
-directly with boto3 using unsigned requests — no credentials needed,
-full history back to 1991.
+anonymously via s3fs — the same library/path the satellite page uses
+for the GOES buckets, proven to work on this deployment.
 
 Each Level II volume contains BOTH reflectivity and velocity, so both
 plots come from the same downloaded file.
@@ -30,7 +30,7 @@ _TIME_RE = re.compile(r"(\d{8})_(\d{6})")
 
 @dataclass
 class _ScanRef:
-    key: str
+    key: str        # full s3 key including bucket, e.g. "noaa-nexrad-level2/2026/07/16/KMLB/KMLB2026..."
     filename: str
     scan_time: datetime
 
@@ -118,7 +118,7 @@ def fetch_and_render_radar_loop(
 
 
 # ---------------------------------------------------------------------------
-# S3 access
+# S3 access via s3fs (anonymous)
 # ---------------------------------------------------------------------------
 def _station4(station: str) -> str:
     """Level II uses 4-letter IDs (KDIX). Re-add K if the page stripped it."""
@@ -126,41 +126,38 @@ def _station4(station: str) -> str:
     return s if len(s) == 4 else "K" + s
 
 
-def _s3_client():
-    import boto3
-    from botocore import UNSIGNED
-    from botocore.config import Config
+def _get_fs():
+    import s3fs
 
-    return boto3.client("s3", config=Config(signature_version=UNSIGNED))
+    return s3fs.S3FileSystem(anon=True)
 
 
 def _find_scans(station: str, start: datetime, end: datetime) -> list[_ScanRef]:
     """List available Level II volumes for a station in a naive-UTC window."""
-    s3 = _s3_client()
+    fs = _get_fs()
     st4 = _station4(station)
 
     scans: list[_ScanRef] = []
     day = start.date()
     while day <= end.date():
-        prefix = f"{day:%Y/%m/%d}/{st4}/"
-        paginator = s3.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=_BUCKET, Prefix=prefix):
-            for obj in page.get("Contents", []):
-                key = obj["Key"]
-                filename = key.rsplit("/", 1)[-1]
-                if "MDM" in filename:
-                    continue  # metadata files, not volumes
-                m = _TIME_RE.search(filename)
-                if not m:
-                    continue
-                try:
-                    ts = datetime.strptime(
-                        m.group(1) + m.group(2), "%Y%m%d%H%M%S"
-                    )
-                except ValueError:
-                    continue
-                if start <= ts <= end:
-                    scans.append(_ScanRef(key=key, filename=filename, scan_time=ts))
+        prefix = f"{_BUCKET}/{day:%Y/%m/%d}/{st4}/"
+        try:
+            keys = fs.ls(prefix)
+        except FileNotFoundError:
+            keys = []
+        for key in keys:
+            filename = key.rsplit("/", 1)[-1]
+            if "MDM" in filename:
+                continue  # metadata files, not volumes
+            m = _TIME_RE.search(filename)
+            if not m:
+                continue
+            try:
+                ts = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+            except ValueError:
+                continue
+            if start <= ts <= end:
+                scans.append(_ScanRef(key=key, filename=filename, scan_time=ts))
         day += timedelta(days=1)
 
     return scans
@@ -172,11 +169,11 @@ def _download_and_render(
     """Download one volume, render REF and VEL. Returns (ref_png, vel_png, name)."""
     from metpy.io import Level2File
 
-    s3 = _s3_client()
+    fs = _get_fs()
     tmpdir = tempfile.mkdtemp(prefix="nexrad_l2_")
     try:
         local_path = os.path.join(tmpdir, scan.filename)
-        s3.download_file(_BUCKET, scan.key, local_path)
+        fs.get(scan.key, local_path)
 
         f = Level2File(local_path)
 
