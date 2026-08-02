@@ -325,39 +325,54 @@ if run_button:
 
     # Cell-level highlighting: track which (row, col) violate thresholds
     # We iterate through df_clipped and mark cells red per-cell
+    _PINK   = "background-color: #660066; color: #FF80FF;"
+    _RED    = "background-color: #660000; color: #FF3333;"
+    _ORANGE = "background-color: #663300; color: #FF8000;"
+    _YELLOW = "background-color: #666600; color: #FFFF00;"
+
+    def _vis_style(v):
+        if v is None or pd.isna(v):
+            return ""
+        if v <= 0.5: return _PINK
+        if v < 1:    return _RED
+        if v < 2:    return _ORANGE
+        if v < 3:    return _YELLOW
+        return ""
+
+    def _cig_style(cig, unl):
+        if unl is True or cig is None or pd.isna(cig):
+            return ""
+        if cig < 400:   return _PINK
+        if cig <= 1000: return _RED
+        if cig <= 2000: return _ORANGE
+        if cig < 3000:  return _YELLOW
+        return ""
+
+    def _wind_style(spd, gst):
+        vals = [x for x in (spd, gst) if x is not None and not pd.isna(x)]
+        if not vals:
+            return ""
+        worst = max(vals)
+        if worst >= 40: return _PINK
+        if worst >= 35: return _RED
+        if worst >= 30: return _ORANGE
+        if worst >= 25: return _YELLOW
+        return ""
+
     def _cell_style(row_label, col_idx):
-        """Return CSS for one cell based on its (row_label, col_idx)."""
         r = df_clipped.iloc[col_idx]
-        red = "background-color: #660000; color: #FFFF00;"
-        # Visibility rows
         if row_label == "NBM VIS":
-            v = r["NBM_vis_sm"]
-            if v is not None and not pd.isna(v) and v < vis_thr:
-                return red
-        elif row_label == "LAMP VIS":
-            v = r["LAMP_vis_sm"]
-            if v is not None and not pd.isna(v) and v < vis_thr:
-                return red
-        # Ceiling rows (skip if unlimited)
-        elif row_label == "NBM CIG":
-            c, u = r["NBM_cig_ft"], r["NBM_cig_unl"]
-            if u is not True and c is not None and not pd.isna(c) and c < cig_thr:
-                return red
-        elif row_label == "LAMP CIG":
-            c, u = r["LAMP_cig_ft"], r["LAMP_cig_unl"]
-            if u is not True and c is not None and not pd.isna(c) and c < cig_thr:
-                return red
-        # Wind rows (speed OR gust)
-        elif row_label == "NBM Wind":
-            s, g = r["NBM_wind_spd"], r["NBM_wind_gst"]
-            for w in (s, g):
-                if w is not None and not pd.isna(w) and w > wind_thr:
-                    return red
-        elif row_label == "LAMP Wind":
-            s, g = r["LAMP_wind_spd"], r["LAMP_wind_gst"]
-            for w in (s, g):
-                if w is not None and not pd.isna(w) and w > wind_thr:
-                    return red
+            return _vis_style(r["NBM_vis_sm"])
+        if row_label == "LAMP VIS":
+            return _vis_style(r["LAMP_vis_sm"])
+        if row_label == "NBM CIG":
+            return _cig_style(r["NBM_cig_ft"], r["NBM_cig_unl"])
+        if row_label == "LAMP CIG":
+            return _cig_style(r["LAMP_cig_ft"], r["LAMP_cig_unl"])
+        if row_label == "NBM Wind":
+            return _wind_style(r["NBM_wind_spd"], r["NBM_wind_gst"])
+        if row_label == "LAMP Wind":
+            return _wind_style(r["LAMP_wind_spd"], r["LAMP_wind_gst"])
         return ""
 
     # Apply the styling
@@ -377,9 +392,12 @@ if run_button:
         "background-color": "#000000",
         "color": "#00FF00",
         "font-family": "Courier New, monospace",
-        "font-size": "12px",
+        "font-size": "9px",
         "text-align": "center",
-        "padding": "2px 6px",
+        "padding": "1px 2px",
+        "white-space": "nowrap",
+        "min-width": "40px",
+        "max-width": "40px",
     })
     # Build styled HTML directly for full CSS control
     styled = display.style.apply(_style_dataframe, axis=None)
