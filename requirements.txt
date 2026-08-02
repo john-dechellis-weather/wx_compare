@@ -13,3 +13,5 @@ cartopy>=0.22
 pyproj>=3.6
 h5py>=3.10
 netCDF4>=1.6
+metpy>=1.6
+siphon>=0.9
