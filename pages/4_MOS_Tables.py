@@ -169,18 +169,6 @@ def row_flagged(row):
     return False
 
 
-def build_summary(df):
-    now = datetime.now(timezone.utc)
-    up = df[df["valid_time"] >= now]
-    if len(up) == 0: return None
-    hits = up[up["flagged"]]
-    if len(hits) == 0:
-        return "No low-condition periods forecast."
-    f = hits.iloc[0]
-    t = pd.to_datetime(f['valid_time'])
-    return f"⚠ Next low-condition period starts at **{t:%m/%d %HZ}** (f+{int(f['fhr'])})"
-
-
 def make_cell(text, bg="#ffffff", fg="#FFFFFF"):
     return (
         f'<td style="'
