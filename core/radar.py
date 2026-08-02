@@ -1,25 +1,38 @@
 """NEXRAD Level II radar fetching and plot rendering.
 
-Data source: AWS public archive (noaa-nexrad-level2) via nexradaws —
-full history back to 1991, no credentials needed.
+Data source: AWS public archive (s3://noaa-nexrad-level2) accessed
+directly with boto3 using unsigned requests — no credentials needed,
+full history back to 1991.
 
 Each Level II volume contains BOTH reflectivity and velocity, so both
-plots come from the same downloaded file (no product-code fallbacks).
+plots come from the same downloaded file.
 
-Decode: metpy Level2File. Reflectivity from the lowest surveillance
-sweep (0.5° CS), velocity from the lowest Doppler sweep (0.5° CD).
-Velocity is converted from m/s to knots for aviation use.
+Decode: metpy Level2File (handles gzip transparently). Reflectivity
+from the lowest surveillance sweep (0.5° CS), velocity from the lowest
+Doppler sweep (0.5° CD), converted from m/s to knots.
 """
 from __future__ import annotations
 
 import io
-import shutil
+import os
+import re
 import tempfile
+import shutil
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 import numpy as np
 
+_BUCKET = "noaa-nexrad-level2"
 _MS_TO_KT = 1.94384
+_TIME_RE = re.compile(r"(\d{8})_(\d{6})")
+
+
+@dataclass
+class _ScanRef:
+    key: str
+    filename: str
+    scan_time: datetime
 
 
 # ---------------------------------------------------------------------------
@@ -37,10 +50,9 @@ def fetch_and_render_radar(
 
     Returns (reflectivity_png, velocity_png_or_empty, refl_time, vel_time).
     """
+    tgt = target_time.replace(tzinfo=None)
     scans = _find_scans(
-        station,
-        target_time - timedelta(minutes=20),
-        target_time + timedelta(minutes=20),
+        station, tgt - timedelta(minutes=20), tgt + timedelta(minutes=20)
     )
     if not scans:
         raise ValueError(
@@ -48,9 +60,7 @@ def fetch_and_render_radar(
             f"20 minutes of {target_time:%Y-%m-%d %H:%M UTC}."
         )
 
-    # Pick the scan closest to the requested time
-    tgt = target_time.replace(tzinfo=None)
-    best = min(scans, key=lambda s: abs(s.scan_time.replace(tzinfo=None) - tgt))
+    best = min(scans, key=lambda s: abs(s.scan_time - tgt))
 
     refl_png, vel_png, name = _download_and_render(
         best, aircraft_lat, aircraft_lon, callsign, station, zoom_deg
@@ -108,7 +118,7 @@ def fetch_and_render_radar_loop(
 
 
 # ---------------------------------------------------------------------------
-# Internals
+# S3 access
 # ---------------------------------------------------------------------------
 def _station4(station: str) -> str:
     """Level II uses 4-letter IDs (KDIX). Re-add K if the page stripped it."""
@@ -116,34 +126,59 @@ def _station4(station: str) -> str:
     return s if len(s) == 4 else "K" + s
 
 
-def _find_scans(station: str, start: datetime, end: datetime):
-    """List available Level II volumes for a station in a naive-UTC window."""
-    import nexradaws
+def _s3_client():
+    import boto3
+    from botocore import UNSIGNED
+    from botocore.config import Config
 
-    conn = nexradaws.NexradAwsInterface()
-    scans = conn.get_avail_scans_in_range(
-        start.replace(tzinfo=None), end.replace(tzinfo=None), _station4(station)
-    )
-    # Skip MDM (metadata) files
-    return [s for s in scans if "MDM" not in s.filename]
+    return boto3.client("s3", config=Config(signature_version=UNSIGNED))
+
+
+def _find_scans(station: str, start: datetime, end: datetime) -> list[_ScanRef]:
+    """List available Level II volumes for a station in a naive-UTC window."""
+    s3 = _s3_client()
+    st4 = _station4(station)
+
+    scans: list[_ScanRef] = []
+    day = start.date()
+    while day <= end.date():
+        prefix = f"{day:%Y/%m/%d}/{st4}/"
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=_BUCKET, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                filename = key.rsplit("/", 1)[-1]
+                if "MDM" in filename:
+                    continue  # metadata files, not volumes
+                m = _TIME_RE.search(filename)
+                if not m:
+                    continue
+                try:
+                    ts = datetime.strptime(
+                        m.group(1) + m.group(2), "%Y%m%d%H%M%S"
+                    )
+                except ValueError:
+                    continue
+                if start <= ts <= end:
+                    scans.append(_ScanRef(key=key, filename=filename, scan_time=ts))
+        day += timedelta(days=1)
+
+    return scans
 
 
 def _download_and_render(
-    scan, aircraft_lat, aircraft_lon, callsign, station, zoom_deg
+    scan: _ScanRef, aircraft_lat, aircraft_lon, callsign, station, zoom_deg
 ) -> tuple[bytes, bytes, str]:
     """Download one volume, render REF and VEL. Returns (ref_png, vel_png, name)."""
-    import nexradaws
     from metpy.io import Level2File
 
-    conn = nexradaws.NexradAwsInterface()
+    s3 = _s3_client()
     tmpdir = tempfile.mkdtemp(prefix="nexrad_l2_")
     try:
-        results = conn.download(scan, tmpdir)
-        success = list(results.iter_success())
-        if not success:
-            raise ValueError(f"Download failed for {scan.filename}.")
+        local_path = os.path.join(tmpdir, scan.filename)
+        s3.download_file(_BUCKET, scan.key, local_path)
 
-        f = Level2File(success[0].filepath)
+        f = Level2File(local_path)
 
         # Radar location from the message-31 header of the first ray
         radar_lat = float(f.sweeps[0][0][1].lat)
@@ -179,6 +214,9 @@ def _download_and_render(
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# Decode + render
+# ---------------------------------------------------------------------------
 def _extract_moment(f, moment: bytes):
     """Pull (azimuths_deg, ranges_m, data) for the lowest sweep with moment."""
     for sweep in f.sweeps:
