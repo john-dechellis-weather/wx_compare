@@ -282,36 +282,102 @@ if run_button:
     if summary:
         st.markdown(summary)
 
-    # Build display table
+ # Clip to first 25 hours (overlap window where LAMP has data)
+    df_clipped = df[df["fhr"] <= 25].copy()
+
+    if len(df_clipped) == 0:
+        st.warning("No data in the 0-25 hour overlap window.")
+        st.stop()
+
+    # Build column headers as time strings
+    time_cols = [f"{t:%m/%d %HZ}" for t in df_clipped["valid_time"]]
+
+    # Build each row of the transposed table
+    # Row 1: F+ hour
+    row_fhr = [f"f+{int(f)}" for f in df_clipped["fhr"]]
+    # Row 2-3: Visibility
+    row_nbm_vis = [_fmt_vis(v) for v in df_clipped["NBM_vis_sm"]]
+    row_lamp_vis = [_fmt_vis(v) for v in df_clipped["LAMP_vis_sm"]]
+    # Row 4-5: Ceiling
+    row_nbm_cig = [_fmt_cig(c, u) for c, u in zip(
+        df_clipped["NBM_cig_ft"], df_clipped["NBM_cig_unl"])]
+    row_lamp_cig = [_fmt_cig(c, u) for c, u in zip(
+        df_clipped["LAMP_cig_ft"], df_clipped["LAMP_cig_unl"])]
+    # Row 6-7: Wind
+    row_nbm_wind = [_fmt_wind(d, s, g) for d, s, g in zip(
+        df_clipped["NBM_wind_dir"],
+        df_clipped["NBM_wind_spd"],
+        df_clipped["NBM_wind_gst"])]
+    row_lamp_wind = [_fmt_wind(d, s, g) for d, s, g in zip(
+        df_clipped["LAMP_wind_dir"],
+        df_clipped["LAMP_wind_spd"],
+        df_clipped["LAMP_wind_gst"])]
+
     display = pd.DataFrame({
-        "Time": df["valid_time"].apply(_fmt_time),
-        "F+": df["fhr"],
-        "NBM VIS": df["NBM_vis_sm"].apply(_fmt_vis),
-        "LAMP VIS": df["LAMP_vis_sm"].apply(_fmt_vis),
-        "NBM CIG": [_fmt_cig(c, u) for c, u in zip(df["NBM_cig_ft"], df["NBM_cig_unl"])],
-        "LAMP CIG": [_fmt_cig(c, u) for c, u in zip(df["LAMP_cig_ft"], df["LAMP_cig_unl"])],
-        "NBM Wind": [_fmt_wind(d, s, g) for d, s, g in zip(
-            df["NBM_wind_dir"], df["NBM_wind_spd"], df["NBM_wind_gst"])],
-        "LAMP Wind": [_fmt_wind(d, s, g) for d, s, g in zip(
-            df["LAMP_wind_dir"], df["LAMP_wind_spd"], df["LAMP_wind_gst"])],
-    })
+        col: [
+            row_fhr[i],
+            row_nbm_vis[i], row_lamp_vis[i],
+            row_nbm_cig[i], row_lamp_cig[i],
+            row_nbm_wind[i], row_lamp_wind[i],
+        ]
+        for i, col in enumerate(time_cols)
+    }, index=[
+        "F+ hour",
+        "NBM VIS", "LAMP VIS",
+        "NBM CIG", "LAMP CIG",
+        "NBM Wind", "LAMP Wind",
+    ])
 
-    # Apply row highlighting based on flagged column
-    def _highlight_row(row_idx):
-        if df["flagged"].iloc[row_idx]:
-            return ["background-color: #FFCCCC; color: #000000;"] * len(display.columns)
-        return [""] * len(display.columns)
+    # Cell-level highlighting: track which (row, col) violate thresholds
+    # We iterate through df_clipped and mark cells red per-cell
+    def _cell_style(row_label, col_idx):
+        """Return CSS for one cell based on its (row_label, col_idx)."""
+        r = df_clipped.iloc[col_idx]
+        red = "background-color: #FFCCCC; color: #000000;"
+        # Visibility rows
+        if row_label == "NBM VIS":
+            v = r["NBM_vis_sm"]
+            if v is not None and not pd.isna(v) and v < vis_thr:
+                return red
+        elif row_label == "LAMP VIS":
+            v = r["LAMP_vis_sm"]
+            if v is not None and not pd.isna(v) and v < vis_thr:
+                return red
+        # Ceiling rows (skip if unlimited)
+        elif row_label == "NBM CIG":
+            c, u = r["NBM_cig_ft"], r["NBM_cig_unl"]
+            if u is not True and c is not None and not pd.isna(c) and c < cig_thr:
+                return red
+        elif row_label == "LAMP CIG":
+            c, u = r["LAMP_cig_ft"], r["LAMP_cig_unl"]
+            if u is not True and c is not None and not pd.isna(c) and c < cig_thr:
+                return red
+        # Wind rows (speed OR gust)
+        elif row_label == "NBM Wind":
+            s, g = r["NBM_wind_spd"], r["NBM_wind_gst"]
+            for w in (s, g):
+                if w is not None and not pd.isna(w) and w > wind_thr:
+                    return red
+        elif row_label == "LAMP Wind":
+            s, g = r["LAMP_wind_spd"], r["LAMP_wind_gst"]
+            for w in (s, g):
+                if w is not None and not pd.isna(w) and w > wind_thr:
+                    return red
+        return ""
 
-    styled = display.style.apply(
-        lambda s: pd.DataFrame(
-            [_highlight_row(i) for i in range(len(display))],
-            columns=display.columns,
-            index=display.index,
-        ),
-        axis=None,
-    )
+    # Apply the styling
+    def _style_dataframe(df_to_style):
+        styles = pd.DataFrame(
+            "", index=df_to_style.index, columns=df_to_style.columns
+        )
+        for row_label in df_to_style.index:
+            for col_idx, col_name in enumerate(df_to_style.columns):
+                styles.loc[row_label, col_name] = _cell_style(row_label, col_idx)
+        return styles
 
-    st.dataframe(styled, use_container_width=True, hide_index=True, height=600)
+    styled = display.style.apply(_style_dataframe, axis=None)
+
+    st.dataframe(styled, use_container_width=True, height=350)
 
     # CSV download
     csv = display.to_csv(index=False).encode("utf-8")
