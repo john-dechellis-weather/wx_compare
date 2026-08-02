@@ -15,3 +15,4 @@ h5py>=3.10
 netCDF4>=1.6
 metpy>=1.6
 siphon>=0.9
+nexradaws>=3.0

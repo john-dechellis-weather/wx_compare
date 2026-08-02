@@ -1,9 +1,8 @@
-"""Archive Radar Position — aircraft location on archived NEXRAD radar.
+"""Archive Radar Position — aircraft location on archived NEXRAD Level II radar.
 
-Single-frame mode (default) or Loop mode: fetch all scans in a
-15/30/60-minute window from the start time and scrub through them
-with a frame slider. Loop results are kept in session_state so the
-slider works without refetching.
+Data from the AWS public Level II archive (full history). Single-frame
+mode or Loop mode with a frame slider. Loop results are kept in
+session_state so the slider works without refetching.
 """
 from __future__ import annotations
 
@@ -76,22 +75,22 @@ def cached_render_loop(
 # UI
 # ---------------------------------------------------------------------------
 st.title("Archive Radar Position")
-st.caption("Plot aircraft position on archived NEXRAD Level III radar imagery.")
+st.caption("Plot aircraft position on archived NEXRAD Level II radar imagery.")
 
 with st.sidebar:
     st.header("Date & Time (UTC)")
     date_input = st.date_input(
         "Date",
         value=None,
-        min_value=datetime(2022, 1, 1).date(),
+        min_value=datetime(2020, 1, 1).date(),
         max_value=datetime.now(timezone.utc).date(),
-        help="Date of the aircraft event (UTC).",
+        help="Date of the aircraft event (UTC). Level II archive covers years back.",
     )
     time_input = st.time_input(
         "Time (UTC)",
         value=None,
         step=timedelta(minutes=5),
-        help="Nearest available radar scan will be used.",
+        help="The Level II volume nearest this time will be used.",
     )
 
     st.divider()
@@ -138,7 +137,7 @@ with st.sidebar:
     loop_mode = st.toggle(
         "Loop from start time",
         value=False,
-        help="Fetch all scans in a window starting at the selected time.",
+        help="Fetch all volumes in a window starting at the selected time.",
     )
     loop_duration = st.selectbox(
         "Loop duration (minutes)",
@@ -228,7 +227,8 @@ if run_button:
 
     if loop_mode:
         with st.spinner(
-            f"Fetching {loop_duration}-minute loop... this can take a minute."
+            f"Fetching {loop_duration}-minute Level II loop... "
+            "volumes are large, this can take a few minutes."
         ):
             try:
                 refl_frames, vel_frames = cached_render_loop(
@@ -248,10 +248,9 @@ if run_button:
             "vel_frames": vel_frames,
             "meta": meta,
         }
-        # Drop any stale single-frame result
         st.session_state.pop("radar_single", None)
     else:
-        with st.spinner("Fetching NEXRAD data and rendering plots..."):
+        with st.spinner("Fetching Level II volume and rendering plots..."):
             try:
                 refl_png, vel_png, refl_time, vel_time = cached_render_single(
                     request_time_iso=request_time.isoformat(),
@@ -296,18 +295,18 @@ if "radar_loop" in st.session_state:
     n = len(refl_frames)
     if n == 1:
         idx = 0
-        st.caption("Only one frame available in this window.")
+        st.caption("Only one volume available in this window.")
     else:
         idx = st.slider(
             "Frame",
             min_value=0,
             max_value=n - 1,
             value=0,
-            help="Scrub through the radar scans chronologically.",
+            help="Scrub through the radar volumes chronologically.",
         )
 
     refl_png, refl_name = refl_frames[idx]
-    st.subheader("Base Reflectivity (N0B)")
+    st.subheader("Base Reflectivity (0.5°)")
     st.caption(f"Frame {idx + 1} of {n}  ·  `{refl_name}`")
     st.image(refl_png, use_container_width=True)
     st.download_button(
@@ -318,7 +317,7 @@ if "radar_loop" in st.session_state:
         key="dl_refl_loop",
     )
 
-    st.subheader("Base Velocity")
+    st.subheader("Base Velocity (0.5°)")
     if vel_frames:
         v_idx = min(idx, len(vel_frames) - 1)
         vel_png, vel_name = vel_frames[v_idx]
@@ -332,7 +331,7 @@ if "radar_loop" in st.session_state:
             key="dl_vel_loop",
         )
     else:
-        st.warning("Velocity product not available for this radar/time window.")
+        st.warning("Velocity not available in this window.")
 
 elif "radar_single" in st.session_state:
     data = st.session_state["radar_single"]
@@ -348,8 +347,8 @@ elif "radar_single" in st.session_state:
         f"Radar: **K{station_code}**"
     )
 
-    st.subheader("Base Reflectivity (N0B)")
-    st.caption(f"Dataset: `{data['refl_time']}`")
+    st.subheader("Base Reflectivity (0.5°)")
+    st.caption(f"Volume: `{data['refl_time']}`")
     st.image(data["refl_png"], use_container_width=True)
     st.download_button(
         label="Download Reflectivity PNG",
@@ -359,8 +358,8 @@ elif "radar_single" in st.session_state:
         key="dl_refl",
     )
 
-    st.subheader("Base Velocity")
-    st.caption(f"Dataset: `{data['vel_time']}`")
+    st.subheader("Base Velocity (0.5°)")
+    st.caption(f"Volume: `{data['vel_time']}`")
     if data["vel_png"]:
         st.image(data["vel_png"], use_container_width=True)
         st.download_button(
@@ -371,29 +370,30 @@ elif "radar_single" in st.session_state:
             key="dl_vel",
         )
     else:
-        st.warning("Velocity product not available for this radar/time.")
+        st.warning("Velocity not available in this volume.")
 
 else:
     st.info(
         "Fill in date/time, position, callsign, and radar station in the sidebar, "
         "then click **Fetch & Render**. Turn on **Loop** to fetch a window of "
-        "scans and scrub through them."
+        "volumes and scrub through them."
     )
     st.markdown(
         """
         ### About
 
-        This page displays aircraft position overlaid on archived NEXRAD
-        Level III radar imagery — useful for forensic weather analysis of
-        past events involving convective weather or turbulence.
+        Aircraft position overlaid on archived **NEXRAD Level II** radar —
+        the full-resolution archive going back years, ideal for forensic
+        weather analysis of past events.
 
-        - **Base Reflectivity (N0B)** — Radar echo intensity at the lowest
-          tilt (0.5°). Shows where precipitation is falling.
-        - **Base Velocity** — Doppler radial velocity at the lowest tilt.
-          Green = motion away from radar, red = motion toward radar.
-        - **Loop mode** — Fetches every scan in a 15/30/60-minute window
-          from the start time. Use the frame slider to scrub through scans
-          (typical cadence 5-10 minutes, so a 30-minute loop is ~4-7 frames).
+        - **Base Reflectivity (0.5°)** — Echo intensity at the lowest tilt.
+        - **Base Velocity (0.5°)** — Doppler radial velocity in knots.
+          Green = away from radar, red = toward radar. (Raw velocity may
+          show aliasing in strong wind regimes.)
+        - **Loop mode** — Fetches every volume in a 15/30/60-minute window
+          (typical cadence 4-10 minutes). Level II volumes are large, so a
+          long loop can take a few minutes on first fetch; results are
+          cached for 24 hours.
 
         Choose a radar site within ~250 km of the aircraft position, and
         note that clear weather legitimately shows no echoes.

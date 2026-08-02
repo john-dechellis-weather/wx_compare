@@ -1,22 +1,25 @@
-"""NEXRAD Level III radar fetching and plot rendering.
+"""NEXRAD Level II radar fetching and plot rendering.
 
-Uses siphon to query UCAR's THREDDS server, metpy to decode NIDS,
-and matplotlib+cartopy for rendering.
+Data source: AWS public archive (noaa-nexrad-level2) via nexradaws —
+full history back to 1991, no credentials needed.
 
-Single-frame mode: fetch nearest N0B (reflectivity) + best-available
-velocity product (N0U/N0V/NBU/N0S).
+Each Level II volume contains BOTH reflectivity and velocity, so both
+plots come from the same downloaded file (no product-code fallbacks).
 
-Loop mode: fetch ALL frames in a time window for both products,
-returned as lists of (png_bytes, dataset_name) sorted by time.
+Decode: metpy Level2File. Reflectivity from the lowest surveillance
+sweep (0.5° CS), velocity from the lowest Doppler sweep (0.5° CD).
+Velocity is converted from m/s to knots for aviation use.
 """
 from __future__ import annotations
 
 import io
+import shutil
+import tempfile
 from datetime import datetime, timedelta
 
 import numpy as np
 
-_VELOCITY_PRODUCTS = ["N0U", "N0V", "NBU", "N0S"]
+_MS_TO_KT = 1.94384
 
 
 # ---------------------------------------------------------------------------
@@ -30,30 +33,30 @@ def fetch_and_render_radar(
     station: str,
     zoom_deg: float,
 ) -> tuple[bytes, bytes, str, str]:
-    """Fetch NEXRAD reflectivity + velocity for one time, render both.
+    """Fetch the Level II volume nearest target_time, render REF + VEL.
 
     Returns (reflectivity_png, velocity_png_or_empty, refl_time, vel_time).
     """
-    rs = _get_radar_server()
-
-    refl_png, refl_time = _fetch_single(
-        rs, target_time, aircraft_lat, aircraft_lon, callsign, station,
-        "N0B", zoom_deg, "Base Reflectivity", "Reflectivity (dBZ)",
+    scans = _find_scans(
+        station,
+        target_time - timedelta(minutes=20),
+        target_time + timedelta(minutes=20),
     )
+    if not scans:
+        raise ValueError(
+            f"No Level II volumes found for {_station4(station)} within "
+            f"20 minutes of {target_time:%Y-%m-%d %H:%M UTC}."
+        )
 
-    vel_png = b""
-    vel_time = "not available"
-    for vp in _VELOCITY_PRODUCTS:
-        try:
-            vel_png, vel_time = _fetch_single(
-                rs, target_time, aircraft_lat, aircraft_lon, callsign, station,
-                vp, zoom_deg, f"Base Velocity ({vp})", "Velocity (kt)",
-            )
-            break
-        except Exception:
-            continue
+    # Pick the scan closest to the requested time
+    tgt = target_time.replace(tzinfo=None)
+    best = min(scans, key=lambda s: abs(s.scan_time.replace(tzinfo=None) - tgt))
 
-    return refl_png, vel_png, refl_time, vel_time
+    refl_png, vel_png, name = _download_and_render(
+        best, aircraft_lat, aircraft_lon, callsign, station, zoom_deg
+    )
+    vel_time = name if vel_png else "not available"
+    return refl_png, vel_png, name, vel_time
 
 
 # ---------------------------------------------------------------------------
@@ -68,39 +71,38 @@ def fetch_and_render_radar_loop(
     station: str,
     zoom_deg: float,
 ) -> tuple[list[tuple[bytes, str]], list[tuple[bytes, str]]]:
-    """Fetch all frames from start_time to start_time + duration_min.
+    """Fetch all Level II volumes in [start, start+duration], render each.
 
     Returns (refl_frames, vel_frames), each a list of
-    (png_bytes, dataset_name) sorted chronologically. vel_frames may be
-    an empty list if no velocity product is available.
+    (png_bytes, name) sorted chronologically.
     """
-    rs = _get_radar_server()
-
-    # siphon prefers naive UTC datetimes
     start = start_time.replace(tzinfo=None)
     end = start + timedelta(minutes=duration_min)
 
-    refl_frames = _fetch_range(
-        rs, start, end, aircraft_lat, aircraft_lon, callsign, station,
-        "N0B", zoom_deg, "Base Reflectivity", "Reflectivity (dBZ)",
-    )
-    if not refl_frames:
+    scans = _find_scans(station, start, end)
+    if not scans:
         raise ValueError(
-            f"No N0B frames found for {station} between "
+            f"No Level II volumes found for {_station4(station)} between "
             f"{start:%Y-%m-%d %H:%M} and {end:%H:%M UTC}."
         )
 
+    scans.sort(key=lambda s: s.scan_time)
+
+    refl_frames: list[tuple[bytes, str]] = []
     vel_frames: list[tuple[bytes, str]] = []
-    for vp in _VELOCITY_PRODUCTS:
+    for scan in scans:
         try:
-            vel_frames = _fetch_range(
-                rs, start, end, aircraft_lat, aircraft_lon, callsign, station,
-                vp, zoom_deg, f"Base Velocity ({vp})", "Velocity (kt)",
+            refl_png, vel_png, name = _download_and_render(
+                scan, aircraft_lat, aircraft_lon, callsign, station, zoom_deg
             )
         except Exception:
-            vel_frames = []
-        if vel_frames:
-            break
+            continue
+        refl_frames.append((refl_png, name))
+        if vel_png:
+            vel_frames.append((vel_png, name))
+
+    if not refl_frames:
+        raise ValueError("All volumes in the window failed to decode/render.")
 
     return refl_frames, vel_frames
 
@@ -108,70 +110,96 @@ def fetch_and_render_radar_loop(
 # ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
-def _get_radar_server():
-    from siphon.radarserver import RadarServer, get_radarserver_datasets
-
-    base_server = "https://thredds.ucar.edu/thredds/"
-    datasets = get_radarserver_datasets(base_server)
-    radar_ref = datasets["NEXRAD Level III Radar from IDD"]
-    return RadarServer(radar_ref.follow().catalog_url)
+def _station4(station: str) -> str:
+    """Level II uses 4-letter IDs (KDIX). Re-add K if the page stripped it."""
+    s = station.strip().upper()
+    return s if len(s) == 4 else "K" + s
 
 
-def _fetch_single(
-    rs, target_time, aircraft_lat, aircraft_lon, callsign, station,
-    product, zoom_deg, title_prefix, cbar_label,
-) -> tuple[bytes, str]:
-    """Fetch one product at one time. Raises on missing dataset."""
-    query = rs.query()
-    query.stations(station).time(target_time).variables(product)
-    catalog = rs.get_catalog(query)
-    matches = list(catalog.datasets.values())
+def _find_scans(station: str, start: datetime, end: datetime):
+    """List available Level II volumes for a station in a naive-UTC window."""
+    import nexradaws
 
-    if not matches:
-        raise ValueError(
-            f"No {product} dataset found for {station} at "
-            f"{target_time:%Y-%m-%d %H:%M UTC}."
+    conn = nexradaws.NexradAwsInterface()
+    scans = conn.get_avail_scans_in_range(
+        start.replace(tzinfo=None), end.replace(tzinfo=None), _station4(station)
+    )
+    # Skip MDM (metadata) files
+    return [s for s in scans if "MDM" not in s.filename]
+
+
+def _download_and_render(
+    scan, aircraft_lat, aircraft_lon, callsign, station, zoom_deg
+) -> tuple[bytes, bytes, str]:
+    """Download one volume, render REF and VEL. Returns (ref_png, vel_png, name)."""
+    import nexradaws
+    from metpy.io import Level2File
+
+    conn = nexradaws.NexradAwsInterface()
+    tmpdir = tempfile.mkdtemp(prefix="nexrad_l2_")
+    try:
+        results = conn.download(scan, tmpdir)
+        success = list(results.iter_success())
+        if not success:
+            raise ValueError(f"Download failed for {scan.filename}.")
+
+        f = Level2File(success[0].filepath)
+
+        # Radar location from the message-31 header of the first ray
+        radar_lat = float(f.sweeps[0][0][1].lat)
+        radar_lon = float(f.sweeps[0][0][1].lon)
+
+        name = scan.filename
+
+        # Reflectivity — lowest sweep containing REF
+        az, rng_m, data = _extract_moment(f, b"REF")
+        refl_png = _render_sweep(
+            az, rng_m, data, radar_lat, radar_lon,
+            aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
+            product="REF", title_prefix="Base Reflectivity (0.5°)",
+            cbar_label="Reflectivity (dBZ)", volume_name=name,
         )
 
-    dataset = matches[0]
-    return _render_dataset(
-        dataset, aircraft_lat, aircraft_lon, callsign, station,
-        product, zoom_deg, title_prefix, cbar_label, target_time,
-    )
-
-
-def _fetch_range(
-    rs, start, end, aircraft_lat, aircraft_lon, callsign, station,
-    product, zoom_deg, title_prefix, cbar_label,
-) -> list[tuple[bytes, str]]:
-    """Fetch all scans of a product in [start, end]. Returns sorted frames."""
-    query = rs.query()
-    query.stations(station).time_range(start, end).variables(product)
-    catalog = rs.get_catalog(query)
-
-    frames: list[tuple[bytes, str]] = []
-    # Dataset names contain timestamps -> lexicographic sort is chronological
-    for name in sorted(catalog.datasets):
-        dataset = catalog.datasets[name]
+        # Velocity — lowest sweep containing VEL (converted to knots)
+        vel_png = b""
         try:
-            png, tstr = _render_dataset(
-                dataset, aircraft_lat, aircraft_lon, callsign, station,
-                product, zoom_deg, title_prefix, cbar_label, start,
+            az_v, rng_v, data_v = _extract_moment(f, b"VEL")
+            data_v = data_v * _MS_TO_KT
+            vel_png = _render_sweep(
+                az_v, rng_v, data_v, radar_lat, radar_lon,
+                aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
+                product="VEL", title_prefix="Base Velocity (0.5°)",
+                cbar_label="Velocity (kt)", volume_name=name,
             )
-            frames.append((png, tstr))
         except Exception:
-            continue
-    return frames
+            vel_png = b""
+
+        return refl_png, vel_png, name
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def _render_dataset(
-    dataset, aircraft_lat, aircraft_lon, callsign, station,
-    product, zoom_deg, title_prefix, cbar_label, target_time,
-) -> tuple[bytes, str]:
-    """Download a NIDS dataset and render it to PNG bytes."""
-    from io import BytesIO
-    from urllib.request import urlopen
-    from metpy.io import Level3File
+def _extract_moment(f, moment: bytes):
+    """Pull (azimuths_deg, ranges_m, data) for the lowest sweep with moment."""
+    for sweep in f.sweeps:
+        if moment in sweep[0][4]:
+            az = np.array([ray[0].az_angle for ray in sweep])
+            hdr = sweep[0][4][moment][0]
+            rng_m = np.arange(hdr.num_gates) * hdr.gate_width + hdr.first_gate
+            data = np.array(
+                [ray[4][moment][1] for ray in sweep], dtype=float
+            )
+            data = np.ma.masked_invalid(data)
+            return az, rng_m, data
+    raise ValueError(f"Moment {moment!r} not found in any sweep.")
+
+
+def _render_sweep(
+    az, rng_m, data, radar_lat, radar_lon,
+    aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
+    product, title_prefix, cbar_label, volume_name,
+) -> bytes:
+    """Render one sweep to PNG bytes with the shared BlueMet radar styling."""
     from metpy.calc import azimuth_range_to_lat_lon
     from metpy.plots import colortables
     from metpy.units import units
@@ -181,35 +209,22 @@ def _render_dataset(
     import cartopy.crs as ccrs
     import cartopy.feature as cfeature
 
-    actual_time_str = dataset.name
+    valid_frac = 1.0 - float(np.ma.getmaskarray(data).mean())
 
-    nids_url = dataset.access_urls["HTTPServer"]
-    with urlopen(nids_url) as resp:
-        raw = resp.read()
-
-    f = Level3File(BytesIO(raw))
-
-    datadict = f.sym_block[0][0]
-    radar_data = f.map_data(datadict["data"])
-    valid_frac = 1.0 - float(np.ma.getmaskarray(radar_data).mean())
-
-    az = units.Quantity(
-        np.array(datadict["start_az"] + [datadict["end_az"][-1]]),
-        "degrees",
-    )
-    rng = units.Quantity(
-        np.linspace(0, f.max_range, radar_data.shape[-1] + 1),
-        "kilometers",
+    lon_grid, lat_grid = azimuth_range_to_lat_lon(
+        units.Quantity(az, "degrees"),
+        units.Quantity(rng_m, "meters"),
+        radar_lon,
+        radar_lat,
     )
 
-    lon_grid, lat_grid = azimuth_range_to_lat_lon(az, rng, f.lon, f.lat)
-
-    if product == "N0B":
+    if product == "REF":
         norm, cmap = colortables.get_with_steps(
             "NWSStormClearReflectivity", -20, 0.5
         )
     else:
-        norm, cmap = colortables.get_with_steps("NWS8bitVel", -64, 1.0)
+        # ±64 kt span using the NWS velocity table
+        norm, cmap = colortables.get_with_steps("NWS8bitVel", -64, 0.5)
 
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
@@ -227,7 +242,7 @@ def _render_dataset(
     mesh = ax.pcolormesh(
         lon_grid,
         lat_grid,
-        radar_data,
+        data,
         cmap=cmap,
         norm=norm,
         shading="auto",
@@ -282,8 +297,8 @@ def _render_dataset(
 
     echo_note = "" if valid_frac > 0.01 else "  ·  NO ECHOES DETECTED (clear)"
     ax.set_title(
-        f"K{station} {title_prefix}{echo_note}\n"
-        f"Radar: {f.lat:.2f}°, {f.lon:.2f}°  ·  {dataset.name}"
+        f"{_station4(station)} {title_prefix}{echo_note}\n"
+        f"Radar: {radar_lat:.2f}°, {radar_lon:.2f}°  ·  {volume_name}"
     )
 
     plt.colorbar(mesh, ax=ax, pad=0.02, label=cbar_label, shrink=0.8)
@@ -294,4 +309,4 @@ def _render_dataset(
     fig.savefig(buf, format="png", dpi=100)
     plt.close(fig)
     buf.seek(0)
-    return buf.getvalue(), actual_time_str
+    return buf.getvalue()
