@@ -131,31 +131,42 @@ def _safe_get(row, col):
 # Display formatting
 # ---------------------------------------------------------------------------
 def _fmt_vis(v):
+    """Compact decimal visibility: '0.5', '1', '1.5', '3', '10'."""
     if v is None or pd.isna(v):
         return "—"
-    return f"{v:.1f} sm"
+    # Whole numbers show without decimal
+    if v == int(v):
+        return f"{int(v)}"
+    return f"{v:g}"
 
 
 def _fmt_cig(cig, unl):
+    """Ceiling as 3-digit hundreds: '008', '025', '100', 'UNL'."""
     if unl is True:
         return "UNL"
     if cig is None or pd.isna(cig):
         return "—"
-    return f"{cig:.0f} ft"
+    hundreds = int(round(cig / 100))
+    return f"{hundreds:03d}"
 
 
 def _fmt_wind(dir_deg, spd_kt, gst_kt):
+    """METAR-style wind: '18012KT' or '18012G26KT'."""
     if spd_kt is None or pd.isna(spd_kt):
         return "—"
-    parts = []
+    # Direction
     if dir_deg is not None and not pd.isna(dir_deg):
-        parts.append(f"{int(dir_deg):03d}°")
+        d = f"{int(dir_deg):03d}"
     else:
-        parts.append("---°")
-    parts.append(f"@ {int(spd_kt):02d} kt")
+        d = "VRB"
+    # Sustained
+    s = f"{int(spd_kt):02d}"
+    # Gust (optional)
     if gst_kt is not None and not pd.isna(gst_kt):
-        parts.append(f"G{int(gst_kt):02d}")
-    return " ".join(parts)
+        g = f"G{int(gst_kt):02d}"
+    else:
+        g = ""
+    return f"{d}{s}{g}KT"
 
 
 def _fmt_time(t):
@@ -333,7 +344,7 @@ if run_button:
     def _cell_style(row_label, col_idx):
         """Return CSS for one cell based on its (row_label, col_idx)."""
         r = df_clipped.iloc[col_idx]
-        red = "background-color: #FFCCCC; color: #000000;"
+        red = "background-color: #660000; color: #FFFF00;"
         # Visibility rows
         if row_label == "NBM VIS":
             v = r["NBM_vis_sm"]
@@ -375,7 +386,34 @@ if run_button:
                 styles.loc[row_label, col_name] = _cell_style(row_label, col_idx)
         return styles
 
+    # Terminal aesthetic: green on black
+    # Highlighted cells use amber/red for contrast
     styled = display.style.apply(_style_dataframe, axis=None)
+    styled = styled.set_properties(**{
+        "background-color": "#000000",
+        "color": "#00FF00",
+        "font-family": "Courier New, monospace",
+        "font-size": "12px",
+        "text-align": "center",
+        "padding": "2px 6px",
+    })
+    styled = styled.set_table_styles([
+        {"selector": "th",
+         "props": [
+             ("background-color", "#000000"),
+             ("color", "#00FF00"),
+             ("font-family", "Courier New, monospace"),
+             ("font-size", "12px"),
+             ("font-weight", "bold"),
+             ("text-align", "center"),
+             ("padding", "2px 6px"),
+             ("border", "1px solid #003300"),
+         ]},
+        {"selector": "td",
+         "props": [
+             ("border", "1px solid #003300"),
+         ]},
+    ])
 
     st.dataframe(styled, use_container_width=True, height=350)
 
