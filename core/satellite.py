@@ -8,6 +8,30 @@ from typing import Optional
 
 import numpy as np
 
+from matplotlib.colors import LinearSegmentedColormap
+
+
+def _make_nws_ir_cmap():
+    """NWS Enhanced IR scheme — grayscale for warm surface, distinct
+    colored bands for cold cloud tops."""
+    colors = [
+        (180, "#FFFFFF"),   # coldest = white
+        (200, "#B22222"),   # firebrick
+        (210, "#FF0000"),   # red
+        (220, "#FFA500"),   # orange
+        (230, "#FFFF00"),   # yellow
+        (240, "#008000"),   # green
+        (250, "#0000FF"),   # blue
+        (260, "#800080"),   # purple
+        (270, "#404040"),   # dark gray
+        (330, "#E8E8E8"),   # light gray (warm surface)
+    ]
+    temps, hex_colors = zip(*colors)
+    positions = [(t - 180) / (330 - 180) for t in temps]
+    return LinearSegmentedColormap.from_list("nws_ir", list(zip(positions, hex_colors)))
+
+
+NWS_IR_CMAP = _make_nws_ir_cmap()
 
 _ZOOM_PAD_METERS = 350_000
 
@@ -160,7 +184,7 @@ def render_infrared(
         origin="upper",
         extent=[x.min(), x.max(), y.min(), y.max()],
         transform=geos_crs,
-        cmap="Greys",   # Simple grayscale — no fancy colormap
+        cmap=NWS_IR_CMAP,
         vmin=180,
         vmax=330,
     )
