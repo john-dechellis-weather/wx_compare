@@ -289,7 +289,7 @@ if run_button:
     for t in times:
         tstr = pd.to_datetime(t).strftime("%m/%d<br>%HZ")
         header_cells.append(
-            f'<th style="background:#002200;color:#FFFFFF !important;'
+            f'<th style="background:#FFFFFF;color:#FFFFFF !important;'
             f'font-family:Courier New,monospace;font-size:9px;font-weight:bold;'
             f'padding:2px 3px;text-align:center;border:1px solid #003300;'
             f'white-space:nowrap;min-width:38px;max-width:38px;">{tstr}</th>'
