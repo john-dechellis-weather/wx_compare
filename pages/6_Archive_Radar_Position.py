@@ -1,4 +1,10 @@
-"""Archive Radar Position — plot aircraft location on archived NEXRAD radar."""
+"""Archive Radar Position — aircraft location on archived NEXRAD radar.
+
+Single-frame mode (default) or Loop mode: fetch all scans in a
+15/30/60-minute window from the start time and scrub through them
+with a frame slider. Loop results are kept in session_state so the
+slider works without refetching.
+"""
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
@@ -17,8 +23,11 @@ from auth import check_password
 check_password()
 
 
+# ---------------------------------------------------------------------------
+# Cached fetchers
+# ---------------------------------------------------------------------------
 @st.cache_data(ttl=86400, show_spinner=False, max_entries=10)
-def cached_render(
+def cached_render_single(
     request_time_iso: str,
     aircraft_lat: float,
     aircraft_lon: float,
@@ -39,6 +48,33 @@ def cached_render(
     )
 
 
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=5)
+def cached_render_loop(
+    request_time_iso: str,
+    duration_min: int,
+    aircraft_lat: float,
+    aircraft_lon: float,
+    callsign: str,
+    station: str,
+    zoom_deg: float,
+) -> tuple[list[tuple[bytes, str]], list[tuple[bytes, str]]]:
+    from core.radar import fetch_and_render_radar_loop
+
+    request_time = datetime.fromisoformat(request_time_iso)
+    return fetch_and_render_radar_loop(
+        start_time=request_time,
+        duration_min=duration_min,
+        aircraft_lat=aircraft_lat,
+        aircraft_lon=aircraft_lon,
+        callsign=callsign,
+        station=station,
+        zoom_deg=zoom_deg,
+    )
+
+
+# ---------------------------------------------------------------------------
+# UI
+# ---------------------------------------------------------------------------
 st.title("Archive Radar Position")
 st.caption("Plot aircraft position on archived NEXRAD Level III radar imagery.")
 
@@ -98,6 +134,20 @@ with st.sidebar:
     )
 
     st.divider()
+    st.header("Loop")
+    loop_mode = st.toggle(
+        "Loop from start time",
+        value=False,
+        help="Fetch all scans in a window starting at the selected time.",
+    )
+    loop_duration = st.selectbox(
+        "Loop duration (minutes)",
+        options=[15, 30, 60],
+        index=1,
+        disabled=not loop_mode,
+    )
+
+    st.divider()
     run_button = st.button("Fetch & Render", type="primary", use_container_width=True)
 
     st.divider()
@@ -116,6 +166,9 @@ with st.sidebar:
     )
 
 
+# ---------------------------------------------------------------------------
+# Fetch on click
+# ---------------------------------------------------------------------------
 if run_button:
     errors = []
     if date_input is None:
@@ -165,45 +218,154 @@ if run_button:
 
     callsign = callsign_input.strip() or "AIRCRAFT"
 
+    meta = {
+        "request_time": request_time,
+        "aircraft_lat": aircraft_lat,
+        "aircraft_lon": aircraft_lon,
+        "callsign": callsign,
+        "station_code": station_code,
+    }
+
+    if loop_mode:
+        with st.spinner(
+            f"Fetching {loop_duration}-minute loop... this can take a minute."
+        ):
+            try:
+                refl_frames, vel_frames = cached_render_loop(
+                    request_time_iso=request_time.isoformat(),
+                    duration_min=int(loop_duration),
+                    aircraft_lat=aircraft_lat,
+                    aircraft_lon=aircraft_lon,
+                    callsign=callsign,
+                    station=station_code,
+                    zoom_deg=zoom_input,
+                )
+            except Exception as e:
+                st.error(f"Failed to fetch loop: {e}")
+                st.stop()
+        st.session_state["radar_loop"] = {
+            "refl_frames": refl_frames,
+            "vel_frames": vel_frames,
+            "meta": meta,
+        }
+        # Drop any stale single-frame result
+        st.session_state.pop("radar_single", None)
+    else:
+        with st.spinner("Fetching NEXRAD data and rendering plots..."):
+            try:
+                refl_png, vel_png, refl_time, vel_time = cached_render_single(
+                    request_time_iso=request_time.isoformat(),
+                    aircraft_lat=aircraft_lat,
+                    aircraft_lon=aircraft_lon,
+                    callsign=callsign,
+                    station=station_code,
+                    zoom_deg=zoom_input,
+                )
+            except Exception as e:
+                st.error(f"Failed to fetch/render: {e}")
+                st.stop()
+        st.session_state["radar_single"] = {
+            "refl_png": refl_png,
+            "vel_png": vel_png,
+            "refl_time": refl_time,
+            "vel_time": vel_time,
+            "meta": meta,
+        }
+        st.session_state.pop("radar_loop", None)
+
+
+# ---------------------------------------------------------------------------
+# Display from session state (survives slider reruns)
+# ---------------------------------------------------------------------------
+if "radar_loop" in st.session_state:
+    data = st.session_state["radar_loop"]
+    refl_frames = data["refl_frames"]
+    vel_frames = data["vel_frames"]
+    meta = data["meta"]
+    request_time = meta["request_time"]
+    callsign = meta["callsign"]
+    station_code = meta["station_code"]
+
+    st.info(
+        f"Loop start: **{request_time:%Y-%m-%d %H:%M UTC}**  ·  "
+        f"Position: **{meta['aircraft_lat']:.4f}°, {meta['aircraft_lon']:.4f}°**  ·  "
+        f"Radar: **K{station_code}**  ·  "
+        f"Frames: **{len(refl_frames)}** reflectivity, **{len(vel_frames)}** velocity"
+    )
+
+    n = len(refl_frames)
+    if n == 1:
+        idx = 0
+        st.caption("Only one frame available in this window.")
+    else:
+        idx = st.slider(
+            "Frame",
+            min_value=0,
+            max_value=n - 1,
+            value=0,
+            help="Scrub through the radar scans chronologically.",
+        )
+
+    refl_png, refl_name = refl_frames[idx]
+    st.subheader("Base Reflectivity (N0B)")
+    st.caption(f"Frame {idx + 1} of {n}  ·  `{refl_name}`")
+    st.image(refl_png, use_container_width=True)
+    st.download_button(
+        label="Download this Reflectivity frame",
+        data=refl_png,
+        file_name=f"radar_refl_{callsign}_K{station_code}_frame{idx + 1}.png",
+        mime="image/png",
+        key="dl_refl_loop",
+    )
+
+    st.subheader("Base Velocity")
+    if vel_frames:
+        v_idx = min(idx, len(vel_frames) - 1)
+        vel_png, vel_name = vel_frames[v_idx]
+        st.caption(f"Frame {v_idx + 1} of {len(vel_frames)}  ·  `{vel_name}`")
+        st.image(vel_png, use_container_width=True)
+        st.download_button(
+            label="Download this Velocity frame",
+            data=vel_png,
+            file_name=f"radar_vel_{callsign}_K{station_code}_frame{v_idx + 1}.png",
+            mime="image/png",
+            key="dl_vel_loop",
+        )
+    else:
+        st.warning("Velocity product not available for this radar/time window.")
+
+elif "radar_single" in st.session_state:
+    data = st.session_state["radar_single"]
+    meta = data["meta"]
+    request_time = meta["request_time"]
+    callsign = meta["callsign"]
+    station_code = meta["station_code"]
+
     st.info(
         f"Requested: **{request_time:%Y-%m-%d %H:%M UTC}**  ·  "
-        f"Position: **{aircraft_lat:.4f}°, {aircraft_lon:.4f}°**  ·  "
+        f"Position: **{meta['aircraft_lat']:.4f}°, {meta['aircraft_lon']:.4f}°**  ·  "
         f"Callsign: **{callsign}**  ·  "
         f"Radar: **K{station_code}**"
     )
 
-    with st.spinner("Fetching NEXRAD data and rendering plots..."):
-        try:
-            refl_png, vel_png, refl_time, vel_time = cached_render(
-                request_time_iso=request_time.isoformat(),
-                aircraft_lat=aircraft_lat,
-                aircraft_lon=aircraft_lon,
-                callsign=callsign,
-                station=station_code,
-                zoom_deg=zoom_input,
-            )
-        except Exception as e:
-            st.error(f"Failed to fetch/render: {e}")
-            st.stop()
-
     st.subheader("Base Reflectivity (N0B)")
-    st.caption(f"Dataset: `{refl_time}`")
-    st.image(refl_png, use_container_width=True)
+    st.caption(f"Dataset: `{data['refl_time']}`")
+    st.image(data["refl_png"], use_container_width=True)
     st.download_button(
         label="Download Reflectivity PNG",
-        data=refl_png,
+        data=data["refl_png"],
         file_name=f"radar_refl_{callsign}_K{station_code}_{request_time:%Y%m%d_%H%M}Z.png",
         mime="image/png",
         key="dl_refl",
     )
 
     st.subheader("Base Velocity")
-    st.caption(f"Dataset: `{vel_time}`")
-    if vel_png:
-        st.image(vel_png, use_container_width=True)
+    st.caption(f"Dataset: `{data['vel_time']}`")
+    if data["vel_png"]:
+        st.image(data["vel_png"], use_container_width=True)
         st.download_button(
             label="Download Velocity PNG",
-            data=vel_png,
+            data=data["vel_png"],
             file_name=f"radar_vel_{callsign}_K{station_code}_{request_time:%Y%m%d_%H%M}Z.png",
             mime="image/png",
             key="dl_vel",
@@ -214,7 +376,8 @@ if run_button:
 else:
     st.info(
         "Fill in date/time, position, callsign, and radar station in the sidebar, "
-        "then click **Fetch & Render**."
+        "then click **Fetch & Render**. Turn on **Loop** to fetch a window of "
+        "scans and scrub through them."
     )
     st.markdown(
         """
@@ -224,16 +387,15 @@ else:
         Level III radar imagery — useful for forensic weather analysis of
         past events involving convective weather or turbulence.
 
-        Two plots are generated:
-
         - **Base Reflectivity (N0B)** — Radar echo intensity at the lowest
           tilt (0.5°). Shows where precipitation is falling.
         - **Base Velocity** — Doppler radial velocity at the lowest tilt.
           Green = motion away from radar, red = motion toward radar.
+        - **Loop mode** — Fetches every scan in a 15/30/60-minute window
+          from the start time. Use the frame slider to scrub through scans
+          (typical cadence 5-10 minutes, so a 30-minute loop is ~4-7 frames).
 
-        Both plots are centered on the aircraft position with a configurable
-        zoom. Radar data from UCAR's THREDDS archive, typical cadence
-        5-10 minutes. Choose a radar site within ~250 km of the aircraft
-        position, and note that clear weather legitimately shows no echoes.
+        Choose a radar site within ~250 km of the aircraft position, and
+        note that clear weather legitimately shows no echoes.
         """
     )

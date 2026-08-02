@@ -3,17 +3,25 @@
 Uses siphon to query UCAR's THREDDS server, metpy to decode NIDS,
 and matplotlib+cartopy for rendering.
 
-Fetches base reflectivity (N0B) and tries several velocity codes
-(N0U, N0V, NBU, N0S) since availability varies by radar site.
+Single-frame mode: fetch nearest N0B (reflectivity) + best-available
+velocity product (N0U/N0V/NBU/N0S).
+
+Loop mode: fetch ALL frames in a time window for both products,
+returned as lists of (png_bytes, dataset_name) sorted by time.
 """
 from __future__ import annotations
 
 import io
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import numpy as np
 
+_VELOCITY_PRODUCTS = ["N0U", "N0V", "NBU", "N0S"]
 
+
+# ---------------------------------------------------------------------------
+# Public API — single frame
+# ---------------------------------------------------------------------------
 def fetch_and_render_radar(
     target_time: datetime,
     aircraft_lat: float,
@@ -22,47 +30,24 @@ def fetch_and_render_radar(
     station: str,
     zoom_deg: float,
 ) -> tuple[bytes, bytes, str, str]:
-    """Fetch NEXRAD reflectivity + velocity, render both.
+    """Fetch NEXRAD reflectivity + velocity for one time, render both.
 
     Returns (reflectivity_png, velocity_png_or_empty, refl_time, vel_time).
     """
-    from siphon.radarserver import RadarServer, get_radarserver_datasets
+    rs = _get_radar_server()
 
-    base_server = "https://thredds.ucar.edu/thredds/"
-    datasets = get_radarserver_datasets(base_server)
-    radar_ref = datasets["NEXRAD Level III Radar from IDD"]
-    rs = RadarServer(radar_ref.follow().catalog_url)
-
-    # Reflectivity — required
-    refl_png, refl_time = _fetch_and_render_product(
-        rs=rs,
-        target_time=target_time,
-        aircraft_lat=aircraft_lat,
-        aircraft_lon=aircraft_lon,
-        callsign=callsign,
-        station=station,
-        product="N0B",
-        zoom_deg=zoom_deg,
-        title_prefix="Base Reflectivity",
-        cbar_label="Reflectivity (dBZ)",
+    refl_png, refl_time = _fetch_single(
+        rs, target_time, aircraft_lat, aircraft_lon, callsign, station,
+        "N0B", zoom_deg, "Base Reflectivity", "Reflectivity (dBZ)",
     )
 
-    # Velocity — try multiple product codes, fall back gracefully
     vel_png = b""
     vel_time = "not available"
-    for vel_product in ["N0U", "N0V", "NBU", "N0S"]:
+    for vp in _VELOCITY_PRODUCTS:
         try:
-            vel_png, vel_time = _fetch_and_render_product(
-                rs=rs,
-                target_time=target_time,
-                aircraft_lat=aircraft_lat,
-                aircraft_lon=aircraft_lon,
-                callsign=callsign,
-                station=station,
-                product=vel_product,
-                zoom_deg=zoom_deg,
-                title_prefix=f"Base Velocity ({vel_product})",
-                cbar_label="Velocity (kt)",
+            vel_png, vel_time = _fetch_single(
+                rs, target_time, aircraft_lat, aircraft_lon, callsign, station,
+                vp, zoom_deg, f"Base Velocity ({vp})", "Velocity (kt)",
             )
             break
         except Exception:
@@ -71,19 +56,119 @@ def fetch_and_render_radar(
     return refl_png, vel_png, refl_time, vel_time
 
 
-def _fetch_and_render_product(
-    rs,
-    target_time: datetime,
+# ---------------------------------------------------------------------------
+# Public API — loop
+# ---------------------------------------------------------------------------
+def fetch_and_render_radar_loop(
+    start_time: datetime,
+    duration_min: int,
     aircraft_lat: float,
     aircraft_lon: float,
     callsign: str,
     station: str,
-    product: str,
     zoom_deg: float,
-    title_prefix: str,
-    cbar_label: str,
+) -> tuple[list[tuple[bytes, str]], list[tuple[bytes, str]]]:
+    """Fetch all frames from start_time to start_time + duration_min.
+
+    Returns (refl_frames, vel_frames), each a list of
+    (png_bytes, dataset_name) sorted chronologically. vel_frames may be
+    an empty list if no velocity product is available.
+    """
+    rs = _get_radar_server()
+
+    # siphon prefers naive UTC datetimes
+    start = start_time.replace(tzinfo=None)
+    end = start + timedelta(minutes=duration_min)
+
+    refl_frames = _fetch_range(
+        rs, start, end, aircraft_lat, aircraft_lon, callsign, station,
+        "N0B", zoom_deg, "Base Reflectivity", "Reflectivity (dBZ)",
+    )
+    if not refl_frames:
+        raise ValueError(
+            f"No N0B frames found for {station} between "
+            f"{start:%Y-%m-%d %H:%M} and {end:%H:%M UTC}."
+        )
+
+    vel_frames: list[tuple[bytes, str]] = []
+    for vp in _VELOCITY_PRODUCTS:
+        try:
+            vel_frames = _fetch_range(
+                rs, start, end, aircraft_lat, aircraft_lon, callsign, station,
+                vp, zoom_deg, f"Base Velocity ({vp})", "Velocity (kt)",
+            )
+        except Exception:
+            vel_frames = []
+        if vel_frames:
+            break
+
+    return refl_frames, vel_frames
+
+
+# ---------------------------------------------------------------------------
+# Internals
+# ---------------------------------------------------------------------------
+def _get_radar_server():
+    from siphon.radarserver import RadarServer, get_radarserver_datasets
+
+    base_server = "https://thredds.ucar.edu/thredds/"
+    datasets = get_radarserver_datasets(base_server)
+    radar_ref = datasets["NEXRAD Level III Radar from IDD"]
+    return RadarServer(radar_ref.follow().catalog_url)
+
+
+def _fetch_single(
+    rs, target_time, aircraft_lat, aircraft_lon, callsign, station,
+    product, zoom_deg, title_prefix, cbar_label,
 ) -> tuple[bytes, str]:
-    """Fetch a single NEXRAD product and render its plot."""
+    """Fetch one product at one time. Raises on missing dataset."""
+    query = rs.query()
+    query.stations(station).time(target_time).variables(product)
+    catalog = rs.get_catalog(query)
+    matches = list(catalog.datasets.values())
+
+    if not matches:
+        raise ValueError(
+            f"No {product} dataset found for {station} at "
+            f"{target_time:%Y-%m-%d %H:%M UTC}."
+        )
+
+    dataset = matches[0]
+    return _render_dataset(
+        dataset, aircraft_lat, aircraft_lon, callsign, station,
+        product, zoom_deg, title_prefix, cbar_label, target_time,
+    )
+
+
+def _fetch_range(
+    rs, start, end, aircraft_lat, aircraft_lon, callsign, station,
+    product, zoom_deg, title_prefix, cbar_label,
+) -> list[tuple[bytes, str]]:
+    """Fetch all scans of a product in [start, end]. Returns sorted frames."""
+    query = rs.query()
+    query.stations(station).time_range(start, end).variables(product)
+    catalog = rs.get_catalog(query)
+
+    frames: list[tuple[bytes, str]] = []
+    # Dataset names contain timestamps -> lexicographic sort is chronological
+    for name in sorted(catalog.datasets):
+        dataset = catalog.datasets[name]
+        try:
+            png, tstr = _render_dataset(
+                dataset, aircraft_lat, aircraft_lon, callsign, station,
+                product, zoom_deg, title_prefix, cbar_label, start,
+            )
+            frames.append((png, tstr))
+        except Exception:
+            continue
+    return frames
+
+
+def _render_dataset(
+    dataset, aircraft_lat, aircraft_lon, callsign, station,
+    product, zoom_deg, title_prefix, cbar_label, target_time,
+) -> tuple[bytes, str]:
+    """Download a NIDS dataset and render it to PNG bytes."""
     from io import BytesIO
     from urllib.request import urlopen
     from metpy.io import Level3File
@@ -96,32 +181,16 @@ def _fetch_and_render_product(
     import cartopy.crs as ccrs
     import cartopy.feature as cfeature
 
-    # Query THREDDS
-    query = rs.query()
-    query.stations(station).time(target_time).variables(product)
-    catalog = rs.get_catalog(query)
-    matches = list(catalog.datasets.values())
-
-    if not matches:
-        raise ValueError(
-            f"No {product} dataset found for {station} at {target_time:%Y-%m-%d %H:%M UTC}."
-        )
-
-    dataset = matches[0]
     actual_time_str = dataset.name
 
-    # Fetch NIDS file
     nids_url = dataset.access_urls["HTTPServer"]
     with urlopen(nids_url) as resp:
         raw = resp.read()
 
     f = Level3File(BytesIO(raw))
 
-    # Decode data
     datadict = f.sym_block[0][0]
     radar_data = f.map_data(datadict["data"])
-
-    # Fraction of bins with real echo (for the no-echo note)
     valid_frac = 1.0 - float(np.ma.getmaskarray(radar_data).mean())
 
     az = units.Quantity(
@@ -135,7 +204,6 @@ def _fetch_and_render_product(
 
     lon_grid, lat_grid = azimuth_range_to_lat_lon(az, rng, f.lon, f.lat)
 
-    # Colortable
     if product == "N0B":
         norm, cmap = colortables.get_with_steps(
             "NWSStormClearReflectivity", -20, 0.5
@@ -143,7 +211,6 @@ def _fetch_and_render_product(
     else:
         norm, cmap = colortables.get_with_steps("NWS8bitVel", -64, 1.0)
 
-    # Build figure — extent set before plotting
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
 
@@ -167,7 +234,6 @@ def _fetch_and_render_product(
         transform=ccrs.PlateCarree(),
     )
 
-    # Features
     ax.coastlines(resolution="10m", color="black", linewidth=0.8)
     ax.add_feature(
         cfeature.BORDERS.with_scale("10m"),
@@ -181,7 +247,6 @@ def _fetch_and_render_product(
         facecolor="none",
     )
 
-    # Gridlines
     gl = ax.gridlines(
         crs=ccrs.PlateCarree(),
         draw_labels=True,
@@ -195,7 +260,6 @@ def _fetch_and_render_product(
     gl.xlabel_style = {"size": 9}
     gl.ylabel_style = {"size": 9}
 
-    # Aircraft marker
     ax.scatter(
         aircraft_lon,
         aircraft_lat,
@@ -219,8 +283,7 @@ def _fetch_and_render_product(
     echo_note = "" if valid_frac > 0.01 else "  ·  NO ECHOES DETECTED (clear)"
     ax.set_title(
         f"K{station} {title_prefix}{echo_note}\n"
-        f"Radar: {f.lat:.2f}°, {f.lon:.2f}°  ·  "
-        f"Requested: {target_time:%Y-%m-%d %H:%M UTC}"
+        f"Radar: {f.lat:.2f}°, {f.lon:.2f}°  ·  {dataset.name}"
     )
 
     plt.colorbar(mesh, ax=ax, pad=0.02, label=cbar_label, shrink=0.8)
