@@ -55,7 +55,7 @@ def fetch_goes_data(
         attime=target_pd,
         satellite=satellite,
         product="ABI-L2-MCMIP",
-        domain="F",
+        domain="C",
         return_as="xarray",
         download=True,
         overwrite=False,
