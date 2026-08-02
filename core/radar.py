@@ -221,7 +221,7 @@ def _fetch_and_render_product(
         transform=ccrs.PlateCarree(),
         weight="bold",
     )
-    
+
     echo_note = "" if valid_frac > 0.01 else "  ·  NO ECHOES DETECTED (clear)"
     ax.set_title(
         f"K{station} {title_prefix}\n"
@@ -232,7 +232,6 @@ def _fetch_and_render_product(
     plt.colorbar(mesh, ax=ax, pad=0.02, label=cbar_label, shrink=0.8)
 
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
-    plt.close(fig)
+    fig.savefig(buf, format="png", dpi=100)
     buf.seek(0)
     return buf.getvalue(), actual_time_str
