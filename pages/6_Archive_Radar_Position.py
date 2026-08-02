@@ -1,4 +1,4 @@
-"""Archive Radar Position — chunk 3: button click + validation, no fetch."""
+"""Archive Radar Position — chunk 4: actual fetch call added."""
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
@@ -40,7 +40,7 @@ def cached_render(
 
 
 st.title("Archive Radar Position")
-st.caption("Chunk 3: button + validation added")
+st.caption("Chunk 4: fetch call added")
 
 with st.sidebar:
     st.header("Date & Time (UTC)")
@@ -74,7 +74,7 @@ with st.sidebar:
 if run_button:
     errors = []
     if not station_input or len(station_input) not in (3, 4):
-        errors.append("Radar site must be 3 or 4 characters (e.g., KDIX or DIX).")
+        errors.append("Radar site must be 3 or 4 characters.")
     if not lat_input.strip():
         errors.append("Please enter a latitude.")
     if not lon_input.strip():
@@ -122,8 +122,44 @@ if run_button:
         f"Requested: **{request_time:%Y-%m-%d %H:%M UTC}**  ·  "
         f"Position: **{aircraft_lat:.4f}°, {aircraft_lon:.4f}°**  ·  "
         f"Callsign: **{callsign}**  ·  "
-        f"Radar: **K{station_code}** (searched as {station_code})"
+        f"Radar: **K{station_code}**"
     )
-    st.success("Validation passed. In Chunk 4 we'll actually call cached_render.")
+
+    with st.spinner("Fetching NEXRAD data and rendering plots..."):
+        try:
+            refl_png, vel_png, refl_time, vel_time = cached_render(
+                request_time_iso=request_time.isoformat(),
+                aircraft_lat=aircraft_lat,
+                aircraft_lon=aircraft_lon,
+                callsign=callsign,
+                station=station_code,
+                zoom_deg=zoom_input,
+            )
+        except Exception as e:
+            st.error(f"Failed to fetch/render: {e}")
+            st.stop()
+
+    st.subheader("Base Reflectivity (N0B)")
+    st.caption(f"Dataset: `{refl_time}`")
+    st.image(refl_png, use_container_width=True)
+
+    st.download_button(
+        label="Download Reflectivity PNG",
+        data=refl_png,
+        file_name=f"radar_refl_{callsign}_K{station_code}_{request_time:%Y%m%d_%H%M}Z.png",
+        mime="image/png",
+    )
+
+    st.subheader("Base Velocity (N0U)")
+    st.caption(f"Dataset: `{vel_time}`")
+    st.image(vel_png, use_container_width=True)
+
+    st.download_button(
+        label="Download Velocity PNG",
+        data=vel_png,
+        file_name=f"radar_vel_{callsign}_K{station_code}_{request_time:%Y%m%d_%H%M}Z.png",
+        mime="image/png",
+    )
+
 else:
-    st.write("Chunk 3: click Fetch & Render to test validation")
+    st.write("Chunk 4: click Fetch & Render to test actual data fetch")
