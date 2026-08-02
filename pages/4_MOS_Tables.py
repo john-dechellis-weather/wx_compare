@@ -280,16 +280,16 @@ if run_button:
         st.warning("No data in overlap window.")
         st.stop()
 
-    # Build table row by row as raw HTML strings
+# Build table with grouped model blocks
     times = df_c["valid_time"].tolist()
     fhrs = df_c["fhr"].tolist()
 
-    # Header row
+    # Header row (time columns)
     header_cells = [make_th("Field", is_row_label=True)]
     for t in times:
         tstr = pd.to_datetime(t).strftime("%m/%d<br>%HZ")
         header_cells.append(
-            f'<th style="background:#FFFFFF;color:#FFFFFF !important;'
+            f'<th style="background:#002200;color:#FFFFFF !important;'
             f'font-family:Courier New,monospace;font-size:9px;font-weight:bold;'
             f'padding:2px 3px;text-align:center;border:1px solid #003300;'
             f'white-space:nowrap;min-width:38px;max-width:38px;">{tstr}</th>'
@@ -302,7 +302,29 @@ if run_button:
         fhr_cells.append(make_cell(f"f+{int(f)}"))
     fhr_row = "<tr>" + "".join(fhr_cells) + "</tr>"
 
-    # NBM VIS row
+    # Helper — direction cell (no color)
+    def dir_cell(d):
+        if d is None or pd.isna(d):
+            return make_cell("-")
+        return make_cell(f"{int(d):03d}")
+
+    # Helper — speed cell (colored by tier)
+    def spd_cell(s, g):
+        if s is None or pd.isna(s):
+            return make_cell("-")
+        colors = wind_bg(s, g)
+        text = f"{int(s):02d}"
+        if colors:
+            return make_cell(text, colors[0], colors[1])
+        return make_cell(text)
+
+    # Helper — gust cell (no color)
+    def gst_cell(g):
+        if g is None or pd.isna(g):
+            return make_cell("-")
+        return make_cell(f"{int(g):02d}")
+
+    # NBM block
     nbm_vis_cells = [make_th("NBM VIS", is_row_label=True)]
     for v in df_c["NBM_vis_sm"]:
         colors = vis_bg(v)
@@ -310,19 +332,7 @@ if run_button:
             nbm_vis_cells.append(make_cell(fmt_vis(v), colors[0], colors[1]))
         else:
             nbm_vis_cells.append(make_cell(fmt_vis(v)))
-    nbm_vis_row = "<tr>" + "".join(nbm_vis_cells) + "</tr>"
 
-    # LAMP VIS row
-    lamp_vis_cells = [make_th("LAMP VIS", is_row_label=True)]
-    for v in df_c["LAMP_vis_sm"]:
-        colors = vis_bg(v)
-        if colors:
-            lamp_vis_cells.append(make_cell(fmt_vis(v), colors[0], colors[1]))
-        else:
-            lamp_vis_cells.append(make_cell(fmt_vis(v)))
-    lamp_vis_row = "<tr>" + "".join(lamp_vis_cells) + "</tr>"
-
-    # NBM CIG row
     nbm_cig_cells = [make_th("NBM CIG", is_row_label=True)]
     for c, u in zip(df_c["NBM_cig_ft"], df_c["NBM_cig_unl"]):
         colors = cig_bg(c, u)
@@ -330,9 +340,28 @@ if run_button:
             nbm_cig_cells.append(make_cell(fmt_cig(c, u), colors[0], colors[1]))
         else:
             nbm_cig_cells.append(make_cell(fmt_cig(c, u)))
-    nbm_cig_row = "<tr>" + "".join(nbm_cig_cells) + "</tr>"
 
-    # LAMP CIG row
+    nbm_dir_cells = [make_th("NBM Dir", is_row_label=True)]
+    for d in df_c["NBM_wind_dir"]:
+        nbm_dir_cells.append(dir_cell(d))
+
+    nbm_spd_cells = [make_th("NBM Spd", is_row_label=True)]
+    for s, g in zip(df_c["NBM_wind_spd"], df_c["NBM_wind_gst"]):
+        nbm_spd_cells.append(spd_cell(s, g))
+
+    nbm_gst_cells = [make_th("NBM Gst", is_row_label=True)]
+    for g in df_c["NBM_wind_gst"]:
+        nbm_gst_cells.append(gst_cell(g))
+
+    # LAMP block
+    lamp_vis_cells = [make_th("LAMP VIS", is_row_label=True)]
+    for v in df_c["LAMP_vis_sm"]:
+        colors = vis_bg(v)
+        if colors:
+            lamp_vis_cells.append(make_cell(fmt_vis(v), colors[0], colors[1]))
+        else:
+            lamp_vis_cells.append(make_cell(fmt_vis(v)))
+
     lamp_cig_cells = [make_th("LAMP CIG", is_row_label=True)]
     for c, u in zip(df_c["LAMP_cig_ft"], df_c["LAMP_cig_unl"]):
         colors = cig_bg(c, u)
@@ -340,49 +369,61 @@ if run_button:
             lamp_cig_cells.append(make_cell(fmt_cig(c, u), colors[0], colors[1]))
         else:
             lamp_cig_cells.append(make_cell(fmt_cig(c, u)))
-    lamp_cig_row = "<tr>" + "".join(lamp_cig_cells) + "</tr>"
 
-    # NBM Wind row
-    nbm_wind_cells = [make_th("NBM Wind", is_row_label=True)]
-    for d, s, g in zip(df_c["NBM_wind_dir"], df_c["NBM_wind_spd"], df_c["NBM_wind_gst"]):
-        colors = wind_bg(s, g)
-        if colors:
-            nbm_wind_cells.append(make_cell(fmt_wind(d, s, g), colors[0], colors[1]))
-        else:
-            nbm_wind_cells.append(make_cell(fmt_wind(d, s, g)))
-    nbm_wind_row = "<tr>" + "".join(nbm_wind_cells) + "</tr>"
+    lamp_dir_cells = [make_th("LAMP Dir", is_row_label=True)]
+    for d in df_c["LAMP_wind_dir"]:
+        lamp_dir_cells.append(dir_cell(d))
 
-    # LAMP Wind row
-    lamp_wind_cells = [make_th("LAMP Wind", is_row_label=True)]
-    for d, s, g in zip(df_c["LAMP_wind_dir"], df_c["LAMP_wind_spd"], df_c["LAMP_wind_gst"]):
-        colors = wind_bg(s, g)
-        if colors:
-            lamp_wind_cells.append(make_cell(fmt_wind(d, s, g), colors[0], colors[1]))
-        else:
-            lamp_wind_cells.append(make_cell(fmt_wind(d, s, g)))
-    lamp_wind_row = "<tr>" + "".join(lamp_wind_cells) + "</tr>"
+    lamp_spd_cells = [make_th("LAMP Spd", is_row_label=True)]
+    for s, g in zip(df_c["LAMP_wind_spd"], df_c["LAMP_wind_gst"]):
+        lamp_spd_cells.append(spd_cell(s, g))
+
+    lamp_gst_cells = [make_th("LAMP Gst", is_row_label=True)]
+    for g in df_c["LAMP_wind_gst"]:
+        lamp_gst_cells.append(gst_cell(g))
+
+    # Assemble rows
+    def row(cells):
+        return "<tr>" + "".join(cells) + "</tr>"
+
+    all_rows = (
+        fhr_row
+        + row(nbm_vis_cells)
+        + row(nbm_cig_cells)
+        + row(nbm_dir_cells)
+        + row(nbm_spd_cells)
+        + row(nbm_gst_cells)
+        + row(lamp_vis_cells)
+        + row(lamp_cig_cells)
+        + row(lamp_dir_cells)
+        + row(lamp_spd_cells)
+        + row(lamp_gst_cells)
+    )
 
     table_html = (
         '<div style="overflow-x:auto;background:#000;padding:4px;border:1px solid #003300;">'
         '<table style="border-collapse:collapse;margin:0;">'
         f'<thead>{header_row}</thead>'
-        f'<tbody>{fhr_row}{nbm_vis_row}{lamp_vis_row}{nbm_cig_row}{lamp_cig_row}{nbm_wind_row}{lamp_wind_row}</tbody>'
+        f'<tbody>{all_rows}</tbody>'
         '</table>'
         '</div>'
     )
 
     st.markdown(table_html, unsafe_allow_html=True)
 
-    # CSV
     csv_df = pd.DataFrame({
         "time": [pd.to_datetime(t).strftime("%Y-%m-%d %H:%MZ") for t in df_c["valid_time"]],
         "fhr": df_c["fhr"].tolist(),
         "NBM_vis": [fmt_vis(v) for v in df_c["NBM_vis_sm"]],
-        "LAMP_vis": [fmt_vis(v) for v in df_c["LAMP_vis_sm"]],
         "NBM_cig": [fmt_cig(c, u) for c, u in zip(df_c["NBM_cig_ft"], df_c["NBM_cig_unl"])],
+        "NBM_dir": [f"{int(d):03d}" if d is not None and not pd.isna(d) else "" for d in df_c["NBM_wind_dir"]],
+        "NBM_spd": [f"{int(s):02d}" if s is not None and not pd.isna(s) else "" for s in df_c["NBM_wind_spd"]],
+        "NBM_gst": [f"{int(g):02d}" if g is not None and not pd.isna(g) else "" for g in df_c["NBM_wind_gst"]],
+        "LAMP_vis": [fmt_vis(v) for v in df_c["LAMP_vis_sm"]],
         "LAMP_cig": [fmt_cig(c, u) for c, u in zip(df_c["LAMP_cig_ft"], df_c["LAMP_cig_unl"])],
-        "NBM_wind": [fmt_wind(d, s, g) for d, s, g in zip(df_c["NBM_wind_dir"], df_c["NBM_wind_spd"], df_c["NBM_wind_gst"])],
-        "LAMP_wind": [fmt_wind(d, s, g) for d, s, g in zip(df_c["LAMP_wind_dir"], df_c["LAMP_wind_spd"], df_c["LAMP_wind_gst"])],
+        "LAMP_dir": [f"{int(d):03d}" if d is not None and not pd.isna(d) else "" for d in df_c["LAMP_wind_dir"]],
+        "LAMP_spd": [f"{int(s):02d}" if s is not None and not pd.isna(s) else "" for s in df_c["LAMP_wind_spd"]],
+        "LAMP_gst": [f"{int(g):02d}" if g is not None and not pd.isna(g) else "" for g in df_c["LAMP_wind_gst"]],
     })
     st.download_button(
         "Download as CSV",
