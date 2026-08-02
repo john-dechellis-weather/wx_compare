@@ -1,4 +1,11 @@
-"""NEXRAD Level III radar fetching and plot rendering."""
+"""NEXRAD Level III radar fetching and plot rendering.
+
+Uses siphon to query UCAR's THREDDS server, metpy to decode NIDS,
+and matplotlib+cartopy for rendering.
+
+Fetches base reflectivity (N0B) and tries several velocity codes
+(N0U, N0V, NBU, N0S) since availability varies by radar site.
+"""
 from __future__ import annotations
 
 import io
@@ -21,14 +28,12 @@ def fetch_and_render_radar(
     """
     from siphon.radarserver import RadarServer, get_radarserver_datasets
 
-    print(f"[RADAR] fetch_and_render_radar for station={station}")
-
     base_server = "https://thredds.ucar.edu/thredds/"
     datasets = get_radarserver_datasets(base_server)
     radar_ref = datasets["NEXRAD Level III Radar from IDD"]
     rs = RadarServer(radar_ref.follow().catalog_url)
 
-    # Reflectivity
+    # Reflectivity — required
     refl_png, refl_time = _fetch_and_render_product(
         rs=rs,
         target_time=target_time,
@@ -42,7 +47,7 @@ def fetch_and_render_radar(
         cbar_label="Reflectivity (dBZ)",
     )
 
-    # Velocity — try multiple product codes
+    # Velocity — try multiple product codes, fall back gracefully
     vel_png = b""
     vel_time = "not available"
     for vel_product in ["N0U", "N0V", "NBU", "N0S"]:
@@ -59,10 +64,8 @@ def fetch_and_render_radar(
                 title_prefix=f"Base Velocity ({vel_product})",
                 cbar_label="Velocity (kt)",
             )
-            print(f"[RADAR] velocity succeeded with {vel_product}")
             break
-        except Exception as e:
-            print(f"[RADAR] velocity {vel_product} failed: {e}")
+        except Exception:
             continue
 
     return refl_png, vel_png, refl_time, vel_time
@@ -113,16 +116,13 @@ def _fetch_and_render_product(
         raw = resp.read()
 
     f = Level3File(BytesIO(raw))
-    print(f"[RADAR DEBUG] {product}: radar lat/lon = {f.lat}, {f.lon}")
-    print(f"[RADAR DEBUG] {product}: max_range = {f.max_range}")
 
     # Decode data
     datadict = f.sym_block[0][0]
     radar_data = f.map_data(datadict["data"])
+
+    # Fraction of bins with real echo (for the no-echo note)
     valid_frac = 1.0 - float(np.ma.getmaskarray(radar_data).mean())
-    print(f"[RADAR DEBUG] {product}: valid (unmasked) fraction = {valid_frac:.3f}")
-    print(f"[RADAR DEBUG] {product}: data shape = {radar_data.shape}, "
-          f"dtype = {radar_data.dtype}")
 
     az = units.Quantity(
         np.array(datadict["start_az"] + [datadict["end_az"][-1]]),
@@ -134,10 +134,6 @@ def _fetch_and_render_product(
     )
 
     lon_grid, lat_grid = azimuth_range_to_lat_lon(az, rng, f.lon, f.lat)
-    print(f"[RADAR DEBUG] {product}: lon_grid shape = {lon_grid.shape}, "
-          f"lat_grid shape = {lat_grid.shape}")
-    print(f"[RADAR DEBUG] {product}: lon range = {lon_grid.min():.2f} to {lon_grid.max():.2f}")
-    print(f"[RADAR DEBUG] {product}: lat range = {lat_grid.min():.2f} to {lat_grid.max():.2f}")
 
     # Colortable
     if product == "N0B":
@@ -147,11 +143,10 @@ def _fetch_and_render_product(
     else:
         norm, cmap = colortables.get_with_steps("NWS8bitVel", -64, 1.0)
 
-    # Build figure — extent set FIRST, then plot
+    # Build figure — extent set before plotting
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
 
-    # Set extent BEFORE plotting
     ax.set_extent(
         [
             aircraft_lon - zoom_deg,
@@ -162,7 +157,6 @@ def _fetch_and_render_product(
         crs=ccrs.PlateCarree(),
     )
 
-    # Plot the radar data — no explicit transform needed since ax is already PlateCarree
     mesh = ax.pcolormesh(
         lon_grid,
         lat_grid,
@@ -224,14 +218,17 @@ def _fetch_and_render_product(
 
     echo_note = "" if valid_frac > 0.01 else "  ·  NO ECHOES DETECTED (clear)"
     ax.set_title(
-        f"K{station} {title_prefix}\n"
+        f"K{station} {title_prefix}{echo_note}\n"
         f"Radar: {f.lat:.2f}°, {f.lon:.2f}°  ·  "
         f"Requested: {target_time:%Y-%m-%d %H:%M UTC}"
     )
 
     plt.colorbar(mesh, ax=ax, pad=0.02, label=cbar_label, shrink=0.8)
 
+    # NOTE: no bbox_inches="tight" — it crops the GeoAxes away and
+    # leaves only the colorbar on this matplotlib/cartopy combination.
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=100)
+    plt.close(fig)
     buf.seek(0)
     return buf.getvalue(), actual_time_str
