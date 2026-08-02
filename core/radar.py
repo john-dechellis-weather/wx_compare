@@ -119,6 +119,8 @@ def _fetch_and_render_product(
     # Decode data
     datadict = f.sym_block[0][0]
     radar_data = f.map_data(datadict["data"])
+    valid_frac = 1.0 - float(np.ma.getmaskarray(radar_data).mean())
+    print(f"[RADAR DEBUG] {product}: valid (unmasked) fraction = {valid_frac:.3f}")
     print(f"[RADAR DEBUG] {product}: data shape = {radar_data.shape}, "
           f"dtype = {radar_data.dtype}")
 
@@ -219,7 +221,8 @@ def _fetch_and_render_product(
         transform=ccrs.PlateCarree(),
         weight="bold",
     )
-
+    
+    echo_note = "" if valid_frac > 0.01 else "  ·  NO ECHOES DETECTED (clear)"
     ax.set_title(
         f"K{station} {title_prefix}\n"
         f"Radar: {f.lat:.2f}°, {f.lon:.2f}°  ·  "
