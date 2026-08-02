@@ -1,4 +1,4 @@
-"""Archive Radar Position — chunk 2: add cached fetch."""
+"""Archive Radar Position — chunk 3: button click + validation, no fetch."""
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
@@ -26,7 +26,6 @@ def cached_render(
     station: str,
     zoom_deg: float,
 ) -> tuple[bytes, bytes, str, str]:
-    """Cache wrapper — same request within 24hr returns immediately."""
     from core.radar import fetch_and_render_radar
 
     request_time = datetime.fromisoformat(request_time_iso)
@@ -41,7 +40,7 @@ def cached_render(
 
 
 st.title("Archive Radar Position")
-st.caption("Chunk 2: cached fetch wrapper added")
+st.caption("Chunk 3: button + validation added")
 
 with st.sidebar:
     st.header("Date & Time (UTC)")
@@ -65,11 +64,66 @@ with st.sidebar:
 
     st.divider()
     st.header("Radar")
-    station_input = st.text_input("Select Radar Site", value="KFTG", max_chars=4)
-
+    station_input = st.text_input("Select Radar Site", value="KFTG", max_chars=4).strip().upper()
     zoom_input = st.slider("Zoom (degrees)", 0.5, 5.0, 2.0, 0.5)
 
     st.divider()
     run_button = st.button("Fetch & Render", type="primary", use_container_width=True)
 
-st.write("Chunk 2: sidebar + cached function definition loaded")
+
+if run_button:
+    errors = []
+    if not station_input or len(station_input) not in (3, 4):
+        errors.append("Radar site must be 3 or 4 characters (e.g., KDIX or DIX).")
+    if not lat_input.strip():
+        errors.append("Please enter a latitude.")
+    if not lon_input.strip():
+        errors.append("Please enter a longitude.")
+
+    aircraft_lat = None
+    aircraft_lon = None
+    if lat_input.strip():
+        try:
+            aircraft_lat = float(lat_input)
+            if not (-90 <= aircraft_lat <= 90):
+                errors.append("Latitude must be between -90 and 90.")
+        except ValueError:
+            errors.append("Latitude must be a number.")
+
+    if lon_input.strip():
+        try:
+            aircraft_lon = float(lon_input)
+            if not (-180 <= aircraft_lon <= 180):
+                errors.append("Longitude must be between -180 and 180.")
+        except ValueError:
+            errors.append("Longitude must be a number.")
+
+    if errors:
+        for e in errors:
+            st.error(e)
+        st.stop()
+
+    request_time = datetime.combine(
+        date_input, time_input, tzinfo=timezone.utc
+    )
+
+    if request_time > datetime.now(timezone.utc):
+        st.error("Requested time is in the future. Pick a past time.")
+        st.stop()
+
+    if len(station_input) == 4 and station_input.startswith("K"):
+        station_code = station_input[1:]
+    else:
+        station_code = station_input
+
+    callsign = callsign_input.strip() or "AIRCRAFT"
+
+    st.info(
+        f"Requested: **{request_time:%Y-%m-%d %H:%M UTC}**  ·  "
+        f"Position: **{aircraft_lat:.4f}°, {aircraft_lon:.4f}°**  ·  "
+        f"Callsign: **{callsign}**  ·  "
+        f"Radar: **K{station_code}** (searched as {station_code})"
+    )
+    st.success("Validation passed. In Chunk 4 we'll actually call cached_render.")
+else:
+    st.write("Chunk 3: click Fetch & Render to test validation")
