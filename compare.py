@@ -346,7 +346,7 @@ def plot_comparison_interactive(
                 go.Scatter(
                     x=obs_times, y=obs["vsby_sm"],
                     mode="markers", name="METAR obs",
-                    marker=dict(size=10, color="#FF3333", symbol="triangle-up",
+                    marker=dict(size=10, color="#FF3333", symbol="triangle",
                                 line=dict(color="#FFFFFF", width=0.75)),
                     hovertext=vis_hover, hoverinfo="text",
                     legendgroup="METAR",
@@ -393,7 +393,7 @@ def plot_comparison_interactive(
                 go.Scatter(
                     x=obs_times, y=ceil_plot,
                     mode="markers", name="METAR obs",
-                    marker=dict(size=10, color="#FF3333", symbol="triangle-up",
+                    marker=dict(size=10, color="#FF3333", symbol="triangle",
                                 line=dict(color="#FFFFFF", width=0.75)),
                     hovertext=ceil_hover, hoverinfo="text",
                     legendgroup="METAR", showlegend=False,
@@ -406,7 +406,7 @@ def plot_comparison_interactive(
                 go.Scatter(
                     x=obs_times, y=ceil_plot,
                     mode="markers", name="METAR obs",
-                    marker=dict(size=10, color="#FF3333", symbol="triangle-up",
+                    marker=dict(size=10, color="#FF3333", symbol="triangle",
                                 line=dict(color="#FFFFFF", width=0.75)),
                     hovertext=ceil_hover, hoverinfo="text",
                     legendgroup="METAR", showlegend=False,
@@ -619,7 +619,7 @@ def plot_wind_comparison_interactive(
                 go.Scatter(
                     x=obs_times, y=obs["wind_speed_kt"],
                     mode="markers", name="METAR obs",
-                    marker=dict(size=10, color="#FF3333", symbol="triangle-up",
+                    marker=dict(size=10, color="#FF3333", symbol="triangle",
                                 line=dict(color="#FFFFFF", width=1)),
                     hovertext=wind_hover, hoverinfo="text",
                     legendgroup="METAR",
@@ -664,7 +664,7 @@ def plot_wind_comparison_interactive(
                         x=obs_times[gust_mask],
                         y=obs.loc[gust_mask, "wind_gust_kt"],
                         mode="markers", name="METAR gust",
-                        marker=dict(size=12, symbol="triangle-up-open",
+                        marker=dict(size=12, symbol="triangle-open",
                                 color="#FF3333",
                                 line=dict(color="#FF3333", width=2)),
                         hovertext=gust_hover, hoverinfo="text",
@@ -680,7 +680,7 @@ def plot_wind_comparison_interactive(
                 go.Scatter(
                     x=obs_times, y=obs["wind_dir_deg"],
                     mode="markers", name="METAR obs",
-                    marker=dict(size=10, color="#FF3333", symbol="triangle-up",
+                    marker=dict(size=10, color="#FF3333", symbol="triangle",
                                 line=dict(color="#FFFFFF", width=1)),
                     hovertext=wind_hover, hoverinfo="text",
                     legendgroup="METAR", showlegend=False,

@@ -13,7 +13,7 @@ def _cleanup_old_cache():
     cache_root = Path("/opt/render/project/src/cache")
     if not cache_root.exists():
         return
-    cutoff = time.time() - (1 * 24 * 3600)  # 1 days
+    cutoff = time.time() - (24 * 3600)  # 1 days
     for p in cache_root.rglob("*"):
         try:
             if p.is_file() and p.stat().st_mtime < cutoff:
