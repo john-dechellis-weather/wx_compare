@@ -1,16 +1,4 @@
-"""GOES satellite data fetching and plot rendering.
-
-Uses goes2go for AWS-hosted archive access. Renders two products:
-    - True Color (Bands 1/2/3 → RGB)
-    - Clean IR Window (Band 13, color-mapped brightness temperature)
-
-Both plots include:
-    - GOES geostationary projection
-    - Coastlines / borders / state lines overlays
-    - Lat/lon gridlines
-    - Aircraft position marker with callsign label
-    - ~350 km zoom around the aircraft
-"""
+"""GOES satellite data fetching and plot rendering."""
 from __future__ import annotations
 
 import io
@@ -21,7 +9,6 @@ from typing import Optional
 import numpy as np
 
 
-# Zoom padding around aircraft position, in meters (matches the notebook)
 _ZOOM_PAD_METERS = 350_000
 
 
@@ -30,39 +17,27 @@ def fetch_goes_data(
     satellite: str,
     cache_dir: Path,
 ) -> tuple["xr.Dataset", datetime]:
-    """Fetch nearest available GOES ABI-L2-MCMIP scan.
-
-    Args:
-        target_time: UTC datetime of the desired scan.
-        satellite: 'goes19' (East) or 'goes18' (West).
-        cache_dir: Directory to cache downloaded NetCDF files.
-
-    Returns:
-        (dataset, actual_scan_time)
-    """
+    """Fetch nearest available GOES ABI-L2-MCMIP scan."""
     import os
-    # goes2go looks at GOES2GO_SAVE env var for its download location
     os.environ["GOES2GO_SAVE"] = str(cache_dir)
 
     from goes2go.data import goes_nearesttime
     import pandas as pd
 
-    # Convert to naive pandas Timestamp — goes2go's internal date math
-    # can trip over tz-aware datetimes with certain pandas versions
+    # Convert to naive pandas Timestamp
     target_pd = pd.Timestamp(target_time).tz_localize(None)
 
     ds = goes_nearesttime(
         attime=target_pd,
         satellite=satellite,
         product="ABI-L2-MCMIP",
-        domain="C",
+        domain="C",  # CONUS
         return_as="xarray",
         download=True,
         overwrite=False,
         verbose=False,
     )
 
-    # Actual scan time from the dataset
     scan_time = _extract_scan_time(ds, fallback=target_time)
     return ds, scan_time
 
@@ -74,12 +49,10 @@ def _extract_scan_time(ds, fallback: datetime) -> datetime:
         v = ds.attrs.get(attr_name)
         if v:
             try:
-                # Handle both string timestamps and numpy datetime64
                 ts = pd.Timestamp(str(v)).tz_localize(None)
                 return ts.to_pydatetime()
             except Exception:
                 pass
-    # Fallback: try the dataset's time coordinate
     try:
         if "t" in ds.coords:
             t_val = ds["t"].values
@@ -90,9 +63,6 @@ def _extract_scan_time(ds, fallback: datetime) -> datetime:
     return fallback
 
 
-# ---------------------------------------------------------------------------
-# Rendering
-# ---------------------------------------------------------------------------
 def render_true_color(
     ds,
     aircraft_lat: float,
@@ -100,19 +70,12 @@ def render_true_color(
     callsign: str,
 ) -> bytes:
     """Render True Color plot with aircraft marker. Returns PNG bytes."""
-    import matplotlib.pyplot as plt
-    import cartopy.crs as ccrs
-    import cartopy.feature as cfeature
-
-    # Extract and process RGB bands
     R = np.clip(ds["CMI_C02"].values, 0, 1)
     G = np.clip(ds["CMI_C03"].values, 0, 1)
     B = np.clip(ds["CMI_C01"].values, 0, 1)
 
-    # Approximate true green
     G_true = np.clip(0.45 * R + 0.10 * G + 0.45 * B, 0, 1)
 
-    # Gamma correction
     gamma = 2.2
     R = np.power(R, 1 / gamma)
     G_true = np.power(G_true, 1 / gamma)
@@ -147,20 +110,21 @@ def render_infrared(
     callsign: str,
 ) -> bytes:
     """Render Clean IR (Band 13) plot with aircraft marker. Returns PNG bytes."""
-    # DIAGNOSTICS
     ir_raw = ds["CMI_C13"].values
     print(f"[IR DEBUG] CMI_C13 shape: {ir_raw.shape}")
     print(f"[IR DEBUG] CMI_C13 dtype: {ir_raw.dtype}")
     print(f"[IR DEBUG] CMI_C13 valid count: {np.sum(~np.isnan(ir_raw))}")
     print(f"[IR DEBUG] CMI_C13 nan count: {np.sum(np.isnan(ir_raw))}")
-    print(f"[IR DEBUG] CMI_C13 min: {np.nanmin(ir_raw)}, max: {np.nanmax(ir_raw)}")
+    try:
+        print(f"[IR DEBUG] CMI_C13 min: {np.nanmin(ir_raw)}, max: {np.nanmax(ir_raw)}")
+    except Exception as e:
+        print(f"[IR DEBUG] Could not compute min/max: {e}")
     print(f"[IR DEBUG] ds x shape: {ds['x'].values.shape}")
     print(f"[IR DEBUG] ds y shape: {ds['y'].values.shape}")
-    # Compare to True Color band shape
     r_raw = ds["CMI_C02"].values
     print(f"[IR DEBUG] CMI_C02 (Red) shape: {r_raw.shape}")
 
-    ir = np.ma.masked_invalid(ir_raw)
+    ir = ir_raw
 
     return _render_plot(
         ds=ds,
@@ -196,19 +160,14 @@ def _render_plot(
     add_colorbar: bool,
     cbar_label: Optional[str],
 ) -> bytes:
-    """Shared rendering function for both True Color and IR plots.
-
-    Returns PNG bytes ready to display or download.
-    """
+    """Shared rendering function for both True Color and IR plots."""
     import matplotlib.pyplot as plt
     import cartopy.crs as ccrs
     import cartopy.feature as cfeature
     import pyproj
 
-    # Force matplotlib to use a non-interactive backend
     plt.switch_backend("Agg")
 
-    # GOES projection info from the dataset
     proj_var = ds["goes_imager_projection"]
     sat_h = float(proj_var.perspective_point_height)
     lon_0 = float(proj_var.longitude_of_projection_origin)
@@ -217,46 +176,41 @@ def _render_plot(
     x = ds["x"].values * sat_h
     y = ds["y"].values * sat_h
 
-    # If the image data doesn't match the dataset x/y shape (multi-res bands),
-    # derive per-band coordinates from the image itself
+    # Adjust coordinates if image has different resolution than default x/y
     if image_data.ndim == 2:
-        img_shape = image_data.shape  # (rows, cols)
+        img_shape = image_data.shape
     else:
-        img_shape = image_data.shape[:2]  # (rows, cols, channels)
+        img_shape = image_data.shape[:2]
 
     if img_shape != (len(y), len(x)):
-        # Regenerate x/y to match the actual image resolution
+        print(f"[RENDER DEBUG] Regenerating coords: img_shape={img_shape}, y_len={len(y)}, x_len={len(x)}")
         x = np.linspace(x.min(), x.max(), img_shape[1])
         y = np.linspace(y.min(), y.max(), img_shape[0])
+    else:
+        print(f"[RENDER DEBUG] Coords match: img_shape={img_shape}")
 
-    # Cartopy CRS for the geostationary view
     geos_crs = ccrs.Geostationary(
         central_longitude=lon_0,
         satellite_height=sat_h,
         sweep_axis=sweep,
     )
 
-   # Transform aircraft lat/lon → GOES x/y meters
     geos_proj = pyproj.Proj(proj="geos", h=sat_h, lon_0=lon_0, sweep=sweep)
     wgs84 = pyproj.Proj(proj="latlong", datum="WGS84")
     transformer = pyproj.Transformer.from_proj(wgs84, geos_proj, always_xy=True)
     aircraft_x, aircraft_y = transformer.transform(aircraft_lon, aircraft_lat)
 
-    # Guard: pyproj returns inf for points outside the projection's valid range
     if not (np.isfinite(aircraft_x) and np.isfinite(aircraft_y)):
         raise ValueError(
             f"Aircraft position ({aircraft_lat}, {aircraft_lon}) is outside "
-            f"the satellite's projection range. Try a location closer to the "
-            f"satellite subpoint."
+            f"the satellite's projection range."
         )
 
-    # Set up figure
     fig = plt.figure(figsize=(12, 10))
     ax = plt.axes(projection=geos_crs)
 
-    # Plot the imagery — different approach for 2D vs 3D data
+    # Different rendering for RGB vs 2D data
     if image_data.ndim == 3:
-        # RGB image — use imshow
         img = ax.imshow(
             image_data,
             origin="upper",
@@ -265,13 +219,9 @@ def _render_plot(
             interpolation="nearest",
         )
     else:
-        # 2D scalar data — use pcolormesh for explicit coordinate handling
-        # Fill any NaN with the minimum value so pixels always render
         img_data = np.array(image_data, dtype=float)
         if vmin is not None:
             img_data = np.where(np.isnan(img_data), vmin, img_data)
-
-        # pcolormesh needs Y in ascending order for correct display
         img = ax.pcolormesh(
             x, y[::-1], img_data[::-1, :],
             transform=geos_crs,
@@ -281,12 +231,10 @@ def _render_plot(
             shading="auto",
         )
 
-    # Colorbar (only for IR)
     if add_colorbar and cbar_label is not None:
         cbar = plt.colorbar(img, ax=ax, shrink=0.7, pad=0.02)
         cbar.set_label(cbar_label)
 
-    # Geographic overlays
     ax.coastlines(resolution="10m", color=coastline_color, linewidth=0.8)
     ax.add_feature(
         cfeature.BORDERS.with_scale("10m"),
@@ -300,7 +248,6 @@ def _render_plot(
         facecolor="none",
     )
 
-    # Lat/lon gridlines
     gl = ax.gridlines(
         crs=ccrs.PlateCarree(),
         draw_labels=True,
@@ -314,7 +261,6 @@ def _render_plot(
     gl.xlabel_style = {"size": 9, "color": "white"}
     gl.ylabel_style = {"size": 9, "color": "white"}
 
-    # Aircraft marker
     ax.scatter(
         aircraft_x,
         aircraft_y,
@@ -323,8 +269,6 @@ def _render_plot(
         color="red",
         zorder=10,
     )
-
-    # Callsign label offset slightly from the marker
     ax.text(
         aircraft_x + 20_000,
         aircraft_y + 20_000,
@@ -335,13 +279,10 @@ def _render_plot(
         weight="bold",
     )
 
-    # Zoom to region around the aircraft
     ax.set_xlim(aircraft_x - _ZOOM_PAD_METERS, aircraft_x + _ZOOM_PAD_METERS)
     ax.set_ylim(aircraft_y - _ZOOM_PAD_METERS, aircraft_y + _ZOOM_PAD_METERS)
-
     ax.set_title(title_text)
 
-    # Render to PNG bytes
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
     plt.close(fig)
