@@ -2,7 +2,29 @@
 
 The actual tools live in pages/ and Streamlit auto-discovers them.
 """
+
 import streamlit as st
+
+import time
+from pathlib import Path
+
+def _cleanup_old_cache():
+    """Delete cache files older than 3 days to prevent disk fill."""
+    cache_root = Path("/opt/render/project/src/cache")
+    if not cache_root.exists():
+        return
+    cutoff = time.time() - (1 * 24 * 3600)  # 1 days
+    for p in cache_root.rglob("*"):
+        try:
+            if p.is_file() and p.stat().st_mtime < cutoff:
+                p.unlink()
+        except Exception:
+            continue
+
+# Run cleanup once per session
+if "_cache_cleanup_done" not in st.session_state:
+    _cleanup_old_cache()
+    st.session_state["_cache_cleanup_done"] = True
 
 st.set_page_config(
     page_title="BlueMet",
