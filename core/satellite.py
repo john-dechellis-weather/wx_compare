@@ -109,39 +109,79 @@ def render_infrared(
     aircraft_lon: float,
     callsign: str,
 ) -> bytes:
-    """Render Clean IR (Band 13) plot with aircraft marker. Returns PNG bytes."""
-    ir_raw = ds["CMI_C13"].values
-    print(f"[IR DEBUG] CMI_C13 shape: {ir_raw.shape}")
-    print(f"[IR DEBUG] CMI_C13 dtype: {ir_raw.dtype}")
-    print(f"[IR DEBUG] CMI_C13 valid count: {np.sum(~np.isnan(ir_raw))}")
-    print(f"[IR DEBUG] CMI_C13 nan count: {np.sum(np.isnan(ir_raw))}")
-    try:
-        print(f"[IR DEBUG] CMI_C13 min: {np.nanmin(ir_raw)}, max: {np.nanmax(ir_raw)}")
-    except Exception as e:
-        print(f"[IR DEBUG] Could not compute min/max: {e}")
-    print(f"[IR DEBUG] ds x shape: {ds['x'].values.shape}")
-    print(f"[IR DEBUG] ds y shape: {ds['y'].values.shape}")
-    r_raw = ds["CMI_C02"].values
-    print(f"[IR DEBUG] CMI_C02 (Red) shape: {r_raw.shape}")
+    """Render Clean IR (Band 13) plot — self-contained, no shared code."""
+    import matplotlib.pyplot as plt
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
+    import pyproj
 
-    ir = ir_raw
+    plt.switch_backend("Agg")
 
-    return _render_plot(
-        ds=ds,
-        aircraft_lat=aircraft_lat,
-        aircraft_lon=aircraft_lon,
-        callsign=callsign,
-        image_data=ir,
-        cmap="nipy_spectral_r",
+    # Get data
+    ir = ds["CMI_C13"].values.astype(float)
+    # Fill NaN with a warm value so nothing is transparent
+    ir = np.where(np.isnan(ir), 300, ir)
+
+    print(f"[IR2] ir shape: {ir.shape}, min: {ir.min()}, max: {ir.max()}")
+
+    # Projection info
+    proj_var = ds["goes_imager_projection"]
+    sat_h = float(proj_var.perspective_point_height)
+    lon_0 = float(proj_var.longitude_of_projection_origin)
+    sweep = str(proj_var.sweep_angle_axis)
+
+    x = ds["x"].values * sat_h
+    y = ds["y"].values * sat_h
+
+    geos_crs = ccrs.Geostationary(
+        central_longitude=lon_0,
+        satellite_height=sat_h,
+        sweep_axis=sweep,
+    )
+
+    geos_proj = pyproj.Proj(proj="geos", h=sat_h, lon_0=lon_0, sweep=sweep)
+    wgs84 = pyproj.Proj(proj="latlong", datum="WGS84")
+    transformer = pyproj.Transformer.from_proj(wgs84, geos_proj, always_xy=True)
+    aircraft_x, aircraft_y = transformer.transform(aircraft_lon, aircraft_lat)
+
+    print(f"[IR2] aircraft geo x/y: {aircraft_x}, {aircraft_y}")
+    print(f"[IR2] extent: x=[{x.min()}, {x.max()}], y=[{y.min()}, {y.max()}]")
+    print(f"[IR2] zoom: x=[{aircraft_x - _ZOOM_PAD_METERS}, {aircraft_x + _ZOOM_PAD_METERS}]")
+
+    if not (np.isfinite(aircraft_x) and np.isfinite(aircraft_y)):
+        raise ValueError(f"Aircraft position outside projection range")
+
+    # Build figure — NO colorbar for now, to isolate the plot problem
+    fig = plt.figure(figsize=(12, 10))
+    ax = plt.axes(projection=geos_crs)
+
+    img = ax.imshow(
+        ir,
+        origin="upper",
+        extent=[x.min(), x.max(), y.min(), y.max()],
+        transform=geos_crs,
+        cmap="Greys",   # Simple grayscale — no fancy colormap
         vmin=180,
         vmax=330,
-        coastline_color="cyan",
-        border_color="cyan",
-        state_color="yellow",
-        title_text="GOES Clean IR Window (Band 13) with Aircraft Position",
-        add_colorbar=True,
-        cbar_label="Brightness Temperature (K)",
     )
+
+    ax.coastlines(resolution="10m", color="cyan", linewidth=0.8)
+    ax.add_feature(cfeature.BORDERS.with_scale("10m"), edgecolor="cyan", linewidth=0.5)
+    ax.add_feature(cfeature.STATES.with_scale("10m"), edgecolor="yellow", linewidth=0.5, facecolor="none")
+
+    ax.scatter(aircraft_x, aircraft_y, s=100, marker="x", color="red", zorder=10)
+    ax.text(aircraft_x + 20_000, aircraft_y + 20_000, callsign,
+            color="red", fontsize=12, zorder=10, weight="bold")
+
+    ax.set_xlim(aircraft_x - _ZOOM_PAD_METERS, aircraft_x + _ZOOM_PAD_METERS)
+    ax.set_ylim(aircraft_y - _ZOOM_PAD_METERS, aircraft_y + _ZOOM_PAD_METERS)
+    ax.set_title("GOES Clean IR Window (Band 13)")
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
 
 
 def _render_plot(
