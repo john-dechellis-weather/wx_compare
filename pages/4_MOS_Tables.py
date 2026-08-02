@@ -397,25 +397,53 @@ if run_button:
         "text-align": "center",
         "padding": "2px 6px",
     })
-    styled = styled.set_table_styles([
-        {"selector": "th",
-         "props": [
-             ("background-color", "#000000"),
-             ("color", "#00FF00"),
-             ("font-family", "Courier New, monospace"),
-             ("font-size", "12px"),
-             ("font-weight", "bold"),
-             ("text-align", "center"),
-             ("padding", "2px 6px"),
-             ("border", "1px solid #003300"),
-         ]},
-        {"selector": "td",
-         "props": [
-             ("border", "1px solid #003300"),
-         ]},
-    ])
+    # Build styled HTML directly for full CSS control
+    styled = display.style.apply(_style_dataframe, axis=None)
 
-    st.dataframe(styled, use_container_width=True, height=350)
+    # Get the HTML from pandas Styler
+    html = styled.to_html()
+
+    # Wrap in a scrollable container with our custom CSS
+    css = """
+    <style>
+    .mos-table-container {
+        overflow-x: auto;
+        max-width: 100%;
+        background: #000000;
+        padding: 4px;
+        border: 1px solid #003300;
+    }
+    .mos-table-container table {
+        border-collapse: collapse;
+        background: #000000;
+        color: #00FF00;
+        font-family: 'Courier New', monospace;
+        font-size: 9px;
+        margin: 0;
+    }
+    .mos-table-container th,
+    .mos-table-container td {
+        border: 1px solid #003300;
+        padding: 1px 2px;
+        text-align: center;
+        white-space: nowrap;
+        min-width: 42px;
+        max-width: 42px;
+    }
+    .mos-table-container th {
+        background: #001100;
+        color: #00FF00;
+        font-weight: bold;
+    }
+    .mos-table-container tr:first-child th:first-child {
+        background: #000000;
+    }
+    </style>
+    """
+
+    st.markdown(css + f'<div class="mos-table-container">{html}</div>',
+                unsafe_allow_html=True)
+
 
     # CSV download
     csv = display.to_csv(index=False).encode("utf-8")
