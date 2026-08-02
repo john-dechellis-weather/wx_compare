@@ -5,7 +5,7 @@ The actual tools live in pages/ and Streamlit auto-discovers them.
 import streamlit as st
 
 st.set_page_config(
-    page_title="Homepage",
+    page_title="BlueMet",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -22,7 +22,7 @@ apply_retro_theme()
 from auth import check_password
 check_password()
 
-st.title("Aviation Forecast Tools")
+st.title("BlueMet")
 st.markdown(
     "<p style='color: #B30000; font-size: 32px; font-weight: bold;'>"
     "IMPORTANT: Use Prohbited outside of the JetBlue SOC or for Tomorrow.io employees"
