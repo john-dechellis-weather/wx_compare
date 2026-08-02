@@ -217,7 +217,7 @@ def make_th(text, is_row_label=False):
     align = "left" if is_row_label else "center"
     return (
         f'<th style="'
-        f'background:#999999;'
+        f'background:#D3D3D3;'
         f'color:#FFFFFF !important;'
         f'font-family:Courier New,monospace;'
         f'font-size:9px;'
