@@ -146,8 +146,6 @@ def render_infrared(
     # Fill NaN with a warm value so nothing is transparent
     ir = np.where(np.isnan(ir), 300, ir)
 
-    print(f"[IR2] ir shape: {ir.shape}, min: {ir.min()}, max: {ir.max()}")
-
     # Projection info
     proj_var = ds["goes_imager_projection"]
     sat_h = float(proj_var.perspective_point_height)
@@ -168,10 +166,6 @@ def render_infrared(
     transformer = pyproj.Transformer.from_proj(wgs84, geos_proj, always_xy=True)
     aircraft_x, aircraft_y = transformer.transform(aircraft_lon, aircraft_lat)
 
-    print(f"[IR2] aircraft geo x/y: {aircraft_x}, {aircraft_y}")
-    print(f"[IR2] extent: x=[{x.min()}, {x.max()}], y=[{y.min()}, {y.max()}]")
-    print(f"[IR2] zoom: x=[{aircraft_x - _ZOOM_PAD_METERS}, {aircraft_x + _ZOOM_PAD_METERS}]")
-
     if not (np.isfinite(aircraft_x) and np.isfinite(aircraft_y)):
         raise ValueError(f"Aircraft position outside projection range")
 
@@ -188,6 +182,10 @@ def render_infrared(
         vmin=180,
         vmax=330,
     )
+
+    # Colorbar showing temperature scale
+    cbar = plt.colorbar(img, ax=ax, shrink=0.7, pad=0.02)
+    cbar.set_label("Brightness Temperature (K)")
 
     ax.coastlines(resolution="10m", color="cyan", linewidth=0.8)
     ax.add_feature(cfeature.BORDERS.with_scale("10m"), edgecolor="cyan", linewidth=0.5)
