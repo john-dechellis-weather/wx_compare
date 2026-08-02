@@ -176,7 +176,10 @@ def _fmt_time(t):
 # ---------------------------------------------------------------------------
 # Row highlighting
 # ---------------------------------------------------------------------------
-def _row_needs_highlight(row, vis_thr, cig_thr, wind_thr) -> bool:
+def _row_needs_highlight(row) -> bool:
+    vis_thr = 3
+    cig_thr = 3000
+    wind_thr = 25
     """A row triggers highlight if any product's field crosses a threshold."""
     # Visibility
     for v in (row["NBM_vis_sm"], row["LAMP_vis_sm"]):
@@ -205,7 +208,7 @@ def _row_needs_highlight(row, vis_thr, cig_thr, wind_thr) -> bool:
 # ---------------------------------------------------------------------------
 # Summary bar — find the next hour that triggers a highlight
 # ---------------------------------------------------------------------------
-def _build_summary(df_flags, vis_thr, cig_thr, wind_thr) -> str | None:
+def _build_summary(df_flags) -> str | None:
     """Return a short summary of the next low-condition window, or None."""
     now = datetime.now(timezone.utc)
     upcoming = df_flags[df_flags["valid_time"] >= now]
@@ -237,21 +240,6 @@ with st.sidebar:
         help="Single 4-letter ICAO (CONUS airports)",
     ).strip().upper()
     
-    st.divider()
-    st.header("Highlight thresholds")
-
-    vis_thr = st.slider(
-        "Visibility (sm) — flag if below",
-        min_value=0.5, max_value=6.0, value=2.0, step=0.5,
-    )
-    cig_thr = st.slider(
-        "Ceiling (ft) — flag if below",
-        min_value=200, max_value=3000, value=1000, step=100,
-    )
-    wind_thr = st.slider(
-        "Wind (kt) — flag if above (sustained or gust)",
-        min_value=10, max_value=50, value=25, step=1,
-    )
 
     st.divider()
     run_button = st.button("Refresh", type="primary", use_container_width=True)
@@ -282,14 +270,10 @@ if run_button:
         st.warning("No data returned. Station may not be in NBM/LAMP.")
         st.stop()
 
-    # Flag rows for highlighting
-    df["flagged"] = df.apply(
-        _row_needs_highlight, axis=1,
-        args=(vis_thr, cig_thr, wind_thr),
-    )
+    df["flagged"] = df.apply(_row_needs_highlight, axis=1)
 
     # Summary bar
-    summary = _build_summary(df, vis_thr, cig_thr, wind_thr)
+    ssummary = _build_summary(df)
     if summary:
         st.markdown(summary)
 
