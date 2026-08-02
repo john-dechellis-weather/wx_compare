@@ -103,8 +103,6 @@ def _fetch_and_render_product(
     import cartopy.crs as ccrs
     import cartopy.feature as cfeature
 
-    plt.switch_backend("Agg")
-
     # Query THREDDS
     query = rs.query()
     query.stations(station).time(target_time).variables(product)
