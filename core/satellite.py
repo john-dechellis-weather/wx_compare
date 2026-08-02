@@ -209,7 +209,7 @@ def _render_plot(
     fig = plt.figure(figsize=(12, 10))
     ax = plt.axes(projection=geos_crs)
 
-    # Different rendering for RGB vs 2D data
+    # Use imshow for both — same approach that works for True Color
     if image_data.ndim == 3:
         img = ax.imshow(
             image_data,
@@ -219,16 +219,20 @@ def _render_plot(
             interpolation="nearest",
         )
     else:
+        # 2D data (IR) — use imshow with cmap
+        # Fill NaN with vmin so it renders as coldest color rather than transparent
         img_data = np.array(image_data, dtype=float)
         if vmin is not None:
             img_data = np.where(np.isnan(img_data), vmin, img_data)
-        img = ax.pcolormesh(
-            x, y[::-1], img_data[::-1, :],
+        img = ax.imshow(
+            img_data,
+            origin="upper",
+            extent=[x.min(), x.max(), y.min(), y.max()],
             transform=geos_crs,
             cmap=cmap,
             vmin=vmin,
             vmax=vmax,
-            shading="auto",
+            interpolation="nearest",
         )
 
     if add_colorbar and cbar_label is not None:
