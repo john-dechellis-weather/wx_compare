@@ -1,12 +1,9 @@
-"""MOS Tables — hourly NBM + GFS LAMP for one airport.
-
-Transposed layout: time runs across columns, fields run down rows.
-Aviation-category tiered color coding.
-"""
+"""MOS Tables — hourly NBM + GFS LAMP for one airport."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from html import escape
 
 import pandas as pd
 import streamlit as st
@@ -48,29 +45,25 @@ def cached_mos_tables(icao: str, cycle_iso: str) -> pd.DataFrame:
     lamp = df[df["model"] == "GFS_LAMP"].set_index("valid_time")
 
     all_times = sorted(set(nbm.index).union(set(lamp.index)))
-    if not all_times:
-        return pd.DataFrame()
-
     rows = []
     for t in all_times:
         n = nbm.loc[t] if t in nbm.index else None
         l = lamp.loc[t] if t in lamp.index else None
         fhr = int((t - cycle).total_seconds() // 3600)
         rows.append({
-            "valid_time": t,
-            "fhr": fhr,
-            "NBM_vis_sm": _safe_get(n, "vsby_sm"),
-            "LAMP_vis_sm": _safe_get(l, "vsby_sm"),
-            "NBM_cig_ft": _safe_get(n, "ceiling_ft"),
-            "NBM_cig_unl": _safe_get(n, "ceiling_unlimited"),
-            "LAMP_cig_ft": _safe_get(l, "ceiling_ft"),
-            "LAMP_cig_unl": _safe_get(l, "ceiling_unlimited"),
-            "NBM_wind_dir": _safe_get(n, "wind_dir_deg"),
-            "NBM_wind_spd": _safe_get(n, "wind_speed_kt"),
-            "NBM_wind_gst": _safe_get(n, "wind_gust_kt"),
-            "LAMP_wind_dir": _safe_get(l, "wind_dir_deg"),
-            "LAMP_wind_spd": _safe_get(l, "wind_speed_kt"),
-            "LAMP_wind_gst": _safe_get(l, "wind_gust_kt"),
+            "valid_time": t, "fhr": fhr,
+            "NBM_vis_sm": _safe(n, "vsby_sm"),
+            "LAMP_vis_sm": _safe(l, "vsby_sm"),
+            "NBM_cig_ft": _safe(n, "ceiling_ft"),
+            "NBM_cig_unl": _safe(n, "ceiling_unlimited"),
+            "LAMP_cig_ft": _safe(l, "ceiling_ft"),
+            "LAMP_cig_unl": _safe(l, "ceiling_unlimited"),
+            "NBM_wind_dir": _safe(n, "wind_dir_deg"),
+            "NBM_wind_spd": _safe(n, "wind_speed_kt"),
+            "NBM_wind_gst": _safe(n, "wind_gust_kt"),
+            "LAMP_wind_dir": _safe(l, "wind_dir_deg"),
+            "LAMP_wind_spd": _safe(l, "wind_speed_kt"),
+            "LAMP_wind_gst": _safe(l, "wind_gust_kt"),
         })
     return pd.DataFrame(rows)
 
@@ -85,7 +78,6 @@ def cached_latest_cycle_mos(icao: str) -> str | None:
     resolved_pre, _ = resolver.resolve_many([icao])
     if not resolved_pre:
         return None
-
     probe_sources = [
         Nbm(cache_dir=CACHE_ROOT / "nbm"),
         GfsLamp(cache_dir=CACHE_ROOT / "gfs_lamp"),
@@ -94,7 +86,7 @@ def cached_latest_cycle_mos(icao: str) -> str | None:
     return cycle.isoformat() if cycle else None
 
 
-def _safe_get(row, col):
+def _safe(row, col):
     if row is None:
         return None
     try:
@@ -106,76 +98,124 @@ def _safe_get(row, col):
     return v
 
 
-def _fmt_vis(v):
+def fmt_vis(v):
     if v is None or pd.isna(v):
-        return "—"
+        return "-"
     if v == int(v):
         return f"{int(v)}"
     return f"{v:g}"
 
 
-def _fmt_cig(cig, unl):
+def fmt_cig(cig, unl):
     if unl is True:
         return "UNL"
     if cig is None or pd.isna(cig):
-        return "—"
-    hundreds = int(round(cig / 100))
-    return f"{hundreds:03d}"
+        return "-"
+    return f"{int(round(cig / 100)):03d}"
 
 
-def _fmt_wind(dir_deg, spd_kt, gst_kt):
-    if spd_kt is None or pd.isna(spd_kt):
-        return "—"
-    if dir_deg is not None and not pd.isna(dir_deg):
-        d = f"{int(dir_deg):03d}"
-    else:
-        d = "VRB"
-    s = f"{int(spd_kt):02d}"
-    if gst_kt is not None and not pd.isna(gst_kt):
-        g = f"G{int(gst_kt):02d}"
-    else:
-        g = ""
+def fmt_wind(dr, sp, gs):
+    if sp is None or pd.isna(sp):
+        return "-"
+    d = f"{int(dr):03d}" if (dr is not None and not pd.isna(dr)) else "VRB"
+    s = f"{int(sp):02d}"
+    g = f"G{int(gs):02d}" if (gs is not None and not pd.isna(gs)) else ""
     return f"{d}{s}{g}KT"
 
 
-def _fmt_time(t):
-    return pd.to_datetime(t).strftime("%m/%d %HZ")
+def vis_bg(v):
+    if v is None or pd.isna(v): return None
+    if v <= 0.5: return ("#660066", "#FF80FF")
+    if v < 1: return ("#660000", "#FF3333")
+    if v < 2: return ("#663300", "#FF8000")
+    if v < 3: return ("#666600", "#FFFF00")
+    return None
 
 
-def _row_needs_highlight(row) -> bool:
+def cig_bg(c, u):
+    if u is True or c is None or pd.isna(c): return None
+    if c < 400: return ("#660066", "#FF80FF")
+    if c <= 1000: return ("#660000", "#FF3333")
+    if c <= 2000: return ("#663300", "#FF8000")
+    if c < 3000: return ("#666600", "#FFFF00")
+    return None
+
+
+def wind_bg(s, g):
+    vals = [x for x in (s, g) if x is not None and not pd.isna(x)]
+    if not vals: return None
+    w = max(vals)
+    if w >= 40: return ("#660066", "#FF80FF")
+    if w >= 35: return ("#660000", "#FF3333")
+    if w >= 30: return ("#663300", "#FF8000")
+    if w >= 25: return ("#666600", "#FFFF00")
+    return None
+
+
+def row_flagged(row):
     for v in (row["NBM_vis_sm"], row["LAMP_vis_sm"]):
         if v is not None and not pd.isna(v) and v < 3:
             return True
-    for cig, unl in [
-        (row["NBM_cig_ft"], row["NBM_cig_unl"]),
-        (row["LAMP_cig_ft"], row["LAMP_cig_unl"]),
-    ]:
-        if unl is True:
-            continue
-        if cig is not None and not pd.isna(cig) and cig < 3000:
+    for c, u in [(row["NBM_cig_ft"], row["NBM_cig_unl"]),
+                 (row["LAMP_cig_ft"], row["LAMP_cig_unl"])]:
+        if u is True: continue
+        if c is not None and not pd.isna(c) and c < 3000:
             return True
-    for spd, gst in [
-        (row["NBM_wind_spd"], row["NBM_wind_gst"]),
-        (row["LAMP_wind_spd"], row["LAMP_wind_gst"]),
-    ]:
-        for w in (spd, gst):
+    for s, g in [(row["NBM_wind_spd"], row["NBM_wind_gst"]),
+                 (row["LAMP_wind_spd"], row["LAMP_wind_gst"])]:
+        for w in (s, g):
             if w is not None and not pd.isna(w) and w >= 25:
                 return True
     return False
 
 
-def _build_summary(df_flags) -> str | None:
+def build_summary(df):
     now = datetime.now(timezone.utc)
-    upcoming = df_flags[df_flags["valid_time"] >= now]
-    if len(upcoming) == 0:
-        return None
-    hits = upcoming[upcoming["flagged"]]
+    up = df[df["valid_time"] >= now]
+    if len(up) == 0: return None
+    hits = up[up["flagged"]]
     if len(hits) == 0:
-        return "No low-condition periods forecast in the visible window."
-    first = hits.iloc[0]
+        return "No low-condition periods forecast."
+    f = hits.iloc[0]
+    t = pd.to_datetime(f['valid_time'])
+    return f"⚠ Next low-condition period starts at **{t:%m/%d %HZ}** (f+{int(f['fhr'])})"
+
+
+def make_cell(text, bg="#000000", fg="#00FF00"):
+    """Return a <td> with fully specified inline styles."""
     return (
-        f"⚠ Next low-condition period starts at "
-        f"**{_fmt_time(first['valid_time'])}** (f+{int(first['fhr'])})"
+        f'<td style="'
+        f'background:{bg};'
+        f'color:{fg};'
+        f'font-family:Courier New,monospace;'
+        f'font-size:9px;'
+        f'padding:2px 3px;'
+        f'text-align:center;'
+        f'border:1px solid #003300;'
+        f'white-space:nowrap;'
+        f'min-width:38px;'
+        f'max-width:38px;'
+        f'">{escape(str(text))}</td>'
+    )
+
+
+def make_th(text, is_row_label=False):
+    """Return a <th>."""
+    min_w = "60px" if is_row_label else "38px"
+    align = "left" if is_row_label else "center"
+    return (
+        f'<th style="'
+        f'background:#002200;'
+        f'color:#00FF00;'
+        f'font-family:Courier New,monospace;'
+        f'font-size:9px;'
+        f'font-weight:bold;'
+        f'padding:2px 4px;'
+        f'text-align:{align};'
+        f'border:1px solid #003300;'
+        f'white-space:nowrap;'
+        f'min-width:{min_w};'
+        f'">{escape(str(text))}</th>'
     )
 
 
@@ -184,15 +224,9 @@ st.caption("Side-by-side hourly NBM + GFS LAMP for one airport.")
 
 with st.sidebar:
     st.header("Airport")
-    icao_input = st.text_input(
-        "ICAO code",
-        value="KJFK",
-        max_chars=4,
-    ).strip().upper()
-
+    icao_input = st.text_input("ICAO code", value="KJFK", max_chars=4).strip().upper()
     st.divider()
     run_button = st.button("Refresh", type="primary", use_container_width=True)
-
     st.divider()
     st.caption(
         "**Color coding:**\n\n"
@@ -208,11 +242,10 @@ if run_button:
         st.error("Enter a 4-letter ICAO code.")
         st.stop()
 
-    with st.spinner("Probing NOMADS for latest complete cycle..."):
+    with st.spinner("Probing NOMADS..."):
         cycle_iso = cached_latest_cycle_mos(icao_input)
-
     if cycle_iso is None:
-        st.error("No complete cycle found within recent probes.")
+        st.error("No complete cycle found.")
         st.stop()
 
     cycle = datetime.fromisoformat(cycle_iso)
@@ -222,227 +255,129 @@ if run_button:
         df = cached_mos_tables(icao_input, cycle_iso)
 
     if len(df) == 0:
-        st.warning("No data returned. Station may not be in NBM/LAMP.")
+        st.warning("No data returned.")
         st.stop()
 
-    df["flagged"] = df.apply(_row_needs_highlight, axis=1)
-
-    summary = _build_summary(df)
+    df["flagged"] = df.apply(row_flagged, axis=1)
+    summary = build_summary(df)
     if summary:
         st.markdown(summary)
 
-    df_clipped = df[df["fhr"] <= 25].copy()
-
-    if len(df_clipped) == 0:
-        st.warning("No data in the 0-25 hour overlap window.")
+    df_c = df[df["fhr"] <= 25].copy()
+    if len(df_c) == 0:
+        st.warning("No data in overlap window.")
         st.stop()
 
-    time_cols = [f"{t:%m/%d %HZ}" for t in df_clipped["valid_time"]]
+    # Build table row by row as raw HTML strings
+    times = df_c["valid_time"].tolist()
+    fhrs = df_c["fhr"].tolist()
 
-    row_fhr = [f"f+{int(f)}" for f in df_clipped["fhr"]]
-    row_nbm_vis = [_fmt_vis(v) for v in df_clipped["NBM_vis_sm"]]
-    row_lamp_vis = [_fmt_vis(v) for v in df_clipped["LAMP_vis_sm"]]
-    row_nbm_cig = [_fmt_cig(c, u) for c, u in zip(
-        df_clipped["NBM_cig_ft"], df_clipped["NBM_cig_unl"])]
-    row_lamp_cig = [_fmt_cig(c, u) for c, u in zip(
-        df_clipped["LAMP_cig_ft"], df_clipped["LAMP_cig_unl"])]
-    row_nbm_wind = [_fmt_wind(d, s, g) for d, s, g in zip(
-        df_clipped["NBM_wind_dir"],
-        df_clipped["NBM_wind_spd"],
-        df_clipped["NBM_wind_gst"])]
-    row_lamp_wind = [_fmt_wind(d, s, g) for d, s, g in zip(
-        df_clipped["LAMP_wind_dir"],
-        df_clipped["LAMP_wind_spd"],
-        df_clipped["LAMP_wind_gst"])]
-
-    display = pd.DataFrame({
-        col: [
-            row_fhr[i],
-            row_nbm_vis[i], row_lamp_vis[i],
-            row_nbm_cig[i], row_lamp_cig[i],
-            row_nbm_wind[i], row_lamp_wind[i],
-        ]
-        for i, col in enumerate(time_cols)
-    }, index=[
-        "F+ hour",
-        "NBM VIS", "LAMP VIS",
-        "NBM CIG", "LAMP CIG",
-        "NBM Wind", "LAMP Wind",
-    ])
-
-    _PINK   = "background-color: #660066; color: #FF80FF;"
-    _RED    = "background-color: #660000; color: #FF3333;"
-    _ORANGE = "background-color: #663300; color: #FF8000;"
-    _YELLOW = "background-color: #666600; color: #FFFF00;"
-
-    def _vis_style(v):
-        if v is None or pd.isna(v):
-            return ""
-        if v <= 0.5: return _PINK
-        if v < 1:    return _RED
-        if v < 2:    return _ORANGE
-        if v < 3:    return _YELLOW
-        return ""
-
-    def _cig_style(cig, unl):
-        if unl is True or cig is None or pd.isna(cig):
-            return ""
-        if cig < 400:   return _PINK
-        if cig <= 1000: return _RED
-        if cig <= 2000: return _ORANGE
-        if cig < 3000:  return _YELLOW
-        return ""
-
-    def _wind_style(spd, gst):
-        vals = [x for x in (spd, gst) if x is not None and not pd.isna(x)]
-        if not vals:
-            return ""
-        worst = max(vals)
-        if worst >= 40: return _PINK
-        if worst >= 35: return _RED
-        if worst >= 30: return _ORANGE
-        if worst >= 25: return _YELLOW
-        return ""
-
-    def _cell_style(row_label, col_idx):
-        r = df_clipped.iloc[col_idx]
-        if row_label == "NBM VIS":
-            return _vis_style(r["NBM_vis_sm"])
-        if row_label == "LAMP VIS":
-            return _vis_style(r["LAMP_vis_sm"])
-        if row_label == "NBM CIG":
-            return _cig_style(r["NBM_cig_ft"], r["NBM_cig_unl"])
-        if row_label == "LAMP CIG":
-            return _cig_style(r["LAMP_cig_ft"], r["LAMP_cig_unl"])
-        if row_label == "NBM Wind":
-            return _wind_style(r["NBM_wind_spd"], r["NBM_wind_gst"])
-        if row_label == "LAMP Wind":
-            return _wind_style(r["LAMP_wind_spd"], r["LAMP_wind_gst"])
-        return ""
-
-    def _style_dataframe(df_to_style):
-        styles = pd.DataFrame(
-            "", index=df_to_style.index, columns=df_to_style.columns
+    # Header row
+    header_cells = [make_th("Field", is_row_label=True)]
+    for t in times:
+        tstr = pd.to_datetime(t).strftime("%m/%d<br>%HZ")
+        header_cells.append(
+            f'<th style="background:#002200;color:#00FF00;'
+            f'font-family:Courier New,monospace;font-size:9px;font-weight:bold;'
+            f'padding:2px 3px;text-align:center;border:1px solid #003300;'
+            f'white-space:nowrap;min-width:38px;max-width:38px;">{tstr}</th>'
         )
-        for row_label in df_to_style.index:
-            for col_idx, col_name in enumerate(df_to_style.columns):
-                styles.loc[row_label, col_name] = _cell_style(row_label, col_idx)
-        return styles
+    header_row = "<tr>" + "".join(header_cells) + "</tr>"
 
-    styled = display.style.apply(_style_dataframe, axis=None)
+    # F+ row
+    fhr_cells = [make_th("F+", is_row_label=True)]
+    for f in fhrs:
+        fhr_cells.append(make_cell(f"f+{int(f)}"))
+    fhr_row = "<tr>" + "".join(fhr_cells) + "</tr>"
 
-    # Wrap with CSS + render as HTML directly (bypasses Streamlit widget)
-    # Build HTML by hand with inline styles on every cell (bypasses both
-    # pandas Styler's <style> block and retro_theme's !important overrides)
-    from html import escape
+    # NBM VIS row
+    nbm_vis_cells = [make_th("NBM VIS", is_row_label=True)]
+    for v in df_c["NBM_vis_sm"]:
+        colors = vis_bg(v)
+        if colors:
+            nbm_vis_cells.append(make_cell(fmt_vis(v), colors[0], colors[1]))
+        else:
+            nbm_vis_cells.append(make_cell(fmt_vis(v)))
+    nbm_vis_row = "<tr>" + "".join(nbm_vis_cells) + "</tr>"
 
-    def _cell_html(row_label, col_idx, value):
-        style_str = _cell_style(row_label, col_idx)
-        base = (
-            "background-color: #000000 !important; "
-            "font-family: 'Courier New', monospace !important; "
-            "font-size: 8px !important; "
-            "padding: 1px 2px !important; "
-            "text-align: center !important; "
-            "border: 1px solid #003300 !important; "
-            "white-space: nowrap !important; "
-            "min-width: 32px !important; "
-            "max-width: 32px !important;"
-        )
-        # Default text color (green)
-        text_color = "#00FF00"
-        cell_bg = ""
-        # If tier violation, parse colors from _cell_style
-        if style_str:
-            # style_str looks like "background-color: #660000; color: #FF3333;"
-            for part in style_str.split(";"):
-                part = part.strip()
-                if part.startswith("background-color:"):
-                    cell_bg = part.split(":", 1)[1].strip()
-                elif part.startswith("color:"):
-                    text_color = part.split(":", 1)[1].strip()
+    # LAMP VIS row
+    lamp_vis_cells = [make_th("LAMP VIS", is_row_label=True)]
+    for v in df_c["LAMP_vis_sm"]:
+        colors = vis_bg(v)
+        if colors:
+            lamp_vis_cells.append(make_cell(fmt_vis(v), colors[0], colors[1]))
+        else:
+            lamp_vis_cells.append(make_cell(fmt_vis(v)))
+    lamp_vis_row = "<tr>" + "".join(lamp_vis_cells) + "</tr>"
 
-        # Cell background — either black or tier color
-        if cell_bg:
-            base = base.replace("background-color: #000000", f"background-color: {cell_bg}")
+    # NBM CIG row
+    nbm_cig_cells = [make_th("NBM CIG", is_row_label=True)]
+    for c, u in zip(df_c["NBM_cig_ft"], df_c["NBM_cig_unl"]):
+        colors = cig_bg(c, u)
+        if colors:
+            nbm_cig_cells.append(make_cell(fmt_cig(c, u), colors[0], colors[1]))
+        else:
+            nbm_cig_cells.append(make_cell(fmt_cig(c, u)))
+    nbm_cig_row = "<tr>" + "".join(nbm_cig_cells) + "</tr>"
 
-        # Wrap text in a <span> with explicit color to defeat any inherited black
-        text_html = (
-            f'<span style="color: {text_color} !important; '
-            f'font-family: Courier New, monospace !important; '
-            f'font-size: 8px !important;">{escape(str(value))}</span>'
-        )
-        return f'<td style="{base}">{text_html}</td>'
+    # LAMP CIG row
+    lamp_cig_cells = [make_th("LAMP CIG", is_row_label=True)]
+    for c, u in zip(df_c["LAMP_cig_ft"], df_c["LAMP_cig_unl"]):
+        colors = cig_bg(c, u)
+        if colors:
+            lamp_cig_cells.append(make_cell(fmt_cig(c, u), colors[0], colors[1]))
+        else:
+            lamp_cig_cells.append(make_cell(fmt_cig(c, u)))
+    lamp_cig_row = "<tr>" + "".join(lamp_cig_cells) + "</tr>"
 
-    # Build the table row by row
-    header_style = (
-        "background-color: #001100 !important; "
-        "color: #00FF00 !important; "
-        "font-family: 'Courier New', monospace !important; "
-        "font-size: 8px !important; "
-        "font-weight: bold !important; "
-        "padding: 1px 2px !important; "
-        "text-align: center !important; "
-        "border: 1px solid #003300 !important; "
-        "white-space: nowrap !important; "
-        "min-width: 32px !important; "
-        "max-width: 32px !important;"
-    )
-    row_label_style = (
-        "background-color: #001100 !important; "
-        "color: #00FF00 !important; "
-        "font-family: 'Courier New', monospace !important; "
-        "font-size: 8px !important; "
-        "font-weight: bold !important; "
-        "padding: 1px 4px !important; "
-        "text-align: left !important; "
-        "border: 1px solid #003300 !important; "
-        "white-space: nowrap !important; "
-        "min-width: 55px !important;"
-    )
+    # NBM Wind row
+    nbm_wind_cells = [make_th("NBM Wind", is_row_label=True)]
+    for d, s, g in zip(df_c["NBM_wind_dir"], df_c["NBM_wind_spd"], df_c["NBM_wind_gst"]):
+        colors = wind_bg(s, g)
+        if colors:
+            nbm_wind_cells.append(make_cell(fmt_wind(d, s, g), colors[0], colors[1]))
+        else:
+            nbm_wind_cells.append(make_cell(fmt_wind(d, s, g)))
+    nbm_wind_row = "<tr>" + "".join(nbm_wind_cells) + "</tr>"
 
-    header_cells = "".join(
-        f'<th style="{header_style}"><span style="color: #00FF00 !important; '
-        f'font-family: Courier New, monospace !important;">{escape(col)}</span></th>'
-        for col in display.columns
-    )
-    header_row = (
-        f'<tr><th style="{row_label_style}">'
-        f'<span style="color: #00FF00 !important;">Field</span></th>{header_cells}</tr>'
-    )
-
-    data_rows = []
-    for row_idx, row_label in enumerate(display.index):
-        row_values = display.iloc[row_idx].tolist()
-        cells = "".join(
-            _cell_html(row_label, col_idx, val)
-            for col_idx, val in enumerate(row_values)
-        )
-        data_rows.append(
-            f'<tr><th style="{row_label_style}">'
-            f'<span style="color: #00FF00 !important;">{escape(row_label)}</span>'
-            f'</th>{cells}</tr>'
-        )
+    # LAMP Wind row
+    lamp_wind_cells = [make_th("LAMP Wind", is_row_label=True)]
+    for d, s, g in zip(df_c["LAMP_wind_dir"], df_c["LAMP_wind_spd"], df_c["LAMP_wind_gst"]):
+        colors = wind_bg(s, g)
+        if colors:
+            lamp_wind_cells.append(make_cell(fmt_wind(d, s, g), colors[0], colors[1]))
+        else:
+            lamp_wind_cells.append(make_cell(fmt_wind(d, s, g)))
+    lamp_wind_row = "<tr>" + "".join(lamp_wind_cells) + "</tr>"
 
     table_html = (
-        '<div style="overflow-x: auto; background: #000000; '
-        'padding: 4px; border: 1px solid #003300;">'
-        '<table style="border-collapse: collapse; margin: 0;">'
+        '<div style="overflow-x:auto;background:#000;padding:4px;border:1px solid #003300;">'
+        '<table style="border-collapse:collapse;margin:0;">'
         f'<thead>{header_row}</thead>'
-        f'<tbody>{"".join(data_rows)}</tbody>'
+        f'<tbody>{fhr_row}{nbm_vis_row}{lamp_vis_row}{nbm_cig_row}{lamp_cig_row}{nbm_wind_row}{lamp_wind_row}</tbody>'
         '</table>'
         '</div>'
     )
 
     st.markdown(table_html, unsafe_allow_html=True)
 
-    csv = display.to_csv().encode("utf-8")
+    # CSV
+    csv_df = pd.DataFrame({
+        "time": [pd.to_datetime(t).strftime("%Y-%m-%d %H:%MZ") for t in df_c["valid_time"]],
+        "fhr": df_c["fhr"].tolist(),
+        "NBM_vis": [fmt_vis(v) for v in df_c["NBM_vis_sm"]],
+        "LAMP_vis": [fmt_vis(v) for v in df_c["LAMP_vis_sm"]],
+        "NBM_cig": [fmt_cig(c, u) for c, u in zip(df_c["NBM_cig_ft"], df_c["NBM_cig_unl"])],
+        "LAMP_cig": [fmt_cig(c, u) for c, u in zip(df_c["LAMP_cig_ft"], df_c["LAMP_cig_unl"])],
+        "NBM_wind": [fmt_wind(d, s, g) for d, s, g in zip(df_c["NBM_wind_dir"], df_c["NBM_wind_spd"], df_c["NBM_wind_gst"])],
+        "LAMP_wind": [fmt_wind(d, s, g) for d, s, g in zip(df_c["LAMP_wind_dir"], df_c["LAMP_wind_spd"], df_c["LAMP_wind_gst"])],
+    })
     st.download_button(
-        label="Download as CSV",
-        data=csv,
-        file_name=f"mos_tables_{icao_input}_{cycle:%Y%m%d_%H}Z.csv",
-        mime="text/csv",
+        "Download as CSV",
+        csv_df.to_csv(index=False).encode("utf-8"),
+        f"mos_tables_{icao_input}_{cycle:%Y%m%d_%H}Z.csv",
+        "text/csv",
     )
 
 else:
-    st.info("Enter an ICAO code in the sidebar and click **Refresh**.")
+    st.info("Enter an ICAO code and click Refresh.")
