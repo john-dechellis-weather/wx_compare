@@ -45,7 +45,7 @@ def fetch_and_render_radar(
     radar_ref = datasets["NEXRAD Level III Radar from IDD"]
     rs = RadarServer(radar_ref.follow().catalog_url)
 
-    # Fetch and render each product
+    # Fetch reflectivity
     refl_png, refl_time = _fetch_and_render_product(
         rs=rs,
         target_time=target_time,
@@ -59,18 +59,34 @@ def fetch_and_render_radar(
         cbar_label="Reflectivity (dBZ)",
     )
 
-    vel_png, vel_time = _fetch_and_render_product(
-        rs=rs,
-        target_time=target_time,
-        aircraft_lat=aircraft_lat,
-        aircraft_lon=aircraft_lon,
-        callsign=callsign,
-        station=station,
-        product="N0U",
-        zoom_deg=zoom_deg,
-        title_prefix="Base Velocity",
-        cbar_label="Velocity (kt)",
-    )
+    # Try multiple velocity product codes in order until one works
+    vel_png = None
+    vel_time = "not available"
+    vel_error = None
+    for vel_product in ["N0U", "N0V", "NBU", "N0S"]:
+        try:
+            vel_png, vel_time = _fetch_and_render_product(
+                rs=rs,
+                target_time=target_time,
+                aircraft_lat=aircraft_lat,
+                aircraft_lon=aircraft_lon,
+                callsign=callsign,
+                station=station,
+                product=vel_product,
+                zoom_deg=zoom_deg,
+                title_prefix=f"Base Velocity ({vel_product})",
+                cbar_label="Velocity (kt)",
+            )
+            break  # Success, stop trying
+        except Exception as e:
+            vel_error = str(e)
+            continue
+
+    if vel_png is None:
+        print(f"[RADAR] All velocity products failed. Last error: {vel_error}")
+        # Return placeholder — reflectivity still works
+        vel_png = b""
+        vel_time = f"Not available (tried N0U/N0V/NBU/N0S)"
 
     return refl_png, vel_png, refl_time, vel_time
 

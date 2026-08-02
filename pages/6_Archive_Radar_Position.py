@@ -139,10 +139,19 @@ if run_button:
             st.error(f"Failed to fetch/render: {e}")
             st.stop()
 
-    st.subheader("Base Reflectivity (N0B)")
-    st.caption(f"Dataset: `{refl_time}`")
-    st.image(refl_png, use_container_width=True)
-
+    st.subheader("Base Velocity")
+    st.caption(f"Dataset: `{vel_time}`")
+    if vel_png:
+        st.image(vel_png, use_container_width=True)
+        st.download_button(
+            label="Download Velocity PNG",
+            data=vel_png,
+            file_name=f"radar_vel_{callsign}_K{station_code}_{request_time:%Y%m%d_%H%M}Z.png",
+            mime="image/png",
+        )
+    else:
+        st.warning("Velocity product not available for this radar/time.")
+        
     st.download_button(
         label="Download Reflectivity PNG",
         data=refl_png,
