@@ -241,17 +241,32 @@ def _render_plot(
     fig = plt.figure(figsize=(12, 10))
     ax = plt.axes(projection=geos_crs)
 
-    # Plot the imagery
-    img = ax.imshow(
-        image_data,
-        origin="upper",
-        extent=[x.min(), x.max(), y.min(), y.max()],
-        transform=geos_crs,
-        cmap=cmap,
-        vmin=vmin,
-        vmax=vmax,
-        interpolation="nearest",
-    )
+    # Plot the imagery — different approach for 2D vs 3D data
+    if image_data.ndim == 3:
+        # RGB image — use imshow
+        img = ax.imshow(
+            image_data,
+            origin="upper",
+            extent=[x.min(), x.max(), y.min(), y.max()],
+            transform=geos_crs,
+            interpolation="nearest",
+        )
+    else:
+        # 2D scalar data — use pcolormesh for explicit coordinate handling
+        # Fill any NaN with the minimum value so pixels always render
+        img_data = np.array(image_data, dtype=float)
+        if vmin is not None:
+            img_data = np.where(np.isnan(img_data), vmin, img_data)
+
+        # pcolormesh needs Y in ascending order for correct display
+        img = ax.pcolormesh(
+            x, y[::-1], img_data[::-1, :],
+            transform=geos_crs,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            shading="auto",
+        )
 
     # Colorbar (only for IR)
     if add_colorbar and cbar_label is not None:
