@@ -179,13 +179,16 @@ def build_summary(df):
     t = pd.to_datetime(f['valid_time'])
     return f"⚠ Next low-condition period starts at **{t:%m/%d %HZ}** (f+{int(f['fhr'])})"
 
-def make_cell(text, bg="#ffffff", fg="#FFFFFF"):
+def make_cell(text, bg="#FFFFFF", fg="#FFFFFF"):
+    # Bold only if this cell has a tier color (bg is not the default black)
+    weight = "bold" if bg != "#000000" else "normal"
     return (
         f'<td style="'
         f'background:{bg};'
         f'color:{fg} !important;'
         f'font-family:Courier New,monospace;'
-        f'font-size:12px;'
+        f'font-size:9px;'
+        f'font-weight:{weight};'
         f'padding:2px 3px;'
         f'text-align:center;'
         f'border:1px solid #003300;'
@@ -194,6 +197,7 @@ def make_cell(text, bg="#ffffff", fg="#FFFFFF"):
         f'max-width:38px;'
         f'">{escape(str(text))}</td>'
     )
+
     return (
         f'<td style="'
         f'background:{bg};'
