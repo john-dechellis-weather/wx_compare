@@ -147,7 +147,20 @@ def render_infrared(
     callsign: str,
 ) -> bytes:
     """Render Clean IR (Band 13) plot with aircraft marker. Returns PNG bytes."""
-    ir = np.ma.masked_invalid(ds["CMI_C13"].values)
+    # DIAGNOSTICS
+    ir_raw = ds["CMI_C13"].values
+    print(f"[IR DEBUG] CMI_C13 shape: {ir_raw.shape}")
+    print(f"[IR DEBUG] CMI_C13 dtype: {ir_raw.dtype}")
+    print(f"[IR DEBUG] CMI_C13 valid count: {np.sum(~np.isnan(ir_raw))}")
+    print(f"[IR DEBUG] CMI_C13 nan count: {np.sum(np.isnan(ir_raw))}")
+    print(f"[IR DEBUG] CMI_C13 min: {np.nanmin(ir_raw)}, max: {np.nanmax(ir_raw)}")
+    print(f"[IR DEBUG] ds x shape: {ds['x'].values.shape}")
+    print(f"[IR DEBUG] ds y shape: {ds['y'].values.shape}")
+    # Compare to True Color band shape
+    r_raw = ds["CMI_C02"].values
+    print(f"[IR DEBUG] CMI_C02 (Red) shape: {r_raw.shape}")
+
+    ir = np.ma.masked_invalid(ir_raw)
 
     return _render_plot(
         ds=ds,
