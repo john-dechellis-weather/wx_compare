@@ -332,47 +332,92 @@ if run_button:
     styled = display.style.apply(_style_dataframe, axis=None)
 
     # Wrap with CSS + render as HTML directly (bypasses Streamlit widget)
-    table_css = """
-    <style>
-    .mos-wrap {
-        overflow-x: auto;
-        background: #000000;
-        padding: 4px;
-        border: 1px solid #003300;
-    }
-    .mos-wrap table {
-        border-collapse: collapse;
-        font-family: 'Courier New', monospace;
-        font-size: 8px;
-        background: #000000;
-        color: #00FF00;
-        margin: 0;
-    }
-    .mos-wrap th, .mos-wrap td {
-        border: 1px solid #003300;
-        padding: 1px 2px;
-        text-align: center;
-        white-space: nowrap;
-        min-width: 32px;
-        max-width: 32px;
-        color: #00FF00;
-    }
-    .mos-wrap thead th {
-        background: #001100;
-        font-weight: bold;
-    }
-    .mos-wrap tbody th {
-        background: #001100;
-        text-align: left;
-        min-width: 60px;
-        padding: 1px 4px;
-    }
-    </style>
-    """
+    # Build HTML by hand with inline styles on every cell (bypasses both
+    # pandas Styler's <style> block and retro_theme's !important overrides)
+    from html import escape
 
-    html = styled.to_html()
-    st.markdown(table_css + f'<div class="mos-wrap">{html}</div>',
-                unsafe_allow_html=True)
+    def _cell_html(row_label, col_idx, value):
+        style_str = _cell_style(row_label, col_idx)
+        # Default: green on black, use !important to beat retro theme
+        base = (
+            "background-color: #000000 !important; "
+            "color: #00FF00 !important; "
+            "font-family: 'Courier New', monospace !important; "
+            "font-size: 8px !important; "
+            "padding: 1px 2px !important; "
+            "text-align: center !important; "
+            "border: 1px solid #003300 !important; "
+            "white-space: nowrap !important; "
+            "min-width: 32px !important; "
+            "max-width: 32px !important;"
+        )
+        # Tier styles override the default bg/color with their own
+        if style_str:
+            # Convert pandas Styler CSS to have !important
+            tier_important = style_str.replace(
+                ";", " !important;"
+            ).replace("!important !important", "!important")
+            return f'<td style="{base} {tier_important}">{escape(str(value))}</td>'
+        return f'<td style="{base}">{escape(str(value))}</td>'
+
+    # Build the table row by row
+    header_style = (
+        "background-color: #001100 !important; "
+        "color: #00FF00 !important; "
+        "font-family: 'Courier New', monospace !important; "
+        "font-size: 8px !important; "
+        "font-weight: bold !important; "
+        "padding: 1px 2px !important; "
+        "text-align: center !important; "
+        "border: 1px solid #003300 !important; "
+        "white-space: nowrap !important; "
+        "min-width: 32px !important; "
+        "max-width: 32px !important;"
+    )
+    row_label_style = (
+        "background-color: #001100 !important; "
+        "color: #00FF00 !important; "
+        "font-family: 'Courier New', monospace !important; "
+        "font-size: 8px !important; "
+        "font-weight: bold !important; "
+        "padding: 1px 4px !important; "
+        "text-align: left !important; "
+        "border: 1px solid #003300 !important; "
+        "white-space: nowrap !important; "
+        "min-width: 55px !important;"
+    )
+
+    # Header row
+    header_cells = "".join(
+        f'<th style="{header_style}">{escape(col)}</th>'
+        for col in display.columns
+    )
+    header_row = f'<tr><th style="{row_label_style}">Field</th>{header_cells}</tr>'
+
+    # Data rows
+    data_rows = []
+    for row_label in display.index:
+        cells = "".join(
+            _cell_html(row_label, col_idx, display.iloc[
+                display.index.get_loc(row_label), col_idx
+            ])
+            for col_idx in range(len(display.columns))
+        )
+        data_rows.append(
+            f'<tr><th style="{row_label_style}">{escape(row_label)}</th>{cells}</tr>'
+        )
+
+    table_html = (
+        '<div style="overflow-x: auto; background: #000000; '
+        'padding: 4px; border: 1px solid #003300;">'
+        '<table style="border-collapse: collapse; margin: 0;">'
+        f'<thead>{header_row}</thead>'
+        f'<tbody>{"".join(data_rows)}</tbody>'
+        '</table>'
+        '</div>'
+    )
+
+    st.markdown(table_html, unsafe_allow_html=True)
 
     csv = display.to_csv().encode("utf-8")
     st.download_button(
