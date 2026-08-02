@@ -204,6 +204,18 @@ def _render_plot(
     x = ds["x"].values * sat_h
     y = ds["y"].values * sat_h
 
+    # If the image data doesn't match the dataset x/y shape (multi-res bands),
+    # derive per-band coordinates from the image itself
+    if image_data.ndim == 2:
+        img_shape = image_data.shape  # (rows, cols)
+    else:
+        img_shape = image_data.shape[:2]  # (rows, cols, channels)
+
+    if img_shape != (len(y), len(x)):
+        # Regenerate x/y to match the actual image resolution
+        x = np.linspace(x.min(), x.max(), img_shape[1])
+        y = np.linspace(y.min(), y.max(), img_shape[0])
+
     # Cartopy CRS for the geostationary view
     geos_crs = ccrs.Geostationary(
         central_longitude=lon_0,
