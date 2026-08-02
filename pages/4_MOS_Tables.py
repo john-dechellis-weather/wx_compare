@@ -181,7 +181,7 @@ def build_summary(df):
     return f"⚠ Next low-condition period starts at **{t:%m/%d %HZ}** (f+{int(f['fhr'])})"
 
 
-def make_cell(text, bg="#000000", fg="#FFFFFF"):
+def make_cell(text, bg="#ffffff", fg="#FFFFFF"):
     return (
         f'<td style="'
         f'background:{bg};'
@@ -217,7 +217,7 @@ def make_th(text, is_row_label=False):
     align = "left" if is_row_label else "center"
     return (
         f'<th style="'
-        f'background:#002200;'
+        f'background:#999999;'
         f'color:#FFFFFF !important;'
         f'font-family:Courier New,monospace;'
         f'font-size:9px;'
