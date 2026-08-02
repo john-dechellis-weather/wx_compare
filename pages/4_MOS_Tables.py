@@ -120,7 +120,7 @@ def fmt_wind(dr, sp, gs):
     d = f"{int(dr):03d}" if (dr is not None and not pd.isna(dr)) else "VRB"
     s = f"{int(sp):02d}"
     g = f"G{int(gs):02d}" if (gs is not None and not pd.isna(gs)) else ""
-    return f"{d}{s}{g}KT"
+    return f"{d}{s}{g}"
 
 
 def vis_bg(v):
