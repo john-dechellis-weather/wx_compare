@@ -11,3 +11,5 @@ avwx-engine>=1.9
 goes2go>=2024.5.0
 cartopy>=0.22
 pyproj>=3.6
+h5py>=3.10
+netCDF4>=1.6
