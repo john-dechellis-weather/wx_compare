@@ -125,10 +125,10 @@ def fmt_wind(dr, sp, gs):
 
 def vis_bg(v):
     if v is None or pd.isna(v): return None
-    if v <= 0.5: return ("#CC00CC", "#FFFFFF")   # bright pink bg, white text
-    if v < 1: return ("#CC0000", "#FFFFFF")       # bright red bg, white text
-    if v < 2: return ("#CC6600", "#FFFFFF")       # bright orange bg, white text
-    if v < 3: return ("#CCCC00", "#000000")       # bright yellow bg, black text
+    if v <= 0.5: return ("#CC00CC", "#FFFFFF")   # pink
+    if v < 1: return ("#CC0000", "#FFFFFF")       # red
+    if v < 2: return ("#CC6600", "#FFFFFF")       # orange
+    if v < 3: return ("#CCCC00", "#FFFFFF")       # yellow
     return None
 
 
@@ -137,7 +137,7 @@ def cig_bg(c, u):
     if c < 400: return ("#CC00CC", "#FFFFFF")
     if c <= 1000: return ("#CC0000", "#FFFFFF")
     if c <= 2000: return ("#CC6600", "#FFFFFF")
-    if c < 3000: return ("#CCCC00", "#000000")
+    if c < 3000: return ("#CCCC00", "#FFFFFF")
     return None
 
 
@@ -148,7 +148,7 @@ def wind_bg(s, g):
     if w >= 40: return ("#CC00CC", "#FFFFFF")
     if w >= 35: return ("#CC0000", "#FFFFFF")
     if w >= 30: return ("#CC6600", "#FFFFFF")
-    if w >= 25: return ("#CCCC00", "#000000")
+    if w >= 25: return ("#CCCC00", "#FFFFFF")
     return None
 
 
@@ -181,7 +181,21 @@ def build_summary(df):
     return f"⚠ Next low-condition period starts at **{t:%m/%d %HZ}** (f+{int(f['fhr'])})"
 
 
-def make_cell(text, bg="#000000", fg="#66FF66"):
+def make_cell(text, bg="#000000", fg="#FFFFFF"):
+    return (
+        f'<td style="'
+        f'background:{bg};'
+        f'color:{fg} !important;'
+        f'font-family:Courier New,monospace;'
+        f'font-size:9px;'
+        f'padding:2px 3px;'
+        f'text-align:center;'
+        f'border:1px solid #003300;'
+        f'white-space:nowrap;'
+        f'min-width:38px;'
+        f'max-width:38px;'
+        f'">{escape(str(text))}</td>'
+    )
     return (
         f'<td style="'
         f'background:{bg};'
@@ -204,7 +218,7 @@ def make_th(text, is_row_label=False):
     return (
         f'<th style="'
         f'background:#002200;'
-        f'color:#66FF66;'
+        f'color:#FFFFFF !important;'
         f'font-family:Courier New,monospace;'
         f'font-size:9px;'
         f'font-weight:bold;'
@@ -275,7 +289,7 @@ if run_button:
     for t in times:
         tstr = pd.to_datetime(t).strftime("%m/%d<br>%HZ")
         header_cells.append(
-            f'<th style="background:#002200;color:#66FF6;'
+            f'<th style="background:#002200;color:#FFFFFF !important;'
             f'font-family:Courier New,monospace;font-size:9px;font-weight:bold;'
             f'padding:2px 3px;text-align:center;border:1px solid #003300;'
             f'white-space:nowrap;min-width:38px;max-width:38px;">{tstr}</th>'
