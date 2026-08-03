@@ -336,23 +336,42 @@ ul[role="listbox"] li[aria-selected="true"] {
 }
 
 /* Control shown when the sidebar is collapsed (expands it).
-   Test-id varies across Streamlit versions — cover all known names,
-   plus the header area's icon span as a catch-all. */
+   Hide the raw icon text, draw » plus a hint label. */
 [data-testid="stSidebarCollapsedControl"] span,
 [data-testid="collapsedControl"] span,
 [data-testid="stExpandSidebarButton"] span,
 [data-testid="stHeader"] span[data-testid="stIconMaterial"] {
     font-size: 0 !important;
 }
-[data-testid="stSidebarCollapsedControl"] span::after,
-[data-testid="collapsedControl"] span::after,
-[data-testid="stExpandSidebarButton"] span::after,
-[data-testid="stHeader"] span[data-testid="stIconMaterial"]::after {
+[data-testid="stSidebarCollapsedControl"] span::before,
+[data-testid="collapsedControl"] span::before,
+[data-testid="stExpandSidebarButton"] span::before,
+[data-testid="stHeader"] span[data-testid="stIconMaterial"]::before {
     content: "»";
     font-size: 20px !important;
     font-family: "Times New Roman", Times, serif !important;
     color: #000000 !important;
     line-height: 1 !important;
+}
+[data-testid="stSidebarCollapsedControl"] span::after,
+[data-testid="collapsedControl"] span::after,
+[data-testid="stExpandSidebarButton"] span::after,
+[data-testid="stHeader"] span[data-testid="stIconMaterial"]::after {
+    content: " Click arrows to view weather products";
+    font-size: 13px !important;
+    font-family: "Times New Roman", Times, serif !important;
+    font-style: italic !important;
+    color: #000000 !important;
+    padding-left: 6px !important;
+    white-space: nowrap !important;
+}
+
+/* Let the collapsed control grow to fit the label */
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="collapsedControl"],
+[data-testid="stExpandSidebarButton"] {
+    width: auto !important;
+    overflow: visible !important;
 }
 
 </style>
