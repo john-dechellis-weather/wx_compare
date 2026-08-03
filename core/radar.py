@@ -1,19 +1,17 @@
 """NEXRAD Level II radar fetching and plot rendering.
 
-Data discovery + download over plain HTTPS (no cloud SDKs):
+Hybrid data discovery (all plain HTTPS / proven-reachable services):
 
-  1. AWS public bucket  https://noaa-nexrad-level2.s3.amazonaws.com
-     (XML listing via ?list-type=2)
-  2. Fallback: Google Cloud public mirror gcp-public-data-nexrad-l2
-     (JSON listing via the GCS objects API)
+  1. AWS public bucket XML listing — tried first, currently denies
+     anonymous listing (kept in case the policy is relaxed again).
+  2. Google Cloud public mirror (gcp-public-data-nexrad-l2) — deep
+     archive of past years, but stale for recent dates.
+  3. UCAR THREDDS "NEXRAD Level II Radar from IDD" via siphon — rolling
+     window of recent weeks; covers what the GCS mirror lacks.
 
-Both hold the full Level II archive with the same YYYY/MM/DD/SITE/
-key layout. If AWS denies anonymous listing (as it currently does for
-some callers), the GCS mirror is used automatically.
-
-Each Level II volume contains BOTH reflectivity and velocity.
-Decode: metpy Level2File (gzip handled transparently). Velocity is
-converted from m/s to knots.
+All three yield Level II volume files decoded identically with metpy
+Level2File (gzip handled transparently). Reflectivity from the lowest
+surveillance sweep, velocity from the lowest Doppler sweep (m/s → kt).
 """
 from __future__ import annotations
 
@@ -33,8 +31,11 @@ _AWS_BASE = "https://noaa-nexrad-level2.s3.amazonaws.com"
 _GCS_LIST = "https://storage.googleapis.com/storage/v1/b/gcp-public-data-nexrad-l2/o"
 _GCS_DL = "https://storage.googleapis.com/gcp-public-data-nexrad-l2"
 _S3_NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
+_THREDDS_BASE = "https://thredds.ucar.edu/thredds/"
+_THREDDS_L2_NAME = "NEXRAD Level II Radar from IDD"
 _MS_TO_KT = 1.94384
-_TIME_RE = re.compile(r"(\d{8})_(\d{6})")
+# Matches KAMX20260724_211005 (6-digit time) and Level2_KAMX_20260724_2110 (4-digit)
+_TIME_RE = re.compile(r"(\d{8})_(\d{4,6})")
 _HEADERS = {"User-Agent": "BlueMet/1.0 (aviation weather tool)"}
 
 
@@ -64,7 +65,8 @@ def fetch_and_render_radar(
     if not scans:
         raise ValueError(
             f"No Level II volumes found for {_station4(station)} within "
-            f"20 minutes of {target_time:%Y-%m-%d %H:%M UTC}."
+            f"20 minutes of {target_time:%Y-%m-%d %H:%M UTC} in any source "
+            f"(archive mirror + recent THREDDS window)."
         )
 
     best = min(scans, key=lambda s: abs(s.scan_time - tgt))
@@ -96,7 +98,7 @@ def fetch_and_render_radar_loop(
     if not scans:
         raise ValueError(
             f"No Level II volumes found for {_station4(station)} between "
-            f"{start:%Y-%m-%d %H:%M} and {end:%H:%M UTC}."
+            f"{start:%Y-%m-%d %H:%M} and {end:%H:%M UTC} in any source."
         )
 
     scans.sort(key=lambda s: s.scan_time)
@@ -121,29 +123,49 @@ def fetch_and_render_radar_loop(
 
 
 # ---------------------------------------------------------------------------
-# Discovery over HTTPS (AWS XML listing → GCS JSON fallback)
+# Discovery
 # ---------------------------------------------------------------------------
 def _station4(station: str) -> str:
     s = station.strip().upper()
     return s if len(s) == 4 else "K" + s
 
 
+def _parse_time(filename: str) -> datetime | None:
+    m = _TIME_RE.search(filename)
+    if not m:
+        return None
+    timepart = m.group(2).ljust(6, "0")  # pad HHMM → HHMM00
+    try:
+        return datetime.strptime(m.group(1) + timepart, "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+
+
 def _find_scans(station: str, start: datetime, end: datetime) -> list[_ScanRef]:
+    """Bucket sources first (AWS→GCS); THREDDS fallback for recent data."""
     st4 = _station4(station)
+
+    scans = _find_scans_buckets(st4, start, end)
+    if scans:
+        return scans
+
+    try:
+        return _find_scans_thredds(st4, start, end)
+    except Exception as e:
+        print(f"[RADAR] THREDDS Level II fallback failed: {e}")
+        return []
+
+
+def _find_scans_buckets(st4: str, start: datetime, end: datetime) -> list[_ScanRef]:
     scans: list[_ScanRef] = []
     day = start.date()
     while day <= end.date():
         datepath = f"{day:%Y/%m/%d}"
-        entries = _list_day(datepath, st4)
-        for filename, url in entries:
+        for filename, url in _list_day_buckets(datepath, st4):
             if "MDM" in filename:
                 continue
-            m = _TIME_RE.search(filename)
-            if not m:
-                continue
-            try:
-                ts = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
-            except ValueError:
+            ts = _parse_time(filename)
+            if ts is None:
                 continue
             if start <= ts <= end:
                 scans.append(
@@ -153,16 +175,16 @@ def _find_scans(station: str, start: datetime, end: datetime) -> list[_ScanRef]:
     return scans
 
 
-def _list_day(datepath: str, st4: str) -> list[tuple[str, str]]:
-    """List (filename, download_url) for one station-day. AWS first, GCS fallback."""
+def _list_day_buckets(datepath: str, st4: str) -> list[tuple[str, str]]:
+    """List (filename, download_url) for one station-day. AWS, then GCS."""
     prefix = f"{datepath}/{st4}/"
 
-    # --- Try AWS anonymous XML listing ---
+    # AWS anonymous XML listing (currently denied; kept as first cheap try)
     try:
         r = requests.get(
             f"{_AWS_BASE}/?list-type=2&prefix={prefix}",
             headers=_HEADERS,
-            timeout=60,
+            timeout=30,
         )
         if r.status_code == 200:
             root = ET.fromstring(r.content)
@@ -175,24 +197,58 @@ def _list_day(datepath: str, st4: str) -> list[tuple[str, str]]:
     except Exception:
         pass
 
-    # --- Fallback: GCS public mirror JSON listing ---
-    out = []
-    params = {"prefix": prefix, "maxResults": "1000"}
-    while True:
-        r = requests.get(_GCS_LIST, params=params, headers=_HEADERS, timeout=60)
-        r.raise_for_status()
-        payload = r.json()
-        for item in payload.get("items", []):
-            name = item["name"]
-            filename = name.rsplit("/", 1)[-1]
-            out.append((filename, f"{_GCS_DL}/{name}"))
-        token = payload.get("nextPageToken")
-        if not token:
-            break
-        params["pageToken"] = token
+    # GCS public mirror JSON listing (deep archive; stale for recent dates)
+    out: list[tuple[str, str]] = []
+    try:
+        params: dict[str, str] = {"prefix": prefix, "maxResults": "1000"}
+        while True:
+            r = requests.get(
+                _GCS_LIST, params=params, headers=_HEADERS, timeout=60
+            )
+            r.raise_for_status()
+            payload = r.json()
+            for item in payload.get("items", []):
+                name = item["name"]
+                filename = name.rsplit("/", 1)[-1]
+                out.append((filename, f"{_GCS_DL}/{name}"))
+            token = payload.get("nextPageToken")
+            if not token:
+                break
+            params["pageToken"] = token
+    except Exception:
+        return []
     return out
 
 
+def _find_scans_thredds(st4: str, start: datetime, end: datetime) -> list[_ScanRef]:
+    """Recent Level II volumes from UCAR THREDDS (rolling window)."""
+    from siphon.radarserver import RadarServer, get_radarserver_datasets
+
+    datasets = get_radarserver_datasets(_THREDDS_BASE)
+    radar_ref = datasets[_THREDDS_L2_NAME]
+    rs = RadarServer(radar_ref.follow().catalog_url)
+
+    query = rs.query()
+    query.stations(st4).time_range(start, end)
+    catalog = rs.get_catalog(query)
+
+    scans: list[_ScanRef] = []
+    for name in sorted(catalog.datasets):
+        ds = catalog.datasets[name]
+        ts = _parse_time(name)
+        if ts is None:
+            continue
+        try:
+            url = ds.access_urls["HTTPServer"]
+        except Exception:
+            continue
+        scans.append(_ScanRef(filename=name, scan_time=ts, download_url=url))
+    return scans
+
+
+# ---------------------------------------------------------------------------
+# Download + decode + render
+# ---------------------------------------------------------------------------
 def _download_and_render(
     scan: _ScanRef, aircraft_lat, aircraft_lon, callsign, station, zoom_deg
 ) -> tuple[bytes, bytes, str]:
@@ -243,9 +299,6 @@ def _download_and_render(
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-# ---------------------------------------------------------------------------
-# Decode + render
-# ---------------------------------------------------------------------------
 def _extract_moment(f, moment: bytes):
     """Pull (azimuths_deg, ranges_m, data) for the lowest sweep with moment."""
     for sweep in f.sweeps:
