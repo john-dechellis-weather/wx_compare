@@ -316,6 +316,37 @@ ul[role="listbox"] li[aria-selected="true"] {
     color: #FFFFFF !important;
     -webkit-text-fill-color: #FFFFFF !important;
 }
+
+/* ===================================================================
+   SIDEBAR ARROW REPAIR — the Material Symbols icon font isn't loading,
+   so its ligature text ("keyboard_double_arrow_right") shows raw.
+   Hide the text and draw plain « » glyphs instead (font-independent).
+   =================================================================== */
+
+/* Button shown inside the open sidebar (collapses it) */
+[data-testid="stSidebarCollapseButton"] span {
+    font-size: 0 !important;
+}
+[data-testid="stSidebarCollapseButton"] span::after {
+    content: "«";
+    font-size: 20px !important;
+    font-family: "Times New Roman", Times, serif !important;
+    color: #000000 !important;
+    line-height: 1 !important;
+}
+
+/* Control shown when the sidebar is collapsed (expands it) */
+[data-testid="stSidebarCollapsedControl"] span {
+    font-size: 0 !important;
+}
+[data-testid="stSidebarCollapsedControl"] span::after {
+    content: "»";
+    font-size: 20px !important;
+    font-family: "Times New Roman", Times, serif !important;
+    color: #000000 !important;
+    line-height: 1 !important;
+}
+
 </style>
 """
 
