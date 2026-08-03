@@ -2,16 +2,20 @@
 below thresholds within a user-selected time window.
 
 Uses AWC's API + avwx-engine (see core/taf.py) for TAF parsing.
+
+Tables are hand-built HTML with inline styles (terminal green-on-black,
+matching the MOS Tables page) because st.dataframe ignores page CSS.
+Critical severity — vis < 1 sm or ceiling < 400 ft — highlights the
+ICAO and value cells in red.
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
 
-import pandas as pd
 import streamlit as st
 
 st.set_page_config(
-    page_title="Airport Alerts",
+    page_title="BlueMet — Airport Alerts",
     layout="wide",
 )
 
@@ -21,12 +25,10 @@ apply_retro_theme()
 from auth import check_password
 check_password()
 
+
 # ---------------------------------------------------------------------------
 # JetBlue destinations — static list
 # ---------------------------------------------------------------------------
-# Duplicates removed; ordering preserved from user's original list.
-# Some international stations may not publish TAFs to AWC and will appear
-# in the "TAF unavailable" list at the bottom of the page.
 JETBLUE_ICAOS = [
     # Northeast US
     "KJFK", "KEWR", "KLGA", "KHPN", "KISP", "KPHL", "KBOS", "KORH", "KBDL",
@@ -64,11 +66,116 @@ JETBLUE_ICAOS = [
     "KCMH", "KIND",
 ]
 
+# Critical-severity thresholds (fixed): red highlight in tables
+CRITICAL_VIS_SM = 1.0
+CRITICAL_CIG_FT = 400
+
+
+# ---------------------------------------------------------------------------
+# Terminal-style HTML table builders (st.dataframe ignores page CSS)
+# ---------------------------------------------------------------------------
+_GREEN = "#00FF00"
+_BLACK = "#000000"
+_RED = "#CC0000"
+_WHITE = "#FFFFFF"
+_FONT = "'Courier New', Courier, monospace"
+
+
+def _td(text, bg=_BLACK, fg=_GREEN, bold=False, align="left") -> str:
+    weight = "bold" if bold else "normal"
+    return (
+        f'<td style="background-color:{bg}; color:{fg} !important; '
+        f"font-family:{_FONT}; font-size:11px; padding:3px 10px; "
+        f"border:1px solid {_GREEN}; font-weight:{weight}; "
+        f'text-align:{align}; white-space:nowrap;">{text}</td>'
+    )
+
+
+def _th(text, align="left") -> str:
+    return (
+        f'<td style="background-color:{_BLACK}; color:{_GREEN} !important; '
+        f"font-family:{_FONT}; font-size:11px; padding:4px 10px; "
+        f"border:1px solid {_GREEN}; font-weight:bold; "
+        f'text-align:{align}; text-decoration:underline; '
+        f'white-space:nowrap;">{text}</td>'
+    )
+
+
+def _table(header_cells: list[str], body_rows: list[str]) -> str:
+    return (
+        f'<table style="border-collapse:collapse; background-color:{_BLACK}; '
+        f'border:2px solid {_GREEN}; width:100%;">'
+        f"<tr>{''.join(header_cells)}</tr>"
+        f"{''.join(body_rows)}"
+        f"</table>"
+    )
+
+
+def _no_alerts() -> str:
+    return (
+        f'<div style="background-color:{_BLACK}; border:2px solid {_GREEN}; '
+        f"color:{_GREEN} !important; font-family:{_FONT}; font-size:11px; "
+        f'padding:6px 10px;">NO AIRPORTS FLAGGED</div>'
+    )
+
+
+def _fmt_vis(v: float) -> str:
+    """0.5 -> '0.5', 2.0 -> '2', 1.75 -> '1.75'."""
+    return f"{v:g}"
+
+
+def render_vis_table(alerts) -> str:
+    header = [_th("ICAO"), _th("MIN VIS (SM)", align="right"), _th("WORST PERIOD")]
+    rows = []
+    for a in alerts:
+        critical = a.min_vis_sm < CRITICAL_VIS_SM
+        bg = _RED if critical else _BLACK
+        fg = _WHITE if critical else _GREEN
+        rows.append(
+            "<tr>"
+            + _td(a.icao, bg=bg, fg=fg, bold=critical)
+            + _td(_fmt_vis(a.min_vis_sm), bg=bg, fg=fg, bold=critical, align="right")
+            + _td(a.worst_period_label)
+            + "</tr>"
+        )
+    return _table(header, rows)
+
+
+def render_ceiling_table(alerts) -> str:
+    header = [_th("ICAO"), _th("MIN CIG (FT)", align="right"), _th("WORST PERIOD")]
+    rows = []
+    for a in alerts:
+        critical = a.min_ceiling_ft < CRITICAL_CIG_FT
+        bg = _RED if critical else _BLACK
+        fg = _WHITE if critical else _GREEN
+        rows.append(
+            "<tr>"
+            + _td(a.icao, bg=bg, fg=fg, bold=critical)
+            + _td(str(a.min_ceiling_ft), bg=bg, fg=fg, bold=critical, align="right")
+            + _td(a.worst_period_label)
+            + "</tr>"
+        )
+    return _table(header, rows)
+
+
+def render_tsra_table(alerts) -> str:
+    header = [_th("ICAO"), _th("CODE"), _th("PERIOD")]
+    rows = []
+    for a in alerts:
+        rows.append(
+            "<tr>"
+            + _td(a.icao)
+            + _td(a.weather_code)
+            + _td(a.period_label)
+            + "</tr>"
+        )
+    return _table(header, rows)
+
 
 # ---------------------------------------------------------------------------
 # Cached analysis — TAFs update every 6 hours; 15-min cache is fresh enough
 # ---------------------------------------------------------------------------
-@st.cache_data(ttl=900, show_spinner=False, max_entries=10)
+@st.cache_data(ttl=900, show_spinner=False)
 def cached_analyze(
     icaos_tuple: tuple[str, ...],
     window_start_iso: str,
@@ -131,6 +238,15 @@ with st.sidebar:
         "Refresh alerts", type="primary", use_container_width=True
     )
 
+    st.divider()
+    st.markdown(
+        '<span style="color:#CC0000 !important; font-weight:bold;">'
+        "RED highlight</span> = critical severity: "
+        f"vis &lt; {_fmt_vis(CRITICAL_VIS_SM)} sm or ceiling &lt; "
+        f"{CRITICAL_CIG_FT} ft.",
+        unsafe_allow_html=True,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Main content
@@ -162,49 +278,49 @@ if run_button:
     col_vis, col_ceil, col_tsra = st.columns(3, gap="medium")
 
     with col_vis:
-        st.subheader(f"Low visibility (<{vis_threshold} sm)")
+        st.subheader(f"Low visibility (<{_fmt_vis(vis_threshold)} sm)")
         if results.vis_alerts:
-            df = pd.DataFrame([
-                {"ICAO": a.icao,
-                 "Min vis (sm)": a.min_vis_sm,
-                 "Worst period": a.worst_period_label}
-                for a in results.vis_alerts
-            ])
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.markdown(render_vis_table(results.vis_alerts),
+                        unsafe_allow_html=True)
         else:
-            st.write("_No airports flagged._")
+            st.markdown(_no_alerts(), unsafe_allow_html=True)
 
     with col_ceil:
         st.subheader(f"Low ceilings (<{ceiling_threshold} ft)")
         if results.ceiling_alerts:
-            df = pd.DataFrame([
-                {"ICAO": a.icao,
-                 "Min ceiling (ft)": a.min_ceiling_ft,
-                 "Worst period": a.worst_period_label}
-                for a in results.ceiling_alerts
-            ])
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.markdown(render_ceiling_table(results.ceiling_alerts),
+                        unsafe_allow_html=True)
         else:
-            st.write("_No airports flagged._")
+            st.markdown(_no_alerts(), unsafe_allow_html=True)
 
     with col_tsra:
         st.subheader("Thunderstorms (TS/TSRA)")
         if not tsra_enabled:
             st.write("_TSRA alerts disabled in sidebar._")
         elif results.tsra_alerts:
-            df = pd.DataFrame([
-                {"ICAO": a.icao,
-                 "Code": a.weather_code,
-                 "Period": a.period_label}
-                for a in results.tsra_alerts
-            ])
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.markdown(render_tsra_table(results.tsra_alerts),
+                        unsafe_allow_html=True)
         else:
-            st.write("_No airports flagged._")
-    
-   
+            st.markdown(_no_alerts(), unsafe_allow_html=True)
 
-   
+    # TAF unavailable + parse errors — smaller notes at bottom
+    st.divider()
+    with st.expander(
+        f"TAF unavailable for {len(results.unavailable_icaos)} stations",
+        expanded=False,
+    ):
+        if results.unavailable_icaos:
+            st.write(", ".join(results.unavailable_icaos))
+        else:
+            st.write("All stations returned a TAF.")
+
+    if results.parse_errors:
+        with st.expander(
+            f"Parse errors on {len(results.parse_errors)} stations",
+            expanded=False,
+        ):
+            for icao, err in results.parse_errors.items():
+                st.write(f"**{icao}**: {err}")
 
 else:
     st.info("Adjust thresholds and click **Refresh alerts** in the sidebar.")
@@ -219,6 +335,9 @@ else:
         - **Low visibility** — below a threshold you set (default: 2 sm)
         - **Low ceilings** — below a threshold you set (default: 1000 ft)
         - **Thunderstorms** — TS, TSRA, or +TSRA (excludes VCTS)
+
+        Rows highlighted in **red** mark critical severity: visibility below
+        1 sm or ceiling below 400 ft.
 
         Only forecast periods that overlap your chosen time window count.
         A station is listed once per table with its worst value and the
