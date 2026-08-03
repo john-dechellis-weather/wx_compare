@@ -44,6 +44,15 @@ def check_password() -> bool:
         [data-testid="stTextInput"] input {
             font-family: "Courier New", monospace !important;
         }
+        /* Hide the "Press Enter to apply" hint */
+        [data-testid="InputInstructions"] {
+            display: none !important;
+        }
+        /* Hide the show-password eye toggle (renders as raw
+           "visibility" text since the icon font doesn't load) */
+        [data-testid="stTextInput"] button {
+            display: none !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
