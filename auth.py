@@ -34,6 +34,21 @@ def check_password() -> bool:
     st.markdown("### 🔒 Restricted access")
     st.write("This site is for authorized users only.")
 
+    st.markdown(
+        """
+        <style>
+        /* Compact password box: ~16 characters wide */
+        [data-testid="stTextInput"] {
+            max-width: 200px !important;
+        }
+        [data-testid="stTextInput"] input {
+            font-family: "Courier New", monospace !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     password = st.text_input("Enter password:", type="password", key="password_input")
 
     if password:
