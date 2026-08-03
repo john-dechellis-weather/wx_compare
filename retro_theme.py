@@ -291,7 +291,7 @@ div[data-baseweb="popover"],
 div[data-baseweb="popover"] > div,
 div[data-baseweb="calendar"],
 div[data-baseweb="datepicker"] {
-    background-color: #FFFFFF !important;
+    background-color: ##B9BBB6 !important;
 }
 
 /* Flatten ALL popup contents: no dark sub-backgrounds, black text.
@@ -301,13 +301,13 @@ div[data-baseweb="popover"] *,
 div[data-baseweb="calendar"] *,
 div[data-baseweb="datepicker"] * {
     background-color: transparent !important;
-    color: #FFFFFF !important;
+    color: ##B9BBB6 !important;
 }
 
 /* Re-apply the selected-day highlight AFTER the flatten rule */
 div[data-baseweb="calendar"] [aria-selected="true"] {
     background-color: #000000 !important;
-    color: #FFFFFF !important;
+    color: ##B9BBB6 !important;
 }
 
 }
