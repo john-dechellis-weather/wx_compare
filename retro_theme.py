@@ -335,11 +335,19 @@ ul[role="listbox"] li[aria-selected="true"] {
     line-height: 1 !important;
 }
 
-/* Control shown when the sidebar is collapsed (expands it) */
-[data-testid="stSidebarCollapsedControl"] span {
+/* Control shown when the sidebar is collapsed (expands it).
+   Test-id varies across Streamlit versions — cover all known names,
+   plus the header area's icon span as a catch-all. */
+[data-testid="stSidebarCollapsedControl"] span,
+[data-testid="collapsedControl"] span,
+[data-testid="stExpandSidebarButton"] span,
+[data-testid="stHeader"] span[data-testid="stIconMaterial"] {
     font-size: 0 !important;
 }
-[data-testid="stSidebarCollapsedControl"] span::after {
+[data-testid="stSidebarCollapsedControl"] span::after,
+[data-testid="collapsedControl"] span::after,
+[data-testid="stExpandSidebarButton"] span::after,
+[data-testid="stHeader"] span[data-testid="stIconMaterial"]::after {
     content: "»";
     font-size: 20px !important;
     font-family: "Times New Roman", Times, serif !important;
