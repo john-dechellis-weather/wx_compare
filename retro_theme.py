@@ -286,11 +286,25 @@ input[type="text"], .stTextInput input {
     color: #FFFFFF !important;
 }
 
-/* The popup list of times (rendered separately) */
+/* Dropdown popups (calendar + time list): white background, black text */
+div[data-baseweb="popover"],
+div[data-baseweb="popover"] > div,
+div[data-baseweb="calendar"],
+div[data-baseweb="datepicker"] {
+    background-color: #FFFFFF !important;
+}
 div[data-baseweb="popover"] li,
-div[data-baseweb="popover"] li * {
+div[data-baseweb="popover"] li *,
+div[data-baseweb="calendar"] *,
+div[data-baseweb="datepicker"] * {
+    color: #000000 !important;
+}
+/* Keep the selected day readable */
+div[data-baseweb="calendar"] [aria-selected="true"] {
+    background-color: #000000 !important;
     color: #FFFFFF !important;
 }
+
 </style>
 """
 def apply_retro_theme():
