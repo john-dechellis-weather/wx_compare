@@ -273,9 +273,9 @@ def _download_and_render(
 
         name = scan.filename
 
-        az, rng_m, data = _extract_moment(f, b"REF")
+        az, rng_km, data = _extract_moment(f, b"REF")
         refl_png = _render_sweep(
-            az, rng_m, data, radar_lat, radar_lon,
+            az, rng_km, data, radar_lat, radar_lon,
             aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
             product="REF", title_prefix="Base Reflectivity (0.5°)",
             cbar_label="Reflectivity (dBZ)", volume_name=name,
@@ -283,10 +283,10 @@ def _download_and_render(
 
         vel_png = b""
         try:
-            az_v, rng_v, data_v = _extract_moment(f, b"VEL")
+            az_v, rng_km_v, data_v = _extract_moment(f, b"VEL")
             data_v = data_v * _MS_TO_KT
             vel_png = _render_sweep(
-                az_v, rng_v, data_v, radar_lat, radar_lon,
+                az_v, rng_km_v, data_v, radar_lat, radar_lon,
                 aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
                 product="VEL", title_prefix="Base Velocity (0.5°)",
                 cbar_label="Velocity (kt)", volume_name=name,
@@ -305,17 +305,20 @@ def _extract_moment(f, moment: bytes):
         if moment in sweep[0][4]:
             az = np.array([ray[0].az_angle for ray in sweep])
             hdr = sweep[0][4][moment][0]
-            rng_m = np.arange(hdr.num_gates) * hdr.gate_width + hdr.first_gate
+            # NOTE: metpy Level2File gate_width/first_gate are KILOMETERS
+            # (e.g. 0.25 km gates). Treating them as meters shrinks the
+            # whole sweep to a ~460 m dot — invisible on the map.
+            rng_km = np.arange(hdr.num_gates) * hdr.gate_width + hdr.first_gate
             data = np.array(
                 [ray[4][moment][1] for ray in sweep], dtype=float
             )
             data = np.ma.masked_invalid(data)
-            return az, rng_m, data
+            return az, rng_km, data
     raise ValueError(f"Moment {moment!r} not found in any sweep.")
 
 
 def _render_sweep(
-    az, rng_m, data, radar_lat, radar_lon,
+    az, rng_km, data, radar_lat, radar_lon,
     aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
     product, title_prefix, cbar_label, volume_name,
 ) -> bytes:
@@ -333,7 +336,7 @@ def _render_sweep(
 
     lon_grid, lat_grid = azimuth_range_to_lat_lon(
         units.Quantity(az, "degrees"),
-        units.Quantity(rng_m, "meters"),
+        units.Quantity(rng_km, "kilometers"),
         radar_lon,
         radar_lat,
     )
