@@ -13,32 +13,9 @@ RETRO_CSS = """
     background: #C0C0C0 !important;
 }
 
-* {
-    color: #000000 !important;
-}
-
-/* Hide broken Material Icons showing as text */
-[data-testid="stSidebarCollapseButton"] span,
-[data-testid="stBaseButton-headerNoPadding"] span {
-    font-family: "Material Symbols Rounded", "Material Icons Rounded", 
-                 "Material Icons" !important;
-    font-weight: normal !important;
-    font-style: normal !important;
-    font-size: 24px !important;
-    line-height: 1 !important;
-    letter-spacing: normal !important;
-    text-transform: none !important;
-    display: inline-block !important;
-    white-space: nowrap !important;
-    word-wrap: normal !important;
-    direction: ltr !important;
-    -webkit-font-feature-settings: "liga" !important;
-    -webkit-font-smoothing: antialiased !important;
-}
-
 /* Main content area gets a white box with a black border, centered */
 .main .block-container {
-    background: #8F8482 !important;
+    background: #FFFFFF !important;
     border: 2px solid #000000 !important;
     max-width: 800px !important;
     padding: 20px 24px !important;
@@ -50,13 +27,13 @@ RETRO_CSS = """
 /* --- Typography --- */
 html, body, [class*="css"] {
     font-family: "Times New Roman", Times, serif !important;
-    font-size: 15px !important;
+    font-size: 13px !important;
     color: #000000 !important;
 }
 
 h1 {
     font-family: "Times New Roman", Times, serif !important;
-    font-size: 25px !important;
+    font-size: 22px !important;
     font-weight: bold !important;
     color: #000000 !important;
     margin: 0 0 4px 0 !important;
@@ -67,18 +44,17 @@ h1 {
 
 h2 {
     font-family: "Times New Roman", Times, serif !important;
-    font-size: 18px !important;
+    font-size: 16px !important;
     font-weight: bold !important;
-    background: #E0E0E0 !important;
-    color: #000000 !important;
-    border: 1px solid #000000 !important;
+    background: #003366 !important;
+    color: #FFFFFF !important;
     padding: 3px 8px !important;
     margin: 16px 0 8px 0 !important;
 }
 
 h3 {
     font-family: "Times New Roman", Times, serif !important;
-    font-size: 16px !important;
+    font-size: 14px !important;
     font-weight: bold !important;
     color: #000000 !important;
     margin: 12px 0 4px 0 !important;
@@ -87,13 +63,13 @@ h3 {
 
 p, div, span, label {
     font-family: "Times New Roman", Times, serif !important;
-    font-size: 16px !important;
+    font-size: 13px !important;
 }
 
 /* Streamlit caption text (below titles) */
 [data-testid="stCaptionContainer"], .stCaption {
     font-family: "Times New Roman", Times, serif !important;
-    font-size: 16px !important;
+    font-size: 12px !important;
     font-style: italic !important;
     color: #444444 !important;
 }
@@ -130,7 +106,7 @@ a:hover { color: #FF0000 !important; }
 .stButton > button,
 .stDownloadButton > button {
     font-family: "Times New Roman", Times, serif !important;
-    font-size: 16px !important;
+    font-size: 13px !important;
     font-weight: bold !important;
     background: #C0C0C0 !important;
     color: #000000 !important;
@@ -152,7 +128,7 @@ a:hover { color: #FF0000 !important; }
 /* --- Text inputs --- */
 input[type="text"], .stTextInput input {
     font-family: "Courier New", Courier, monospace !important;
-    font-size: 16px !important;
+    font-size: 13px !important;
     background: #FFFFFF !important;
     color: #000000 !important;
     border: 1px solid #000000 !important;
@@ -163,7 +139,7 @@ input[type="text"], .stTextInput input {
 /* Select boxes / dropdowns */
 .stSelectbox [data-baseweb="select"] > div {
     font-family: "Times New Roman", Times, serif !important;
-    font-size: 16px !important;
+    font-size: 13px !important;
     background: #FFFFFF !important;
     color: #000000 !important;
     border: 1px solid #000000 !important;
@@ -174,7 +150,7 @@ input[type="text"], .stTextInput input {
 .stRadio > div { font-family: "Times New Roman", Times, serif !important; }
 .stRadio label {
     font-family: "Times New Roman", Times, serif !important;
-    font-size: 15px !important;
+    font-size: 13px !important;
     color: #000000 !important;
 }
 
@@ -185,7 +161,7 @@ input[type="text"], .stTextInput input {
     border: 1px solid #000000 !important;
     color: #000000 !important;
     border-radius: 0 !important;
-    padding: 8px 15px !important;
+    padding: 8px 12px !important;
 }
 
 /* Success box → light green */
@@ -206,43 +182,42 @@ input[type="text"], .stTextInput input {
 [data-testid="stDataFrame"] table,
 [data-testid="stTable"] table {
     font-family: "Courier New", Courier, monospace !important;
-    font-size: 14px !important;
+    font-size: 12px !important;
     border-collapse: collapse !important;
     border: 1px solid #000000 !important;
 }
 [data-testid="stDataFrame"] th,
 [data-testid="stTable"] th {
-    background: #E0E0E0 !important;
-    color: #000000 !important;
+    background: #003366 !important;
+    color: #FFFFFF !important;
     border: 1px solid #000000 !important;
     padding: 3px 8px !important;
     font-weight: bold !important;
 }
-[data-testid="stDataFrame"] th,
-[data-testid="stTable"] th {
-    background: #E0E0E0 !important;
+[data-testid="stDataFrame"] td,
+[data-testid="stTable"] td {
+    background: #FFFFFF !important;
     color: #000000 !important;
     border: 1px solid #000000 !important;
-    padding: 3px 8px !important;
-    font-weight: bold !important;
+    padding: 2px 8px !important;
 }
 
 /* Metric boxes (the counters at the top) — make them look boxy */
 [data-testid="stMetric"] {
     background: #F0F0F0 !important;
     border: 2px inset #FFFFFF !important;
-    padding: 6px 8px !important;
+    padding: 6px 10px !important;
     font-family: "Times New Roman", Times, serif !important;
 }
 [data-testid="stMetricValue"] {
     font-family: "Courier New", Courier, monospace !important;
-    font-size: 21px !important;
+    font-size: 18px !important;
     font-weight: bold !important;
-    color: #A3A379 !important;
+    color: #000000 !important;
 }
 [data-testid="stMetricLabel"] {
     font-family: "Times New Roman", Times, serif !important;
-    font-size: 14px !important;
+    font-size: 12px !important;
     color: #000000 !important;
 }
 
@@ -254,7 +229,7 @@ input[type="text"], .stTextInput input {
 }
 .stTabs [data-baseweb="tab"] {
     font-family: "Times New Roman", Times, serif !important;
-    font-size: 15px !important;
+    font-size: 13px !important;
     background: #C0C0C0 !important;
     color: #000000 !important;
     border: 1px solid #000000 !important;
@@ -265,7 +240,7 @@ input[type="text"], .stTextInput input {
     font-weight: bold !important;
 }
 .stTabs [aria-selected="true"] {
-    background: #8F8482 !important;
+    background: #FFFFFF !important;
     color: #000000 !important;
 }
 
@@ -280,40 +255,71 @@ input[type="text"], .stTextInput input {
     height: 0 !important;
 }
 
-/* Time input: force light text on the dark dropdown control */
-[data-testid="stTimeInput"] div[data-baseweb="select"] *,
+/* ===================================================================
+   DATE & TIME PICKERS — consolidated fix (do not split this block)
+   Closed controls AND their popups, white background / black text.
+   Broad selectors because BaseWeb renders popups in a portal at the
+   document root, outside .stApp.
+   =================================================================== */
+
+/* Closed date + time controls: white box, black text */
+[data-testid="stDateInput"] div[data-baseweb="input"],
+[data-testid="stDateInput"] input,
+[data-testid="stTimeInput"] div[data-baseweb="select"] > div,
 [data-testid="stTimeInput"] input {
-    color: #FFFFFF !important;
+    background-color: #FFFFFF !important;
+    color: #000000 !important;
+    -webkit-text-fill-color: #000000 !important;
 }
 
-/* Dropdown popups (calendar + time list): white background throughout */
+/* Any popup portal content: calendar, time list, select menus.
+   role-based selectors survive BaseWeb DOM changes. */
 div[data-baseweb="popover"],
-div[data-baseweb="popover"] > div,
+div[data-baseweb="popover"] div,
 div[data-baseweb="calendar"],
-div[data-baseweb="datepicker"] {
-    background-color: ##B9BBB6 !important;
+div[data-baseweb="calendar"] div,
+div[data-baseweb="datepicker"],
+div[data-baseweb="menu"],
+ul[role="listbox"],
+ul[role="listbox"] li,
+div[role="grid"],
+div[role="gridcell"],
+table[role="grid"],
+table[role="grid"] th,
+table[role="grid"] td {
+    background-color: #FFFFFF !important;
+    color: #000000 !important;
+    -webkit-text-fill-color: #000000 !important;
 }
 
-/* Flatten ALL popup contents: no dark sub-backgrounds, black text.
-   This catches the month/year mini-dropdowns and the weekday row,
-   which otherwise inherit the theme's dark select styling. */
-div[data-baseweb="popover"] *,
-div[data-baseweb="calendar"] *,
-div[data-baseweb="datepicker"] * {
-    background-color: transparent !important;
-    color: ##B9BBB6 !important;
+/* Buttons/labels inside the calendar header (month/year navigation) */
+div[data-baseweb="calendar"] button,
+div[data-baseweb="calendar"] span,
+div[data-baseweb="calendar"] abbr,
+div[data-baseweb="popover"] button,
+div[data-baseweb="popover"] span {
+    background-color: #FFFFFF !important;
+    color: #000000 !important;
+    -webkit-text-fill-color: #000000 !important;
 }
 
-/* Re-apply the selected-day highlight AFTER the flatten rule */
-div[data-baseweb="calendar"] [aria-selected="true"] {
+/* Hover highlight so the list is still navigable */
+ul[role="listbox"] li:hover,
+div[data-baseweb="calendar"] [role="gridcell"]:hover {
+    background-color: #C0C0C0 !important;
+}
+
+/* Selected day / selected time: inverted, must come LAST */
+div[data-baseweb="calendar"] [aria-selected="true"],
+ul[role="listbox"] li[aria-selected="true"] {
     background-color: #000000 !important;
-    color: ##B9BBB6 !important;
+    color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
 }
-
-}
-
 </style>
 """
+
+
 def apply_retro_theme():
     """Call once per page after set_page_config."""
     st.markdown(RETRO_CSS, unsafe_allow_html=True)
