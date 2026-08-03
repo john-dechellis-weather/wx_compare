@@ -387,7 +387,7 @@ ul[role="listbox"] li[aria-selected="true"] {
 [data-testid="stText"],
 .stMarkdown p,
 .stMarkdown li {
-    color: #006400 !important;   /* ← chosen color */
+    color: #000000 !important;   /* ← chosen color */
 }
 
 /* Tables: readable cells with retro borders.
