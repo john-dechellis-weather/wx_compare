@@ -376,6 +376,33 @@ ul[role="listbox"] li[aria-selected="true"] {
     overflow: visible !important;
 }
 
+/* ===================================================================
+   BODY TEXT REPAIR — newer Streamlit no longer matches the old
+   [class*="css"] selector, so paragraphs/lists/tables fell back to
+   light default text. Target them directly.
+   =================================================================== */
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] li,
+[data-testid="stMarkdownContainer"] span,
+[data-testid="stText"],
+.stMarkdown p,
+.stMarkdown li {
+    color: #006400 !important;   /* ← chosen color */
+}
+
+/* Tables: readable cells with retro borders */
+[data-testid="stMarkdownContainer"] table,
+[data-testid="stMarkdownContainer"] th,
+[data-testid="stMarkdownContainer"] td {
+    color: #006400 !important;   /* ← chosen color */
+    background-color: #FFFFFF !important;
+    border: 1px solid #000000 !important;
+}
+[data-testid="stMarkdownContainer"] th {
+    background-color: #E0E0E0 !important;
+    font-weight: bold !important;
+}
+
 </style>
 """
 
