@@ -279,10 +279,20 @@ input[type="text"], .stTextInput input {
     background: transparent !important;
     height: 0 !important;
 }
+
+/* Time input: force light text on the dark dropdown control */
+[data-testid="stTimeInput"] div[data-baseweb="select"] *,
+[data-testid="stTimeInput"] input {
+    color: #FFFFFF !important;
+}
+
+/* The popup list of times (rendered separately) */
+div[data-baseweb="popover"] li,
+div[data-baseweb="popover"] li * {
+    color: #FFFFFF !important;
+}
 </style>
 """
-
-
 def apply_retro_theme():
     """Call once per page after set_page_config."""
     st.markdown(RETRO_CSS, unsafe_allow_html=True)
