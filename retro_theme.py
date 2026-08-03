@@ -403,6 +403,24 @@ ul[role="listbox"] li[aria-selected="true"] {
     font-weight: bold !important;
 }
 
+/* ===================================================================
+   EXPANDER ARROW REPAIR — same broken Material icon font as the
+   sidebar arrows: expander chevrons render as raw
+   "keyboard_arrow_down" text. Hide the ligature, draw ▼ instead.
+   =================================================================== */
+[data-testid="stExpander"] summary span[data-testid="stIconMaterial"],
+[data-testid="stExpander"] summary svg + span,
+[data-testid="stExpander"] details summary span[data-testid="stIconMaterial"] {
+    font-size: 0 !important;
+}
+[data-testid="stExpander"] summary span[data-testid="stIconMaterial"]::before {
+    content: "▼";
+    font-size: 12px !important;
+    font-family: "Times New Roman", Times, serif !important;
+    color: #000000 !important;
+    line-height: 1 !important;
+}
+
 </style>
 """
 
