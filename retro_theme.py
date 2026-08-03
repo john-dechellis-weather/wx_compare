@@ -336,41 +336,43 @@ ul[role="listbox"] li[aria-selected="true"] {
 }
 
 /* Control shown when the sidebar is collapsed (expands it).
-   Hide the raw icon text, draw » plus a hint label. */
-[data-testid="stSidebarCollapsedControl"] span,
-[data-testid="collapsedControl"] span,
-[data-testid="stExpandSidebarButton"] span,
-[data-testid="stHeader"] span[data-testid="stIconMaterial"] {
+   IMPORTANT: target ONLY the innermost icon span — using a bare
+   "span" descendant selector matches nested spans and draws the
+   arrow + label twice, overlapping. */
+[data-testid="stHeader"] span[data-testid="stIconMaterial"],
+[data-testid="stSidebarCollapsedControl"] span[data-testid="stIconMaterial"],
+[data-testid="collapsedControl"] span[data-testid="stIconMaterial"] {
     font-size: 0 !important;
+    display: inline-block !important;
 }
-[data-testid="stSidebarCollapsedControl"] span::before,
-[data-testid="collapsedControl"] span::before,
-[data-testid="stExpandSidebarButton"] span::before,
-[data-testid="stHeader"] span[data-testid="stIconMaterial"]::before {
+[data-testid="stHeader"] span[data-testid="stIconMaterial"]::before,
+[data-testid="stSidebarCollapsedControl"] span[data-testid="stIconMaterial"]::before,
+[data-testid="collapsedControl"] span[data-testid="stIconMaterial"]::before {
     content: "»";
     font-size: 20px !important;
     font-family: "Times New Roman", Times, serif !important;
     color: #000000 !important;
     line-height: 1 !important;
+    vertical-align: middle !important;
 }
-[data-testid="stSidebarCollapsedControl"] span::after,
-[data-testid="collapsedControl"] span::after,
-[data-testid="stExpandSidebarButton"] span::after,
-[data-testid="stHeader"] span[data-testid="stIconMaterial"]::after {
-    content: " Click arrows to view weather products";
+[data-testid="stHeader"] span[data-testid="stIconMaterial"]::after,
+[data-testid="stSidebarCollapsedControl"] span[data-testid="stIconMaterial"]::after,
+[data-testid="collapsedControl"] span[data-testid="stIconMaterial"]::after {
+    content: "Click arrows to view weather products";
     font-size: 13px !important;
     font-family: "Times New Roman", Times, serif !important;
     font-style: italic !important;
     color: #000000 !important;
-    padding-left: 6px !important;
+    margin-left: 8px !important;
+    vertical-align: middle !important;
     white-space: nowrap !important;
 }
 
 /* Let the collapsed control grow to fit the label */
 [data-testid="stSidebarCollapsedControl"],
-[data-testid="collapsedControl"],
-[data-testid="stExpandSidebarButton"] {
+[data-testid="collapsedControl"] {
     width: auto !important;
+    max-width: none !important;
     overflow: visible !important;
 }
 
