@@ -390,15 +390,18 @@ ul[role="listbox"] li[aria-selected="true"] {
     color: #006400 !important;   /* ← chosen color */
 }
 
-/* Tables: readable cells with retro borders */
-[data-testid="stMarkdownContainer"] table,
-[data-testid="stMarkdownContainer"] th,
-[data-testid="stMarkdownContainer"] td {
-    color: #006400 !important;   /* ← chosen color */
+/* Tables: readable cells with retro borders.
+   :not([style]) restricts this to plain markdown tables — hand-built
+   HTML tables (MOS Tables, Airport Alerts) carry inline styles and
+   must NOT be overridden, or their color coding is wiped. */
+[data-testid="stMarkdownContainer"] table:not([style]),
+[data-testid="stMarkdownContainer"] th:not([style]),
+[data-testid="stMarkdownContainer"] td:not([style]) {
+    color: #000000 !important;
     background-color: #FFFFFF !important;
     border: 1px solid #000000 !important;
 }
-[data-testid="stMarkdownContainer"] th {
+[data-testid="stMarkdownContainer"] th:not([style]) {
     background-color: #E0E0E0 !important;
     font-weight: bold !important;
 }
