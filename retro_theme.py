@@ -47,7 +47,7 @@ h2 {
     font-size: 16px !important;
     font-weight: bold !important;
     background: #003366 !important;
-    color: #FFFFFF !important;
+    color: #000000 !important;
     padding: 3px 8px !important;
     margin: 16px 0 8px 0 !important;
 }
