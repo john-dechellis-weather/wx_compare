@@ -71,7 +71,7 @@ p, div, span, label {
     font-family: "Times New Roman", Times, serif !important;
     font-size: 12px !important;
     font-style: italic !important;
-    color: #444444 !important;
+    color: #000000 !important;
 }
 
 /* --- Links --- */
