@@ -160,7 +160,10 @@ def build_wind_row(label, series, colored=False, spd_series=None, gst_series=Non
         if colored:
             s = spd_series.iloc[i] if spd_series is not None else None
             g = gst_series.iloc[i] if gst_series is not None else None
-            colors = wind_bg(s, g)
+            if gst_series is not None and spd_series is None:
+                colors = gust_bg(g)          # gust rows: 2-tier scheme
+            else:
+                colors = wind_bg(s, g)       # sustained rows: 4-tier scheme
         else:
             colors = None
         if colors:
@@ -178,6 +181,15 @@ def wind_bg(s, g):
     if w >= 35: return ("#FF4040", "#000000")    # red
     if w >= 30: return ("#FF9900", "#000000")    # orange
     if w >= 25: return ("#FFFF00", "#000000")    # yellow
+    return None
+
+
+def gust_bg(g):
+    """Gust-specific tiers: orange >= 25 kt, red >= 35 kt."""
+    if g is None or pd.isna(g):
+        return None
+    if g >= 35: return ("#FF4040", "#000000")    # red
+    if g >= 25: return ("#FF9900", "#000000")    # orange
     return None
 
 
