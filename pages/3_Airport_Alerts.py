@@ -81,7 +81,7 @@ _WHITE = "#FFFFFF"
 _FONT = "'Courier New', Courier, monospace"
 
 
-def _td(text, bg=_BLACK, fg=_GREEN, bold=False, align="left") -> str:
+def _td(text, bg=_BLACK, fg=_WHITE, bold=False, align="left") -> str:
     weight = "bold" if bold else "normal"
     return (
         f'<td style="background-color:{bg}; color:{fg}; -webkit-text-fill-color:{fg}; '
@@ -93,9 +93,9 @@ def _td(text, bg=_BLACK, fg=_GREEN, bold=False, align="left") -> str:
 
 def _th(text, align="left") -> str:
     return (
-        f'<td style="background-color:{_BLACK}; color:{_GREEN}; '
+        f'<td style="background-color:{_BLACK}; color:{_WHITE}; '
         f"font-family:{_FONT}; font-size:11px; padding:4px 10px; "
-        f"border:1px solid {_GREEN}; font-weight:bold; "
+        f"border:1px solid {_WHITE}; font-weight:bold; "
         f'text-align:{align}; text-decoration:underline; '
         f'white-space:nowrap;">{text}</td>'
     )
@@ -114,7 +114,7 @@ def _table(header_cells: list[str], body_rows: list[str]) -> str:
 def _no_alerts() -> str:
     return (
         f'<div style="background-color:{_BLACK}; border:2px solid {_GREEN}; '
-        f"color:{_GREEN}; -webkit-text-fill-color:{_GREEN}; font-family:{_FONT}; font-size:11px; "
+        f"color:{_WHITE}; -webkit-text-fill-color:{_WHITE}; font-family:{_FONT}; font-size:11px; "
         f'padding:6px 10px;">NO AIRPORTS FLAGGED</div>'
     )
 
