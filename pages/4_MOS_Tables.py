@@ -393,15 +393,30 @@ if run_button:
         "LAMP GST", df_c["LAMP_wind_gst"], colored=True,
         gst_series=df_c["LAMP_wind_gst"])
 
+    _wrap_open = (
+        '<div style="overflow-x:auto;background:#FFFFFF;padding:4px;'
+        'border:2px solid #000000;{margin}">'
+    )
+    _label = (
+        '<div style="font-family:Courier New,monospace;font-size:10px;'
+        'font-weight:bold;color:#000000;-webkit-text-fill-color:#000000;'
+        'padding:1px 2px;">{name}</div>'
+    )
     table_html = (
-        '<div style="overflow-x:auto;background:#FFFFFF;padding:4px;border:2px solid #000000;">'
-        '<table style="border-collapse:collapse;margin:0;">'
-        f'<thead>{header_row}</thead>'
-        f'<tbody>{fhr_row}'
-        f'{nbm_vis_row}{nbm_cig_row}{nbm_wdr_row}{nbm_wsp_row}{nbm_gst_row}'
-        f'{lamp_vis_row}{lamp_cig_row}{lamp_wdr_row}{lamp_wsp_row}{lamp_gst_row}</tbody>'
-        '</table>'
-        '</div>'
+        _wrap_open.format(margin="margin-bottom:10px;")
+        + _label.format(name="NBM")
+        + '<table style="border-collapse:collapse;margin:0;">'
+        + f'<thead>{header_row}</thead>'
+        + f'<tbody>{fhr_row}{nbm_vis_row}{nbm_cig_row}'
+        + f'{nbm_wdr_row}{nbm_wsp_row}{nbm_gst_row}</tbody>'
+        + '</table></div>'
+        + _wrap_open.format(margin="")
+        + _label.format(name="GFS LAMP")
+        + '<table style="border-collapse:collapse;margin:0;">'
+        + f'<thead>{header_row}</thead>'
+        + f'<tbody>{fhr_row}{lamp_vis_row}{lamp_cig_row}'
+        + f'{lamp_wdr_row}{lamp_wsp_row}{lamp_gst_row}</tbody>'
+        + '</table></div>'
     )
 
     st.markdown(table_html, unsafe_allow_html=True)
@@ -411,12 +426,12 @@ if run_button:
         "time": [pd.to_datetime(t).strftime("%Y-%m-%d %H:%MZ") for t in df_c["valid_time"]],
         "fhr": df_c["fhr"].tolist(),
         "NBM_vis": [fmt_vis(v) for v in df_c["NBM_vis_sm"]],
+        "LAMP_vis": [fmt_vis(v) for v in df_c["LAMP_vis_sm"]],
         "NBM_cig": [fmt_cig(c, u) for c, u in zip(df_c["NBM_cig_ft"], df_c["NBM_cig_unl"])],
+        "LAMP_cig": [fmt_cig(c, u) for c, u in zip(df_c["LAMP_cig_ft"], df_c["LAMP_cig_unl"])],
         "NBM_wdr": [fmt_wdr(d) for d in df_c["NBM_wind_dir"]],
         "NBM_wsp": [fmt_kt(s) for s in df_c["NBM_wind_spd"]],
         "NBM_gst": [fmt_kt(g) for g in df_c["NBM_wind_gst"]],
-        "LAMP_vis": [fmt_vis(v) for v in df_c["LAMP_vis_sm"]],
-        "LAMP_cig": [fmt_cig(c, u) for c, u in zip(df_c["LAMP_cig_ft"], df_c["LAMP_cig_unl"])],
         "LAMP_wdr": [fmt_wdr(d) for d in df_c["LAMP_wind_dir"]],
         "LAMP_wsp": [fmt_kt(s) for s in df_c["LAMP_wind_spd"]],
         "LAMP_gst": [fmt_kt(g) for g in df_c["LAMP_wind_gst"]],
