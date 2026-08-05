@@ -84,7 +84,7 @@ _FONT = "'Courier New', Courier, monospace"
 def _td(text, bg=_BLACK, fg=_GREEN, bold=False, align="left") -> str:
     weight = "bold" if bold else "normal"
     return (
-        f'<td style="background-color:{bg}; color:{fg} !important; '
+        f'<td style="background-color:{bg}; color:{fg}; -webkit-text-fill-color:{fg}; '
         f"font-family:{_FONT}; font-size:11px; padding:3px 10px; "
         f"border:1px solid {_GREEN}; font-weight:{weight}; "
         f'text-align:{align}; white-space:nowrap;">{text}</td>'
@@ -93,7 +93,7 @@ def _td(text, bg=_BLACK, fg=_GREEN, bold=False, align="left") -> str:
 
 def _th(text, align="left") -> str:
     return (
-        f'<td style="background-color:{_BLACK}; color:{_GREEN} !important; '
+        f'<td style="background-color:{_BLACK}; color:{_GREEN}; '
         f"font-family:{_FONT}; font-size:11px; padding:4px 10px; "
         f"border:1px solid {_GREEN}; font-weight:bold; "
         f'text-align:{align}; text-decoration:underline; '
@@ -114,7 +114,7 @@ def _table(header_cells: list[str], body_rows: list[str]) -> str:
 def _no_alerts() -> str:
     return (
         f'<div style="background-color:{_BLACK}; border:2px solid {_GREEN}; '
-        f"color:{_GREEN} !important; font-family:{_FONT}; font-size:11px; "
+        f"color:{_GREEN}; -webkit-text-fill-color:{_GREEN}; font-family:{_FONT}; font-size:11px; "
         f'padding:6px 10px;">NO AIRPORTS FLAGGED</div>'
     )
 
@@ -240,7 +240,7 @@ with st.sidebar:
 
     st.divider()
     st.markdown(
-        '<span style="color:#CC0000 !important; font-weight:bold;">'
+        '<span style="color:#CC0000; -webkit-text-fill-color:#CC0000; font-weight:bold;">'
         "RED highlight</span> = critical severity: "
         f"vis &lt; {_fmt_vis(CRITICAL_VIS_SM)} sm or ceiling &lt; "
         f"{CRITICAL_CIG_FT} ft.",

@@ -183,13 +183,13 @@ def build_summary(df):
 
 def make_cell(text, bg="#FFFFFF", fg="#000000"):
     """Return a <td>: white/black by default; tier colors pass a bg.
-    color uses !important so the retro theme cannot wash it out."""
+    plain color + -webkit-text-fill-color, NO important flags: the Streamlit sanitizer strips inline declarations containing them; text-fill-color wins the paint step regardless."""
     weight = "bold" if bg != "#FFFFFF" else "normal"
     return (
         f'<td style="'
         f'background:{bg};'
-        f'color:{fg} !important;'
-        f'-webkit-text-fill-color:{fg} !important;'
+        f'color:{fg};'
+        f'-webkit-text-fill-color:{fg};'
         f'font-family:Courier New,monospace;'
         f'font-size:9px;'
         f'font-weight:{weight};'
@@ -209,8 +209,8 @@ def make_th(text, is_row_label=False):
     return (
         f'<th style="'
         f'background:#E0E0E0;'
-        f'color:#000000 !important;'
-        f'-webkit-text-fill-color:#000000 !important;'
+        f'color:#000000;'
+        f'-webkit-text-fill-color:#000000;'
         f'font-family:Courier New,monospace;'
         f'font-size:9px;'
         f'font-weight:bold;'
@@ -281,8 +281,8 @@ if run_button:
     for t in times:
         tstr = pd.to_datetime(t).strftime("%m/%d<br>%HZ")
         header_cells.append(
-            f'<th style="background:#E0E0E0;color:#000000 !important;'
-            f'-webkit-text-fill-color:#000000 !important;'
+            f'<th style="background:#E0E0E0;color:#000000;'
+            f'-webkit-text-fill-color:#000000;'
             f'font-family:Courier New,monospace;font-size:9px;font-weight:bold;'
             f'padding:2px 3px;text-align:center;border:1px solid #000000;'
             f'white-space:nowrap;min-width:38px;">{tstr}</th>'
