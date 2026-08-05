@@ -189,6 +189,7 @@ def make_cell(text, bg="#FFFFFF", fg="#000000"):
         f'<td style="'
         f'background:{bg};'
         f'color:{fg} !important;'
+        f'-webkit-text-fill-color:{fg} !important;'
         f'font-family:Courier New,monospace;'
         f'font-size:9px;'
         f'font-weight:{weight};'
@@ -197,7 +198,6 @@ def make_cell(text, bg="#FFFFFF", fg="#000000"):
         f'border:1px solid #000000;'
         f'white-space:nowrap;'
         f'min-width:38px;'
-        f'max-width:38px;'
         f'">{escape(str(text))}</td>'
     )
 
@@ -210,6 +210,7 @@ def make_th(text, is_row_label=False):
         f'<th style="'
         f'background:#E0E0E0;'
         f'color:#000000 !important;'
+        f'-webkit-text-fill-color:#000000 !important;'
         f'font-family:Courier New,monospace;'
         f'font-size:9px;'
         f'font-weight:bold;'
@@ -281,9 +282,10 @@ if run_button:
         tstr = pd.to_datetime(t).strftime("%m/%d<br>%HZ")
         header_cells.append(
             f'<th style="background:#E0E0E0;color:#000000 !important;'
+            f'-webkit-text-fill-color:#000000 !important;'
             f'font-family:Courier New,monospace;font-size:9px;font-weight:bold;'
             f'padding:2px 3px;text-align:center;border:1px solid #000000;'
-            f'white-space:nowrap;min-width:38px;max-width:38px;">{tstr}</th>'
+            f'white-space:nowrap;min-width:38px;">{tstr}</th>'
         )
     header_row = "<tr>" + "".join(header_cells) + "</tr>"
 
