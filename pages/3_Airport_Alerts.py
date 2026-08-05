@@ -173,6 +173,90 @@ def render_tsra_table(alerts) -> str:
     return _table(header, rows)
 
 
+def _fmt_vis_obs(v) -> str:
+    if v is None:
+        return "-"
+    return f"{v:g}"
+
+
+def _fmt_cig_obs(c, unl) -> str:
+    if unl or c is None:
+        return "UNL"
+    return f"{int(round(c / 100)):03d}"
+
+
+def _fmt_wind_obs(spd, gst) -> str:
+    if spd is None:
+        return "-"
+    s = f"{int(spd):02d}"
+    return f"{s}G{int(gst):02d}" if gst else s
+
+
+def render_metar_table(rows) -> str:
+    """rows: list of dicts with icao, obs_time, vis, cig, cig_unl, spd, gst,
+    raw, and breach flags vis_bad/cig_bad/wind_bad."""
+    header = [_th("ICAO"), _th("TIME"), _th("VIS", align="right"),
+              _th("CIG", align="right"), _th("WIND", align="right"),
+              _th("RAW METAR")]
+    body = []
+    for r in rows:
+        def cell(text, bad, align="right"):
+            if bad:
+                return _td(text, bg=_RED, fg=_WHITE, bold=True, align=align)
+            return _td(text, align=align)
+        body.append(
+            "<tr>"
+            + _td(r["icao"], bold=True)
+            + _td(r["obs_time"].strftime("%H:%MZ"))
+            + cell(_fmt_vis_obs(r["vis"]), r["vis_bad"])
+            + cell(_fmt_cig_obs(r["cig"], r["cig_unl"]), r["cig_bad"])
+            + cell(_fmt_wind_obs(r["spd"], r["gst"]), r["wind_bad"])
+            + _td(r["raw"])
+            + "</tr>"
+        )
+    return _table(header, body)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def cached_current_metars(
+    icaos_tuple: tuple[str, ...],
+    vis_threshold_sm: float,
+    ceiling_threshold_ft: int,
+    wind_threshold_kt: int,
+):
+    """Latest METAR per station; return rows breaching any threshold.
+    5-minute cache — METARs are hourly with specials in between."""
+    from core.metar import fetch_metars
+
+    by_station = fetch_metars(list(icaos_tuple), hours_back=2)
+    rows = []
+    for icao, obs_list in by_station.items():
+        if not obs_list:
+            continue
+        o = obs_list[-1]  # latest
+        vis_bad = o.vsby_sm is not None and o.vsby_sm < vis_threshold_sm
+        cig_bad = (not o.ceiling_unlimited and o.ceiling_ft is not None
+                   and o.ceiling_ft < ceiling_threshold_ft)
+        wind_max = max(
+            [x for x in (o.wind_speed_kt, o.wind_gust_kt) if x is not None],
+            default=None,
+        )
+        wind_bad = wind_max is not None and wind_max >= wind_threshold_kt
+        if vis_bad or cig_bad or wind_bad:
+            rows.append({
+                "icao": icao,
+                "obs_time": o.obs_time,
+                "vis": o.vsby_sm, "vis_bad": vis_bad,
+                "cig": o.ceiling_ft, "cig_unl": o.ceiling_unlimited,
+                "cig_bad": cig_bad,
+                "spd": o.wind_speed_kt, "gst": o.wind_gust_kt,
+                "wind_bad": wind_bad,
+                "raw": o.raw_text,
+            })
+    rows.sort(key=lambda r: r["icao"])
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # Cached analysis — TAFs update every 6 hours; 15-min cache is fresh enough
 # ---------------------------------------------------------------------------
@@ -223,6 +307,11 @@ with st.sidebar:
         "Flag thunderstorms (TS/TSRA)",
         value=True,
         help="Includes TS, TSRA, +TSRA, -TSRA. Excludes VCTS (vicinity).",
+    )
+    wind_threshold = st.slider(
+        "Wind/gust threshold (kt) — METARs",
+        min_value=15, max_value=50, value=25, step=5,
+        help="Current-METAR section flags sustained or gust at/above this.",
     )
 
     st.divider()
@@ -301,6 +390,31 @@ if run_button:
         elif results.tsra_alerts:
             st.markdown(render_tsra_table(results.tsra_alerts),
                         unsafe_allow_html=True)
+        else:
+            st.markdown(_no_alerts(), unsafe_allow_html=True)
+
+    # Current METARs breaching thresholds
+    st.divider()
+    st.subheader("Current METARs at/beyond thresholds")
+    st.caption(
+        f"Latest observation per station · vis < {vis_threshold:g} sm · "
+        f"cig < {ceiling_threshold} ft · wind/gust \u2265 {wind_threshold} kt · "
+        "red cell = breaching value"
+    )
+    with st.spinner("Fetching current METARs..."):
+        try:
+            metar_rows = cached_current_metars(
+                icaos_tuple=tuple(JETBLUE_ICAOS),
+                vis_threshold_sm=vis_threshold,
+                ceiling_threshold_ft=ceiling_threshold,
+                wind_threshold_kt=wind_threshold,
+            )
+        except Exception as e:
+            metar_rows = None
+            st.warning(f"METAR fetch failed: {e}")
+    if metar_rows is not None:
+        if metar_rows:
+            st.markdown(render_metar_table(metar_rows), unsafe_allow_html=True)
         else:
             st.markdown(_no_alerts(), unsafe_allow_html=True)
 
