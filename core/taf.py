@@ -84,10 +84,19 @@ class TsraAlert:
 
 
 @dataclass
+class WindAlert:
+    icao: str
+    max_wind_kt: int           # highest sustained-or-gust in the window
+    wind_str: str              # e.g. "35G45" or "38"
+    worst_period_label: str = ""
+
+
+@dataclass
 class AlertResults:
     vis_alerts: list[VisAlert] = field(default_factory=list)
     ceiling_alerts: list[CeilingAlert] = field(default_factory=list)
     tsra_alerts: list[TsraAlert] = field(default_factory=list)
+    wind_alerts: list[WindAlert] = field(default_factory=list)
     unavailable_icaos: list[str] = field(default_factory=list)
     parse_errors: dict[str, str] = field(default_factory=dict)
 
@@ -109,6 +118,7 @@ def analyze_tafs(
     vis_threshold_sm: float,
     ceiling_threshold_ft: int,
     tsra_enabled: bool = True,
+    wind_threshold_kt: int = 35,
 ) -> AlertResults:
     """Fetch, parse, and analyze TAFs for all provided stations.
 
@@ -135,7 +145,7 @@ def analyze_tafs(
                 icao, raw_tafs[icao],
                 window_start, window_end,
                 vis_threshold_sm, ceiling_threshold_ft, tsra_enabled,
-                results,
+                wind_threshold_kt, results,
             )
         except Exception as e:
             results.parse_errors[icao] = str(e)
@@ -144,6 +154,7 @@ def analyze_tafs(
     results.vis_alerts.sort(key=lambda a: a.min_vis_sm)
     results.ceiling_alerts.sort(key=lambda a: a.min_ceiling_ft)
     results.tsra_alerts.sort(key=lambda a: a.icao)
+    results.wind_alerts.sort(key=lambda a: -a.max_wind_kt)
 
     return results
 
@@ -156,6 +167,7 @@ def _analyze_one(
     vis_threshold_sm: float,
     ceiling_threshold_ft: int,
     tsra_enabled: bool,
+    wind_threshold_kt: int,
     results: AlertResults,
 ) -> None:
     """Analyze one station's TAF and append any alerts to results."""
@@ -170,6 +182,9 @@ def _analyze_one(
     min_ceiling_label = ""
     first_tsra_code: Optional[str] = None
     first_tsra_label = ""
+    max_wind: Optional[int] = None
+    max_wind_str = ""
+    max_wind_label = ""
 
     for period in taf.data.forecast:
         # Skip periods that don't overlap the user's window
@@ -196,6 +211,14 @@ def _analyze_one(
                 min_ceiling = ceil_ft
                 min_ceiling_label = period_label
 
+        # --- Wind ---
+        wind_kt, wind_str = _period_wind_kt(period)
+        if wind_kt is not None and wind_kt >= wind_threshold_kt:
+            if max_wind is None or wind_kt > max_wind:
+                max_wind = wind_kt
+                max_wind_str = wind_str
+                max_wind_label = period_label
+
         # --- TSRA ---
         if tsra_enabled and first_tsra_code is None:
             tsra_code = _period_tsra_code(period)
@@ -214,6 +237,13 @@ def _analyze_one(
             icao=icao,
             min_ceiling_ft=min_ceiling,
             worst_period_label=min_ceiling_label,
+        ))
+    if max_wind is not None:
+        results.wind_alerts.append(WindAlert(
+            icao=icao,
+            max_wind_kt=max_wind,
+            wind_str=max_wind_str,
+            worst_period_label=max_wind_label,
         ))
     if first_tsra_code is not None:
         results.tsra_alerts.append(TsraAlert(
@@ -252,6 +282,30 @@ def _period_ceiling_ft(period) -> Optional[int]:
     if not ceiling_bases:
         return None
     return int(min(ceiling_bases) * 100)
+
+
+def _period_wind_kt(period):
+    """Return (max sustained-or-gust kt, display string) or (None, "")."""
+    spd = None
+    gst = None
+    try:
+        if period.wind_speed is not None and period.wind_speed.value is not None:
+            spd = int(period.wind_speed.value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        if period.wind_gust is not None and period.wind_gust.value is not None:
+            gst = int(period.wind_gust.value)
+    except (TypeError, ValueError):
+        pass
+    if spd is None and gst is None:
+        return None, ""
+    max_kt = max(x for x in (spd, gst) if x is not None)
+    if spd is not None and gst is not None:
+        return max_kt, f"{spd:02d}G{gst:02d}"
+    if gst is not None:
+        return max_kt, f"G{gst:02d}"
+    return max_kt, f"{spd:02d}"
 
 
 def _period_tsra_code(period) -> Optional[str]:

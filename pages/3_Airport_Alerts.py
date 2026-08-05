@@ -159,6 +159,20 @@ def render_ceiling_table(alerts) -> str:
     return _table(header, rows)
 
 
+def render_wind_table(alerts) -> str:
+    header = [_th("ICAO"), _th("WIND (KT)", align="right"), _th("WORST PERIOD")]
+    rows = []
+    for a in alerts:
+        rows.append(
+            "<tr>"
+            + _td(a.icao, bold=True)
+            + _td(a.wind_str, bold=True, align="right")
+            + _td(a.worst_period_label)
+            + "</tr>"
+        )
+    return _table(header, rows)
+
+
 def render_tsra_table(alerts) -> str:
     header = [_th("ICAO"), _th("CODE"), _th("PERIOD")]
     rows = []
@@ -364,8 +378,8 @@ if run_button:
             st.error(f"Failed to fetch TAFs: {e}")
             st.stop()
 
-    # Three tables side-by-side
-    col_vis, col_ceil, col_tsra = st.columns(3, gap="medium")
+    # Four tables side-by-side
+    col_vis, col_ceil, col_tsra, col_wind = st.columns(4, gap="medium")
 
     with col_vis:
         st.subheader(f"Low visibility (<{_fmt_vis(vis_threshold)} sm)")
@@ -389,6 +403,14 @@ if run_button:
             st.write("_TSRA alerts disabled in sidebar._")
         elif results.tsra_alerts:
             st.markdown(render_tsra_table(results.tsra_alerts),
+                        unsafe_allow_html=True)
+        else:
+            st.markdown(_no_alerts(), unsafe_allow_html=True)
+
+    with col_wind:
+        st.subheader("TAF winds (\u226535 kt)")
+        if results.wind_alerts:
+            st.markdown(render_wind_table(results.wind_alerts),
                         unsafe_allow_html=True)
         else:
             st.markdown(_no_alerts(), unsafe_allow_html=True)
