@@ -397,9 +397,9 @@ if run_button:
         '<div style="overflow-x:auto;background:#FFFFFF;padding:4px;border:2px solid #000000;">'
         '<table style="border-collapse:collapse;margin:0;">'
         f'<thead>{header_row}</thead>'
-        f'<tbody>{fhr_row}{nbm_vis_row}{lamp_vis_row}{nbm_cig_row}{lamp_cig_row}'
-        f'{nbm_wdr_row}{nbm_wsp_row}{nbm_gst_row}'
-        f'{lamp_wdr_row}{lamp_wsp_row}{lamp_gst_row}</tbody>'
+        f'<tbody>{fhr_row}'
+        f'{nbm_vis_row}{nbm_cig_row}{nbm_wdr_row}{nbm_wsp_row}{nbm_gst_row}'
+        f'{lamp_vis_row}{lamp_cig_row}{lamp_wdr_row}{lamp_wsp_row}{lamp_gst_row}</tbody>'
         '</table>'
         '</div>'
     )
