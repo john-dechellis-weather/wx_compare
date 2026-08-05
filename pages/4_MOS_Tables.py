@@ -141,6 +141,35 @@ def cig_bg(c, u):
     return None
 
 
+def fmt_wdr(dr):
+    if dr is None or pd.isna(dr):
+        return "VRB"
+    return f"{int(dr):03d}"
+
+
+def fmt_kt(x):
+    if x is None or pd.isna(x):
+        return "-"
+    return f"{int(x):02d}"
+
+
+def build_wind_row(label, series, colored=False, spd_series=None, gst_series=None, fmt=fmt_kt):
+    """One table row for a wind component. If colored, tint by wind_bg."""
+    cells = [make_th(label, is_row_label=True)]
+    for i, v in enumerate(series):
+        if colored:
+            s = spd_series.iloc[i] if spd_series is not None else None
+            g = gst_series.iloc[i] if gst_series is not None else None
+            colors = wind_bg(s, g)
+        else:
+            colors = None
+        if colors:
+            cells.append(make_cell(fmt(v), colors[0], colors[1]))
+        else:
+            cells.append(make_cell(fmt(v)))
+    return "<tr>" + "".join(cells) + "</tr>"
+
+
 def wind_bg(s, g):
     vals = [x for x in (s, g) if x is not None and not pd.isna(x)]
     if not vals: return None
@@ -335,31 +364,30 @@ if run_button:
             lamp_cig_cells.append(make_cell(fmt_cig(c, u)))
     lamp_cig_row = "<tr>" + "".join(lamp_cig_cells) + "</tr>"
 
-    # NBM Wind row
-    nbm_wind_cells = [make_th("NBM Wind", is_row_label=True)]
-    for d, s, g in zip(df_c["NBM_wind_dir"], df_c["NBM_wind_spd"], df_c["NBM_wind_gst"]):
-        colors = wind_bg(s, g)
-        if colors:
-            nbm_wind_cells.append(make_cell(fmt_wind(d, s, g), colors[0], colors[1]))
-        else:
-            nbm_wind_cells.append(make_cell(fmt_wind(d, s, g)))
-    nbm_wind_row = "<tr>" + "".join(nbm_wind_cells) + "</tr>"
-
-    # LAMP Wind row
-    lamp_wind_cells = [make_th("LAMP Wind", is_row_label=True)]
-    for d, s, g in zip(df_c["LAMP_wind_dir"], df_c["LAMP_wind_spd"], df_c["LAMP_wind_gst"]):
-        colors = wind_bg(s, g)
-        if colors:
-            lamp_wind_cells.append(make_cell(fmt_wind(d, s, g), colors[0], colors[1]))
-        else:
-            lamp_wind_cells.append(make_cell(fmt_wind(d, s, g)))
-    lamp_wind_row = "<tr>" + "".join(lamp_wind_cells) + "</tr>"
+    # Wind rows — direction / sustained / gust, per model.
+    # WSP colored by sustained speed; GST colored by gust; WDR plain.
+    nbm_wdr_row = build_wind_row("NBM WDR", df_c["NBM_wind_dir"], fmt=fmt_wdr)
+    nbm_wsp_row = build_wind_row(
+        "NBM WSP", df_c["NBM_wind_spd"], colored=True,
+        spd_series=df_c["NBM_wind_spd"])
+    nbm_gst_row = build_wind_row(
+        "NBM GST", df_c["NBM_wind_gst"], colored=True,
+        gst_series=df_c["NBM_wind_gst"])
+    lamp_wdr_row = build_wind_row("LAMP WDR", df_c["LAMP_wind_dir"], fmt=fmt_wdr)
+    lamp_wsp_row = build_wind_row(
+        "LAMP WSP", df_c["LAMP_wind_spd"], colored=True,
+        spd_series=df_c["LAMP_wind_spd"])
+    lamp_gst_row = build_wind_row(
+        "LAMP GST", df_c["LAMP_wind_gst"], colored=True,
+        gst_series=df_c["LAMP_wind_gst"])
 
     table_html = (
         '<div style="overflow-x:auto;background:#FFFFFF;padding:4px;border:2px solid #000000;">'
         '<table style="border-collapse:collapse;margin:0;">'
         f'<thead>{header_row}</thead>'
-        f'<tbody>{fhr_row}{nbm_vis_row}{lamp_vis_row}{nbm_cig_row}{lamp_cig_row}{nbm_wind_row}{lamp_wind_row}</tbody>'
+        f'<tbody>{fhr_row}{nbm_vis_row}{lamp_vis_row}{nbm_cig_row}{lamp_cig_row}'
+        f'{nbm_wdr_row}{nbm_wsp_row}{nbm_gst_row}'
+        f'{lamp_wdr_row}{lamp_wsp_row}{lamp_gst_row}</tbody>'
         '</table>'
         '</div>'
     )
@@ -374,8 +402,12 @@ if run_button:
         "LAMP_vis": [fmt_vis(v) for v in df_c["LAMP_vis_sm"]],
         "NBM_cig": [fmt_cig(c, u) for c, u in zip(df_c["NBM_cig_ft"], df_c["NBM_cig_unl"])],
         "LAMP_cig": [fmt_cig(c, u) for c, u in zip(df_c["LAMP_cig_ft"], df_c["LAMP_cig_unl"])],
-        "NBM_wind": [fmt_wind(d, s, g) for d, s, g in zip(df_c["NBM_wind_dir"], df_c["NBM_wind_spd"], df_c["NBM_wind_gst"])],
-        "LAMP_wind": [fmt_wind(d, s, g) for d, s, g in zip(df_c["LAMP_wind_dir"], df_c["LAMP_wind_spd"], df_c["LAMP_wind_gst"])],
+        "NBM_wdr": [fmt_wdr(d) for d in df_c["NBM_wind_dir"]],
+        "NBM_wsp": [fmt_kt(s) for s in df_c["NBM_wind_spd"]],
+        "NBM_gst": [fmt_kt(g) for g in df_c["NBM_wind_gst"]],
+        "LAMP_wdr": [fmt_wdr(d) for d in df_c["LAMP_wind_dir"]],
+        "LAMP_wsp": [fmt_kt(s) for s in df_c["LAMP_wind_spd"]],
+        "LAMP_gst": [fmt_kt(g) for g in df_c["LAMP_wind_gst"]],
     })
     st.download_button(
         "Download as CSV",
