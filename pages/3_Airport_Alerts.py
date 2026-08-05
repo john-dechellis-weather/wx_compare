@@ -94,8 +94,9 @@ def _td(text, bg=_BLACK, fg=_WHITE, bold=False, align="left") -> str:
 def _th(text, align="left") -> str:
     return (
         f'<td style="background-color:{_BLACK}; color:{_WHITE}; '
+        f"-webkit-text-fill-color:{_WHITE}; "
         f"font-family:{_FONT}; font-size:11px; padding:4px 10px; "
-        f"border:1px solid {_WHITE}; font-weight:bold; "
+        f"border:1px solid {_GREEN}; font-weight:bold; "
         f'text-align:{align}; text-decoration:underline; '
         f'white-space:nowrap;">{text}</td>'
     )
@@ -130,7 +131,7 @@ def render_vis_table(alerts) -> str:
     for a in alerts:
         critical = a.min_vis_sm < CRITICAL_VIS_SM
         bg = _RED if critical else _BLACK
-        fg = _WHITE if critical else _GREEN
+        fg = _WHITE
         rows.append(
             "<tr>"
             + _td(a.icao, bg=bg, fg=fg, bold=critical)
@@ -147,7 +148,7 @@ def render_ceiling_table(alerts) -> str:
     for a in alerts:
         critical = a.min_ceiling_ft < CRITICAL_CIG_FT
         bg = _RED if critical else _BLACK
-        fg = _WHITE if critical else _GREEN
+        fg = _WHITE
         rows.append(
             "<tr>"
             + _td(a.icao, bg=bg, fg=fg, bold=critical)
