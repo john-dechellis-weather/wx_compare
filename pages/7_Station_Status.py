@@ -175,9 +175,10 @@ def cached_nbh_table(icao: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=600, show_spinner=False, max_entries=20)
-def cached_notams(icao: str) -> list[dict] | None:
-    """FAA NOTAM Search JSON endpoint — unofficial but long-stable.
-    Returns None on failure so the section shows 'unavailable'."""
+def cached_notams(icao: str):
+    """FAA NOTAM Search JSON endpoint — unofficial.
+    Returns (rows, None) on success or (None, error_detail) on failure
+    so the page can show WHY it failed (status code vs timeout vs schema)."""
     try:
         r = requests.post(
             "https://notams.aim.faa.gov/notamSearch/search",
@@ -185,8 +186,13 @@ def cached_notams(icao: str) -> list[dict] | None:
             headers=_HEADERS,
             timeout=30,
         )
-        r.raise_for_status()
-        payload = r.json()
+        if r.status_code != 200:
+            return None, f"HTTP {r.status_code} from notams.aim.faa.gov"
+        try:
+            payload = r.json()
+        except ValueError:
+            snippet = r.text[:120].replace("\n", " ")
+            return None, f"Non-JSON response (starts: {snippet!r})"
         items = payload.get("notamList", [])
         out = []
         for it in items:
@@ -195,9 +201,11 @@ def cached_notams(icao: str) -> list[dict] | None:
                 "text": (it.get("icaoMessage") or it.get("traditionalMessage")
                          or it.get("plainLanguageMessage") or "").strip(),
             })
-        return out
-    except Exception:
-        return None
+        return out, None
+    except requests.Timeout:
+        return None, "Timeout after 30s"
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
 
 
 # ---------------------------------------------------------------------------
@@ -481,12 +489,9 @@ if active_icao:
     # --- NOTAMs ---
     st.subheader("Active NOTAMs")
     with st.spinner("Fetching NOTAMs..."):
-        notams = cached_notams(icao)
+        notams, notam_err = cached_notams(icao)
     if notams is None:
-        st.warning(
-            "NOTAM service unavailable (unofficial FAA endpoint — "
-            "may be intermittent)."
-        )
+        st.warning(f"NOTAM service unavailable — {notam_err}")
     elif not notams:
         st.caption("No active NOTAMs returned.")
     else:
