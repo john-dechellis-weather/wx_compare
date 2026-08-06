@@ -68,6 +68,46 @@ def cached_mos_tables(icao: str, cycle_iso: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+@st.cache_data(ttl=600, show_spinner=False, max_entries=20)
+def cached_extended_tables(icao: str, cycle_iso: str):
+    """NBS (3-hourly, f+6-72) and NBE (12-hourly, wind only) frames."""
+    from compare import compare_icaos
+    from models import Nbs, Nbe
+
+    cycle = datetime.fromisoformat(cycle_iso)
+    df_long, resolved, unresolved = compare_icaos(
+        icaos=[icao],
+        cycle=cycle,
+        cache_root=CACHE_ROOT,
+        model_classes=[Nbs, Nbe],
+    )
+    if not resolved or len(df_long) == 0:
+        return pd.DataFrame(), pd.DataFrame()
+
+    df = df_long[df_long["station_id"] == icao.upper()].copy()
+
+    def _wide(model_name):
+        m = df[df["model"] == model_name].sort_values("valid_time")
+        if len(m) == 0:
+            return pd.DataFrame()
+        rows = []
+        for _, r in m.iterrows():
+            t = r["valid_time"]
+            rows.append({
+                "valid_time": t,
+                "fhr": int((t - cycle).total_seconds() // 3600),
+                "vis_sm": r.get("vsby_sm"),
+                "cig_ft": r.get("ceiling_ft"),
+                "cig_unl": r.get("ceiling_unlimited"),
+                "wdr": r.get("wind_dir_deg"),
+                "wsp": r.get("wind_speed_kt"),
+                "gst": r.get("wind_gust_kt"),
+            })
+        return pd.DataFrame(rows)
+
+    return _wide("NBS"), _wide("NBE")
+
+
 @st.cache_data(ttl=300, show_spinner=False, max_entries=10)
 def cached_latest_cycle_mos(icao: str) -> str | None:
     from core.stations import StationResolver
@@ -191,6 +231,63 @@ def gust_bg(g):
     if g >= 35: return ("#FF4040", "#000000")    # red
     if g >= 25: return ("#FF9900", "#000000")    # orange
     return None
+
+
+def build_generic_table(df_m, table_label, show_viscig=True):
+    """One stacked table for a per-model frame (columns: valid_time, fhr,
+    vis_sm, cig_ft, cig_unl, wdr, wsp, gst)."""
+    times = df_m["valid_time"].tolist()
+    fhrs = df_m["fhr"].tolist()
+
+    header_cells = [make_th("Field", is_row_label=True)]
+    for t in times:
+        tstr = pd.to_datetime(t).strftime("%m/%d<br>%HZ")
+        header_cells.append(
+            f'<th style="background:#E0E0E0;color:#000000;'
+            f'-webkit-text-fill-color:#000000;'
+            f'font-family:Courier New,monospace;font-size:9px;font-weight:bold;'
+            f'padding:2px 3px;text-align:center;border:1px solid #000000;'
+            f'white-space:nowrap;min-width:38px;">{tstr}</th>'
+        )
+    header_row = "<tr>" + "".join(header_cells) + "</tr>"
+
+    fhr_cells = [make_th("F+", is_row_label=True)]
+    for f in fhrs:
+        fhr_cells.append(make_cell(f"f+{int(f)}"))
+    rows_html = ["<tr>" + "".join(fhr_cells) + "</tr>"]
+
+    if show_viscig:
+        cells = [make_th("VIS", is_row_label=True)]
+        for v in df_m["vis_sm"]:
+            colors = vis_bg(v)
+            cells.append(make_cell(fmt_vis(v), colors[0], colors[1])
+                         if colors else make_cell(fmt_vis(v)))
+        rows_html.append("<tr>" + "".join(cells) + "</tr>")
+
+        cells = [make_th("CIG", is_row_label=True)]
+        for c, u in zip(df_m["cig_ft"], df_m["cig_unl"]):
+            colors = cig_bg(c, u)
+            cells.append(make_cell(fmt_cig(c, u), colors[0], colors[1])
+                         if colors else make_cell(fmt_cig(c, u)))
+        rows_html.append("<tr>" + "".join(cells) + "</tr>")
+
+    rows_html.append(build_wind_row("WDR", df_m["wdr"], fmt=fmt_wdr))
+    rows_html.append(build_wind_row("WSP", df_m["wsp"], colored=True,
+                                    spd_series=df_m["wsp"]))
+    rows_html.append(build_wind_row("GST", df_m["gst"], colored=True,
+                                    gst_series=df_m["gst"]))
+
+    return (
+        '<div style="overflow-x:auto;background:#FFFFFF;padding:4px;'
+        'border:2px solid #000000;margin-bottom:10px;">'
+        + f'<div style="font-family:Courier New,monospace;font-size:10px;'
+        + f'font-weight:bold;color:#000000;-webkit-text-fill-color:#000000;'
+        + f'padding:1px 2px;">{table_label}</div>'
+        + '<table style="border-collapse:collapse;margin:0;">'
+        + f'<thead>{header_row}</thead>'
+        + f'<tbody>{"".join(rows_html)}</tbody>'
+        + '</table></div>'
+    )
 
 
 def row_flagged(row):
@@ -420,6 +517,34 @@ if run_button:
     )
 
     st.markdown(table_html, unsafe_allow_html=True)
+
+    # Extended tables: NBS (3-hourly) + NBE (12-hourly, wind only)
+    with st.spinner("Fetching NBS + NBE..."):
+        try:
+            nbs_df, nbe_df = cached_extended_tables(icao_input, cycle_iso)
+        except Exception as e:
+            nbs_df, nbe_df = pd.DataFrame(), pd.DataFrame()
+            st.warning(f"NBS/NBE fetch failed: {e}")
+
+    if len(nbs_df):
+        st.markdown(
+            build_generic_table(nbs_df, "NBS (3-hourly)", show_viscig=True),
+            unsafe_allow_html=True,
+        )
+    else:
+        st.caption("NBS: no data for this cycle.")
+
+    if len(nbe_df):
+        st.markdown(
+            build_generic_table(
+                nbe_df, "NBE (12-hourly \u00b7 wind only \u2014 "
+                "VIS/CIG not produced at extended range)",
+                show_viscig=False,
+            ),
+            unsafe_allow_html=True,
+        )
+    else:
+        st.caption("NBE: no data for this cycle.")
 
     # CSV
     csv_df = pd.DataFrame({
