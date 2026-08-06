@@ -1,18 +1,16 @@
 """Station Status — one-airport operational dashboard.
 
-Sections:
-  1. Current METAR   — latest ob via core.metar (AWC JSON)
-  2. Current TAF     — raw text via AWC data API
-  3. Live radar loop — NWS RIDGE standard station loop GIF (no rendering
-                       on our side; browser pulls the current loop)
-  4. NBH MOS table   — hourly NBM, f+1..25, same terminal styling as the
-                       MOS Tables page
-  5. Active NOTAMs   — FAA NOTAM Search JSON endpoint (unofficial but
-                       long-stable; degrades gracefully if unavailable)
+Sections: current METAR, current TAF, live radar (NWS RIDGE loop OR raw
+Level II frames rendered from volume data), hourly NBM table, NOTAMs.
+
+Architecture note: the Refresh button commits the station to
+st.session_state and the display gates on that (not on the button), so
+widget interactions like the Level II frame slider rerun the page
+without blanking it — every fetcher is cached, so reruns are instant.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -37,8 +35,6 @@ CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 
 _HEADERS = {"User-Agent": "BlueMet/1.0 (aviation weather tool)"}
 
-# Airport -> nearest NEXRAD site for the RIDGE loop. Manual override in
-# sidebar covers anything missing here.
 RADAR_FOR_AIRPORT = {
     "KJFK": "KOKX", "KLGA": "KOKX", "KHPN": "KOKX", "KISP": "KOKX",
     "KEWR": "KDIX", "KPHL": "KDIX",
@@ -61,11 +57,10 @@ RADAR_FOR_AIRPORT = {
 
 
 # ---------------------------------------------------------------------------
-# Data fetchers
+# Data fetchers (all cached — reruns from widget interaction are instant)
 # ---------------------------------------------------------------------------
 @st.cache_data(ttl=300, show_spinner=False, max_entries=30)
 def cached_metar(icao: str):
-    """Latest METAR object (raw + decoded fields) or None."""
     from core.metar import fetch_metars
 
     by_station = fetch_metars([icao], hours_back=3)
@@ -75,7 +70,6 @@ def cached_metar(icao: str):
 
 @st.cache_data(ttl=300, show_spinner=False, max_entries=30)
 def cached_taf_raw(icao: str) -> str | None:
-    """Raw TAF text from AWC."""
     try:
         r = requests.get(
             "https://aviationweather.gov/api/data/taf",
@@ -90,9 +84,51 @@ def cached_taf_raw(icao: str) -> str | None:
         return None
 
 
+@st.cache_data(ttl=600, show_spinner=False, max_entries=30)
+def cached_station_coords(icao: str):
+    from core.stations import StationResolver
+
+    resolver = StationResolver(cache_dir=CACHE_ROOT / "stations")
+    resolved, _ = resolver.resolve_many([icao])
+    if not resolved:
+        return None
+    stn = resolved[0]
+    return float(stn.lat), float(stn.lon)
+
+
+@st.cache_data(ttl=300, show_spinner=False, max_entries=5)
+def cached_live_l2(
+    icao: str, radar_site: str, zoom_deg: float, bucket: str
+) -> list[tuple[bytes, str]]:
+    """Last ~45 min of raw Level II reflectivity rendered around the
+    airport. `bucket` is a 5-minute stamp so the cache key rolls forward."""
+    from core.radar import fetch_and_render_radar_loop
+
+    coords = cached_station_coords(icao)
+    if coords is None:
+        raise ValueError(f"Cannot resolve coordinates for {icao}.")
+    lat, lon = coords
+
+    site = radar_site
+    if len(site) == 4 and site.startswith("K"):
+        site = site[1:]
+
+    start = datetime.now(timezone.utc) - timedelta(minutes=45)
+    refl_frames, _ = fetch_and_render_radar_loop(
+        start_time=start,
+        duration_min=45,
+        aircraft_lat=lat,
+        aircraft_lon=lon,
+        callsign=icao,
+        station=site,
+        zoom_deg=zoom_deg,
+        include_velocity=False,
+    )
+    return refl_frames
+
+
 @st.cache_data(ttl=600, show_spinner=False, max_entries=20)
 def cached_nbh_table(icao: str) -> pd.DataFrame:
-    """Hourly NBM (NBH portion, f+1..25) as a per-model wide frame."""
     from compare import compare_icaos
     from core.stations import StationResolver
     from core.cycle_select import find_latest_complete
@@ -140,11 +176,8 @@ def cached_nbh_table(icao: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=600, show_spinner=False, max_entries=20)
 def cached_notams(icao: str) -> list[dict] | None:
-    """Active NOTAMs via FAA NOTAM Search JSON endpoint.
-
-    Unofficial but long-stable. Returns None on any failure so the page
-    can show 'unavailable' instead of an error.
-    """
+    """FAA NOTAM Search JSON endpoint — unofficial but long-stable.
+    Returns None on failure so the section shows 'unavailable'."""
     try:
         r = requests.post(
             "https://notams.aim.faa.gov/notamSearch/search",
@@ -168,7 +201,7 @@ def cached_notams(icao: str) -> list[dict] | None:
 
 
 # ---------------------------------------------------------------------------
-# Terminal-style table (compact copy of the MOS page builders)
+# Rendering helpers (terminal styling, sanitizer-proof: no !important)
 # ---------------------------------------------------------------------------
 def _cell(text, bg="#FFFFFF", fg="#000000", bold=False):
     weight = "bold" if bold or bg != "#FFFFFF" else "normal"
@@ -301,7 +334,6 @@ def build_nbh_table(df_m: pd.DataFrame) -> str:
 
 
 def mono_box(text: str) -> str:
-    """Raw-text display box (METAR/TAF/NOTAM) in terminal styling."""
     from html import escape
     return (
         '<div style="background:#000000;border:2px solid #00FF00;'
@@ -320,7 +352,7 @@ st.caption("Current conditions, forecast, radar, and NOTAMs for one airport.")
 
 with st.sidebar:
     st.header("Airport")
-    icao_input = st.text_input(
+    icao_sidebar = st.text_input(
         "ICAO code",
         value="KJFK",
         max_chars=4,
@@ -330,21 +362,39 @@ with st.sidebar:
         "Radar site (blank = auto)",
         value="",
         max_chars=4,
-        help="NEXRAD site for the live loop, e.g. KOKX. "
+        help="NEXRAD site for the radar section, e.g. KOKX. "
              "Auto-mapped for common airports.",
     ).strip().upper()
+
+    radar_mode = st.radio(
+        "Radar display",
+        options=["RIDGE loop (instant)", "Raw Level II (slower, full res)"],
+        index=0,
+    )
+    l2_zoom = st.slider(
+        "Level II zoom (degrees)", 0.5, 3.0, 1.5, 0.5,
+        disabled=not radar_mode.startswith("Raw"),
+    )
 
     st.divider()
     run_button = st.button("Refresh", type="primary", use_container_width=True)
 
-if run_button and icao_input:
+
+if run_button and icao_sidebar:
+    st.session_state["status_icao"] = icao_sidebar
+    st.session_state.pop("live_l2", None)  # fresh loop on explicit refresh
+
+active_icao = st.session_state.get("status_icao")
+
+if active_icao:
+    icao = active_icao
     now = datetime.now(timezone.utc)
-    st.info(f"Station: **{icao_input}** · as of **{now:%Y-%m-%d %H:%M UTC}**")
+    st.info(f"Station: **{icao}** · as of **{now:%Y-%m-%d %H:%M UTC}**")
 
     # --- METAR ---
     st.subheader("Current METAR")
     with st.spinner("Fetching METAR..."):
-        ob = cached_metar(icao_input)
+        ob = cached_metar(icao)
     if ob is not None:
         st.markdown(mono_box(ob.raw_text), unsafe_allow_html=True)
         age_min = int((now - ob.obs_time).total_seconds() // 60)
@@ -355,32 +405,71 @@ if run_button and icao_input:
     # --- TAF ---
     st.subheader("Current TAF")
     with st.spinner("Fetching TAF..."):
-        taf_text = cached_taf_raw(icao_input)
+        taf_text = cached_taf_raw(icao)
     if taf_text:
         st.markdown(mono_box(taf_text), unsafe_allow_html=True)
     else:
         st.warning("No TAF available (station may not be a TAF site).")
 
-    # --- Live radar loop ---
-    st.subheader("Live Radar Loop")
-    radar_site = radar_override or RADAR_FOR_AIRPORT.get(icao_input, "")
-    if radar_site:
-        loop_url = f"https://radar.weather.gov/ridge/standard/{radar_site}_loop.gif"
+    # --- Radar ---
+    st.subheader("Live Radar")
+    radar_site = radar_override or RADAR_FOR_AIRPORT.get(icao, "")
+    if not radar_site:
+        st.warning(
+            f"No radar mapping for {icao}. Enter a NEXRAD site "
+            "(e.g. KOKX) in the sidebar."
+        )
+    elif radar_mode.startswith("RIDGE"):
+        loop_url = (
+            f"https://radar.weather.gov/ridge/standard/{radar_site}_loop.gif"
+        )
         st.image(loop_url, use_container_width=True)
         st.caption(
             f"NWS RIDGE loop for {radar_site} — refreshes on page reload."
         )
     else:
-        st.warning(
-            f"No radar mapping for {icao_input}. Enter a NEXRAD site "
-            "(e.g. KOKX) in the sidebar."
+        # Raw Level II mode
+        bucket = (
+            datetime.now(timezone.utc).strftime("%Y%m%d%H")
+            + str(datetime.now(timezone.utc).minute // 5)
         )
+        if "live_l2" not in st.session_state:
+            with st.spinner(
+                "Fetching raw Level II volumes (30-60s first time)..."
+            ):
+                try:
+                    st.session_state["live_l2"] = cached_live_l2(
+                        icao, radar_site, l2_zoom, bucket
+                    )
+                except Exception as e:
+                    st.session_state["live_l2"] = []
+                    st.warning(f"Level II fetch failed: {e}")
+        frames = st.session_state.get("live_l2", [])
+        if frames:
+            st.caption(
+                f"{len(frames)} raw volumes from {radar_site} "
+                "(last ~45 min), rendered from Level II data — "
+                "not NWS imagery."
+            )
+            if len(frames) > 1:
+                idx = st.slider(
+                    "Frame", 0, len(frames) - 1, len(frames) - 1,
+                    key="live_l2_idx",
+                    help="Newest frame is rightmost.",
+                )
+            else:
+                idx = 0
+            png, name = frames[idx]
+            st.image(png, use_container_width=True)
+            st.caption(f"Frame {idx + 1} of {len(frames)} · `{name}`")
+        else:
+            st.caption("No Level II volumes returned for the window.")
 
     # --- NBH MOS table ---
     st.subheader("NBM Hourly (NBH, f+1–25)")
     with st.spinner("Fetching NBM..."):
         try:
-            nbh_df = cached_nbh_table(icao_input)
+            nbh_df = cached_nbh_table(icao)
         except Exception as e:
             nbh_df = pd.DataFrame()
             st.warning(f"NBM fetch failed: {e}")
@@ -392,7 +481,7 @@ if run_button and icao_input:
     # --- NOTAMs ---
     st.subheader("Active NOTAMs")
     with st.spinner("Fetching NOTAMs..."):
-        notams = cached_notams(icao_input)
+        notams = cached_notams(icao)
     if notams is None:
         st.warning(
             "NOTAM service unavailable (unofficial FAA endpoint — "

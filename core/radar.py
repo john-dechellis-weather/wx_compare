@@ -89,6 +89,7 @@ def fetch_and_render_radar_loop(
     callsign: str,
     station: str,
     zoom_deg: float,
+    include_velocity: bool = True,
 ) -> tuple[list[tuple[bytes, str]], list[tuple[bytes, str]]]:
     """Fetch all Level II volumes in [start, start+duration], render each."""
     start = start_time.replace(tzinfo=None)
@@ -108,7 +109,8 @@ def fetch_and_render_radar_loop(
     for scan in scans:
         try:
             refl_png, vel_png, name = _download_and_render(
-                scan, aircraft_lat, aircraft_lon, callsign, station, zoom_deg
+                scan, aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
+                include_velocity=include_velocity,
             )
         except Exception:
             continue
@@ -250,7 +252,8 @@ def _find_scans_thredds(st4: str, start: datetime, end: datetime) -> list[_ScanR
 # Download + decode + render
 # ---------------------------------------------------------------------------
 def _download_and_render(
-    scan: _ScanRef, aircraft_lat, aircraft_lon, callsign, station, zoom_deg
+    scan: _ScanRef, aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
+    include_velocity: bool = True,
 ) -> tuple[bytes, bytes, str]:
     """Download one volume over HTTPS, render REF and VEL."""
     from metpy.io import Level2File
@@ -282,6 +285,8 @@ def _download_and_render(
         )
 
         vel_png = b""
+        if not include_velocity:
+            return refl_png, vel_png, name
         try:
             az_v, rng_km_v, data_v = _extract_moment(f, b"VEL")
             data_v = data_v * _MS_TO_KT
