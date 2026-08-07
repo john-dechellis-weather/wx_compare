@@ -116,13 +116,22 @@ def cached_l2(
 def cached_ir(clat: float, clon: float, callsign: str, bucket: str) -> bytes:
     from core.satellite import fetch_goes_data, render_infrared
     # GOES-19 became GOES-East in 2025 (GOES-16 retired); GOES-18 is West.
+    # ABI files land on S3 with real latency — ask 30 min back, and step
+    # further back if the nearest-time lookup finds nothing yet.
     sat = "goes19" if clon > -105 else "goes18"
-    ds, scan_time = fetch_goes_data(
-        target_time=datetime.now(timezone.utc) - timedelta(minutes=10),
-        satellite=sat,
-        cache_dir=CACHE_ROOT / "satellite",
-    )
-    return render_infrared(ds, clat, clon, callsign)
+    last_err = None
+    for minutes_back in (30, 75, 120):
+        try:
+            ds, scan_time = fetch_goes_data(
+                target_time=datetime.now(timezone.utc)
+                - timedelta(minutes=minutes_back),
+                satellite=sat,
+                cache_dir=CACHE_ROOT / "satellite",
+            )
+            return render_infrared(ds, clat, clon, callsign)
+        except Exception as e:
+            last_err = e
+    raise RuntimeError(f"GOES {sat} unavailable back to 2h: {last_err}")
 
 
 def _frames_to_gif(

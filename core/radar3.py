@@ -152,7 +152,23 @@ def parse_l3(raw: bytes):
 
     f = Level3File(io.BytesIO(raw))
     d = f.sym_block[0][0]
-    data = np.ma.masked_invalid(np.asarray(f.map_data(d["data"]), dtype=float))
+    mapped = f.map_data(d["data"])
+    try:
+        arr = np.asarray(mapped, dtype=float)
+    except (TypeError, ValueError):
+        # Legacy products (e.g. p41 Echo Tops) map through coded level
+        # strings ("ND", "TH", ...) — coerce element-wise, non-numeric
+        # becomes NaN (masked).
+        def _num(v):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return np.nan
+        arr = np.array(
+            [[_num(v) for v in row] for row in np.asarray(mapped, dtype=object)],
+            dtype=float,
+        )
+    data = np.ma.masked_invalid(arr)
     meta = {
         "site_lat": float(f.lat),
         "site_lon": float(f.lon),
