@@ -296,7 +296,10 @@ def _render_plot(
     ax.set_title(title_text)
 
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
+    # NOTE: no bbox_inches="tight" — on this matplotlib/cartopy combo it
+    # crops the GeoAxes away entirely, leaving only the colorbar (the
+    # exact bug this comment is here to prevent reintroducing).
+    fig.savefig(buf, format="png", dpi=100)
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
