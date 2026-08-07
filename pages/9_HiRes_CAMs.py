@@ -169,6 +169,11 @@ if active:
         + (f" \u00b7 {len(aircraft)} JBU live"
            f" \u00b7 {len(routes)} routes" if show_jbu else "")
     )
+    if show_jbu and aircraft and not routes:
+        from core.flights import last_route_error
+        err = last_route_error()
+        if err:
+            st.caption(f"Route lookup: {err}")
 
     # 2x2 model grid — HRRR occupies the TOP-RIGHT quadrant
     top_left, top_right = st.columns(2)

@@ -511,6 +511,13 @@ def load_track(track_dir: Path, callsign: str) -> list[tuple[float, float]]:
     return pts
 
 
+_route_error: dict = {"msg": None}
+
+
+def last_route_error():
+    return _route_error["msg"]
+
+
 def fetch_routes(planes: list[AircraftPos]) -> dict:
     """Origin/destination for a set of live callsigns via adsb.lol's
     routeset API (community route DB). Returns
@@ -525,6 +532,7 @@ def fetch_routes(planes: list[AircraftPos]) -> dict:
             for p in planes
         ]
     }
+    _route_error["msg"] = None
     try:
         r = requests.post(
             "https://api.adsb.lol/api/0/routeset",
@@ -532,9 +540,18 @@ def fetch_routes(planes: list[AircraftPos]) -> dict:
             headers={**_HEADERS, "Content-Type": "application/json"},
             timeout=20,
         )
-        r.raise_for_status()
+        if r.status_code != 200:
+            _route_error["msg"] = (
+                f"HTTP {r.status_code}: {r.text[:150]}"
+            )
+            return {}
+        payload = r.json()
+        if not payload:
+            _route_error["msg"] = "empty response (no callsigns matched)"
+        elif not isinstance(payload, list):
+            _route_error["msg"] = f"unexpected shape: {str(payload)[:150]}"
         out = {}
-        for item in r.json() or []:
+        for item in (payload if isinstance(payload, list) else []):
             cs = (item.get("callsign") or "").strip().upper()
             airports = item.get("_airports") or []
             if len(airports) < 2 or not cs:
@@ -552,6 +569,13 @@ def fetch_routes(planes: list[AircraftPos]) -> dict:
                 "orig": (float(o["lat"]), float(o["lon"])),
                 "dest": (float(d["lat"]), float(d["lon"])),
             }
+        if not out and _route_error["msg"] is None:
+            sample = str((payload or [None])[0])[:200]
+            _route_error["msg"] = (
+                f"{len(payload or [])} items, none parsed — "
+                f"first item: {sample}"
+            )
         return out
-    except Exception:
+    except Exception as e:
+        _route_error["msg"] = f"{type(e).__name__}: {e}"
         return {}
