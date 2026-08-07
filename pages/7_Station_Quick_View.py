@@ -148,6 +148,7 @@ def cached_live_l2(
 
     overlay = None
     overlay_fn = None
+    overlay_mode = "off"
     if overlay_flights:
         try:
             from core.flights import (
@@ -156,6 +157,7 @@ def cached_live_l2(
                 historical_positions_available,
             )
             if historical_positions_available():
+                overlay_mode = "historical"
                 # True per-frame playback: positions at each scan time
                 def overlay_fn(scan_dt):
                     return fetch_positions_at(
@@ -164,10 +166,12 @@ def cached_live_l2(
                     )
             else:
                 # Static fallback: current positions on every frame
+                overlay_mode = "static (no OpenSky credentials detected)"
                 overlay = fetch_positions_near(lat, lon, radius_deg=zoom_deg)
         except Exception:
             overlay = None
             overlay_fn = None
+            overlay_mode = "failed"
 
     start = datetime.now(timezone.utc) - timedelta(minutes=45)
     refl_frames, _ = fetch_and_render_radar_loop(
@@ -183,7 +187,7 @@ def cached_live_l2(
         overlay_fn=overlay_fn,
     )
     gif = _frames_to_gif(refl_frames) if len(refl_frames) > 1 else b""
-    return refl_frames, gif
+    return refl_frames, gif, overlay_mode
 
 
 @st.cache_data(ttl=600, show_spinner=False, max_entries=20)
@@ -528,12 +532,13 @@ if active_icao:
                 "Fetching raw Level II volumes (30-60s first time)..."
             ):
                 try:
-                    frames, gif = cached_live_l2(
+                    frames, gif, ov_mode = cached_live_l2(
                         icao, radar_site, l2_zoom, bucket,
                         overlay_flights=l2_flights,
                     )
                     st.session_state["live_l2"] = frames
                     st.session_state["live_l2_gif"] = gif
+                    st.session_state["live_l2_mode"] = ov_mode
                 except Exception as e:
                     st.session_state["live_l2"] = []
                     st.session_state["live_l2_gif"] = b""
@@ -544,7 +549,8 @@ if active_icao:
             st.caption(
                 f"{len(frames)} raw volumes from {radar_site} "
                 "(last ~45 min), rendered from Level II data — "
-                "not NWS imagery."
+                "not NWS imagery. Flight overlay: "
+                f"{st.session_state.get('live_l2_mode', '?')}."
             )
             if gif:
                 st.image(gif, use_container_width=True)
