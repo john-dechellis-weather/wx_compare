@@ -115,7 +115,8 @@ def cached_l2(
 @st.cache_data(ttl=600, show_spinner=False, max_entries=4)
 def cached_ir(clat: float, clon: float, callsign: str, bucket: str) -> bytes:
     from core.satellite import fetch_goes_data, render_infrared
-    sat = "east" if clon > -105 else "west"
+    # GOES-19 became GOES-East in 2025 (GOES-16 retired); GOES-18 is West.
+    sat = "goes19" if clon > -105 else "goes18"
     ds, scan_time = fetch_goes_data(
         target_time=datetime.now(timezone.utc) - timedelta(minutes=10),
         satellite=sat,

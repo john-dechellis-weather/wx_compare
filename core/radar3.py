@@ -39,11 +39,62 @@ def _site_dir(product: str, site: str) -> str:
     return f"{TGFTP_BASE}/{PRODUCT_DIRS[product]}/SI.{site.lower()}"
 
 
-def fetch_latest(product: str, site: str) -> bytes:
-    url = f"{_site_dir(product, site)}/sn.last"
-    r = requests.get(url, headers=_HEADERS, timeout=30)
+# THREDDS fallback: UCAR IDD serves the same NIDS products; the host is
+# already proven reachable from the app server (Level II uses it).
+THREDDS_L3_PRODUCTS = {"REF": "N0Q", "VEL": "N0U", "ET": "EET"}
+
+
+def _site3(site: str) -> str:
+    """KOKX -> OKX, TJUA -> JUA, PHKI -> HKI."""
+    return site[1:].upper() if len(site) == 4 else site.upper()
+
+
+def _thredds_l3_datasets(product: str, site: str):
+    """Newest-first dataset list for today (and yesterday as spillover)."""
+    from datetime import timedelta as _td
+    from siphon.catalog import TDSCatalog
+
+    prod = THREDDS_L3_PRODUCTS[product]
+    s3 = _site3(site)
+    out = []
+    day = datetime.now(timezone.utc)
+    for d in (day, day - _td(days=1)):
+        url = (
+            "https://thredds.ucar.edu/thredds/catalog/nexrad/level3/"
+            f"{prod}/{s3}/{d:%Y%m%d}/catalog.xml"
+        )
+        try:
+            cat = TDSCatalog(url)
+        except Exception:
+            continue
+        names = sorted(cat.datasets.keys(), reverse=True)
+        out.extend((name, cat.datasets[name]) for name in names)
+        if out:
+            break
+    return out
+
+
+def _thredds_fetch(ds) -> bytes:
+    url = ds.access_urls.get("HTTPServer") or ds.access_urls.get("httpserver")
+    r = requests.get(url, headers=_HEADERS, timeout=60)
     r.raise_for_status()
     return r.content
+
+
+def fetch_latest(product: str, site: str) -> bytes:
+    try:
+        url = f"{_site_dir(product, site)}/sn.last"
+        r = requests.get(url, headers=_HEADERS, timeout=20)
+        r.raise_for_status()
+        return r.content
+    except Exception as tgftp_err:
+        dsets = _thredds_l3_datasets(product, site)
+        if not dsets:
+            raise RuntimeError(
+                f"tgftp failed ({type(tgftp_err).__name__}) and THREDDS "
+                f"has no Level III {product} datasets for {site}"
+            )
+        return _thredds_fetch(dsets[0][1])
 
 
 _DIR_ROW_RE = re.compile(
@@ -52,10 +103,24 @@ _DIR_ROW_RE = re.compile(
 
 
 def fetch_recent(product: str, site: str, n: int = 6) -> list[tuple[bytes, str]]:
-    """Newest n ring-buffer files, oldest first, via the HTML listing's
-    Last-Modified column (ring order wraps, so names alone are useless)."""
+    """Newest n frames, oldest first. tgftp ring buffer first; THREDDS
+    dataset list as fallback."""
+    try:
+        return _fetch_recent_tgftp(product, site, n)
+    except Exception:
+        out = []
+        for name, ds in _thredds_l3_datasets(product, site)[:n]:
+            try:
+                out.append((_thredds_fetch(ds), name))
+            except Exception:
+                continue
+        out.reverse()  # newest-first list -> oldest-first frames
+        return out
+
+
+def _fetch_recent_tgftp(product: str, site: str, n: int) -> list[tuple[bytes, str]]:
     base = _site_dir(product, site)
-    r = requests.get(base + "/", headers=_HEADERS, timeout=30)
+    r = requests.get(base + "/", headers=_HEADERS, timeout=20)
     r.raise_for_status()
     entries = []
     for m in _DIR_ROW_RE.finditer(r.text):
