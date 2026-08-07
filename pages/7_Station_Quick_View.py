@@ -1,4 +1,4 @@
-"""Station Status — one-airport operational dashboard.
+"""Station Quick View — one-airport operational dashboard.
 
 Sections: current METAR, current TAF, live radar (NWS RIDGE loop OR raw
 Level II frames rendered from volume data), hourly NBM table, NOTAMs.
@@ -60,12 +60,12 @@ RADAR_FOR_AIRPORT = {
 # Data fetchers (all cached — reruns from widget interaction are instant)
 # ---------------------------------------------------------------------------
 @st.cache_data(ttl=300, show_spinner=False, max_entries=30)
-def cached_metar(icao: str):
+def cached_metar_history(icao: str, hours_back: int):
+    """All obs in the lookback window, oldest -> newest."""
     from core.metar import fetch_metars
 
-    by_station = fetch_metars([icao], hours_back=3)
-    obs = by_station.get(icao.upper(), [])
-    return obs[-1] if obs else None
+    by_station = fetch_metars([icao], hours_back=hours_back)
+    return by_station.get(icao.upper(), [])
 
 
 @st.cache_data(ttl=300, show_spinner=False, max_entries=30)
@@ -407,6 +407,11 @@ with st.sidebar:
              "Auto-mapped for common airports.",
     ).strip().upper()
 
+    n_metars = st.slider(
+        "METARs to show", 1, 12, 1,
+        help="1 = current only; more shows recent history, newest first.",
+    )
+
     radar_mode = st.radio(
         "Radar display",
         options=["RIDGE loop (instant)", "Raw Level II (slower, full res)"],
@@ -433,13 +438,24 @@ if active_icao:
     st.info(f"Station: **{icao}** · as of **{now:%Y-%m-%d %H:%M UTC}**")
 
     # --- METAR ---
-    st.subheader("Current METAR")
-    with st.spinner("Fetching METAR..."):
-        ob = cached_metar(icao)
-    if ob is not None:
-        st.markdown(mono_box(ob.raw_text), unsafe_allow_html=True)
-        age_min = int((now - ob.obs_time).total_seconds() // 60)
-        st.caption(f"Observed {ob.obs_time:%H:%MZ} ({age_min} min ago)")
+    st.subheader("Current METAR" if n_metars == 1 else
+                 f"METARs (last {n_metars})")
+    # Hourly obs + specials: n+4 hours of lookback comfortably covers n obs.
+    with st.spinner("Fetching METARs..."):
+        obs_list = cached_metar_history(icao, hours_back=n_metars + 4)
+    if obs_list:
+        recent = obs_list[-n_metars:][::-1]  # newest first
+        st.markdown(
+            mono_box("\n".join(o.raw_text for o in recent)),
+            unsafe_allow_html=True,
+        )
+        latest = recent[0]
+        age_min = int((now - latest.obs_time).total_seconds() // 60)
+        st.caption(
+            f"Latest observed {latest.obs_time:%H:%MZ} ({age_min} min ago)"
+            + ("" if len(recent) == 1 else
+               f" · showing {len(recent)} obs, newest first")
+        )
     else:
         st.warning("No recent METAR found.")
 
