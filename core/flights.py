@@ -408,3 +408,33 @@ def interpolate_at(
             out.append(AircraftPos(cs, a["lat"], a["lon"],
                                    a.get("alt"), a.get("trk")))
     return out
+
+
+def fetch_callsign(callsign: str) -> Optional[AircraftPos]:
+    """Live position of a specific flight by exact callsign (adsb.lol).
+    Returns None when not found / not airborne / service down."""
+    cs = callsign.strip().upper()
+    try:
+        r = requests.get(
+            f"https://api.adsb.lol/v2/callsign/{cs}",
+            headers=_HEADERS,
+            timeout=20,
+        )
+        r.raise_for_status()
+        planes = r.json().get("ac", []) or []
+        for p in planes:
+            plat, plon = p.get("lat"), p.get("lon")
+            if plat is None or plon is None:
+                continue
+            alt = p.get("alt_baro")
+            trk = p.get("track")
+            return AircraftPos(
+                callsign=(p.get("flight") or cs).strip().upper(),
+                lat=float(plat),
+                lon=float(plon),
+                alt_ft=float(alt) if isinstance(alt, (int, float)) else None,
+                heading_deg=float(trk) if trk is not None else None,
+            )
+        return None
+    except Exception:
+        return None
