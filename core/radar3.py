@@ -184,6 +184,15 @@ def parse_l3(raw: bytes):
             [[_num(v) for v in row] for row in np.asarray(mapped, dtype=object)],
             dtype=float,
         )
+    if arr.ndim == 3 and arr.shape[0] <= 3:
+        # Some digital products (e.g. EET/135) map into multiple planes:
+        # physical values plus a small flag layer. Keep the plane with
+        # the largest magnitudes — kft values dwarf 0/1 flags.
+        def _plane_score(p):
+            with np.errstate(all="ignore"):
+                m = np.nanmax(p)
+            return m if np.isfinite(m) else -1.0
+        arr = max((arr[i] for i in range(arr.shape[0])), key=_plane_score)
     data = np.ma.masked_invalid(arr)
     meta = {
         "site_lat": float(f.lat),
