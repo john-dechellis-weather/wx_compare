@@ -53,6 +53,15 @@ PRODUCT_LABELS = {
     "GUST": "10 m Wind Gust (kt)",
 }
 
+# For idx-based fetching: (grib var name, level substring to match)
+IDX_MATCHERS = {
+    "REFC": ("REFC", "entire atmosphere"),
+    "RETOP": ("RETOP", ""),
+    "VIS": ("VIS", "surface"),
+    "CEIL": ("HGT", "cloud ceiling"),
+    "GUST": ("GUST", "surface"),
+}
+
 MODELS = {
     "hrrr": {
         "label": "HRRR",
@@ -68,8 +77,7 @@ MODELS = {
     },
     "nam_nest": {
         "label": "NAM 3km Nest",
-        "filter": f"{NOMADS}/gribfilter.php",
-        "ds": "nam_conusnest",
+        "mechanism": "idx",
         "file": "nam.t{cc:02d}z.conusnest.hiresf{ff:02d}.tm00.grib2",
         "dir": "/nam.{ymd}",
         "idx": (f"{NOMADS}/pub/data/nccf/com/nam/prod/"
@@ -81,8 +89,7 @@ MODELS = {
     },
     "hiresw_arw": {
         "label": "HRW ARW",
-        "filter": f"{NOMADS}/gribfilter.php",
-        "ds": "hiresw",
+        "mechanism": "idx",
         "file": "hiresw.t{cc:02d}z.arw_2p5km.f{ff:02d}.conus.grib2",
         "dir": "/hiresw.{ymd}",
         "idx": (f"{NOMADS}/pub/data/nccf/com/hiresw/prod/"
@@ -94,8 +101,7 @@ MODELS = {
     },
     "rrfs": {
         "label": "RRFS",
-        "filter": f"{NOMADS}/gribfilter.php",
-        "ds": "rrfs",
+        "mechanism": "idx",
         "file": "rrfs.t{cc:02d}z.prslev.3km.f{ff:03d}.conus.grib2",
         "dir": "/rrfs.{ymd}/{cc:02d}",
         "idx": (f"{NOMADS}/pub/data/nccf/com/rrfs/para/"
@@ -146,6 +152,8 @@ def fetch_field(
     cfg = MODELS[model]
     if product not in cfg["products"]:
         raise RuntimeError(f"{cfg['label']} does not provide {product}")
+    if cfg.get("mechanism") == "idx":
+        return _fetch_field_idx(cfg, product, cycle, fhr)
     var_p, lev_candidates = PRODUCT_PARAMS[product]
     pad = zoom_deg + 0.4
     base = {
@@ -180,6 +188,58 @@ def fetch_field(
         f"{cfg['label']} filter failed for {product} f{fhr:02d} "
         f"(last attempt: {last_detail})"
     )
+
+
+def _fetch_field_idx(cfg: dict, product: str, cycle, fhr: int) -> bytes:
+    """Byte-range fetch of a single GRIB message using the .idx sidecar
+    (the Herbie technique). Filter-independent: works for any NOMADS
+    GRIB that publishes an index, so it survives interface migrations.
+    Returns the full-domain field (~1-5 MB); the renderer crops to the
+    requested extent."""
+    idx_url = cfg["idx"].format(ymd=cycle.strftime("%Y%m%d"),
+                                cc=cycle.hour, ff=fhr)
+    grib_url = idx_url[:-4]  # strip ".idx"
+    r = requests.get(idx_url, headers=_HEADERS, timeout=30)
+    r.raise_for_status()
+
+    var_name, lev_sub = IDX_MATCHERS[product]
+    lines = r.text.splitlines()
+    start = end = None
+    for i, line in enumerate(lines):
+        # "n:offset:d=YYYYMMDDHH:VAR:LEVEL:fcst:..."
+        parts = line.split(":")
+        if len(parts) < 5:
+            continue
+        if parts[3] == var_name and lev_sub in parts[4].lower():
+            start = int(parts[1])
+            for nxt in lines[i + 1:]:
+                p2 = nxt.split(":")
+                if len(p2) >= 2:
+                    end = int(p2[1]) - 1
+                    break
+            break
+    if start is None:
+        available = sorted({
+            p[3] for p in (l.split(":") for l in lines) if len(p) > 3
+        })
+        raise RuntimeError(
+            f"{cfg['label']}: {var_name} ({lev_sub or 'any level'}) "
+            f"not in index. Vars present: {', '.join(available[:25])}"
+        )
+    headers = {**_HEADERS,
+               "Range": f"bytes={start}-{end}" if end else
+                        f"bytes={start}-"}
+    r2 = requests.get(grib_url, headers=headers, timeout=120)
+    if r2.status_code not in (200, 206):
+        raise RuntimeError(
+            f"{cfg['label']}: range request HTTP {r2.status_code}"
+        )
+    if r2.content[:4] != b"GRIB":
+        raise RuntimeError(
+            f"{cfg['label']}: range response not GRIB "
+            f"({len(r2.content)} bytes)"
+        )
+    return r2.content
 
 
 def decode_field(raw: bytes):
