@@ -1,23 +1,22 @@
-"""HRRR convection-allowing model fields for the Hi-Res CAMs page.
+"""Convection-allowing model fields for the Hi-Res CAMs page.
 
-Data path: NOMADS grib_filter CGI - requests a single field over a
-subregion, returning a small (~0.5-3 MB) GRIB2 that cfgrib decodes.
-NOMADS reachability from the app server is proven (NBM text bulletins
-come from the same host).
+Generic multi-model layer over the NOMADS grib_filter CGIs. Each model
+is a config entry; fetch/decode/render are shared. All requests are
+single-field subregion subsets (~0.5-3 MB GRIB2), decoded with cfgrib.
 
-Aviation product set (HRRR 2D surface file, wrfsfcf):
-  REFC    composite reflectivity (dBZ)
-  RETOP   echo tops (m -> rendered kft)
-  VIS     surface visibility (m -> statute miles)
-  CEIL    cloud ceiling height (m -> hundreds of feet)
-  GUST    10 m wind gust (m/s -> kt)
+Models:
+  hrrr        HRRR CONUS (hourly cycles, f00-f18 here)
+  nam_nest    NAM 3 km CONUS nest (00/06/12/18Z)   [retires Oct 2026]
+  hiresw_arw  Hi-Res Window ARW CONUS (00/12Z)     [retires Oct 2026]
+  rrfs        RRFS 3 km CONUS (00/06/12/18Z) - parallel NOMADS feed
+              announced for ~Aug 11 2026, operational Oct 6 2026.
+              Until files appear the panel reports "no cycle found".
 """
 from __future__ import annotations
 
 import io
 import tempfile
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -25,14 +24,10 @@ import requests
 
 _HEADERS = {"User-Agent": "BlueMet/1.0 (aviation weather tool)"}
 
-FILTER_URL = "https://nomads.ncep.noaa.gov/cgi-bin/filter_hrrr_2d.pl"
-IDX_URL = (
-    "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod/"
-    "hrrr.{ymd}/conus/hrrr.t{cc}z.wrfsfcf{ff}.grib2.idx"
-)
+NOMADS = "https://nomads.ncep.noaa.gov"
 
 # product -> (filter var params, filter lev params)
-PRODUCTS = {
+PRODUCT_PARAMS = {
     "REFC": ({"var_REFC": "on"}, {"lev_entire_atmosphere": "on"}),
     "RETOP": ({"var_RETOP": "on"}, {"lev_cloud_top": "on",
                                     "lev_entire_atmosphere": "on"}),
@@ -49,20 +44,74 @@ PRODUCT_LABELS = {
     "GUST": "10 m Wind Gust (kt)",
 }
 
+MODELS = {
+    "hrrr": {
+        "label": "HRRR",
+        "filter": f"{NOMADS}/cgi-bin/filter_hrrr_2d.pl",
+        "file": "hrrr.t{cc:02d}z.wrfsfcf{ff:02d}.grib2",
+        "dir": "/hrrr.{ymd}/conus",
+        "idx": (f"{NOMADS}/pub/data/nccf/com/hrrr/prod/"
+                "hrrr.{ymd}/conus/hrrr.t{cc:02d}z.wrfsfcf{ff:02d}"
+                ".grib2.idx"),
+        "cycles": list(range(24)),
+        "products": {"REFC", "RETOP", "VIS", "CEIL", "GUST"},
+        "note": "",
+    },
+    "nam_nest": {
+        "label": "NAM 3km Nest",
+        "filter": f"{NOMADS}/cgi-bin/filter_nam_conusnest.pl",
+        "file": "nam.t{cc:02d}z.conusnest.hiresf{ff:02d}.tm00.grib2",
+        "dir": "/nam.{ymd}",
+        "idx": (f"{NOMADS}/pub/data/nccf/com/nam/prod/"
+                "nam.{ymd}/nam.t{cc:02d}z.conusnest.hiresf{ff:02d}"
+                ".tm00.grib2.idx"),
+        "cycles": [0, 6, 12, 18],
+        "products": {"REFC", "VIS", "CEIL", "GUST"},
+        "note": "retires Oct 2026 (replaced by RRFS)",
+    },
+    "hiresw_arw": {
+        "label": "HRW ARW",
+        "filter": f"{NOMADS}/cgi-bin/filter_hiresw.pl",
+        "file": "hiresw.t{cc:02d}z.arw_2p5km.f{ff:02d}.conus.grib2",
+        "dir": "/hiresw.{ymd}",
+        "idx": (f"{NOMADS}/pub/data/nccf/com/hiresw/prod/"
+                "hiresw.{ymd}/hiresw.t{cc:02d}z.arw_2p5km.f{ff:02d}"
+                ".conus.grib2.idx"),
+        "cycles": [0, 12],
+        "products": {"REFC", "VIS", "CEIL", "GUST"},
+        "note": "retires Oct 2026 (replaced by RRFS)",
+    },
+    "rrfs": {
+        "label": "RRFS",
+        "filter": f"{NOMADS}/cgi-bin/filter_rrfs.pl",
+        "file": "rrfs.t{cc:02d}z.prslev.3km.f{ff:03d}.conus.grib2",
+        "dir": "/rrfs.{ymd}/{cc:02d}",
+        "idx": (f"{NOMADS}/pub/data/nccf/com/rrfs/para/"
+                "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev.3km"
+                ".f{ff:03d}.conus.grib2.idx"),
+        "cycles": [0, 6, 12, 18],
+        "products": {"REFC", "VIS", "CEIL", "GUST"},
+        "note": ("parallel feed announced ~Aug 11 2026; "
+                 "'no cycle found' is expected until it starts"),
+    },
+}
 
-def latest_cycle(fhr: int, now: Optional[datetime] = None) -> Optional[datetime]:
-    """Newest HRRR cycle whose requested forecast hour exists on NOMADS.
-    Walks back up to 6 hours probing the .idx sidecar (tiny)."""
+
+def latest_cycle(
+    model: str, fhr: int, now: Optional[datetime] = None
+) -> Optional[datetime]:
+    """Newest cycle whose requested forecast hour exists (idx probe).
+    Walks back up to 30 hours to cover sparse-cycle models."""
+    cfg = MODELS[model]
     now = now or datetime.now(timezone.utc)
-    for back in range(1, 7):
+    for back in range(1, 31):
         cyc = (now - timedelta(hours=back)).replace(
             minute=0, second=0, microsecond=0
         )
-        # F19-F48 only exist for 00/06/12/18Z cycles
-        if fhr > 18 and cyc.hour % 6 != 0:
+        if cyc.hour not in cfg["cycles"]:
             continue
-        url = IDX_URL.format(ymd=cyc.strftime("%Y%m%d"),
-                             cc=f"{cyc.hour:02d}", ff=f"{fhr:02d}")
+        url = cfg["idx"].format(ymd=cyc.strftime("%Y%m%d"),
+                                cc=cyc.hour, ff=fhr)
         try:
             r = requests.head(url, headers=_HEADERS, timeout=10)
             if r.status_code == 200:
@@ -73,6 +122,7 @@ def latest_cycle(fhr: int, now: Optional[datetime] = None) -> Optional[datetime]
 
 
 def fetch_field(
+    model: str,
     product: str,
     cycle: datetime,
     fhr: int,
@@ -80,28 +130,31 @@ def fetch_field(
     lon: float,
     zoom_deg: float,
 ) -> bytes:
-    """Small subregion GRIB2 for one field via the NOMADS filter."""
-    var_p, lev_p = PRODUCTS[product]
-    pad = zoom_deg + 0.4  # margin so pcolormesh fills the frame
-    left = (lon - pad) % 360
-    right = (lon + pad) % 360
+    """Small subregion GRIB2 for one field via the model's filter CGI."""
+    cfg = MODELS[model]
+    if product not in cfg["products"]:
+        raise RuntimeError(f"{cfg['label']} does not provide {product}")
+    var_p, lev_p = PRODUCT_PARAMS[product]
+    pad = zoom_deg + 0.4
     params = {
-        "file": f"hrrr.t{cycle.hour:02d}z.wrfsfcf{fhr:02d}.grib2",
-        "dir": f"/hrrr.{cycle:%Y%m%d}/conus",
+        "file": cfg["file"].format(cc=cycle.hour, ff=fhr),
+        "dir": cfg["dir"].format(ymd=cycle.strftime("%Y%m%d"),
+                                 cc=cycle.hour),
         "subregion": "",
-        "leftlon": f"{left:.2f}",
-        "rightlon": f"{right:.2f}",
+        "leftlon": f"{(lon - pad) % 360:.2f}",
+        "rightlon": f"{(lon + pad) % 360:.2f}",
         "toplat": f"{lat + pad:.2f}",
         "bottomlat": f"{lat - pad:.2f}",
         **var_p,
         **lev_p,
     }
-    r = requests.get(FILTER_URL, params=params, headers=_HEADERS, timeout=90)
+    r = requests.get(cfg["filter"], params=params, headers=_HEADERS,
+                     timeout=90)
     r.raise_for_status()
     if len(r.content) < 500 or r.content[:4] != b"GRIB":
         raise RuntimeError(
-            f"NOMADS filter returned non-GRIB ({len(r.content)} bytes) "
-            f"for {product} f{fhr:02d}"
+            f"{cfg['label']} filter returned non-GRIB "
+            f"({len(r.content)} bytes) for {product} f{fhr:02d}"
         )
     return r.content
 
@@ -133,8 +186,8 @@ def render_field(
     center_lon: float,
     zoom_deg: float,
     title: str,
-    aircraft=None,          # list[AircraftPos] JBU overlay
-    routes=None,            # {callsign: {"label", "orig", "dest"}}
+    aircraft=None,
+    routes=None,
 ) -> bytes:
     import matplotlib
     matplotlib.use("Agg")
@@ -147,32 +200,31 @@ def render_field(
 
     if product == "REFC":
         from metpy.plots import colortables
-        norm, cmap = colortables.get_with_steps(
-            "NWSReflectivity", 5, 5)
+        norm, cmap = colortables.get_with_steps("NWSReflectivity", 5, 5)
         # Standard CAM convention: mask < 5 dBZ so clear air stays clean
         data = np.ma.masked_less(data, 5)
     elif product == "RETOP":
-        data = np.ma.masked_less(data, 0) / 304.8  # m -> kft
+        data = np.ma.masked_less(data, 0) / 304.8
         bounds = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 70]
         colors = ["#C8C8C8", "#9BD4F5", "#4FA8E8", "#2E6FDB", "#22B14C",
                   "#7CD934", "#FFF200", "#FFC90E", "#FF7F27", "#ED1C24",
                   "#B21E28", "#A349A4", "#6F2DA8"]
         cmap = ListedColormap(colors); norm = BoundaryNorm(bounds, cmap.N)
     elif product == "VIS":
-        data = data / 1609.34  # m -> SM
+        data = data / 1609.34
         bounds = [0, 0.5, 1, 2, 3, 5, 7, 10]
         colors = ["#FF80FF", "#FF4040", "#FF9900", "#FFFF00",
                   "#B0E000", "#60C060", "#E8E8E8"]
         cmap = ListedColormap(colors); norm = BoundaryNorm(bounds, cmap.N)
     elif product == "CEIL":
-        data = data * 3.28084 / 100.0  # m -> hundreds of ft
-        data = np.ma.masked_greater(data, 300)  # >30kft ~ unlimited
+        data = data * 3.28084 / 100.0
+        data = np.ma.masked_greater(data, 300)
         bounds = [0, 2, 4, 10, 20, 30, 50, 100, 300]
         colors = ["#FF80FF", "#FF4040", "#FF9900", "#FFFF00",
                   "#B0E000", "#60C060", "#A8D8A8", "#E8E8E8"]
         cmap = ListedColormap(colors); norm = BoundaryNorm(bounds, cmap.N)
     else:  # GUST
-        data = data * 1.94384  # m/s -> kt
+        data = data * 1.94384
         bounds = [0, 10, 15, 20, 25, 30, 35, 40, 50, 65]
         colors = ["#E8E8E8", "#B0E0FF", "#60B0E0", "#FFFF00", "#FFC90E",
                   "#FF9900", "#FF4040", "#B21E28", "#A349A4"]
@@ -208,8 +260,6 @@ def render_field(
     for ac in aircraft or []:
         rt = routes.get(ac.callsign)
         if rt:
-            # Great-circle route line origin -> destination (Geodetic
-            # transform draws the true arc through the current position)
             (olat, olon), (dlat, dlon) = rt["orig"], rt["dest"]
             ax.plot(
                 [olon, dlon], [olat, dlat],
