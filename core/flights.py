@@ -235,3 +235,83 @@ def fetch_positions_at(
     except Exception as e:
         _last_error["msg"] = f"states {type(e).__name__}: {e}"
         return []
+
+
+# ---------------------------------------------------------------------------
+# Self-recorded history: append live snapshots to disk; the radar loop
+# matches each frame to the snapshot nearest its scan time. Accumulates
+# naturally during active use — no external history API required.
+# ---------------------------------------------------------------------------
+import json
+from pathlib import Path
+
+
+def record_snapshot(
+    history_dir: Path,
+    icao: str,
+    positions: list[AircraftPos],
+    min_interval_s: int = 120,
+    max_age_s: int = 7200,
+) -> None:
+    """Append a timestamped snapshot for this airport (throttled), and
+    prune entries older than max_age_s."""
+    history_dir.mkdir(parents=True, exist_ok=True)
+    path = history_dir / f"{icao.upper()}.jsonl"
+    now = _time.time()
+
+    lines: list[str] = []
+    last_ts = 0.0
+    if path.exists():
+        for line in path.read_text().splitlines():
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if now - rec["ts"] <= max_age_s:
+                lines.append(line)
+                last_ts = max(last_ts, rec["ts"])
+
+    if now - last_ts >= min_interval_s:
+        lines.append(json.dumps({
+            "ts": now,
+            "ac": [
+                {
+                    "cs": p.callsign, "lat": p.lat, "lon": p.lon,
+                    "alt": p.alt_ft, "trk": p.heading_deg,
+                }
+                for p in positions
+            ],
+        }))
+    path.write_text("\n".join(lines) + ("\n" if lines else ""))
+
+
+def positions_at_time(
+    history_dir: Path,
+    icao: str,
+    when_unix: float,
+    tolerance_s: int = 300,
+) -> Optional[list[AircraftPos]]:
+    """Snapshot nearest when_unix within tolerance, or None."""
+    path = history_dir / f"{icao.upper()}.jsonl"
+    if not path.exists():
+        return None
+    best = None
+    best_dt = tolerance_s + 1
+    for line in path.read_text().splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        dt = abs(rec["ts"] - when_unix)
+        if dt < best_dt:
+            best_dt = dt
+            best = rec
+    if best is None:
+        return None
+    return [
+        AircraftPos(
+            callsign=a["cs"], lat=a["lat"], lon=a["lon"],
+            alt_ft=a.get("alt"), heading_deg=a.get("trk"),
+        )
+        for a in best["ac"]
+    ]

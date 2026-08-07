@@ -153,40 +153,39 @@ def cached_live_l2(
         try:
             from core.flights import (
                 fetch_positions_near,
-                fetch_positions_at,
-                historical_positions_available,
+                record_snapshot,
+                positions_at_time,
             )
-            if historical_positions_available():
-                # True per-frame playback: positions at each scan time
-                def overlay_fn(scan_dt):
-                    return fetch_positions_at(
-                        lat, lon, radius_deg=zoom_deg,
-                        when_unix=int(scan_dt.timestamp()),
-                    )
-                # Probe a recent timestamp so failures are visible in
-                # the caption instead of silently rendering no planes.
-                from core.flights import last_error
-                _probe_ts = int(datetime.now(timezone.utc).timestamp()) - 600
-                _probe = fetch_positions_at(
-                    lat, lon, radius_deg=zoom_deg, when_unix=_probe_ts
+            hist_dir = CACHE_ROOT / "flights"
+            # Always take a live sample and bank it (throttled inside).
+            current = fetch_positions_near(lat, lon, radius_deg=zoom_deg)
+            record_snapshot(hist_dir, icao, current)
+
+            def overlay_fn(scan_dt):
+                # Nearest recorded snapshot to this frame's scan time;
+                # fall back to current positions when no history yet.
+                hist = positions_at_time(
+                    hist_dir, icao, scan_dt.timestamp(), tolerance_s=300
                 )
-                if _probe:
-                    overlay_mode = f"historical ({len(_probe)} JBU at probe)"
-                else:
-                    err = last_error()
-                    overlay_mode = (
-                        f"historical but EMPTY — {err}" if err else
-                        "historical but EMPTY — query OK, no JBU aircraft "
-                        "matched (coverage or callsign filter)"
-                    )
-            else:
-                # Static fallback: current positions on every frame
-                overlay_mode = "static (no OpenSky credentials detected)"
-                overlay = fetch_positions_near(lat, lon, radius_deg=zoom_deg)
-        except Exception:
+                return hist if hist is not None else current
+
+            # Mode caption: how much of the loop window has real history
+            n_hist = 0
+            probe_now = datetime.now(timezone.utc).timestamp()
+            for k in range(9):
+                if positions_at_time(
+                    hist_dir, icao, probe_now - k * 300, tolerance_s=200
+                ) is not None:
+                    n_hist += 1
+            overlay_mode = (
+                f"self-recorded history ({n_hist}/9 window slots have "
+                f"snapshots; {len(current)} JBU live). History builds as "
+                "the page is used."
+            )
+        except Exception as e:
             overlay = None
             overlay_fn = None
-            overlay_mode = "failed"
+            overlay_mode = f"failed ({type(e).__name__})"
 
     start = datetime.now(timezone.utc) - timedelta(minutes=45)
     refl_frames, _ = fetch_and_render_radar_loop(
