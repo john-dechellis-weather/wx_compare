@@ -1,357 +1,312 @@
-"""HRRR (High-Resolution Rapid Refresh) source.
+"""Convection-allowing model fields for the Hi-Res CAMs page.
 
-URL pattern (CONUS):
-  https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod/
-    hrrr.YYYYMMDD/conus/hrrr.tCCz.wrfsfcfHH.grib2
-  (companion .idx file at the same URL + ".idx")
+Generic multi-model layer over the NOMADS grib_filter CGIs. Each model
+is a config entry; fetch/decode/render are shared. All requests are
+single-field subregion subsets (~0.5-3 MB GRIB2), decoded with cfgrib.
 
-Cycles: every hour (00-23 UTC).
-Forecast hours: 0-48 for 00/06/12/18Z cycles, 0-18 otherwise.
-
-Key optimization: full GRIB files are ~150 MB. We parse the .idx (a tiny
-text file listing byte offsets per record), find just the records we need
-(VIS at surface, HGT at cloud ceiling), and HTTP-Range-fetch only those
-bytes — typically a few hundred KB per forecast hour instead of 150 MB.
-
-Variable strings as they appear in HRRR .idx files:
-  ":VIS:surface:"       — surface visibility (m)
-  ":HGT:cloud ceiling:" — cloud ceiling height (m, MSL — needs station elev for AGL)
-  ":CEIL:..."           — some products expose CEIL directly; fall back to HGT
+Models:
+  hrrr        HRRR CONUS (hourly cycles, f00-f18 here)
+  nam_nest    NAM 3 km CONUS nest (00/06/12/18Z)   [retires Oct 2026]
+  hiresw_arw  Hi-Res Window ARW CONUS (00/12Z)     [retires Oct 2026]
+  rrfs        RRFS 3 km CONUS (00/06/12/18Z) - parallel NOMADS feed
+              announced for ~Aug 11 2026, operational Oct 6 2026.
+              Until files appear the panel reports "no cycle found".
 """
 from __future__ import annotations
 
 import io
-import re
+import tempfile
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Iterable, Optional
+from typing import Optional
 
 import numpy as np
-import pandas as pd
 import requests
 
-from core.schema import ForecastRecord, records_to_df, empty_df
-from core import units
-from .base import ModelSource
+_HEADERS = {"User-Agent": "BlueMet/1.0 (aviation weather tool)"}
 
+NOMADS = "https://nomads.ncep.noaa.gov"
 
-NOMADS_BASE = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod"
+# product -> (var param, list of candidate level params). Different
+# NOMADS filters name the same layer differently (e.g. HRRR's
+# "entire_atmosphere" vs NAM's
+# "entire_atmosphere_(considered_as_a_single_layer)"), so fetch_field
+# tries candidates in order until one returns GRIB.
+PRODUCT_PARAMS = {
+    "REFC": ({"var_REFC": "on"}, [
+        {"lev_entire_atmosphere": "on"},
+        {"lev_entire_atmosphere_(considered_as_a_single_layer)": "on"},
+    ]),
+    "RETOP": ({"var_RETOP": "on"}, [
+        {"lev_cloud_top": "on"},
+        {"lev_entire_atmosphere": "on"},
+    ]),
+    "VIS": ({"var_VIS": "on"}, [{"lev_surface": "on"}]),
+    "CEIL": ({"var_HGT": "on"}, [{"lev_cloud_ceiling": "on"}]),
+    "GUST": ({"var_GUST": "on"}, [{"lev_surface": "on"}]),
+}
 
-# Records we want from the surface file. Each is a regex matched against
-# the .idx line. Keep these conservative — too-loose patterns will grab
-# extra records and bloat downloads.
-WANTED_RECORDS = {
-    "vsby": re.compile(r":VIS:surface:"),
-    "ceiling_hgt": re.compile(r":HGT:cloud ceiling:"),
-    # Wind at 10m AGL. The component values are in m/s; we compute speed and
-    # direction in parse_point_subset(). Note: ":UGRD:10 m above ground:" matches
-    # only that record, not other UGRD layers like 80m or top of atmosphere.
-    "ugrd_10m": re.compile(r":UGRD:10 m above ground:"),
-    "vgrd_10m": re.compile(r":VGRD:10 m above ground:"),
+PRODUCT_LABELS = {
+    "REFC": "Composite Reflectivity (dBZ)",
+    "RETOP": "Echo Tops (kft)",
+    "VIS": "Visibility (SM)",
+    "CEIL": "Ceiling (hundreds ft)",
+    "GUST": "10 m Wind Gust (kt)",
+}
+
+MODELS = {
+    "hrrr": {
+        "label": "HRRR",
+        "filter": f"{NOMADS}/cgi-bin/filter_hrrr_2d.pl",
+        "file": "hrrr.t{cc:02d}z.wrfsfcf{ff:02d}.grib2",
+        "dir": "/hrrr.{ymd}/conus",
+        "idx": (f"{NOMADS}/pub/data/nccf/com/hrrr/prod/"
+                "hrrr.{ymd}/conus/hrrr.t{cc:02d}z.wrfsfcf{ff:02d}"
+                ".grib2.idx"),
+        "cycles": list(range(24)),
+        "products": {"REFC", "RETOP", "VIS", "CEIL", "GUST"},
+        "note": "",
+    },
+    "nam_nest": {
+        "label": "NAM 3km Nest",
+        "filter": f"{NOMADS}/gribfilter.php",
+        "ds": "nam_conusnest",
+        "file": "nam.t{cc:02d}z.conusnest.hiresf{ff:02d}.tm00.grib2",
+        "dir": "/nam.{ymd}",
+        "idx": (f"{NOMADS}/pub/data/nccf/com/nam/prod/"
+                "nam.{ymd}/nam.t{cc:02d}z.conusnest.hiresf{ff:02d}"
+                ".tm00.grib2.idx"),
+        "cycles": [0, 6, 12, 18],
+        "products": {"REFC", "VIS", "CEIL", "GUST"},
+        "note": "retires Oct 2026 (replaced by RRFS)",
+    },
+    "hiresw_arw": {
+        "label": "HRW ARW",
+        "filter": f"{NOMADS}/gribfilter.php",
+        "ds": "hiresw",
+        "file": "hiresw.t{cc:02d}z.arw_2p5km.f{ff:02d}.conus.grib2",
+        "dir": "/hiresw.{ymd}",
+        "idx": (f"{NOMADS}/pub/data/nccf/com/hiresw/prod/"
+                "hiresw.{ymd}/hiresw.t{cc:02d}z.arw_2p5km.f{ff:02d}"
+                ".conus.grib2.idx"),
+        "cycles": [0, 12],
+        "products": {"REFC", "VIS", "CEIL", "GUST"},
+        "note": "retires Oct 2026 (replaced by RRFS)",
+    },
+    "rrfs": {
+        "label": "RRFS",
+        "filter": f"{NOMADS}/gribfilter.php",
+        "ds": "rrfs",
+        "file": "rrfs.t{cc:02d}z.prslev.3km.f{ff:03d}.conus.grib2",
+        "dir": "/rrfs.{ymd}/{cc:02d}",
+        "idx": (f"{NOMADS}/pub/data/nccf/com/rrfs/para/"
+                "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev.3km"
+                ".f{ff:03d}.conus.grib2.idx"),
+        "cycles": [0, 6, 12, 18],
+        "products": {"REFC", "VIS", "CEIL", "GUST"},
+        "note": ("parallel feed announced ~Aug 11 2026; "
+                 "'no cycle found' is expected until it starts"),
+    },
 }
 
 
-# Use the canonical Station from core.stations so all modules speak the
-# same dataclass. Re-export here for backward compatibility with any code
-# that imported Station from models.hrrr or models.
-from core.stations import Station  # noqa: F401  (re-export)
-
-
-class Hrrr(ModelSource):
-    """HRRR surface forecasts, point-extracted at given stations."""
-
-    name = "HRRR"
-
-    def __init__(self, cache_dir: Path, stations: list[Station], fhours: Iterable[int] = range(0, 7)):
-        super().__init__(cache_dir)
-        # Index stations by ICAO for fast lookup during parsing.
-        self.station_table: dict[str, Station] = {s.icao.upper(): s for s in stations}
-        self.fhours = list(fhours)
-
-    # --- cycle discovery ---------------------------------------------------
-    def available_cycles(self, date: datetime) -> list[datetime]:
-        d = date.astimezone(timezone.utc) if date.tzinfo else date.replace(tzinfo=timezone.utc)
-        return [
-            d.replace(hour=h, minute=0, second=0, microsecond=0)
-            for h in range(24)
-        ]
-
-    # --- URL helpers -------------------------------------------------------
-    def _grib_url(self, cycle: datetime, fhour: int) -> str:
-        ymd = cycle.strftime("%Y%m%d")
-        return (f"{NOMADS_BASE}/hrrr.{ymd}/conus/"
-                f"hrrr.t{cycle:%H}z.wrfsfcf{fhour:02d}.grib2")
-
-    def _idx_url(self, cycle: datetime, fhour: int) -> str:
-        return self._grib_url(cycle, fhour) + ".idx"
-
-    def _cache_path(self, cycle: datetime, fhour: int) -> Path:
-        return self.cache_dir / (
-            f"hrrr.{cycle:%Y%m%d.%H}z.f{fhour:02d}.subset.grib2"
+def latest_cycle(
+    model: str, fhr: int, now: Optional[datetime] = None
+) -> Optional[datetime]:
+    """Newest cycle whose requested forecast hour exists (idx probe).
+    Walks back up to 30 hours to cover sparse-cycle models."""
+    cfg = MODELS[model]
+    now = now or datetime.now(timezone.utc)
+    for back in range(1, 31):
+        cyc = (now - timedelta(hours=back)).replace(
+            minute=0, second=0, microsecond=0
         )
-
-    # --- cycle completeness probe ------------------------------------------
-    def is_cycle_complete(self, cycle: datetime) -> bool:
-        """HRRR posts files incrementally as the run progresses. Probe the
-        .idx of the highest forecast hour we care about — if that exists,
-        every earlier hour exists too. Using .idx not the grib itself
-        because idx files are tiny (~kilobytes) and one HEAD is enough.
-        """
-        last_fhour = max(self.fhours) if self.fhours else 0
-        url = self._idx_url(cycle, last_fhour)
-        try:
-            r = requests.head(url, timeout=15, allow_redirects=True)
-            return r.status_code == 200
-        except requests.RequestException:
-            return False
-
-    # --- fetch -------------------------------------------------------------
-    def fetch(self, cycle: datetime, stations: Iterable[str]) -> Optional[Path]:
-        """Fetch is per-cycle but HRRR has one file per forecast hour. We
-        return the cache *directory* root and let parse() iterate. This is a
-        deliberate departure from the simple 'one file per cycle' contract
-        and is documented here so future maintainers don't get surprised.
-        """
-        cycle_dir = self.cache_dir / f"hrrr.{cycle:%Y%m%d.%H}z"
-        cycle_dir.mkdir(parents=True, exist_ok=True)
-        ok_any = False
-
-        # Separate cached hours (skip fetch) from missing ones (fetch in parallel).
-        to_fetch: list[tuple[int, Path]] = []
-        for fhour in self.fhours:
-            subset_path = cycle_dir / f"f{fhour:02d}.subset.grib2"
-            if subset_path.exists() and subset_path.stat().st_size > 0:
-                ok_any = True
-            else:
-                to_fetch.append((fhour, subset_path))
-
-        # Parallel fetch of missing hours. 8 workers is a reasonable balance:
-        # enough to overlap NOMADS latency, few enough that we don't hammer
-        # the server or exhaust our container's connection pool.
-        if to_fetch:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-
-            def _try_fetch(fhour: int, subset_path: Path) -> tuple[int, Optional[Exception]]:
-                try:
-                    self._download_subset(cycle, fhour, subset_path)
-                    return fhour, None
-                except Exception as e:
-                    return fhour, e
-
-            with ThreadPoolExecutor(max_workers=8) as pool:
-                futures = [pool.submit(_try_fetch, fh, sp) for fh, sp in to_fetch]
-                for fut in as_completed(futures):
-                    fhour, err = fut.result()
-                    if err is None:
-                        ok_any = True
-                    else:
-                        print(f"[{self.name}] f{fhour:02d} failed: {err}")
-
-        return cycle_dir if ok_any else None
-
-    def _download_subset(self, cycle: datetime, fhour: int, out_path: Path) -> None:
-        """Fetch the .idx, find wanted records, then HTTP-Range the bytes."""
-        idx_url = self._idx_url(cycle, fhour)
-        grib_url = self._grib_url(cycle, fhour)
-
-        idx_text = _http_get_text(idx_url, timeout=30)
-        ranges = _idx_byte_ranges(idx_text, WANTED_RECORDS.values())
-        if not ranges:
-            raise RuntimeError(f"no wanted records found in idx for f{fhour:02d}")
-
-        # Each range is independent; download and concatenate. GRIB2 is a
-        # sequence of self-contained messages, so concatenated subsets are
-        # still a valid GRIB2 file.
-        chunks: list[bytes] = []
-        with requests.Session() as sess:
-            for start, end in ranges:
-                headers = {"Range": f"bytes={start}-{end}"}
-                r = sess.get(grib_url, headers=headers, timeout=60)
-                if r.status_code not in (200, 206):
-                    raise RuntimeError(
-                        f"range request {start}-{end} returned {r.status_code}"
-                    )
-                chunks.append(r.content)
-        out_path.write_bytes(b"".join(chunks))
-
-    # --- parse -------------------------------------------------------------
-    def parse(
-        self,
-        path: Path,
-        stations: Iterable[str],
-        cycle: datetime,
-    ) -> pd.DataFrame:
-        """Point-extract VIS and ceiling at each station for each forecast hour."""
-        # Lazy import — cfgrib pulls in eccodes, which is a heavy install we
-        # only want to require when HRRR is actually used.
-        try:
-            import xarray as xr  # noqa: F401
-        except ImportError:
-            print(f"[{self.name}] xarray/cfgrib not installed — skipping parse")
-            return empty_df()
-
-        cycle_dir = Path(path)
-        station_list = [self.station_table[s.upper()]
-                        for s in stations if s.upper() in self.station_table]
-        if not station_list:
-            return empty_df()
-
-        records: list[ForecastRecord] = []
-        for fhour in self.fhours:
-            subset_path = cycle_dir / f"f{fhour:02d}.subset.grib2"
-            if not subset_path.exists():
-                continue
-            try:
-                records.extend(self._parse_one_hour(
-                    subset_path, station_list, cycle, fhour
-                ))
-            except Exception as e:
-                print(f"[{self.name}] parse f{fhour:02d}: {e}")
-                continue
-        return records_to_df(records) if records else empty_df()
-
-    def _parse_one_hour(
-        self,
-        subset_path: Path,
-        stations: list[Station],
-        cycle: datetime,
-        fhour: int,
-    ) -> list[ForecastRecord]:
-        import xarray as xr
-        # Open each record separately. cfgrib needs a filter_by_keys to pick
-        # which message it loads. Surface VIS and cloud-ceiling HGT live in
-        # different typeOfLevel groups.
-        vis_ds = _open_grib(subset_path, filter_by_keys={"shortName": "vis"})
-        hgt_ds = _open_grib(subset_path, filter_by_keys={
-            "shortName": "gh", "typeOfLevel": "cloudCeiling",
-        })
-        # Wind U/V at 10m AGL. paramId is universal across GRIB sources;
-        # shortName+typeOfLevel filters proved unreliable across cfgrib versions.
-        # 165 = 10m U-component, 166 = 10m V-component.
-        u_ds = _open_grib(subset_path, filter_by_keys={"paramId": 165})
-        v_ds = _open_grib(subset_path, filter_by_keys={"paramId": 166})
-
-        valid_time = cycle + timedelta(hours=fhour)
-        records: list[ForecastRecord] = []
-        for stn in stations:
-            vis_m = _nearest_point(vis_ds, "vis", stn.lat, stn.lon) if vis_ds is not None else np.nan
-            hgt_m_msl = _nearest_point(hgt_ds, "gh", stn.lat, stn.lon) if hgt_ds is not None else np.nan
-            u_ms = _nearest_point(u_ds, "u10", stn.lat, stn.lon) if u_ds is not None else np.nan
-            v_ms = _nearest_point(v_ds, "v10", stn.lat, stn.lon) if v_ds is not None else np.nan
-
-            vsby_sm = units.hrrr_vis_meters_to_sm(float(vis_m)) if np.isfinite(vis_m) else None
-            # Convert MSL height to AGL using the station's field elevation.
-            # HRRR cloud ceiling missing/unlimited is typically a fill value
-            # like 20000 m or NaN; treat both as "unlimited".
-            ceiling_ft = None
-            ceiling_unlimited = False
-            if np.isfinite(hgt_m_msl) and hgt_m_msl < 20000:
-                agl_ft = units.meters_to_feet(float(hgt_m_msl)) - stn.elev_ft
-                if agl_ft > 0:
-                    ceiling_ft = agl_ft
-                else:
-                    ceiling_unlimited = True  # below ground -> treat as missing
-            else:
-                ceiling_unlimited = True
-
-            # Wind speed = sqrt(u² + v²), m/s → knots × 1.94384
-            # Direction (meteorological): atan2(-u, -v) gives the direction the
-            # wind is COMING FROM, in radians, then convert to degrees [0, 360).
-            wind_speed_kt = None
-            wind_dir_deg = None
-            if np.isfinite(u_ms) and np.isfinite(v_ms):
-                speed_ms = float(np.hypot(u_ms, v_ms))
-                wind_speed_kt = speed_ms * 1.94384
-                # Calm winds: direction is undefined; leave as None
-                if speed_ms > 0.1:
-                    raw_deg = float(np.degrees(np.arctan2(-u_ms, -v_ms)))
-                    wind_dir_deg = raw_deg % 360.0
-
-            records.append(ForecastRecord(
-                station_id=stn.icao,
-                model=self.name,
-                cycle=cycle,
-                valid_time=valid_time,
-                forecast_hour=fhour,
-                vsby_sm=vsby_sm,
-                vsby_category=units.vsby_sm_to_category(vsby_sm),
-                ceiling_ft=ceiling_ft,
-                ceiling_category=units.ceiling_ft_to_category(
-                    ceiling_ft, unlimited=ceiling_unlimited
-                ),
-                ceiling_unlimited=ceiling_unlimited,
-                wind_speed_kt=wind_speed_kt,
-                wind_dir_deg=wind_dir_deg,
-                wind_gust_kt=None,  # HRRR provides GUST but at surface, separate record
-                source_file=subset_path.name,
-            ))
-        return records
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-def _http_get_text(url: str, timeout: int = 30) -> str:
-    r = requests.get(url, timeout=timeout)
-    r.raise_for_status()
-    return r.text
-
-
-def _idx_byte_ranges(
-    idx_text: str,
-    patterns: Iterable[re.Pattern],
-) -> list[tuple[int, int]]:
-    """Parse a .idx file and return a list of (start, end) byte ranges
-    matching any of the given patterns.
-
-    .idx format: "<msgnum>:<byteoffset>:d=<date>:<var>:<level>:<...>"
-    The end byte is (next message's offset - 1); the last message ends at EOF
-    so we use a very large end value (HTTP servers cap at file size anyway).
-    """
-    patterns = list(patterns)
-    lines = [l for l in idx_text.splitlines() if l.strip()]
-    parsed = []
-    for line in lines:
-        parts = line.split(":")
-        if len(parts) < 2:
+        if cyc.hour not in cfg["cycles"]:
             continue
+        url = cfg["idx"].format(ymd=cyc.strftime("%Y%m%d"),
+                                cc=cyc.hour, ff=fhr)
         try:
-            offset = int(parts[1])
-        except ValueError:
+            r = requests.head(url, headers=_HEADERS, timeout=10)
+            if r.status_code == 200:
+                return cyc
+        except Exception:
             continue
-        parsed.append((offset, line))
-
-    ranges: list[tuple[int, int]] = []
-    for i, (offset, line) in enumerate(parsed):
-        if any(p.search(line) for p in patterns):
-            next_offset = parsed[i + 1][0] - 1 if i + 1 < len(parsed) else offset + 50_000_000
-            ranges.append((offset, next_offset))
-    return ranges
+    return None
 
 
-def _open_grib(path: Path, filter_by_keys: dict):
-    """Open a GRIB2 subset with cfgrib, returning None if the message isn't there."""
+def fetch_field(
+    model: str,
+    product: str,
+    cycle: datetime,
+    fhr: int,
+    lat: float,
+    lon: float,
+    zoom_deg: float,
+) -> bytes:
+    """Small subregion GRIB2 for one field via the model's filter CGI."""
+    cfg = MODELS[model]
+    if product not in cfg["products"]:
+        raise RuntimeError(f"{cfg['label']} does not provide {product}")
+    var_p, lev_candidates = PRODUCT_PARAMS[product]
+    pad = zoom_deg + 0.4
+    base = {
+        "file": cfg["file"].format(cc=cycle.hour, ff=fhr),
+        "dir": cfg["dir"].format(ymd=cycle.strftime("%Y%m%d"),
+                                 cc=cycle.hour),
+        "subregion": "",
+        "leftlon": f"{(lon - pad) % 360:.2f}",
+        "rightlon": f"{(lon + pad) % 360:.2f}",
+        "toplat": f"{lat + pad:.2f}",
+        "bottomlat": f"{lat - pad:.2f}",
+        **var_p,
+    }
+    if cfg.get("ds"):
+        base["ds"] = cfg["ds"]
+    last_detail = "no level candidates"
+    for lev_p in lev_candidates:
+        try:
+            r = requests.get(cfg["filter"], params={**base, **lev_p},
+                             headers=_HEADERS, timeout=90)
+        except Exception as e:
+            last_detail = f"{type(e).__name__}: {e}"
+            continue
+        if (r.status_code == 200 and len(r.content) >= 500
+                and r.content[:4] == b"GRIB"):
+            return r.content
+        last_detail = (
+            f"HTTP {r.status_code}, {len(r.content)} bytes "
+            f"with {list(lev_p)[0]}"
+        )
+    raise RuntimeError(
+        f"{cfg['label']} filter failed for {product} f{fhr:02d} "
+        f"(last attempt: {last_detail})"
+    )
+
+
+def decode_field(raw: bytes):
+    """(values_2d, lat_2d, lon_2d) from a single-message GRIB2."""
     import xarray as xr
+
+    with tempfile.NamedTemporaryFile(suffix=".grib2", delete=False) as tf:
+        tf.write(raw)
+        path = tf.name
+    ds = xr.open_dataset(path, engine="cfgrib",
+                         backend_kwargs={"indexpath": ""})
+    var = list(ds.data_vars)[0]
+    vals = np.asarray(ds[var].values, dtype=float)
+    lats = np.asarray(ds["latitude"].values, dtype=float)
+    lons = np.asarray(ds["longitude"].values, dtype=float)
+    lons = np.where(lons > 180, lons - 360, lons)
+    ds.close()
+    return vals, lats, lons
+
+
+def render_field(
+    product: str,
+    vals: np.ndarray,
+    lats: np.ndarray,
+    lons: np.ndarray,
+    center_lat: float,
+    center_lon: float,
+    zoom_deg: float,
+    title: str,
+    aircraft=None,
+    routes=None,
+) -> bytes:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import BoundaryNorm, ListedColormap
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
+
+    data = np.ma.masked_invalid(vals)
+
+    if product == "REFC":
+        from metpy.plots import colortables
+        norm, cmap = colortables.get_with_steps("NWSReflectivity", 5, 5)
+        # Standard CAM convention: mask < 5 dBZ so clear air stays clean
+        data = np.ma.masked_less(data, 5)
+    elif product == "RETOP":
+        data = np.ma.masked_less(data, 0) / 304.8
+        bounds = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 70]
+        colors = ["#C8C8C8", "#9BD4F5", "#4FA8E8", "#2E6FDB", "#22B14C",
+                  "#7CD934", "#FFF200", "#FFC90E", "#FF7F27", "#ED1C24",
+                  "#B21E28", "#A349A4", "#6F2DA8"]
+        cmap = ListedColormap(colors); norm = BoundaryNorm(bounds, cmap.N)
+    elif product == "VIS":
+        data = data / 1609.34
+        bounds = [0, 0.5, 1, 2, 3, 5, 7, 10]
+        colors = ["#FF80FF", "#FF4040", "#FF9900", "#FFFF00",
+                  "#B0E000", "#60C060", "#E8E8E8"]
+        cmap = ListedColormap(colors); norm = BoundaryNorm(bounds, cmap.N)
+    elif product == "CEIL":
+        data = data * 3.28084 / 100.0
+        data = np.ma.masked_greater(data, 300)
+        bounds = [0, 2, 4, 10, 20, 30, 50, 100, 300]
+        colors = ["#FF80FF", "#FF4040", "#FF9900", "#FFFF00",
+                  "#B0E000", "#60C060", "#A8D8A8", "#E8E8E8"]
+        cmap = ListedColormap(colors); norm = BoundaryNorm(bounds, cmap.N)
+    else:  # GUST
+        data = data * 1.94384
+        bounds = [0, 10, 15, 20, 25, 30, 35, 40, 50, 65]
+        colors = ["#E8E8E8", "#B0E0FF", "#60B0E0", "#FFFF00", "#FFC90E",
+                  "#FF9900", "#FF4040", "#B21E28", "#A349A4"]
+        cmap = ListedColormap(colors); norm = BoundaryNorm(bounds, cmap.N)
+
+    fig = plt.figure(figsize=(8, 7))
+    ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
+    ax.set_extent(
+        [center_lon - zoom_deg, center_lon + zoom_deg,
+         center_lat - zoom_deg, center_lat + zoom_deg],
+        crs=ccrs.PlateCarree(),
+    )
+    mesh = ax.pcolormesh(
+        lons, lats, data, cmap=cmap, norm=norm, shading="auto",
+        transform=ccrs.PlateCarree(), zorder=2,
+    )
     try:
-        return xr.open_dataset(
-            path, engine="cfgrib",
-            backend_kwargs={"filter_by_keys": filter_by_keys, "indexpath": ""},
-        )
+        coast = cfeature.COASTLINE.with_scale("10m")
+        states = cfeature.STATES.with_scale("10m")
+        next(iter(coast.geometries()))
+        ax.add_feature(coast, linewidth=0.8, zorder=3)
+        ax.add_feature(states, linewidth=0.5, zorder=3)
     except Exception:
-        return None
+        pass
+    gl = ax.gridlines(draw_labels=True, linewidth=0.3, linestyle=":",
+                      color="gray")
+    gl.top_labels = False
+    gl.right_labels = False
+    gl.xlabel_style = {"size": 8}
+    gl.ylabel_style = {"size": 8}
 
+    routes = routes or {}
+    for ac in aircraft or []:
+        rt = routes.get(ac.callsign)
+        if rt:
+            (olat, olon), (dlat, dlon) = rt["orig"], rt["dest"]
+            ax.plot(
+                [olon, dlon], [olat, dlat],
+                color="#0000CC", linewidth=1.0, linestyle="--",
+                alpha=0.55, zorder=9, transform=ccrs.Geodetic(),
+            )
+        ax.scatter(ac.lon, ac.lat, s=70, marker="^", color="#0000CC",
+                   edgecolors="white", linewidths=0.8, zorder=10,
+                   transform=ccrs.PlateCarree())
+        lbl = ac.callsign
+        if ac.alt_ft is not None:
+            lbl += f"\nFL{int(round(ac.alt_ft / 100)):03d}"
+        if rt:
+            lbl += f"\n{rt['label']}"
+        ax.annotate(lbl, xy=(ac.lon, ac.lat), xytext=(4, 4),
+                    textcoords="offset points", fontsize=6,
+                    fontweight="bold", color="#0000CC", zorder=10)
 
-def _nearest_point(ds, varname: str, lat: float, lon: float) -> float:
-    """Nearest-neighbor extraction of a 2D field at one (lat, lon)."""
-    if ds is None or varname not in ds.variables:
-        return float("nan")
-    da = ds[varname]
-    # HRRR longitudes are 0..360; allow either convention for the input.
-    grid_lon = ds["longitude"].values
-    grid_lat = ds["latitude"].values
-    target_lon = lon % 360 if grid_lon.max() > 180 else lon
-    # Flat-earth nearest neighbor is fine over CONUS for a 3-km grid; great-
-    # circle distance is overkill here.
-    dist2 = (grid_lat - lat) ** 2 + (grid_lon - target_lon) ** 2
-    j, i = np.unravel_index(np.argmin(dist2), dist2.shape)
-    return float(da.values[j, i])
+    ax.set_title(title, fontsize=10)
+    plt.colorbar(mesh, ax=ax, pad=0.02, shrink=0.85,
+                 label=PRODUCT_LABELS[product])
+    # NOTE: no bbox_inches="tight" - crops the GeoAxes (see core.radar).
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=100)
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
