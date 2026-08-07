@@ -130,7 +130,8 @@ def _frames_to_gif(
 
 @st.cache_data(ttl=300, show_spinner=False, max_entries=5)
 def cached_live_l2(
-    icao: str, radar_site: str, zoom_deg: float, bucket: str
+    icao: str, radar_site: str, zoom_deg: float, bucket: str,
+    overlay_flights: bool = False,
 ):
     """Last ~45 min of raw Level II reflectivity rendered around the
     airport. `bucket` is a 5-minute stamp so the cache key rolls forward."""
@@ -145,6 +146,14 @@ def cached_live_l2(
     if len(site) == 4 and site.startswith("K"):
         site = site[1:]
 
+    overlay = None
+    if overlay_flights:
+        try:
+            from core.flights import fetch_positions_near
+            overlay = fetch_positions_near(lat, lon, radius_deg=zoom_deg)
+        except Exception:
+            overlay = None
+
     start = datetime.now(timezone.utc) - timedelta(minutes=45)
     refl_frames, _ = fetch_and_render_radar_loop(
         start_time=start,
@@ -155,6 +164,7 @@ def cached_live_l2(
         station=site,
         zoom_deg=zoom_deg,
         include_velocity=False,
+        overlay_aircraft=overlay,
     )
     gif = _frames_to_gif(refl_frames) if len(refl_frames) > 1 else b""
     return refl_frames, gif
@@ -421,6 +431,13 @@ with st.sidebar:
         "Level II zoom (degrees)", 0.5, 3.0, 1.5, 0.5,
         disabled=not radar_mode.startswith("Raw"),
     )
+    l2_flights = st.checkbox(
+        "Overlay live JBU flights",
+        value=True,
+        disabled=not radar_mode.startswith("Raw"),
+        help="Current JetBlue aircraft positions (community ADS-B) drawn "
+             "on the newest Level II frame.",
+    )
 
     st.divider()
     run_button = st.button("Refresh", type="primary", use_container_width=True)
@@ -496,7 +513,8 @@ if active_icao:
             ):
                 try:
                     frames, gif = cached_live_l2(
-                        icao, radar_site, l2_zoom, bucket
+                        icao, radar_site, l2_zoom, bucket,
+                        overlay_flights=l2_flights,
                     )
                     st.session_state["live_l2"] = frames
                     st.session_state["live_l2_gif"] = gif

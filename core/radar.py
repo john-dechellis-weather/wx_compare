@@ -90,6 +90,7 @@ def fetch_and_render_radar_loop(
     station: str,
     zoom_deg: float,
     include_velocity: bool = True,
+    overlay_aircraft: list | None = None,
 ) -> tuple[list[tuple[bytes, str]], list[tuple[bytes, str]]]:
     """Fetch all Level II volumes in [start, start+duration], render each."""
     start = start_time.replace(tzinfo=None)
@@ -107,10 +108,12 @@ def fetch_and_render_radar_loop(
     refl_frames: list[tuple[bytes, str]] = []
     vel_frames: list[tuple[bytes, str]] = []
     for scan in scans:
+        is_last = scan is scans[-1]
         try:
             refl_png, vel_png, name = _download_and_render(
                 scan, aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
                 include_velocity=include_velocity,
+                overlay_aircraft=overlay_aircraft if is_last else None,
             )
         except Exception:
             continue
@@ -254,6 +257,7 @@ def _find_scans_thredds(st4: str, start: datetime, end: datetime) -> list[_ScanR
 def _download_and_render(
     scan: _ScanRef, aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
     include_velocity: bool = True,
+    overlay_aircraft: list | None = None,
 ) -> tuple[bytes, bytes, str]:
     """Download one volume over HTTPS, render REF and VEL."""
     from metpy.io import Level2File
@@ -281,6 +285,7 @@ def _download_and_render(
             az, rng_km, data, radar_lat, radar_lon,
             aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
             product="REF", title_prefix="Base Reflectivity (0.5°)",
+            overlay_aircraft=overlay_aircraft,
             cbar_label="Reflectivity (dBZ)", volume_name=name,
         )
 
@@ -326,6 +331,7 @@ def _render_sweep(
     az, rng_km, data, radar_lat, radar_lon,
     aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
     product, title_prefix, cbar_label, volume_name,
+    overlay_aircraft=None,
 ) -> bytes:
     """Render one sweep to PNG bytes with the shared BlueMet radar styling."""
     from metpy.calc import azimuth_range_to_lat_lon
@@ -411,6 +417,25 @@ def _render_sweep(
         zorder=10,
         transform=ccrs.PlateCarree(),
     )
+
+    # Live aircraft overlay: draw each plane with callsign + flight level
+    if overlay_aircraft:
+        for ac in overlay_aircraft:
+            ax.scatter(
+                ac.lon, ac.lat, s=90, marker="^", color="#0000CC",
+                edgecolors="white", linewidths=0.8, zorder=11,
+                transform=ccrs.PlateCarree(),
+            )
+            _lbl = ac.callsign
+            if ac.alt_ft is not None:
+                _lbl += f"\nFL{int(round(ac.alt_ft / 100)):03d}"
+            ax.annotate(
+                _lbl,
+                xy=(ac.lon, ac.lat),
+                xytext=(5, 5), textcoords="offset points",
+                fontsize=7, fontweight="bold", color="#0000CC",
+                zorder=11,
+            )
     ax.text(
         aircraft_lon + 0.05,
         aircraft_lat + 0.05,
