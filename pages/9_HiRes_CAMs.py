@@ -1,4 +1,4 @@
-"""Hi-Res CAMs — convection-allowing model viewer, 2x2 model grid.
+"""Hi-Res CAMs - convection-allowing model viewer, 2x2 model grid.
 
 Top-right panel: HRRR (hourly-updating, aviation products only, live
 JBU aircraft overlaid). Remaining quadrants are placeholders for the
@@ -12,7 +12,7 @@ from pathlib import Path
 import streamlit as st
 
 st.set_page_config(
-    page_title="BlueMet — Hi-Res CAMs",
+    page_title="BlueMet - Hi-Res CAMs",
     layout="wide",
 )
 
@@ -89,12 +89,30 @@ def cached_hrrr_panel(
     )
 
 
+def _frames_to_gif(frames, width=800, frame_ms=500, last_hold_ms=1500):
+    from io import BytesIO
+    from PIL import Image
+
+    imgs = []
+    for png, _name in frames:
+        im = Image.open(BytesIO(png)).convert("RGB")
+        w, h = im.size
+        if w > width:
+            im = im.resize((width, int(h * width / w)), Image.LANCZOS)
+        imgs.append(im.quantize(colors=256))
+    durations = [frame_ms] * (len(imgs) - 1) + [last_hold_ms]
+    buf = BytesIO()
+    imgs[0].save(buf, format="GIF", save_all=True, append_images=imgs[1:],
+                 duration=durations, loop=0, disposal=2)
+    return buf.getvalue()
+
+
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
 st.title("Hi-Res CAMs")
 st.caption(
-    "Convection-allowing model viewer — aviation products, "
+    "Convection-allowing model viewer - aviation products, "
     "hourly-updating, live JBU aircraft overlaid."
 )
 
@@ -123,7 +141,12 @@ with st.sidebar:
         "Ceiling": "CEIL",
         "10 m Wind Gust": "GUST",
     }
-    fhr = st.slider("Forecast hour", 0, 18, 1)
+    fhr_range = st.slider(
+        "Forecast hours (loop range)", 0, 18, (1, 8),
+        help="Renders every hour in the range as an animated loop. "
+             "Collapse the range to a single hour for one frame. "
+             "Frames cache per hour, so re-loops are fast.",
+    )
     show_jbu = st.checkbox("Overlay live JBU aircraft", value=True)
 
     st.divider()
@@ -147,7 +170,9 @@ if active:
     clat, clon = coords
 
     product = PRODUCT_KEY[product_label]
-    cycle_iso = cached_hrrr_cycle(fhr, bucket10)
+    fhr_start, fhr_end = fhr_range
+    hours = list(range(fhr_start, fhr_end + 1))
+    cycle_iso = cached_hrrr_cycle(fhr_end, bucket10)
     if cycle_iso is None:
         st.error("No complete HRRR cycle found on NOMADS (last 6 hours).")
         st.stop()
@@ -164,10 +189,10 @@ if active:
             )
 
     st.info(
-        f"**{icao}** \u00b7 HRRR **{cycle:%m/%d %H}Z** \u00b7 f{fhr:02d} "
-        f"\u00b7 {product_label}"
-        + (f" \u00b7 {len(aircraft)} JBU live"
-           f" \u00b7 {len(routes)} routes" if show_jbu else "")
+        f"**{icao}** | HRRR **{cycle:%m/%d %H}Z** | "
+        f"f{fhr_start:02d}-f{fhr_end:02d} | {product_label}"
+        + (f" | {len(aircraft)} JBU live"
+           f" | {len(routes)} routes" if show_jbu else "")
     )
     if show_jbu and aircraft and not routes:
         from core.flights import last_route_error
@@ -175,22 +200,56 @@ if active:
         if err:
             st.caption(f"Route lookup: {err}")
 
-    # 2x2 model grid — HRRR occupies the TOP-RIGHT quadrant
+    # 2x2 model grid - HRRR occupies the TOP-RIGHT quadrant
     top_left, top_right = st.columns(2)
     bot_left, bot_right = st.columns(2)
 
     with top_right:
         st.markdown("**HRRR**")
-        with st.spinner("Fetching + decoding HRRR (5-20s)..."):
+        frames = []
+        errors = []
+        prog = st.progress(0.0, text=f"Rendering f{fhr_start:02d}...")
+        for i, h in enumerate(hours):
+            prog.progress(
+                (i + 1) / len(hours),
+                text=f"Rendering f{h:02d} ({i + 1}/{len(hours)})...",
+            )
             try:
                 png = cached_hrrr_panel(
-                    product, cycle_iso, fhr,
+                    product, cycle_iso, h,
                     round(clat, 2), round(clon, 2), zoom,
                     aircraft, routes=routes,
                 )
-                st.image(png, use_container_width=True)
+                frames.append((png, f"f{h:02d}"))
             except Exception as e:
-                st.error(f"HRRR panel failed: {e}")
+                errors.append(f"f{h:02d}: {e}")
+        prog.empty()
+
+        if not frames:
+            st.error(
+                "All frames failed. First error: "
+                + (errors[0] if errors else "unknown")
+            )
+        elif len(frames) == 1:
+            st.image(frames[0][0], use_container_width=True)
+            st.caption(f"`{frames[0][1]}`")
+        else:
+            gif = _frames_to_gif(frames)
+            st.image(gif, use_container_width=True)
+            st.download_button(
+                "Download loop GIF", data=gif,
+                file_name=f"hrrr_{product}_{icao}.gif",
+                mime="image/gif", key="dl_cam_gif",
+            )
+            with st.expander("Frame-by-frame"):
+                idx = st.slider(
+                    "Frame", 0, len(frames) - 1, len(frames) - 1,
+                    key="cam_idx",
+                )
+                st.image(frames[idx][0], use_container_width=True)
+                st.caption(f"`{frames[idx][1]}`")
+        if errors and frames:
+            st.caption(f"{len(errors)} frame(s) failed: {errors[0]}")
 
     _ph = (
         '<div style="border:2px dashed #00FF00;padding:40px 10px;'
