@@ -157,12 +157,27 @@ def cached_live_l2(
                 historical_positions_available,
             )
             if historical_positions_available():
-                overlay_mode = "historical"
                 # True per-frame playback: positions at each scan time
                 def overlay_fn(scan_dt):
                     return fetch_positions_at(
                         lat, lon, radius_deg=zoom_deg,
                         when_unix=int(scan_dt.timestamp()),
+                    )
+                # Probe a recent timestamp so failures are visible in
+                # the caption instead of silently rendering no planes.
+                from core.flights import last_error
+                _probe_ts = int(datetime.now(timezone.utc).timestamp()) - 600
+                _probe = fetch_positions_at(
+                    lat, lon, radius_deg=zoom_deg, when_unix=_probe_ts
+                )
+                if _probe:
+                    overlay_mode = f"historical ({len(_probe)} JBU at probe)"
+                else:
+                    err = last_error()
+                    overlay_mode = (
+                        f"historical but EMPTY — {err}" if err else
+                        "historical but EMPTY — query OK, no JBU aircraft "
+                        "matched (coverage or callsign filter)"
                     )
             else:
                 # Static fallback: current positions on every frame
@@ -444,7 +459,11 @@ with st.sidebar:
 
     radar_mode = st.radio(
         "Radar display",
-        options=["RIDGE loop (instant)", "Raw Level II (slower, full res)"],
+        options=[
+            "Windy interactive (instant, animated)",
+            "RIDGE loop (instant)",
+            "Raw Level II (slower, full res)",
+        ],
         index=0,
     )
     l2_zoom = st.slider(
@@ -508,7 +527,27 @@ if active_icao:
     # --- Radar ---
     st.subheader("Live Radar")
     radar_site = radar_override or RADAR_FOR_AIRPORT.get(icao, "")
-    if not radar_site:
+    if radar_mode.startswith("Windy"):
+        coords = cached_station_coords(icao)
+        if coords is None:
+            st.warning(f"Cannot resolve coordinates for {icao}.")
+        else:
+            w_lat, w_lon = coords
+            windy_url = (
+                "https://embed.windy.com/embed2.html"
+                f"?lat={w_lat:.3f}&lon={w_lon:.3f}"
+                f"&detailLat={w_lat:.3f}&detailLon={w_lon:.3f}"
+                "&zoom=8&level=surface&overlay=radar&menu=&message="
+                "&marker=true&calendar=now&pressure=&type=map"
+                "&location=coordinates&detail=&metricWind=default"
+                "&metricTemp=default&radarRange=-1"
+            )
+            st.components.v1.iframe(windy_url, height=520)
+            st.caption(
+                "Windy.com interactive radar — animated, pan/zoomable. "
+                "Press play on the bottom timeline for the loop."
+            )
+    elif not radar_site:
         st.warning(
             f"No radar mapping for {icao}. Enter a NEXRAD site "
             "(e.g. KOKX) in the sidebar."

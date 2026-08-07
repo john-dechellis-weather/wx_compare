@@ -125,6 +125,12 @@ _TOKEN_URL = (
     "/protocol/openid-connect/token"
 )
 _token_cache: dict = {"token": None, "expires": 0.0}
+_last_error: dict = {"msg": None}
+
+
+def last_error():
+    """Most recent OpenSky failure detail, or None."""
+    return _last_error["msg"]
 
 
 def _opensky_token() -> Optional[str]:
@@ -147,14 +153,20 @@ def _opensky_token() -> Optional[str]:
             headers=_HEADERS,
             timeout=20,
         )
-        r.raise_for_status()
+        if r.status_code != 200:
+            _last_error["msg"] = (
+                f"token HTTP {r.status_code}: {r.text[:120]}"
+            )
+            return None
         payload = r.json()
         _token_cache["token"] = payload["access_token"]
+        _last_error["msg"] = None
         _token_cache["expires"] = _time.time() + int(
             payload.get("expires_in", 1800)
         )
         return _token_cache["token"]
-    except Exception:
+    except Exception as e:
+        _last_error["msg"] = f"token {type(e).__name__}: {e}"
         return None
 
 
@@ -180,6 +192,8 @@ def fetch_positions_at(
     which shows frozen planes)."""
     token = _opensky_token()
     if token is None:
+        if _last_error["msg"] is None:
+            _last_error["msg"] = "no credentials"
         return []
     try:
         r = requests.get(
@@ -194,7 +208,11 @@ def fetch_positions_at(
             headers={**_HEADERS, "Authorization": f"Bearer {token}"},
             timeout=20,
         )
-        r.raise_for_status()
+        if r.status_code != 200:
+            _last_error["msg"] = (
+                f"states HTTP {r.status_code}: {r.text[:120]}"
+            )
+            return []
         payload = r.json()
         states = payload.get("states") or []
         out = []
@@ -214,5 +232,6 @@ def fetch_positions_at(
                 heading_deg=float(s[10]) if s[10] is not None else None,
             ))
         return out
-    except Exception:
+    except Exception as e:
+        _last_error["msg"] = f"states {type(e).__name__}: {e}"
         return []
