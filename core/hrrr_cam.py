@@ -72,6 +72,7 @@ MODELS = {
                 "hrrr.{ymd}/conus/hrrr.t{cc:02d}z.wrfsfcf{ff:02d}"
                 ".grib2.idx"),
         "cycles": list(range(24)),
+        "max_fhr": 18,
         "products": {"REFC", "RETOP", "VIS", "CEIL", "GUST"},
         "note": "",
     },
@@ -84,6 +85,7 @@ MODELS = {
                 "nam.{ymd}/nam.t{cc:02d}z.conusnest.hiresf{ff:02d}"
                 ".tm00.grib2.idx"),
         "cycles": [0, 6, 12, 18],
+        "max_fhr": 60,
         "products": {"REFC", "VIS", "CEIL", "GUST"},
         "note": "retires Oct 2026 (replaced by RRFS)",
     },
@@ -96,6 +98,7 @@ MODELS = {
                 "hiresw.{ymd}/hiresw.t{cc:02d}z.arw_2p5km.f{ff:02d}"
                 ".conus.grib2.idx"),
         "cycles": [0, 12],
+        "max_fhr": 48,
         "products": {"REFC", "VIS", "CEIL", "GUST"},
         "note": "retires Oct 2026 (replaced by RRFS)",
     },
@@ -108,6 +111,7 @@ MODELS = {
                 "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev.3km"
                 ".f{ff:03d}.conus.grib2.idx"),
         "cycles": [0, 6, 12, 18],
+        "max_fhr": 60,
         "products": {"REFC", "VIS", "CEIL", "GUST"},
         "note": ("parallel feed announced ~Aug 11 2026; "
                  "'no cycle found' is expected until it starts"),
