@@ -26,14 +26,23 @@ _HEADERS = {"User-Agent": "BlueMet/1.0 (aviation weather tool)"}
 
 NOMADS = "https://nomads.ncep.noaa.gov"
 
-# product -> (filter var params, filter lev params)
+# product -> (var param, list of candidate level params). Different
+# NOMADS filters name the same layer differently (e.g. HRRR's
+# "entire_atmosphere" vs NAM's
+# "entire_atmosphere_(considered_as_a_single_layer)"), so fetch_field
+# tries candidates in order until one returns GRIB.
 PRODUCT_PARAMS = {
-    "REFC": ({"var_REFC": "on"}, {"lev_entire_atmosphere": "on"}),
-    "RETOP": ({"var_RETOP": "on"}, {"lev_cloud_top": "on",
-                                    "lev_entire_atmosphere": "on"}),
-    "VIS": ({"var_VIS": "on"}, {"lev_surface": "on"}),
-    "CEIL": ({"var_HGT": "on"}, {"lev_cloud_ceiling": "on"}),
-    "GUST": ({"var_GUST": "on"}, {"lev_surface": "on"}),
+    "REFC": ({"var_REFC": "on"}, [
+        {"lev_entire_atmosphere": "on"},
+        {"lev_entire_atmosphere_(considered_as_a_single_layer)": "on"},
+    ]),
+    "RETOP": ({"var_RETOP": "on"}, [
+        {"lev_cloud_top": "on"},
+        {"lev_entire_atmosphere": "on"},
+    ]),
+    "VIS": ({"var_VIS": "on"}, [{"lev_surface": "on"}]),
+    "CEIL": ({"var_HGT": "on"}, [{"lev_cloud_ceiling": "on"}]),
+    "GUST": ({"var_GUST": "on"}, [{"lev_surface": "on"}]),
 }
 
 PRODUCT_LABELS = {
@@ -59,7 +68,8 @@ MODELS = {
     },
     "nam_nest": {
         "label": "NAM 3km Nest",
-        "filter": f"{NOMADS}/cgi-bin/filter_nam_conusnest.pl",
+        "filter": f"{NOMADS}/gribfilter.php",
+        "ds": "nam_conusnest",
         "file": "nam.t{cc:02d}z.conusnest.hiresf{ff:02d}.tm00.grib2",
         "dir": "/nam.{ymd}",
         "idx": (f"{NOMADS}/pub/data/nccf/com/nam/prod/"
@@ -71,7 +81,8 @@ MODELS = {
     },
     "hiresw_arw": {
         "label": "HRW ARW",
-        "filter": f"{NOMADS}/cgi-bin/filter_hiresw.pl",
+        "filter": f"{NOMADS}/gribfilter.php",
+        "ds": "hiresw",
         "file": "hiresw.t{cc:02d}z.arw_2p5km.f{ff:02d}.conus.grib2",
         "dir": "/hiresw.{ymd}",
         "idx": (f"{NOMADS}/pub/data/nccf/com/hiresw/prod/"
@@ -83,7 +94,8 @@ MODELS = {
     },
     "rrfs": {
         "label": "RRFS",
-        "filter": f"{NOMADS}/cgi-bin/filter_rrfs.pl",
+        "filter": f"{NOMADS}/gribfilter.php",
+        "ds": "rrfs",
         "file": "rrfs.t{cc:02d}z.prslev.3km.f{ff:03d}.conus.grib2",
         "dir": "/rrfs.{ymd}/{cc:02d}",
         "idx": (f"{NOMADS}/pub/data/nccf/com/rrfs/para/"
@@ -134,9 +146,9 @@ def fetch_field(
     cfg = MODELS[model]
     if product not in cfg["products"]:
         raise RuntimeError(f"{cfg['label']} does not provide {product}")
-    var_p, lev_p = PRODUCT_PARAMS[product]
+    var_p, lev_candidates = PRODUCT_PARAMS[product]
     pad = zoom_deg + 0.4
-    params = {
+    base = {
         "file": cfg["file"].format(cc=cycle.hour, ff=fhr),
         "dir": cfg["dir"].format(ymd=cycle.strftime("%Y%m%d"),
                                  cc=cycle.hour),
@@ -146,17 +158,28 @@ def fetch_field(
         "toplat": f"{lat + pad:.2f}",
         "bottomlat": f"{lat - pad:.2f}",
         **var_p,
-        **lev_p,
     }
-    r = requests.get(cfg["filter"], params=params, headers=_HEADERS,
-                     timeout=90)
-    r.raise_for_status()
-    if len(r.content) < 500 or r.content[:4] != b"GRIB":
-        raise RuntimeError(
-            f"{cfg['label']} filter returned non-GRIB "
-            f"({len(r.content)} bytes) for {product} f{fhr:02d}"
+    if cfg.get("ds"):
+        base["ds"] = cfg["ds"]
+    last_detail = "no level candidates"
+    for lev_p in lev_candidates:
+        try:
+            r = requests.get(cfg["filter"], params={**base, **lev_p},
+                             headers=_HEADERS, timeout=90)
+        except Exception as e:
+            last_detail = f"{type(e).__name__}: {e}"
+            continue
+        if (r.status_code == 200 and len(r.content) >= 500
+                and r.content[:4] == b"GRIB"):
+            return r.content
+        last_detail = (
+            f"HTTP {r.status_code}, {len(r.content)} bytes "
+            f"with {list(lev_p)[0]}"
         )
-    return r.content
+    raise RuntimeError(
+        f"{cfg['label']} filter failed for {product} f{fhr:02d} "
+        f"(last attempt: {last_detail})"
+    )
 
 
 def decode_field(raw: bytes):
