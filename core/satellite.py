@@ -8,30 +8,6 @@ from typing import Optional
 
 import numpy as np
 
-from matplotlib.colors import LinearSegmentedColormap
-
-
-def _make_nws_ir_cmap():
-    """NWS Enhanced IR scheme — grayscale for warm surface, distinct
-    colored bands for cold cloud tops."""
-    colors = [
-        (180, "#FFFFFF"),   # coldest = white
-        (200, "#B22222"),   # firebrick
-        (210, "#FF0000"),   # red
-        (220, "#FFA500"),   # orange
-        (230, "#FFFF00"),   # yellow
-        (240, "#008000"),   # green
-        (250, "#0000FF"),   # blue
-        (260, "#800080"),   # purple
-        (270, "#404040"),   # dark gray
-        (330, "#E8E8E8"),   # light gray (warm surface)
-    ]
-    temps, hex_colors = zip(*colors)
-    positions = [(t - 180) / (330 - 180) for t in temps]
-    return LinearSegmentedColormap.from_list("nws_ir", list(zip(positions, hex_colors)))
-
-
-NWS_IR_CMAP = _make_nws_ir_cmap()
 
 _ZOOM_PAD_METERS = 350_000
 
@@ -132,78 +108,42 @@ def render_infrared(
     aircraft_lat: float,
     aircraft_lon: float,
     callsign: str,
+    lightning=None,
 ) -> bytes:
-    """Render Clean IR (Band 13) plot — self-contained, no shared code."""
-    import matplotlib.pyplot as plt
-    import cartopy.crs as ccrs
-    import cartopy.feature as cfeature
-    import pyproj
+    """Render Clean IR (Band 13) plot with aircraft marker. Returns PNG bytes."""
+    ir_raw = ds["CMI_C13"].values
+    print(f"[IR DEBUG] CMI_C13 shape: {ir_raw.shape}")
+    print(f"[IR DEBUG] CMI_C13 dtype: {ir_raw.dtype}")
+    print(f"[IR DEBUG] CMI_C13 valid count: {np.sum(~np.isnan(ir_raw))}")
+    print(f"[IR DEBUG] CMI_C13 nan count: {np.sum(np.isnan(ir_raw))}")
+    try:
+        print(f"[IR DEBUG] CMI_C13 min: {np.nanmin(ir_raw)}, max: {np.nanmax(ir_raw)}")
+    except Exception as e:
+        print(f"[IR DEBUG] Could not compute min/max: {e}")
+    print(f"[IR DEBUG] ds x shape: {ds['x'].values.shape}")
+    print(f"[IR DEBUG] ds y shape: {ds['y'].values.shape}")
+    r_raw = ds["CMI_C02"].values
+    print(f"[IR DEBUG] CMI_C02 (Red) shape: {r_raw.shape}")
 
-    plt.switch_backend("Agg")
+    ir = ir_raw
 
-    # Get data
-    ir = ds["CMI_C13"].values.astype(float)
-    # Fill NaN with a warm value so nothing is transparent
-    ir = np.where(np.isnan(ir), 300, ir)
-
-    # Projection info
-    proj_var = ds["goes_imager_projection"]
-    sat_h = float(proj_var.perspective_point_height)
-    lon_0 = float(proj_var.longitude_of_projection_origin)
-    sweep = str(proj_var.sweep_angle_axis)
-
-    x = ds["x"].values * sat_h
-    y = ds["y"].values * sat_h
-
-    geos_crs = ccrs.Geostationary(
-        central_longitude=lon_0,
-        satellite_height=sat_h,
-        sweep_axis=sweep,
-    )
-
-    geos_proj = pyproj.Proj(proj="geos", h=sat_h, lon_0=lon_0, sweep=sweep)
-    wgs84 = pyproj.Proj(proj="latlong", datum="WGS84")
-    transformer = pyproj.Transformer.from_proj(wgs84, geos_proj, always_xy=True)
-    aircraft_x, aircraft_y = transformer.transform(aircraft_lon, aircraft_lat)
-
-    if not (np.isfinite(aircraft_x) and np.isfinite(aircraft_y)):
-        raise ValueError(f"Aircraft position outside projection range")
-
-    # Build figure — NO colorbar for now, to isolate the plot problem
-    fig = plt.figure(figsize=(12, 10))
-    ax = plt.axes(projection=geos_crs)
-
-    img = ax.imshow(
-        ir,
-        origin="upper",
-        extent=[x.min(), x.max(), y.min(), y.max()],
-        transform=geos_crs,
-        cmap=NWS_IR_CMAP,
+    return _render_plot(
+        ds=ds,
+        aircraft_lat=aircraft_lat,
+        aircraft_lon=aircraft_lon,
+        callsign=callsign,
+        image_data=ir,
+        cmap="nipy_spectral_r",
         vmin=180,
         vmax=330,
+        coastline_color="cyan",
+        border_color="cyan",
+        state_color="yellow",
+        title_text="GOES Clean IR Window (Band 13) with Aircraft Position",
+        add_colorbar=True,
+        cbar_label="Brightness Temperature (K)",
+        lightning=lightning,
     )
-
-    # Colorbar showing temperature scale
-    cbar = plt.colorbar(img, ax=ax, shrink=0.7, pad=0.02)
-    cbar.set_label("Brightness Temperature (K)")
-
-    ax.coastlines(resolution="10m", color="cyan", linewidth=0.8)
-    ax.add_feature(cfeature.BORDERS.with_scale("10m"), edgecolor="cyan", linewidth=0.5)
-    ax.add_feature(cfeature.STATES.with_scale("10m"), edgecolor="yellow", linewidth=0.5, facecolor="none")
-
-    ax.scatter(aircraft_x, aircraft_y, s=100, marker="x", color="red", zorder=10)
-    ax.text(aircraft_x + 20_000, aircraft_y + 20_000, callsign,
-            color="red", fontsize=12, zorder=10, weight="bold")
-
-    ax.set_xlim(aircraft_x - _ZOOM_PAD_METERS, aircraft_x + _ZOOM_PAD_METERS)
-    ax.set_ylim(aircraft_y - _ZOOM_PAD_METERS, aircraft_y + _ZOOM_PAD_METERS)
-    ax.set_title("GOES Clean IR Window (Band 13)")
-
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
-    plt.close(fig)
-    buf.seek(0)
-    return buf.getvalue()
 
 
 def _render_plot(
@@ -221,6 +161,7 @@ def _render_plot(
     title_text: str,
     add_colorbar: bool,
     cbar_label: Optional[str],
+    lightning=None,
 ) -> bytes:
     """Shared rendering function for both True Color and IR plots."""
     import matplotlib.pyplot as plt
@@ -271,7 +212,7 @@ def _render_plot(
     fig = plt.figure(figsize=(12, 10))
     ax = plt.axes(projection=geos_crs)
 
-    # Use imshow for both — same approach that works for True Color
+    # Different rendering for RGB vs 2D data
     if image_data.ndim == 3:
         img = ax.imshow(
             image_data,
@@ -281,20 +222,16 @@ def _render_plot(
             interpolation="nearest",
         )
     else:
-        # 2D data (IR) — use imshow with cmap
-        # Fill NaN with vmin so it renders as coldest color rather than transparent
         img_data = np.array(image_data, dtype=float)
         if vmin is not None:
             img_data = np.where(np.isnan(img_data), vmin, img_data)
-        img = ax.imshow(
-            img_data,
-            origin="upper",
-            extent=[x.min(), x.max(), y.min(), y.max()],
+        img = ax.pcolormesh(
+            x, y[::-1], img_data[::-1, :],
             transform=geos_crs,
             cmap=cmap,
             vmin=vmin,
             vmax=vmax,
-            interpolation="nearest",
+            shading="auto",
         )
 
     if add_colorbar and cbar_label is not None:
@@ -326,6 +263,15 @@ def _render_plot(
     gl.right_labels = False
     gl.xlabel_style = {"size": 9, "color": "white"}
     gl.ylabel_style = {"size": 9, "color": "white"}
+
+    # GLM lightning flashes: gold crosses under the aircraft marker
+    if lightning:
+        _lons = [p[1] for p in lightning]
+        _lats = [p[0] for p in lightning]
+        ax.scatter(
+            _lons, _lats, s=28, marker="+", color="#FFD700",
+            linewidths=1.4, zorder=9, transform=ccrs.PlateCarree(),
+        )
 
     ax.scatter(
         aircraft_x,

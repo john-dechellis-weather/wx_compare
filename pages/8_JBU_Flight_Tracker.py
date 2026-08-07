@@ -92,7 +92,7 @@ def cached_l2(
     bucket: str, callsign: str, others, loop: bool,
 ):
     from core.radar import fetch_and_render_radar_loop
-    minutes = 45 if loop else 12
+    minutes = 45 if loop else 30   # single: wide window, newest frame kept
     start = datetime.now(timezone.utc) - timedelta(minutes=minutes)
     st4 = site[1:] if len(site) == 4 and site.startswith("K") else site
     frames, _ = fetch_and_render_radar_loop(
@@ -112,8 +112,50 @@ def cached_l2(
     return frames, gif
 
 
+@st.cache_data(ttl=300, show_spinner=False, max_entries=4)
+def cached_glm(clat: float, clon: float, zoom: float, bucket: str):
+    """GLM lightning flash locations from the last ~6 minutes within the
+    view window. Returns tuple of (lat, lon) pairs; empty on failure."""
+    import xarray as xr
+    from goes2go.data import goes_timerange
+
+    sat = "goes19" if clon > -105 else "goes18"
+    end = datetime.now(timezone.utc) - timedelta(minutes=6)
+    start = end - timedelta(minutes=6)
+    try:
+        files = goes_timerange(
+            start=start.replace(tzinfo=None),
+            end=end.replace(tzinfo=None),
+            satellite=sat,
+            product="GLM-L2-LCFA",
+            return_as="filelist",
+            download=True,
+            overwrite=False,
+            verbose=False,
+            save_dir=str(CACHE_ROOT / "glm"),
+        )
+    except Exception:
+        return tuple()
+    pts = []
+    base = CACHE_ROOT / "glm"
+    for _, row in files.iterrows():
+        try:
+            ds = xr.open_dataset(base / row["file"])
+            la = ds["flash_lat"].values
+            lo = ds["flash_lon"].values
+            ds.close()
+        except Exception:
+            continue
+        for a, o in zip(la, lo):
+            if (abs(float(a) - clat) <= zoom
+                    and abs(float(o) - clon) <= zoom):
+                pts.append((round(float(a), 3), round(float(o), 3)))
+    return tuple(pts)
+
+
 @st.cache_data(ttl=600, show_spinner=False, max_entries=4)
-def cached_ir(clat: float, clon: float, callsign: str, bucket: str) -> bytes:
+def cached_ir(clat: float, clon: float, callsign: str, bucket: str,
+              lightning=tuple()) -> bytes:
     from core.satellite import fetch_goes_data, render_infrared
     # GOES-19 became GOES-East in 2025 (GOES-16 retired); GOES-18 is West.
     # ABI files land on S3 with real latency — ask 30 min back, and step
@@ -128,7 +170,9 @@ def cached_ir(clat: float, clon: float, callsign: str, bucket: str) -> bytes:
                 satellite=sat,
                 cache_dir=CACHE_ROOT / "satellite",
             )
-            return render_infrared(ds, clat, clon, callsign)
+            return render_infrared(
+                ds, clat, clon, callsign, lightning=lightning
+            )
         except Exception as e:
             last_err = e
     raise RuntimeError(f"GOES {sat} unavailable back to 2h: {last_err}")
@@ -269,7 +313,10 @@ if track_cs:
     st.subheader("Radar")
     ckey_lat, ckey_lon = round(clat, 2), round(clon, 2)
     try:
-        if radar_product.startswith("Level II"):
+        # NOTE: "Level III...".startswith("Level II") is True (string
+        # prefix!) — branch on Level III explicitly, never on the
+        # "Level II" prefix.
+        if not radar_product.startswith("Level III"):
             with st.spinner(
                 "Rendering Level II"
                 + (" loop (30-60s)..." if loop_mode else " (10-20s)...")
@@ -316,13 +363,23 @@ if track_cs:
 
     # --- IR Satellite (opt-in) ---
     if show_ir:
-        st.subheader("IR Satellite (GOES Band 13)")
-        with st.spinner("Fetching GOES (15-30s first time)..."):
+        st.subheader("IR Satellite (GOES Band 13) + GLM Lightning")
+        with st.spinner("Fetching GOES + GLM (15-40s first time)..."):
+            try:
+                flashes = cached_glm(ckey_lat, ckey_lon, zoom, bucket5)
+            except Exception:
+                flashes = tuple()
             try:
                 ir_png = cached_ir(
-                    ckey_lat, ckey_lon, target.callsign, bucket5
+                    ckey_lat, ckey_lon, target.callsign, bucket5,
+                    lightning=flashes,
                 )
                 st.image(ir_png, use_container_width=True)
+                st.caption(
+                    f"{len(flashes)} GLM flashes (last ~6 min) in view"
+                    if flashes else
+                    "No GLM flashes in view (last ~6 min)"
+                )
             except Exception as e:
                 st.warning(f"Satellite fetch failed: {e}")
 

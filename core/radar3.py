@@ -27,16 +27,20 @@ import requests
 TGFTP_BASE = "https://tgftp.nws.noaa.gov/SL.us008001/DF.of/DC.radar"
 _HEADERS = {"User-Agent": "BlueMet/1.0 (aviation weather tool)"}
 
+# ET tries Enhanced Echo Tops (135, 1 km) first, legacy (41, 4 km) second.
 PRODUCT_DIRS = {
-    "REF": "DS.p94r0",
-    "VEL": "DS.p99v0",
-    "ET": "DS.p41et",
+    "REF": ["DS.p94r0"],
+    "VEL": ["DS.p99v0"],
+    "ET": ["DS.135et", "DS.p41et"],
 }
 
 
-def _site_dir(product: str, site: str) -> str:
+def _site_dirs(product: str, site: str) -> list[str]:
     """site like KOKX/TJUA/PHKI -> SI.kokx (server uses lowercase)."""
-    return f"{TGFTP_BASE}/{PRODUCT_DIRS[product]}/SI.{site.lower()}"
+    return [
+        f"{TGFTP_BASE}/{d}/SI.{site.lower()}"
+        for d in PRODUCT_DIRS[product]
+    ]
 
 
 # THREDDS fallback: UCAR IDD serves the same NIDS products; the host is
@@ -82,12 +86,15 @@ def _thredds_fetch(ds) -> bytes:
 
 
 def fetch_latest(product: str, site: str) -> bytes:
-    try:
-        url = f"{_site_dir(product, site)}/sn.last"
-        r = requests.get(url, headers=_HEADERS, timeout=20)
-        r.raise_for_status()
-        return r.content
-    except Exception as tgftp_err:
+    tgftp_err: Exception = RuntimeError("no tgftp dirs")
+    for base in _site_dirs(product, site):
+        try:
+            r = requests.get(f"{base}/sn.last", headers=_HEADERS, timeout=20)
+            r.raise_for_status()
+            return r.content
+        except Exception as e:
+            tgftp_err = e
+    if True:
         dsets = _thredds_l3_datasets(product, site)
         if not dsets:
             raise RuntimeError(
@@ -119,7 +126,16 @@ def fetch_recent(product: str, site: str, n: int = 6) -> list[tuple[bytes, str]]
 
 
 def _fetch_recent_tgftp(product: str, site: str, n: int) -> list[tuple[bytes, str]]:
-    base = _site_dir(product, site)
+    last_err: Exception = RuntimeError("no tgftp dirs")
+    for base in _site_dirs(product, site):
+        try:
+            return _fetch_recent_tgftp_one(base, n)
+        except Exception as e:
+            last_err = e
+    raise last_err
+
+
+def _fetch_recent_tgftp_one(base: str, n: int) -> list[tuple[bytes, str]]:
     r = requests.get(base + "/", headers=_HEADERS, timeout=20)
     r.raise_for_status()
     entries = []
