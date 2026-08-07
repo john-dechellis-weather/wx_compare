@@ -109,6 +109,7 @@ def render_infrared(
     aircraft_lon: float,
     callsign: str,
     lightning=None,
+    trail=None,
 ) -> bytes:
     """Render Clean IR (Band 13) plot with aircraft marker. Returns PNG bytes."""
     ir_raw = ds["CMI_C13"].values
@@ -143,6 +144,7 @@ def render_infrared(
         add_colorbar=True,
         cbar_label="Brightness Temperature (K)",
         lightning=lightning,
+        trail=trail,
     )
 
 
@@ -162,6 +164,7 @@ def _render_plot(
     add_colorbar: bool,
     cbar_label: Optional[str],
     lightning=None,
+    trail=None,
 ) -> bytes:
     """Shared rendering function for both True Color and IR plots."""
     import matplotlib.pyplot as plt
@@ -263,6 +266,14 @@ def _render_plot(
     gl.right_labels = False
     gl.xlabel_style = {"size": 9, "color": "white"}
     gl.ylabel_style = {"size": 9, "color": "white"}
+
+    # Flight path trail (dashed red, under markers)
+    if trail and len(trail) >= 2:
+        ax.plot(
+            [p[1] for p in trail], [p[0] for p in trail],
+            color="red", linewidth=1.4, linestyle="--", alpha=0.85,
+            zorder=8, transform=ccrs.PlateCarree(),
+        )
 
     # GLM lightning flashes: gold crosses under the aircraft marker
     if lightning:

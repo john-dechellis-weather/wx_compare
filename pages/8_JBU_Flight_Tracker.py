@@ -48,10 +48,31 @@ def cached_others(lat: float, lon: float, radius: float, bucket: str):
     return fetch_positions_near(lat, lon, radius_deg=radius)
 
 
+@st.cache_data(ttl=120, show_spinner=False, max_entries=10)
+def cached_trail(hex_code, callsign: str, lat: float, lon: float,
+                 bucket: str):
+    """Flight path: OpenSky tracks first; self-recorded trail as
+    fallback. Returns (points_tuple, source_str)."""
+    from core.flights import (
+        fetch_track_opensky, record_track_point, load_track,
+    )
+    track_dir = CACHE_ROOT / "tracks"
+    # Always bank the current fix so the fallback trail grows regardless
+    record_track_point(track_dir, callsign, lat, lon)
+    if hex_code:
+        pts = fetch_track_opensky(hex_code)
+        if pts and len(pts) >= 2:
+            return tuple(pts), "OpenSky track"
+    own = load_track(track_dir, callsign)
+    if len(own) >= 2:
+        return tuple(own), "self-recorded (builds during tracking)"
+    return tuple(), "none yet"
+
+
 @st.cache_data(ttl=300, show_spinner=False, max_entries=10)
 def cached_l3_frame(
     product: str, site: str, clat: float, clon: float,
-    zoom: float, bucket: str, target, others,
+    zoom: float, bucket: str, target, others, trail=tuple(),
 ) -> bytes:
     from core.radar3 import fetch_latest, parse_l3, render_l3
     raw = fetch_latest(product, site)
@@ -59,7 +80,7 @@ def cached_l3_frame(
     return render_l3(
         parsed, product, clat, clon, zoom, site,
         target_aircraft=target, other_aircraft=others,
-        title_note="latest",
+        title_note="latest", trail=trail,
     )
 
 
@@ -67,6 +88,7 @@ def cached_l3_frame(
 def cached_l3_loop(
     product: str, site: str, clat: float, clon: float,
     zoom: float, bucket: str, target, others, n: int = 6,
+    trail=tuple(),
 ):
     from core.radar3 import fetch_recent, parse_l3, render_l3
     files = fetch_recent(product, site, n=n)
@@ -77,7 +99,7 @@ def cached_l3_loop(
             png = render_l3(
                 parsed, product, clat, clon, zoom, site,
                 target_aircraft=target, other_aircraft=others,
-                title_note=name,
+                title_note=name, trail=trail,
             )
             frames.append((png, name))
         except Exception:
@@ -89,7 +111,7 @@ def cached_l3_loop(
 @st.cache_data(ttl=300, show_spinner=False, max_entries=4)
 def cached_l2(
     site: str, clat: float, clon: float, zoom: float,
-    bucket: str, callsign: str, others, loop: bool,
+    bucket: str, callsign: str, others, loop: bool, trail=tuple(),
 ):
     from core.radar import fetch_and_render_radar_loop
     minutes = 45 if loop else 30   # single: wide window, newest frame kept
@@ -105,6 +127,7 @@ def cached_l2(
         zoom_deg=zoom,
         include_velocity=False,
         overlay_aircraft=others,
+        trail=trail,
     )
     if not loop:
         frames = frames[-1:]
@@ -155,7 +178,7 @@ def cached_glm(clat: float, clon: float, zoom: float, bucket: str):
 
 @st.cache_data(ttl=600, show_spinner=False, max_entries=4)
 def cached_ir(clat: float, clon: float, callsign: str, bucket: str,
-              lightning=tuple()) -> bytes:
+              lightning=tuple(), trail=tuple()) -> bytes:
     from core.satellite import fetch_goes_data, render_infrared
     # GOES-19 became GOES-East in 2025 (GOES-16 retired); GOES-18 is West.
     # ABI files land on S3 with real latency — ask 30 min back, and step
@@ -171,7 +194,8 @@ def cached_ir(clat: float, clon: float, callsign: str, bucket: str,
                 cache_dir=CACHE_ROOT / "satellite",
             )
             return render_infrared(
-                ds, clat, clon, callsign, lightning=lightning
+                ds, clat, clon, callsign, lightning=lightning,
+                trail=trail,
             )
         except Exception as e:
             last_err = e
@@ -309,6 +333,14 @@ if track_cs:
     others_all = cached_others(round(clat, 2), round(clon, 2), zoom, bucket5)
     others = [a for a in others_all if a.callsign != target.callsign]
 
+    # Flight path trail (OpenSky, else self-recorded)
+    trail, trail_src = cached_trail(
+        getattr(target, "hex", None), target.callsign,
+        clat, clon, now.strftime("%Y%m%d%H%M"),
+    )
+    if trail:
+        st.caption(f"Path trail: {len(trail)} points · {trail_src}")
+
     # --- Radar ---
     st.subheader("Radar")
     ckey_lat, ckey_lon = round(clat, 2), round(clon, 2)
@@ -323,7 +355,7 @@ if track_cs:
             ):
                 frames, gif = cached_l2(
                     site, ckey_lat, ckey_lon, zoom, bucket5,
-                    target.callsign, others, loop_mode,
+                    target.callsign, others, loop_mode, trail=trail,
                 )
         else:
             product = "ET" if "Echo Tops" in radar_product else "REF"
@@ -331,13 +363,13 @@ if track_cs:
                 with st.spinner("Rendering Level III loop..."):
                     frames, gif = cached_l3_loop(
                         product, site, ckey_lat, ckey_lon, zoom, bucket5,
-                        target, others,
+                        target, others, trail=trail,
                     )
             else:
                 with st.spinner("Rendering Level III..."):
                     png = cached_l3_frame(
                         product, site, ckey_lat, ckey_lon, zoom, bucket5,
-                        target, others,
+                        target, others, trail=trail,
                     )
                     frames, gif = [(png, "sn.last")], b""
     except Exception as e:
@@ -372,7 +404,7 @@ if track_cs:
             try:
                 ir_png = cached_ir(
                     ckey_lat, ckey_lon, target.callsign, bucket5,
-                    lightning=flashes,
+                    lightning=flashes, trail=trail,
                 )
                 st.image(ir_png, use_container_width=True)
                 st.caption(

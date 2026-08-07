@@ -223,6 +223,7 @@ def render_l3(
     target_aircraft=None,       # AircraftPos of the tracked flight (red)
     other_aircraft=None,        # list[AircraftPos] (blue)
     title_note: str = "",
+    trail=None,                 # [(lat, lon), ...] flight path so far
 ) -> bytes:
     import matplotlib
     matplotlib.use("Agg")
@@ -325,6 +326,14 @@ def render_l3(
         ax.annotate(lbl, xy=(ac.lon, ac.lat), xytext=(5, 5),
                     textcoords="offset points", fontsize=7,
                     fontweight="bold", color="#0000CC", zorder=10)
+
+    # Flight path trail (dashed, under the target marker)
+    if trail and len(trail) >= 2:
+        ax.plot(
+            [p[1] for p in trail], [p[0] for p in trail],
+            color="red", linewidth=1.4, linestyle="--", alpha=0.85,
+            zorder=8, transform=ccrs.PlateCarree(),
+        )
 
     # Target flight (red, prominent)
     if target_aircraft is not None:

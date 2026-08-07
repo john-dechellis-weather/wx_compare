@@ -22,6 +22,7 @@ class AircraftPos:
     lon: float
     alt_ft: Optional[float]      # barometric, feet (None on ground/unknown)
     heading_deg: Optional[float]
+    hex: Optional[str] = None    # ICAO24 transponder hex (for track lookups)
 
 
 def fetch_positions_near(
@@ -434,7 +435,77 @@ def fetch_callsign(callsign: str) -> Optional[AircraftPos]:
                 lon=float(plon),
                 alt_ft=float(alt) if isinstance(alt, (int, float)) else None,
                 heading_deg=float(trk) if trk is not None else None,
+                hex=(p.get("hex") or "").strip().lower() or None,
             )
         return None
     except Exception:
         return None
+
+
+def fetch_track_opensky(icao24: str) -> Optional[list[tuple[float, float]]]:
+    """Waypoints of the aircraft's current flight via OpenSky's tracks
+    endpoint (anonymous, experimental). None on failure — including the
+    host being unreachable from the server — so callers can fall back."""
+    try:
+        r = requests.get(
+            "https://opensky-network.org/api/tracks/all",
+            params={"icao24": icao24.lower(), "time": 0},
+            headers=_HEADERS,
+            timeout=12,
+        )
+        if r.status_code != 200:
+            return None
+        path = r.json().get("path") or []
+        pts = []
+        for wp in path:
+            # [time, lat, lon, baro_alt, true_track, on_ground]
+            if wp[1] is not None and wp[2] is not None:
+                pts.append((float(wp[1]), float(wp[2])))
+        return pts if pts else None
+    except Exception:
+        return None
+
+
+def record_track_point(
+    track_dir: Path,
+    callsign: str,
+    lat: float,
+    lon: float,
+    min_interval_s: int = 60,
+    max_age_s: int = 10800,
+) -> None:
+    """Append the target's position to its own trail file (throttled,
+    pruned) — the self-recorded fallback when OpenSky is unreachable."""
+    track_dir.mkdir(parents=True, exist_ok=True)
+    path = track_dir / f"{callsign.upper()}.jsonl"
+    now = _time.time()
+    lines: list[str] = []
+    last_ts = 0.0
+    if path.exists():
+        for line in path.read_text().splitlines():
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if now - rec["ts"] <= max_age_s:
+                lines.append(line)
+                last_ts = max(last_ts, rec["ts"])
+    if now - last_ts >= min_interval_s:
+        lines.append(json.dumps(
+            {"ts": now, "lat": round(lat, 4), "lon": round(lon, 4)}
+        ))
+    path.write_text("\n".join(lines) + ("\n" if lines else ""))
+
+
+def load_track(track_dir: Path, callsign: str) -> list[tuple[float, float]]:
+    path = track_dir / f"{callsign.upper()}.jsonl"
+    if not path.exists():
+        return []
+    pts = []
+    for line in path.read_text().splitlines():
+        try:
+            rec = json.loads(line)
+            pts.append((rec["lat"], rec["lon"]))
+        except (ValueError, KeyError):
+            continue
+    return pts

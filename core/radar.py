@@ -92,6 +92,7 @@ def fetch_and_render_radar_loop(
     include_velocity: bool = True,
     overlay_aircraft: list | None = None,
     overlay_fn=None,
+    trail=None,
 ) -> tuple[list[tuple[bytes, str]], list[tuple[bytes, str]]]:
     """Fetch all Level II volumes in [start, start+duration], render each."""
     start = start_time.replace(tzinfo=None)
@@ -124,6 +125,7 @@ def fetch_and_render_radar_loop(
                 scan, aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
                 include_velocity=include_velocity,
                 overlay_aircraft=frame_overlay,
+                trail=trail,
             )
         except Exception:
             continue
@@ -269,6 +271,7 @@ def _download_and_render(
     include_velocity: bool = True,
     overlay_aircraft: list | None = None,
     return_geo: bool = False,
+    trail=None,
 ):
     """Download one volume over HTTPS, render REF and VEL. With
     return_geo, returns (refl_png, vel_png, name, geo, px_box)."""
@@ -301,7 +304,7 @@ def _download_and_render(
                 product="REF", title_prefix="Base Reflectivity (0.5°)",
                 overlay_aircraft=overlay_aircraft,
                 cbar_label="Reflectivity (dBZ)", volume_name=name,
-                return_geo=True,
+                return_geo=True, trail=trail,
             )
         else:
             refl_png = _render_sweep(
@@ -310,6 +313,7 @@ def _download_and_render(
                 product="REF", title_prefix="Base Reflectivity (0.5°)",
                 overlay_aircraft=overlay_aircraft,
                 cbar_label="Reflectivity (dBZ)", volume_name=name,
+                trail=trail,
             )
 
         vel_png = b""
@@ -360,6 +364,7 @@ def _render_sweep(
     product, title_prefix, cbar_label, volume_name,
     overlay_aircraft=None,
     return_geo: bool = False,
+    trail=None,
 ):
     """Render one sweep to PNG bytes with the shared BlueMet radar styling."""
     from metpy.calc import azimuth_range_to_lat_lon
@@ -435,6 +440,14 @@ def _render_sweep(
     gl.right_labels = False
     gl.xlabel_style = {"size": 9}
     gl.ylabel_style = {"size": 9}
+
+    # Flight path trail (dashed, under the aircraft marker)
+    if trail and len(trail) >= 2:
+        ax.plot(
+            [p[1] for p in trail], [p[0] for p in trail],
+            color="red", linewidth=1.4, linestyle="--", alpha=0.85,
+            zorder=9, transform=ccrs.PlateCarree(),
+        )
 
     ax.scatter(
         aircraft_lon,
