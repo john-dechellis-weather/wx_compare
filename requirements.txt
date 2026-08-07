@@ -17,5 +17,5 @@ netCDF4>=1.6
 metpy>=1.6
 siphon>=0.9
 nexradaws>=2.0
-cfgrib==0.9.15.1
-eccodes==2.48.0
+cfgrib
+eccodes
