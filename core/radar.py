@@ -268,8 +268,10 @@ def _download_and_render(
     scan: _ScanRef, aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
     include_velocity: bool = True,
     overlay_aircraft: list | None = None,
-) -> tuple[bytes, bytes, str]:
-    """Download one volume over HTTPS, render REF and VEL."""
+    return_geo: bool = False,
+):
+    """Download one volume over HTTPS, render REF and VEL. With
+    return_geo, returns (refl_png, vel_png, name, geo, px_box)."""
     from metpy.io import Level2File
 
     tmpdir = tempfile.mkdtemp(prefix="nexrad_l2_")
@@ -291,16 +293,29 @@ def _download_and_render(
         name = scan.filename
 
         az, rng_km, data = _extract_moment(f, b"REF")
-        refl_png = _render_sweep(
-            az, rng_km, data, radar_lat, radar_lon,
-            aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
-            product="REF", title_prefix="Base Reflectivity (0.5°)",
-            overlay_aircraft=overlay_aircraft,
-            cbar_label="Reflectivity (dBZ)", volume_name=name,
-        )
+        geo = px_box = None
+        if return_geo:
+            refl_png, geo, px_box = _render_sweep(
+                az, rng_km, data, radar_lat, radar_lon,
+                aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
+                product="REF", title_prefix="Base Reflectivity (0.5°)",
+                overlay_aircraft=overlay_aircraft,
+                cbar_label="Reflectivity (dBZ)", volume_name=name,
+                return_geo=True,
+            )
+        else:
+            refl_png = _render_sweep(
+                az, rng_km, data, radar_lat, radar_lon,
+                aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
+                product="REF", title_prefix="Base Reflectivity (0.5°)",
+                overlay_aircraft=overlay_aircraft,
+                cbar_label="Reflectivity (dBZ)", volume_name=name,
+            )
 
         vel_png = b""
         if not include_velocity:
+            if return_geo:
+                return refl_png, vel_png, name, geo, px_box
             return refl_png, vel_png, name
         try:
             az_v, rng_km_v, data_v = _extract_moment(f, b"VEL")
@@ -314,6 +329,8 @@ def _download_and_render(
         except Exception:
             vel_png = b""
 
+        if return_geo:
+            return refl_png, vel_png, name, geo, px_box
         return refl_png, vel_png, name
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
@@ -342,7 +359,8 @@ def _render_sweep(
     aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
     product, title_prefix, cbar_label, volume_name,
     overlay_aircraft=None,
-) -> bytes:
+    return_geo: bool = False,
+):
     """Render one sweep to PNG bytes with the shared BlueMet radar styling."""
     from metpy.calc import azimuth_range_to_lat_lon
     from metpy.plots import colortables
@@ -467,8 +485,89 @@ def _render_sweep(
 
     # NOTE: no bbox_inches="tight" — it crops the GeoAxes away and
     # leaves only the colorbar on this matplotlib/cartopy combination.
+    geo = px_box = None
+    if return_geo:
+        # Axes pixel box + geographic extent for later PIL compositing
+        # (PlateCarree is linear in lon/lat so the mapping is affine).
+        fig.canvas.draw()
+        pos = ax.get_position()
+        fw, fh = fig.get_size_inches()
+        W, H = fw * 100, fh * 100  # dpi=100 below
+        px_box = (pos.x0 * W, (1 - pos.y1) * H, pos.x1 * W, (1 - pos.y0) * H)
+        west, east, south, north = ax.get_extent(crs=ccrs.PlateCarree())
+        geo = (west, east, south, north)
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=100)
     plt.close(fig)
     buf.seek(0)
+    if return_geo:
+        return buf.getvalue(), geo, px_box
+    return buf.getvalue()
+
+
+def fetch_and_render_base_frames(
+    start_time: datetime,
+    duration_min: int,
+    center_lat: float,
+    center_lon: float,
+    label: str,
+    station: str,
+    zoom_deg: float,
+) -> list[dict]:
+    """Reflectivity base frames WITHOUT aircraft overlay, each carrying
+    scan time and geo->pixel transform for later compositing."""
+    end_time = start_time + timedelta(minutes=duration_min)
+    scans = _find_scans(station, start_time, end_time)
+    out: list[dict] = []
+    for scan in scans:
+        try:
+            refl_png, _vel, name, geo, px_box = _download_and_render(
+                scan, center_lat, center_lon, label, station, zoom_deg,
+                include_velocity=False,
+                overlay_aircraft=None,
+                return_geo=True,
+            )
+        except Exception:
+            continue
+        out.append({
+            "png": refl_png,
+            "name": name,
+            "scan_time": scan.scan_time,
+            "geo": geo,
+            "px": px_box,
+        })
+    out.sort(key=lambda d: d["scan_time"])
+    return out
+
+
+def composite_aircraft(png_bytes: bytes, geo, px_box, aircraft) -> bytes:
+    """Draw aircraft triangles + labels onto a rendered frame with PIL."""
+    from PIL import Image, ImageDraw
+
+    im = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    draw = ImageDraw.Draw(im)
+    west, east, south, north = geo
+    x0, y0, x1, y1 = px_box
+
+    def to_px(lon, lat):
+        fx = (lon - west) / (east - west)
+        fy = (north - lat) / (north - south)
+        return x0 + fx * (x1 - x0), y0 + fy * (y1 - y0)
+
+    for ac in aircraft or []:
+        if not (west <= ac.lon <= east and south <= ac.lat <= north):
+            continue
+        cx, cy = to_px(ac.lon, ac.lat)
+        r = 7
+        draw.polygon(
+            [(cx, cy - r), (cx - r * 0.8, cy + r * 0.7),
+             (cx + r * 0.8, cy + r * 0.7)],
+            fill=(0, 0, 204), outline=(255, 255, 255),
+        )
+        lbl = ac.callsign
+        if ac.alt_ft is not None:
+            lbl += f" FL{int(round(ac.alt_ft / 100)):03d}"
+        draw.text((cx + 8, cy - 14), lbl, fill=(0, 0, 204))
+    buf = io.BytesIO()
+    im.save(buf, format="PNG")
     return buf.getvalue()

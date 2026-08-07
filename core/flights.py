@@ -250,7 +250,7 @@ def record_snapshot(
     history_dir: Path,
     icao: str,
     positions: list[AircraftPos],
-    min_interval_s: int = 120,
+    min_interval_s: int = 45,
     max_age_s: int = 7200,
 ) -> None:
     """Append a timestamped snapshot for this airport (throttled), and
@@ -315,3 +315,96 @@ def positions_at_time(
         )
         for a in best["ac"]
     ]
+
+
+def _load_history(history_dir: Path, icao: str, max_age_s: int = 7200):
+    path = history_dir / f"{icao.upper()}.jsonl"
+    if not path.exists():
+        return []
+    now = _time.time()
+    out = []
+    for line in path.read_text().splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if now - rec["ts"] <= max_age_s:
+            out.append(rec)
+    out.sort(key=lambda r: r["ts"])
+    return out
+
+
+def _rec_to_positions(rec) -> list[AircraftPos]:
+    return [
+        AircraftPos(
+            callsign=a["cs"], lat=a["lat"], lon=a["lon"],
+            alt_ft=a.get("alt"), heading_deg=a.get("trk"),
+        )
+        for a in rec["ac"]
+    ]
+
+
+def interpolate_at(
+    history_dir: Path,
+    icao: str,
+    when_unix: float,
+    tolerance_s: int = 240,
+) -> Optional[list[AircraftPos]]:
+    """Aircraft positions at an arbitrary moment.
+
+    Linear interpolation per callsign between the snapshots bracketing
+    when_unix; aircraft present on only one side are shown at that
+    snapshot's position when it's within tolerance. Returns None when
+    no snapshot is anywhere near the requested time."""
+    hist = _load_history(history_dir, icao)
+    if not hist:
+        return None
+
+    before = None
+    after = None
+    for rec in hist:
+        if rec["ts"] <= when_unix:
+            before = rec
+        elif after is None:
+            after = rec
+            break
+
+    if before is None and after is None:
+        return None
+    if before is None:
+        return (_rec_to_positions(after)
+                if after["ts"] - when_unix <= tolerance_s else None)
+    if after is None:
+        return (_rec_to_positions(before)
+                if when_unix - before["ts"] <= tolerance_s else None)
+
+    span = after["ts"] - before["ts"]
+    if span <= 0 or span > 2 * tolerance_s:
+        # Bracketing gap too wide to trust a lerp; use the nearer side.
+        nearer = before if (when_unix - before["ts"]) <= (
+            after["ts"] - when_unix) else after
+        return (_rec_to_positions(nearer)
+                if abs(nearer["ts"] - when_unix) <= tolerance_s else None)
+
+    frac = (when_unix - before["ts"]) / span
+    b = {a["cs"]: a for a in before["ac"]}
+    aft = {a["cs"]: a for a in after["ac"]}
+    out: list[AircraftPos] = []
+    for cs in set(b) | set(aft):
+        if cs in b and cs in aft:
+            pa, pb = b[cs], aft[cs]
+            lat = pa["lat"] + (pb["lat"] - pa["lat"]) * frac
+            lon = pa["lon"] + (pb["lon"] - pa["lon"]) * frac
+            alt_a, alt_b = pa.get("alt"), pb.get("alt")
+            alt = (alt_a + (alt_b - alt_a) * frac
+                   if alt_a is not None and alt_b is not None else alt_a)
+            out.append(AircraftPos(cs, lat, lon, alt, pa.get("trk")))
+        elif cs in b and frac < 0.5:
+            a = b[cs]
+            out.append(AircraftPos(cs, a["lat"], a["lon"],
+                                   a.get("alt"), a.get("trk")))
+        elif cs in aft and frac >= 0.5:
+            a = aft[cs]
+            out.append(AircraftPos(cs, a["lat"], a["lon"],
+                                   a.get("alt"), a.get("trk")))
+    return out

@@ -133,9 +133,10 @@ def cached_live_l2(
     icao: str, radar_site: str, zoom_deg: float, bucket: str,
     overlay_flights: bool = False,
 ):
-    """Last ~45 min of raw Level II reflectivity rendered around the
-    airport. `bucket` is a 5-minute stamp so the cache key rolls forward."""
-    from core.radar import fetch_and_render_radar_loop
+    """Last ~45 min of Level II reflectivity as 1-minute sub-frames:
+    radar advances per scan (~5 min), aircraft advance per minute via
+    interpolated self-recorded snapshots. Returns (frames, gif, mode)."""
+    from core.radar import fetch_and_render_base_frames, composite_aircraft
 
     coords = cached_station_coords(icao)
     if coords is None:
@@ -146,62 +147,76 @@ def cached_live_l2(
     if len(site) == 4 and site.startswith("K"):
         site = site[1:]
 
-    overlay = None
-    overlay_fn = None
+    start = datetime.now(timezone.utc) - timedelta(minutes=45)
+    base = fetch_and_render_base_frames(
+        start_time=start,
+        duration_min=45,
+        center_lat=lat,
+        center_lon=lon,
+        label=icao,
+        station=site,
+        zoom_deg=zoom_deg,
+    )
+    if not base:
+        return [], b"", "no radar volumes"
+
     overlay_mode = "off"
-    if overlay_flights:
+    frames: list[tuple[bytes, str]] = []
+
+    if not overlay_flights:
+        frames = [(b["png"], b["name"]) for b in base]
+    else:
         try:
             from core.flights import (
                 fetch_positions_near,
                 record_snapshot,
+                interpolate_at,
                 positions_at_time,
             )
             hist_dir = CACHE_ROOT / "flights"
-            # Always take a live sample and bank it (throttled inside).
             current = fetch_positions_near(lat, lon, radius_deg=zoom_deg)
             record_snapshot(hist_dir, icao, current)
 
-            def overlay_fn(scan_dt):
-                # Nearest recorded snapshot to this frame's scan time;
-                # fall back to current positions when no history yet.
-                hist = positions_at_time(
-                    hist_dir, icao, scan_dt.timestamp(), tolerance_s=300
-                )
-                return hist if hist is not None else current
-
-            # Mode caption: how much of the loop window has real history
-            n_hist = 0
-            probe_now = datetime.now(timezone.utc).timestamp()
-            for k in range(9):
-                if positions_at_time(
-                    hist_dir, icao, probe_now - k * 300, tolerance_s=200
-                ) is not None:
-                    n_hist += 1
+            # Sub-frame timeline: every minute from first scan to now
+            t0 = base[0]["scan_time"].timestamp()
+            t1 = datetime.now(timezone.utc).timestamp()
+            n_interp = 0
+            t = t0
+            while t <= t1:
+                # radar frame: latest scan at or before t
+                b = base[0]
+                for cand in base:
+                    if cand["scan_time"].timestamp() <= t:
+                        b = cand
+                    else:
+                        break
+                planes = interpolate_at(hist_dir, icao, t, tolerance_s=240)
+                if planes is None:
+                    planes = current
+                else:
+                    n_interp += 1
+                png = composite_aircraft(b["png"], b["geo"], b["px"], planes)
+                tstr = datetime.fromtimestamp(
+                    t, tz=timezone.utc
+                ).strftime("%H:%MZ")
+                frames.append((png, f"{tstr} \u00b7 {b['name']}"))
+                t += 60
+            n_total = len(frames)
             overlay_mode = (
-                f"self-recorded history ({n_hist}/9 window slots have "
-                f"snapshots; {len(current)} JBU live). History builds as "
-                "the page is used."
+                f"interpolated history ({n_interp}/{n_total} sub-frames "
+                f"from snapshots, rest use current; {len(current)} JBU "
+                "live). Fills in with continued use."
             )
         except Exception as e:
-            overlay = None
-            overlay_fn = None
-            overlay_mode = f"failed ({type(e).__name__})"
+            frames = [(b["png"], b["name"]) for b in base]
+            overlay_mode = f"failed ({type(e).__name__}: {e})"
 
-    start = datetime.now(timezone.utc) - timedelta(minutes=45)
-    refl_frames, _ = fetch_and_render_radar_loop(
-        start_time=start,
-        duration_min=45,
-        aircraft_lat=lat,
-        aircraft_lon=lon,
-        callsign=icao,
-        station=site,
-        zoom_deg=zoom_deg,
-        include_velocity=False,
-        overlay_aircraft=overlay,
-        overlay_fn=overlay_fn,
+    # Faster flip for the denser timeline
+    gif = (
+        _frames_to_gif(frames, frame_ms=160, last_hold_ms=1200)
+        if len(frames) > 1 else b""
     )
-    gif = _frames_to_gif(refl_frames) if len(refl_frames) > 1 else b""
-    return refl_frames, gif, overlay_mode
+    return frames, gif, overlay_mode
 
 
 @st.cache_data(ttl=600, show_spinner=False, max_entries=20)
