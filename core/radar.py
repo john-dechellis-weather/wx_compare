@@ -91,6 +91,7 @@ def fetch_and_render_radar_loop(
     zoom_deg: float,
     include_velocity: bool = True,
     overlay_aircraft: list | None = None,
+    overlay_fn=None,
 ) -> tuple[list[tuple[bytes, str]], list[tuple[bytes, str]]]:
     """Fetch all Level II volumes in [start, start+duration], render each."""
     start = start_time.replace(tzinfo=None)
@@ -108,15 +109,21 @@ def fetch_and_render_radar_loop(
     refl_frames: list[tuple[bytes, str]] = []
     vel_frames: list[tuple[bytes, str]] = []
     for scan in scans:
-        # Overlay drawn on EVERY frame: positions are as-of-fetch ("now"),
-        # so planes appear static while radar animates — a deliberate
-        # quick-view trade-off (true per-frame history would need
-        # OpenSky's authenticated time-travel API).
+        # Per-frame overlay: overlay_fn(scan_time) -> positions at that
+        # moment (OpenSky time-travel), letting planes move frame to
+        # frame. Falls back to the static overlay_aircraft list ("now"
+        # positions repeated on every frame) when no callable is given.
+        frame_overlay = overlay_aircraft
+        if overlay_fn is not None:
+            try:
+                frame_overlay = overlay_fn(scan.scan_time)
+            except Exception:
+                frame_overlay = overlay_aircraft
         try:
             refl_png, vel_png, name = _download_and_render(
                 scan, aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
                 include_velocity=include_velocity,
-                overlay_aircraft=overlay_aircraft,
+                overlay_aircraft=frame_overlay,
             )
         except Exception:
             continue

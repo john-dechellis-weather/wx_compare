@@ -112,3 +112,104 @@ def _try_opensky(lat, lon, radius_deg, prefix) -> Optional[list[AircraftPos]]:
         return out
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Historical positions (OpenSky authenticated "time travel", last ~1 hour)
+# ---------------------------------------------------------------------------
+import os
+import time as _time
+
+_TOKEN_URL = (
+    "https://auth.opensky-network.org/auth/realms/opensky-network"
+    "/protocol/openid-connect/token"
+)
+_token_cache: dict = {"token": None, "expires": 0.0}
+
+
+def _opensky_token() -> Optional[str]:
+    """OAuth2 client-credentials token, cached until near expiry.
+    Requires OPENSKY_CLIENT_ID / OPENSKY_CLIENT_SECRET env vars."""
+    cid = os.environ.get("OPENSKY_CLIENT_ID")
+    secret = os.environ.get("OPENSKY_CLIENT_SECRET")
+    if not cid or not secret:
+        return None
+    if _token_cache["token"] and _time.time() < _token_cache["expires"] - 60:
+        return _token_cache["token"]
+    try:
+        r = requests.post(
+            _TOKEN_URL,
+            data={
+                "grant_type": "client_credentials",
+                "client_id": cid,
+                "client_secret": secret,
+            },
+            headers=_HEADERS,
+            timeout=20,
+        )
+        r.raise_for_status()
+        payload = r.json()
+        _token_cache["token"] = payload["access_token"]
+        _token_cache["expires"] = _time.time() + int(
+            payload.get("expires_in", 1800)
+        )
+        return _token_cache["token"]
+    except Exception:
+        return None
+
+
+def historical_positions_available() -> bool:
+    """True when OpenSky credentials are configured."""
+    return bool(
+        os.environ.get("OPENSKY_CLIENT_ID")
+        and os.environ.get("OPENSKY_CLIENT_SECRET")
+    )
+
+
+def fetch_positions_at(
+    lat: float,
+    lon: float,
+    radius_deg: float,
+    when_unix: int,
+    callsign_prefix: str = "JBU",
+) -> list[AircraftPos]:
+    """Positions at a specific past moment (OpenSky supports roughly the
+    last hour for authenticated users). Empty list on failure or no creds."""
+    token = _opensky_token()
+    if token is None:
+        return []
+    try:
+        r = requests.get(
+            "https://opensky-network.org/api/states/all",
+            params={
+                "time": int(when_unix),
+                "lamin": lat - radius_deg,
+                "lamax": lat + radius_deg,
+                "lomin": lon - radius_deg,
+                "lomax": lon + radius_deg,
+            },
+            headers={**_HEADERS, "Authorization": f"Bearer {token}"},
+            timeout=20,
+        )
+        r.raise_for_status()
+        payload = r.json()
+        states = payload.get("states") or []
+        out = []
+        for s in states:
+            cs = (s[1] or "").strip().upper()
+            if not cs.startswith(callsign_prefix):
+                continue
+            plon, plat = s[5], s[6]
+            if plat is None or plon is None:
+                continue
+            alt_m = s[7]
+            out.append(AircraftPos(
+                callsign=cs,
+                lat=float(plat),
+                lon=float(plon),
+                alt_ft=float(alt_m) * 3.28084 if alt_m is not None else None,
+                heading_deg=float(s[10]) if s[10] is not None else None,
+            ))
+        return out
+    except Exception:
+        return []
