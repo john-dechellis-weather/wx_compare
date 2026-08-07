@@ -108,12 +108,15 @@ def fetch_and_render_radar_loop(
     refl_frames: list[tuple[bytes, str]] = []
     vel_frames: list[tuple[bytes, str]] = []
     for scan in scans:
-        is_last = scan is scans[-1]
+        # Overlay drawn on EVERY frame: positions are as-of-fetch ("now"),
+        # so planes appear static while radar animates — a deliberate
+        # quick-view trade-off (true per-frame history would need
+        # OpenSky's authenticated time-travel API).
         try:
             refl_png, vel_png, name = _download_and_render(
                 scan, aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
                 include_velocity=include_velocity,
-                overlay_aircraft=overlay_aircraft if is_last else None,
+                overlay_aircraft=overlay_aircraft,
             )
         except Exception:
             continue
