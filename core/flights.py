@@ -509,3 +509,49 @@ def load_track(track_dir: Path, callsign: str) -> list[tuple[float, float]]:
         except (ValueError, KeyError):
             continue
     return pts
+
+
+def fetch_routes(planes: list[AircraftPos]) -> dict:
+    """Origin/destination for a set of live callsigns via adsb.lol's
+    routeset API (community route DB). Returns
+    {callsign: {"label": "JFK-FLL", "orig": (lat, lon),
+                "dest": (lat, lon)}} — only entries with both airports
+    resolved. Empty dict on failure."""
+    if not planes:
+        return {}
+    body = {
+        "planes": [
+            {"callsign": p.callsign, "lat": p.lat, "lng": p.lon}
+            for p in planes
+        ]
+    }
+    try:
+        r = requests.post(
+            "https://api.adsb.lol/api/0/routeset",
+            json=body,
+            headers={**_HEADERS, "Content-Type": "application/json"},
+            timeout=20,
+        )
+        r.raise_for_status()
+        out = {}
+        for item in r.json() or []:
+            cs = (item.get("callsign") or "").strip().upper()
+            airports = item.get("_airports") or []
+            if len(airports) < 2 or not cs:
+                continue
+            o, d = airports[0], airports[-1]
+            if None in (o.get("lat"), o.get("lon"),
+                        d.get("lat"), d.get("lon")):
+                continue
+            label = (
+                f"{o.get('iata') or o.get('icao') or '?'}"
+                f"-{d.get('iata') or d.get('icao') or '?'}"
+            )
+            out[cs] = {
+                "label": label,
+                "orig": (float(o["lat"]), float(o["lon"])),
+                "dest": (float(d["lat"]), float(d["lon"])),
+            }
+        return out
+    except Exception:
+        return {}
