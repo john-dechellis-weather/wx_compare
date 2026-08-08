@@ -1,8 +1,7 @@
 """Hi-Res CAMs - convection-allowing model viewer, 2x2 model grid.
 
-Top-right panel: HRRR (hourly-updating, aviation products only, live
-JBU aircraft overlaid). Remaining quadrants are placeholders for the
-next models (NAM Nest, HRW, RRFS).
+2x2 grid of CAMs (HRRR, NAM Nest, HRW ARW, RRFS) with a hub
+pre-warmer serving JFK/MCO/FLL/DCA reflectivity instantly.
 """
 from __future__ import annotations
 
@@ -28,6 +27,14 @@ _persistent = Path("/opt/render/project/src/cache")
 CACHE_ROOT = _persistent if _persistent.exists() else Path("/tmp/wx_compare_cache")
 CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 
+# Background hub pre-warmer: renders JFK/MCO/FLL/DCA reflectivity
+# frames for each new model cycle so hub views serve instantly.
+from core.cam_warm import (
+    HUBS as WARM_HUBS, WARM_HOURS, WARM_PRODUCT, WARM_ZOOM,
+    ensure_warmer_started, warm_get, warm_status,
+)
+ensure_warmer_started(CACHE_ROOT)
+
 
 # ---------------------------------------------------------------------------
 # Cached fetchers
@@ -50,30 +57,11 @@ def cached_model_cycle(model: str, fhr: int, bucket: str):
     return cyc.isoformat() if cyc else None
 
 
-@st.cache_data(ttl=120, show_spinner=False, max_entries=20)
-def cached_jbu(lat: float, lon: float, radius: float, bucket: str):
-    from core.flights import fetch_positions_near
-    try:
-        return fetch_positions_near(lat, lon, radius_deg=radius)
-    except Exception:
-        return []
-
-
-@st.cache_data(ttl=600, show_spinner=False, max_entries=10)
-def cached_routes(aircraft, bucket: str):
-    from core.flights import fetch_routes
-    try:
-        return fetch_routes(list(aircraft))
-    except Exception:
-        return {}
-
-
 @st.cache_data(ttl=1800, show_spinner=False, max_entries=48)
 def cached_grid_frame(
     model_cycle_fhr: tuple,   # ((model, cycle_iso, fhr), ...)
     product: str,
     clat: float, clon: float, zoom: float,
-    aircraft, routes_t=tuple(),
 ):
     """One forecast frame for MANY models: all fetch+decode run
     concurrently (the slow, parallelizable part), then panels render
@@ -96,7 +84,6 @@ def cached_grid_frame(
     data = parallel_fetch_decode(tasks)
 
     out = {}
-    routes = _routes_from_tuple(routes_t) if routes_t else {}
     for model, cycle_iso, fhr in model_cycle_fhr:
         res = data.get(model)
         if isinstance(res, Exception) or res is None:
@@ -112,24 +99,16 @@ def cached_grid_frame(
         try:
             out[model] = render_field(
                 product, vals, lats, lons, clat, clon, zoom, title,
-                aircraft=aircraft, routes=routes,
             )
         except Exception as e:
             out[model] = f"error: {e}"
     return out
 
 
-def _routes_from_tuple(routes_t):
-    return {
-        cs: {"label": lbl, "orig": o, "dest": d}
-        for cs, (lbl, o, d) in routes_t
-    }
-
-
 @st.cache_data(ttl=1800, show_spinner=False, max_entries=96)
 def cached_panel(
     model: str, product: str, cycle_iso: str, fhr: int,
-    clat: float, clon: float, zoom: float, aircraft, routes=None,
+    clat: float, clon: float, zoom: float,
 ) -> bytes:
     """One rendered panel for one model. Keyed on model+cycle+fhr+
     product+region, so new model cycles refresh naturally."""
@@ -146,7 +125,6 @@ def cached_panel(
     )
     return render_field(
         product, vals, lats, lons, clat, clon, zoom, title,
-        aircraft=aircraft, routes=routes,
     )
 
 
@@ -156,13 +134,18 @@ def cached_panel(
 st.title("Hi-Res CAMs")
 st.caption(
     "Convection-allowing model viewer - aviation products, "
-    "hourly-updating, live JBU aircraft overlaid."
+    "hourly-updating, with prewarmed hub views."
 )
 
 with st.sidebar:
     st.header("Region")
     icao_input = st.text_input("Airport ICAO", value="KJFK",
                                max_chars=4).strip().upper()
+    hub_cols = st.columns(4)
+    for i, hub in enumerate(WARM_HUBS):
+        if hub_cols[i].button(hub[1:], key=f"hub_{hub}",
+                              use_container_width=True):
+            st.session_state["cam_icao"] = hub
     zoom = st.slider("Zoom (degrees)", 1.0, 6.0, 2.5, 0.5)
 
     st.header("Models")
@@ -192,7 +175,6 @@ with st.sidebar:
         "Ceiling": "CEIL",
         "10 m Wind Gust": "GUST",
     }
-    show_jbu = st.checkbox("Overlay live JBU aircraft", value=True)
 
     smooth = st.checkbox(
         "Smooth scrub mode", value=False,
@@ -237,26 +219,7 @@ if active:
 
     product = PRODUCT_KEY[product_label]
 
-    aircraft = []
-    routes = {}
-    if show_jbu:
-        aircraft = cached_jbu(round(clat, 2), round(clon, 2), zoom,
-                              now.strftime("%Y%m%d%H%M"))
-        if aircraft:
-            routes = cached_routes(
-                tuple(aircraft), now.strftime("%Y%m%d%H%M")
-            )
-
-    st.info(
-        f"**{icao}** | {product_label}"
-        + (f" | {len(aircraft)} JBU live | {len(routes)} routes"
-           if show_jbu else "")
-    )
-    if show_jbu and aircraft and not routes:
-        from core.flights import last_route_error
-        err = last_route_error()
-        if err:
-            st.caption(f"Route lookup: {err}")
+    st.info(f"**{icao}** | {product_label}")
 
     from core.hrrr_cam import MODELS
 
@@ -291,43 +254,6 @@ if active:
             specs.append((m, cyc, fh))
         return specs, notes
 
-    def render_model_panel(model: str):
-        cfg = MODELS[model]
-        st.markdown(f"**{cfg['label']}**")
-        if not show_models.get(model):
-            st.caption("(unchecked in sidebar)")
-            return
-        if product not in cfg["products"]:
-            st.caption(
-                f"{PRODUCT_LABELS_SHORT.get(product, product)} is not "
-                f"available in {cfg['label']}."
-            )
-            return
-        # Shared slider drives all panels; clamp to this model's reach.
-        fhr = min(fhr_all, cfg["max_fhr"])
-        if fhr != fhr_all:
-            st.caption(f"f{fhr_all:02d} beyond {cfg['label']} range; "
-                       f"showing f{fhr:02d} (its max).")
-        cycle_iso = cached_model_cycle(model, fhr, bucket10)
-        if cycle_iso is None:
-            msg = f"No complete {cfg['label']} cycle found for f{fhr:02d}."
-            if cfg["note"]:
-                msg += f" ({cfg['note']})"
-            st.caption(msg)
-            return
-        try:
-            with st.spinner(f"{cfg['label']} f{fhr:02d}..."):
-                png = cached_panel(
-                    model, product, cycle_iso, fhr,
-                    round(clat, 2), round(clon, 2), zoom,
-                    aircraft, routes=routes,
-                )
-            st.image(png, use_container_width=True)
-        except Exception as e:
-            st.error(f"{cfg['label']} f{fhr:02d} failed: {e}")
-        if cfg["note"]:
-            st.caption(cfg["note"])
-
     GRID_ORDER = ["nam_nest", "hrrr", "hiresw_arw", "rrfs"]
 
     if smooth:
@@ -356,6 +282,26 @@ if active:
                 continue
             for h in mh:
                 plan.append((m, cycle_iso, h))
+
+        # Pull any prewarmed frames first; only the rest download.
+        warm_ok_s = (
+            icao in WARM_HUBS and product == WARM_PRODUCT
+            and abs(zoom - WARM_ZOOM) < 0.01
+        )
+        if warm_ok_s:
+            still_plan = []
+            for m, cyc, h in plan:
+                got = warm_get(CACHE_ROOT, m, icao, h)                     if h in WARM_HOURS else None
+                if got:
+                    frames.setdefault(m, {})[h] = got[0]
+                else:
+                    still_plan.append((m, cyc, h))
+            if len(still_plan) < len(plan):
+                st.caption(
+                    f"{len(plan) - len(still_plan)} prewarmed frames "
+                    f"loaded instantly from disk"
+                )
+            plan = still_plan
 
         prog = st.progress(
             0.0, text=f"Downloading {len(plan)} fields in parallel..."
@@ -391,7 +337,6 @@ if active:
                 png = render_field(
                     product, vals, lats, lons,
                     round(clat, 2), round(clon, 2), zoom, title,
-                    aircraft=aircraft, routes=routes,
                 )
             except Exception:
                 continue
@@ -462,20 +407,38 @@ if active:
         # models' data fetches run in PARALLEL inside
         # cached_grid_frame; panels then display from the dict.
         specs, notes = _panel_specs()
-        routes_tuple = tuple(sorted(
-            (cs, (rt["label"], rt["orig"], rt["dest"]))
-            for cs, rt in routes.items()
-        ))
+        # Warm-store eligibility: hub airport, warm product/zoom,
+        # in-range hour.
+        warm_ok = (
+            icao in WARM_HUBS and product == WARM_PRODUCT
+            and abs(zoom - WARM_ZOOM) < 0.01
+        )
         grid = {}
-        if specs:
+        warm_hits = []
+        remaining = list(specs)
+        if warm_ok:
+            still = []
+            for m, cyc, fh in remaining:
+                got = warm_get(CACHE_ROOT, m, icao, fh)                     if fh in WARM_HOURS else None
+                if got:
+                    grid[m] = got[0]
+                    warm_hits.append(m)
+                else:
+                    still.append((m, cyc, fh))
+            remaining = still
+        if warm_hits:
+            st.caption(
+                f"Prewarmed hub frames: {', '.join(warm_hits)} "
+                f"(instant from disk)"
+            )
+        if remaining:
             with st.spinner(
-                f"Fetching {len(specs)} model(s) in parallel..."
+                f"Fetching {len(remaining)} model(s) in parallel..."
             ):
-                grid = cached_grid_frame(
-                    tuple(specs), product,
+                grid.update(cached_grid_frame(
+                    tuple(remaining), product,
                     round(clat, 2), round(clon, 2), zoom,
-                    aircraft, routes_t=routes_tuple,
-                )
+                ))
 
         spec_fhr = {m: fh for m, _c, fh in specs}
         top_left, top_right = st.columns(2)
@@ -512,7 +475,7 @@ else:
         airport, aviation products only. **HRRR** (top right) is live:
         composite reflectivity, echo tops, visibility, ceiling, and
         gusts, forecast hours f00\u2013f18, updating every hour, with
-        live JetBlue aircraft overlaid. The other quadrants fill in as
-        models are added.
+        Hub buttons (JFK/MCO/FLL/DCA) serve prewarmed
+        reflectivity instantly.
         """
     )
