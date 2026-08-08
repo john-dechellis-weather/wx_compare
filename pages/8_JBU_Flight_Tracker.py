@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1
 
 st.set_page_config(
     page_title="BlueMet — JBU Flight Tracker",
@@ -48,6 +49,29 @@ def cached_others(lat: float, lon: float, radius: float, bucket: str):
     return fetch_positions_near(lat, lon, radius_deg=radius)
 
 
+def _routes_dict(routes_t):
+    """Rebuild {cs: {label, orig, dest}} from the hashable tuple form."""
+    return {
+        cs: {"label": lbl, "orig": o, "dest": d}
+        for cs, (lbl, o, d) in routes_t
+    }
+
+
+@st.cache_data(ttl=600, show_spinner=False, max_entries=10)
+def cached_fleet_routes(planes, bucket: str):
+    """Origin/destination for every visible aircraft, as a hashable
+    sorted tuple: ((cs, (label, (olat, olon), (dlat, dlon))), ...)."""
+    from core.flights import fetch_routes
+    try:
+        routes = fetch_routes(list(planes))
+    except Exception:
+        return tuple()
+    return tuple(sorted(
+        (cs, (rt["label"], rt["orig"], rt["dest"]))
+        for cs, rt in routes.items()
+    ))
+
+
 @st.cache_data(ttl=120, show_spinner=False, max_entries=10)
 def cached_fleet_trails(planes, bucket: str):
     """Trails for every visible aircraft (target + others). Returns
@@ -66,7 +90,7 @@ def cached_fleet_trails(planes, bucket: str):
 def cached_l3_frame(
     product: str, site: str, clat: float, clon: float,
     zoom: float, bucket: str, target, others, trail=tuple(),
-    others_trails=tuple(),
+    others_trails=tuple(), routes_t=tuple(),
 ) -> bytes:
     from core.radar3 import fetch_latest, parse_l3, render_l3
     raw = fetch_latest(product, site)
@@ -76,6 +100,7 @@ def cached_l3_frame(
         target_aircraft=target, other_aircraft=others,
         title_note="latest", trail=trail,
         others_trails=dict(others_trails),
+        routes=_routes_dict(routes_t),
     )
 
 
@@ -83,7 +108,7 @@ def cached_l3_frame(
 def cached_l3_loop(
     product: str, site: str, clat: float, clon: float,
     zoom: float, bucket: str, target, others, n: int = 6,
-    trail=tuple(), others_trails=tuple(),
+    trail=tuple(), others_trails=tuple(), routes_t=tuple(),
 ):
     from core.radar3 import fetch_recent, parse_l3, render_l3
     files = fetch_recent(product, site, n=n)
@@ -96,6 +121,7 @@ def cached_l3_loop(
                 target_aircraft=target, other_aircraft=others,
                 title_note=name, trail=trail,
                 others_trails=dict(others_trails),
+                routes=_routes_dict(routes_t),
             )
             frames.append((png, name))
         except Exception:
@@ -108,7 +134,7 @@ def cached_l3_loop(
 def cached_l2(
     site: str, clat: float, clon: float, zoom: float,
     bucket: str, callsign: str, others, loop: bool, trail=tuple(),
-    others_trails=tuple(),
+    others_trails=tuple(), routes_t=tuple(),
 ):
     from core.radar import fetch_and_render_radar_loop
     minutes = 45 if loop else 30   # single: wide window, newest frame kept
@@ -126,6 +152,7 @@ def cached_l2(
         overlay_aircraft=others,
         trail=trail,
         others_trails=dict(others_trails),
+        routes=_routes_dict(routes_t),
     )
     if not loop:
         frames = frames[-1:]
@@ -177,7 +204,7 @@ def cached_glm(clat: float, clon: float, zoom: float, bucket: str):
 @st.cache_data(ttl=600, show_spinner=False, max_entries=4)
 def cached_ir(clat: float, clon: float, callsign: str, bucket: str,
               lightning=tuple(), trail=tuple(),
-              others_trails=tuple()) -> bytes:
+              others_trails=tuple(), routes_t=tuple()) -> bytes:
     from core.satellite import fetch_goes_data, render_infrared
     # GOES-19 became GOES-East in 2025 (GOES-16 retired); GOES-18 is West.
     # ABI files land on S3 with real latency — ask 30 min back, and step
@@ -195,6 +222,7 @@ def cached_ir(clat: float, clon: float, callsign: str, bucket: str,
             return render_infrared(
                 ds, clat, clon, callsign, lightning=lightning,
                 trail=trail, others_trails=dict(others_trails),
+                routes=_routes_dict(routes_t),
             )
         except Exception as e:
             last_err = e
@@ -225,6 +253,59 @@ def _fmt_alt(alt_ft):
     if alt_ft is None:
         return "alt unknown"
     return f"FL{int(round(alt_ft / 100)):03d}"
+
+
+def _client_scrubber(frames, key: str) -> str:
+    """HTML for an instant client-side frame scrubber with play/pause.
+    All frames ship as base64 once; swapping is pure browser JS - no
+    Streamlit rerun, no loading, per frame."""
+    import base64
+    import json as _json
+
+    srcs = ["data:image/png;base64," + base64.b64encode(p).decode()
+            for p, _n in frames]
+    names = [n for _p, n in frames]
+    n = len(srcs)
+    return (
+        "<style>"
+        ".scr{font:13px monospace}"
+        ".scr img{width:100%;border:1px solid #888}"
+        ".scr input[type=range]{width:55%;vertical-align:middle}"
+        ".scr button{font:bold 13px monospace;margin-right:6px;"
+        "padding:2px 10px}"
+        "</style>"
+        "<div class='scr'>"
+        "<img id='im_" + key + "'>"
+        "<div>"
+        "<button id='pb_" + key + "'>PAUSE</button>"
+        "<input type='range' id='sl_" + key + "' min='0' max='"
+        + str(n - 1) + "' value='" + str(n - 1) + "' step='1'>"
+        " <span id='lb_" + key + "'></span>"
+        "</div></div>"
+        "<script>"
+        "(function(){"
+        "const F=" + _json.dumps(srcs) + ";"
+        "const N=" + _json.dumps(names) + ";"
+        "const im=document.getElementById('im_" + key + "');"
+        "const sl=document.getElementById('sl_" + key + "');"
+        "const lb=document.getElementById('lb_" + key + "');"
+        "const pb=document.getElementById('pb_" + key + "');"
+        "let playing=true;let t=null;"
+        "function show(i){im.src=F[i];lb.textContent=N[i];}"
+        "function step(){let i=(+sl.value+1)%F.length;"
+        "sl.value=i;show(i);"
+        "t=setTimeout(step,i==F.length-1?1400:450);}"
+        "sl.addEventListener('input',function(){"
+        "clearTimeout(t);playing=false;pb.textContent='PLAY';"
+        "show(+sl.value);});"
+        "pb.addEventListener('click',function(){"
+        "if(playing){clearTimeout(t);playing=false;"
+        "pb.textContent='PLAY';}"
+        "else{playing=true;pb.textContent='PAUSE';step();}});"
+        "show(+sl.value);t=setTimeout(step,450);"
+        "})();"
+        "</script>"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +420,12 @@ if track_cs:
     all_trails = dict(trails_t)
     trail = all_trails.pop(target.callsign, tuple())
     others_trails_t = tuple(sorted(all_trails.items()))
-    st.caption(f"Trails: {trails_summary}")
+    routes_t = cached_fleet_routes(
+        tuple([target] + others), now.strftime("%Y%m%d%H")
+    )
+    st.caption(
+        f"Trails: {trails_summary} | Routes: {len(routes_t)} resolved"
+    )
 
     # --- Radar ---
     st.subheader("Radar")
@@ -356,7 +442,7 @@ if track_cs:
                 frames, gif = cached_l2(
                     site, ckey_lat, ckey_lon, zoom, bucket5,
                     target.callsign, others, loop_mode, trail=trail,
-                    others_trails=others_trails_t,
+                    others_trails=others_trails_t, routes_t=routes_t,
                 )
         else:
             product = "ET" if "Echo Tops" in radar_product else "REF"
@@ -366,6 +452,7 @@ if track_cs:
                         product, site, ckey_lat, ckey_lon, zoom, bucket5,
                         target, others, trail=trail,
                         others_trails=others_trails_t,
+                        routes_t=routes_t,
                     )
             else:
                 with st.spinner("Rendering Level III..."):
@@ -373,25 +460,25 @@ if track_cs:
                         product, site, ckey_lat, ckey_lon, zoom, bucket5,
                         target, others, trail=trail,
                         others_trails=others_trails_t,
+                        routes_t=routes_t,
                     )
                     frames, gif = [(png, "sn.last")], b""
     except Exception as e:
         frames, gif = [], b""
         st.error(f"Radar fetch/render failed: {e}")
 
-    if gif:
-        st.image(gif, use_container_width=True)
-        st.download_button(
-            "Download loop GIF", data=gif,
-            file_name=f"tracker_{site}.gif", mime="image/gif",
-            key="dl_tracker_gif",
+    if len(frames) > 1:
+        # Client-side scrubber: auto-plays like the old GIF, but the
+        # slider swaps frames instantly in the browser - no reloading.
+        st.components.v1.html(
+            _client_scrubber(frames, key="rad"), height=760,
         )
-        with st.expander("Frame-by-frame (full resolution)"):
-            idx = st.slider("Frame", 0, len(frames) - 1, len(frames) - 1,
-                            key="tracker_idx")
-            png, name = frames[idx]
-            st.image(png, use_container_width=True)
-            st.caption(f"`{name}`")
+        if gif:
+            st.download_button(
+                "Download loop GIF", data=gif,
+                file_name=f"tracker_{site}.gif", mime="image/gif",
+                key="dl_tracker_gif",
+            )
     elif frames:
         st.image(frames[-1][0], use_container_width=True)
         st.caption(f"`{frames[-1][1]}`")
@@ -409,6 +496,7 @@ if track_cs:
                     ckey_lat, ckey_lon, target.callsign, bucket5,
                     lightning=flashes, trail=trail,
                     others_trails=others_trails_t,
+                    routes_t=routes_t,
                 )
                 st.image(ir_png, use_container_width=True)
                 st.caption(
