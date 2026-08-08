@@ -135,6 +135,13 @@ with st.sidebar:
     }
     show_jbu = st.checkbox("Overlay live JBU aircraft", value=True)
 
+    fhr_all = st.slider(
+        "Forecast hour (all models)", 0, 60, 1,
+        help="One slider drives every panel. Models that don't reach "
+             "the selected hour clamp to their own maximum (HRRR f18, "
+             "ARW f48, NAM/RRFS f60).",
+    )
+
     st.divider()
     run_button = st.button("Render", type="primary",
                            use_container_width=True)
@@ -197,12 +204,11 @@ if active:
                 f"available in {cfg['label']}."
             )
             return
-        # Per-model time slider: scrubbing fetches that hour on demand;
-        # visited hours are cached, so scrubbing back is instant.
-        fhr = st.slider(
-            "Forecast hour", 0, cfg["max_fhr"], 1,
-            key=f"fhr_{model}",
-        )
+        # Shared slider drives all panels; clamp to this model's reach.
+        fhr = min(fhr_all, cfg["max_fhr"])
+        if fhr != fhr_all:
+            st.caption(f"f{fhr_all:02d} beyond {cfg['label']} range; "
+                       f"showing f{fhr:02d} (its max).")
         cycle_iso = cached_model_cycle(model, fhr, bucket10)
         if cycle_iso is None:
             msg = f"No complete {cfg['label']} cycle found for f{fhr:02d}."
