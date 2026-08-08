@@ -130,6 +130,44 @@ def cached_l3_loop(
     return frames, gif
 
 
+@st.cache_data(ttl=90, show_spinner=False, max_entries=6)
+def cached_l2_realtime(
+    site: str, clat: float, clon: float, zoom: float,
+    bucket: str, callsign: str, others, trail=tuple(),
+    others_trails=tuple(), routes_t=tuple(),
+):
+    """Near-live Level II from the AWS chunk feed: the 0.5 deg sweep
+    ~1 minute into the volume instead of after the full scan. Returns
+    (png, info) - raises on any failure so the caller falls back to
+    the completed-volume IDD path."""
+    import os
+    import tempfile
+
+    from core.radar import _ScanRef, _download_and_render
+    from core.radar_l2rt import fetch_live_volume_bytes
+
+    blob, info = fetch_live_volume_bytes(site)
+    tmpdir = tempfile.mkdtemp(prefix="l2rt_")
+    path = os.path.join(tmpdir, f"{site}_rt")
+    with open(path, "wb") as fh:
+        fh.write(blob)
+    scan = _ScanRef(
+        filename=f"{site} live vol {info['volume']}",
+        scan_time=datetime.fromisoformat(info["chunk_time"]),
+        download_url="",
+    )
+    refl_png, _vel, _name = _download_and_render(
+        scan, clat, clon, callsign, site, zoom,
+        include_velocity=False,
+        overlay_aircraft=list(others),
+        trail=trail,
+        others_trails=dict(others_trails),
+        routes=_routes_dict(routes_t),
+        prefetched_path=path,
+    )
+    return refl_png, info
+
+
 @st.cache_data(ttl=300, show_spinner=False, max_entries=4)
 def cached_l2(
     site: str, clat: float, clon: float, zoom: float,
@@ -439,11 +477,41 @@ if track_cs:
                 "Rendering Level II"
                 + (" loop (30-60s)..." if loop_mode else " (10-20s)...")
             ):
-                frames, gif = cached_l2(
-                    site, ckey_lat, ckey_lon, zoom, bucket5,
-                    target.callsign, others, loop_mode, trail=trail,
-                    others_trails=others_trails_t, routes_t=routes_t,
-                )
+                if not loop_mode:
+                    try:
+                        rt_png, rt_info = cached_l2_realtime(
+                            site, ckey_lat, ckey_lon, zoom, bucket5,
+                            target.callsign, others, trail=trail,
+                            others_trails=others_trails_t,
+                            routes_t=routes_t,
+                        )
+                        frames, gif = [(rt_png, "live-chunks")], b""
+                        st.caption(
+                            f"Level II real-time: volume "
+                            f"{rt_info['volume']}, chunk "
+                            f"{rt_info['newest_chunk']}, ~"
+                            f"{rt_info['age_s']}s old "
+                            f"({rt_info['n_used']}/"
+                            f"{rt_info['n_chunks']} chunks)"
+                        )
+                    except Exception as rt_err:
+                        st.caption(
+                            f"Real-time chunk feed unavailable "
+                            f"({rt_err}); using completed volume."
+                        )
+                        frames, gif = cached_l2(
+                            site, ckey_lat, ckey_lon, zoom, bucket5,
+                            target.callsign, others, loop_mode,
+                            trail=trail,
+                            others_trails=others_trails_t,
+                            routes_t=routes_t,
+                        )
+                else:
+                    frames, gif = cached_l2(
+                        site, ckey_lat, ckey_lon, zoom, bucket5,
+                        target.callsign, others, loop_mode, trail=trail,
+                        others_trails=others_trails_t, routes_t=routes_t,
+                    )
         else:
             product = "ET" if "Echo Tops" in radar_product else "REF"
             if loop_mode:
