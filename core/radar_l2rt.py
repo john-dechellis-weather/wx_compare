@@ -63,36 +63,70 @@ def _first_chunk_time(site: str, vol: str) -> Optional[datetime]:
 
 
 def find_live_volume(site: str) -> tuple[str, datetime]:
-    """Newest volume dir for a site. Volume numbers cycle 001-999 in
-    time order, so coarse-sample then walk forward."""
+    """Newest volume dir for a site.
+
+    Volume numbers cycle 001-999 sequentially in time, so the times of
+    the numerically-sorted dirs form a ROTATED sorted array; the newest
+    volume sits just before the rotation point. Binary search for it
+    (~10 probes) instead of walking - robust to single listing hiccups.
+    """
     site = site.upper()
     _, vols = _list(f"{site}/", delimiter="/")
     vol_ids = sorted(
-        p.split("/")[-2] for p in vols if p.split("/")[-2].isdigit()
+        (p.split("/")[-2] for p in vols if p.split("/")[-2].isdigit()),
+        key=int,
     )
     if not vol_ids:
         raise RuntimeError(
             f"chunk feed: no volume dirs for {site} "
             f"(listed {len(vols)} prefixes)"
         )
-    # Coarse sample every ~50th volume
-    stride = max(1, len(vol_ids) // 20)
-    sampled = vol_ids[::stride]
+
+    times: dict[str, Optional[datetime]] = {}
+
+    def t_of(i: int) -> Optional[datetime]:
+        v = vol_ids[i]
+        if v not in times:
+            times[v] = _first_chunk_time(site, v)
+        return times[v]
+
+    # Classic rotated-sorted-array minimum search: compare mid vs HI.
+    # The newest volume is the minimum's left neighbor (cyclically).
+    lo, hi = 0, len(vol_ids) - 1
+    while lo < hi:
+        prev = (lo, hi)
+        mid = (lo + hi) // 2
+        t_mid = t_of(mid)
+        t_hi = t_of(hi)
+        if t_hi is None:
+            hi -= 1
+            continue
+        if t_mid is None:
+            mid += 1
+            t_mid = t_of(mid)
+            if t_mid is None:
+                lo += 1
+                continue
+        if t_mid > t_hi:
+            lo = mid + 1
+        else:
+            hi = mid
+        if (lo, hi) == prev:
+            # Unreadable-dir edge cases can stall the bounds; force
+            # progress - the end-stage neighborhood check (plus the
+            # staleness guard downstream) absorbs any imprecision.
+            hi -= 1
+    # lo now sits at (or near) the oldest; check its neighborhood for
+    # the true maximum to absorb any probe noise.
+    cands = {(lo - 1) % len(vol_ids), lo % len(vol_ids),
+             (lo + 1) % len(vol_ids), len(vol_ids) - 1, 0}
     best_vol, best_t = None, None
-    for v in sampled:
-        t = _first_chunk_time(site, v)
+    for i in cands:
+        t = t_of(i)
         if t and (best_t is None or t > best_t):
-            best_vol, best_t = v, t
+            best_vol, best_t = vol_ids[i], t
     if best_vol is None:
         raise RuntimeError(f"chunk feed: no readable chunks for {site}")
-    # Walk forward (with wraparound) while newer volumes exist
-    idx = vol_ids.index(best_vol)
-    for _ in range(len(vol_ids)):
-        nxt = vol_ids[(idx + 1) % len(vol_ids)]
-        t = _first_chunk_time(site, nxt)
-        if t is None or t <= best_t:
-            break
-        best_vol, best_t, idx = nxt, t, (idx + 1) % len(vol_ids)
     return best_vol, best_t
 
 
@@ -134,24 +168,33 @@ def parse_partial(raw_chunks: list[bytes]):
     )
 
 
-def fetch_live_volume_bytes(site: str) -> tuple[bytes, dict]:
-    """High-level: locate the live volume, fetch chunks, verify a
-    parseable prefix, and return (bytes_for_Level2File, info).
+MAX_CHUNKS = 14          # 0.5 deg sweep lives in the first chunks
+MAX_AGE_S = 1200         # refuse to serve anything staler than 20 min
 
-    info: {volume, n_chunks, n_used, newest_chunk, chunk_time,
-           age_s}
+
+def fetch_live_volume_bytes(site: str) -> tuple[bytes, dict]:
+    """High-level: locate the live volume, fetch its first chunks in
+    parallel, verify a parseable prefix, and return
+    (bytes_for_Level2File, info).
+
+    info: {volume, n_chunks, n_used, newest_chunk, chunk_time, age_s}
     """
+    from concurrent.futures import ThreadPoolExecutor
+
     vol, start_t = find_live_volume(site)
     site = site.upper()
     keys, _ = _list(f"{site}/{vol}/")
-    keys = sorted(keys)
+    keys = sorted(keys)[:MAX_CHUNKS]
     if not keys:
         raise RuntimeError(f"chunk feed: volume {vol} empty")
-    parts = []
-    for k in keys:
+
+    def _get(k):
         r = requests.get(f"{BUCKET}/{k}", headers=_HEADERS, timeout=30)
         r.raise_for_status()
-        parts.append(r.content)
+        return r.content
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        parts = list(ex.map(_get, keys))
     _f, upto = parse_partial(parts)
     newest = keys[upto - 1].rsplit("/", 1)[-1]
     try:
@@ -161,6 +204,11 @@ def fetch_live_volume_bytes(site: str) -> tuple[bytes, dict]:
     except ValueError:
         chunk_t = start_t
     age = (datetime.now(timezone.utc) - chunk_t).total_seconds()
+    if age > MAX_AGE_S:
+        raise RuntimeError(
+            f"chunk feed: newest parseable data for {site} is "
+            f"{int(age)}s old (volume {vol}) - stale, falling back"
+        )
     info = {
         "volume": vol,
         "n_chunks": len(parts),
