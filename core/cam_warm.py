@@ -1,425 +1,223 @@
-"""Convection-allowing model fields for the Hi-Res CAMs page.
+"""Hub pre-warmer for the Hi-Res CAMs page.
 
-Generic multi-model layer over the NOMADS grib_filter CGIs. Each model
-is a config entry; fetch/decode/render are shared. All requests are
-single-field subregion subsets (~0.5-3 MB GRIB2), decoded with cfgrib.
+TropicalTidbits trick, BlueMet-sized: a background thread watches for
+new model cycles and immediately renders a fixed menu - four JBU hubs
+x composite reflectivity x f00-f12 - to PNGs on the persistent disk.
+Page requests that match the menu are served from disk instantly; the
+compute happened once per cycle instead of once per viewer.
 
-Models:
-  hrrr        HRRR CONUS (hourly cycles, f00-f18 here)
-  nam_nest    NAM 3 km CONUS nest (00/06/12/18Z)   [retires Oct 2026]
-  hiresw_arw  Hi-Res Window ARW CONUS (00/12Z)     [retires Oct 2026]
-  rrfs        RRFS 3 km CONUS (00/06/12/18Z) - parallel NOMADS feed
-              announced for ~Aug 11 2026, operational Oct 6 2026.
-              Until files appear the panel reports "no cycle found".
+v1 scope (deliberate):
+  - Hubs: KJFK, KMCO, KFLL, KDCA at zoom 2.5 (the page default)
+  - Product: REFC only
+  - Hours: f00-f12
+  - Frames contain NO aircraft overlay (pre-rendered images cannot
+    hold live positions; the page serves warm frames only when the
+    JBU overlay is off)
+Per-model warming triggers only when that model's cycle changes, so
+hourly background work is just HRRR's 4x13 frames.
 """
 from __future__ import annotations
 
-import io
-import tempfile
+import json
+import threading
+import time
+import traceback
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
-import numpy as np
-import requests
-
-_HEADERS = {"User-Agent": "BlueMet/1.0 (aviation weather tool)"}
-
-NOMADS = "https://nomads.ncep.noaa.gov"
-
-# product -> (var param, list of candidate level params). Different
-# NOMADS filters name the same layer differently (e.g. HRRR's
-# "entire_atmosphere" vs NAM's
-# "entire_atmosphere_(considered_as_a_single_layer)"), so fetch_field
-# tries candidates in order until one returns GRIB.
-PRODUCT_PARAMS = {
-    "REFD": ({"var_REFD": "on"}, [
-        {"lev_1000_m_above_ground": "on"},
-    ]),
-    "REFC": ({"var_REFC": "on"}, [
-        {"lev_entire_atmosphere": "on"},
-        {"lev_entire_atmosphere_(considered_as_a_single_layer)": "on"},
-    ]),
-    "RETOP": ({"var_RETOP": "on"}, [
-        {"lev_cloud_top": "on"},
-        {"lev_entire_atmosphere": "on"},
-    ]),
-    "VIS": ({"var_VIS": "on"}, [{"lev_surface": "on"}]),
-    "CEIL": ({"var_HGT": "on"}, [{"lev_cloud_ceiling": "on"}]),
-    "GUST": ({"var_GUST": "on"}, [{"lev_surface": "on"}]),
+HUBS = {
+    "KJFK": (40.6413, -73.7781),
+    "KMCO": (28.4312, -81.3081),
+    "KFLL": (26.0726, -80.1527),
+    "KDCA": (38.8512, -77.0402),
 }
+WARM_ZOOM = 2.5
+WARM_PRODUCT = "REFD"
+WARM_HOURS = list(range(0, 13))
+# HRRR only: its hub fetches are small filter subregions. The idx
+# models decode full-CONUS grids, and warming several concurrently
+# inside the web process can OOM a small instance (-> 502 crash
+# loop). Re-expand only with instance headroom.
+WARM_MODELS = ["hrrr"]
+CHECK_INTERVAL_S = 600
 
-PRODUCT_LABELS = {
-    "REFD": "1 km AGL Reflectivity (dBZ)",
-    "REFC": "Composite Reflectivity (dBZ)",
-    "RETOP": "Echo Tops (kft)",
-    "VIS": "Visibility (SM)",
-    "CEIL": "Ceiling (hundreds ft)",
-    "GUST": "10 m Wind Gust (kt)",
-}
-
-# For idx-based fetching: (grib var name, level substring to match)
-IDX_MATCHERS = {
-    "REFD": ("REFD", "1000 m above ground"),
-    "REFC": ("REFC", "entire atmosphere"),
-    "RETOP": ("RETOP", ""),
-    "VIS": ("VIS", "surface"),
-    "CEIL": ("HGT", "cloud ceiling"),
-    "GUST": ("GUST", "surface"),
-}
-
-MODELS = {
-    "hrrr": {
-        "label": "HRRR",
-        "filter": f"{NOMADS}/cgi-bin/filter_hrrr_2d.pl",
-        "file": "hrrr.t{cc:02d}z.wrfsfcf{ff:02d}.grib2",
-        "dir": "/hrrr.{ymd}/conus",
-        "idx": (f"{NOMADS}/pub/data/nccf/com/hrrr/prod/"
-                "hrrr.{ymd}/conus/hrrr.t{cc:02d}z.wrfsfcf{ff:02d}"
-                ".grib2.idx"),
-        "cycles": list(range(24)),
-        "max_fhr": 18,
-        "products": {"REFD", "REFC", "RETOP", "VIS", "CEIL", "GUST"},
-        "note": "",
-    },
-    "nam_nest": {
-        "label": "NAM 3km Nest",
-        "mechanism": "idx",
-        "file": "nam.t{cc:02d}z.conusnest.hiresf{ff:02d}.tm00.grib2",
-        "dir": "/nam.{ymd}",
-        "idx": (f"{NOMADS}/pub/data/nccf/com/nam/prod/"
-                "nam.{ymd}/nam.t{cc:02d}z.conusnest.hiresf{ff:02d}"
-                ".tm00.grib2.idx"),
-        "cycles": [0, 6, 12, 18],
-        "max_fhr": 60,
-        "products": {"REFD", "REFC", "VIS", "CEIL", "GUST"},
-        "note": "retires Oct 2026 (replaced by RRFS)",
-    },
-    "hiresw_arw": {
-        "label": "HRW ARW",
-        "mechanism": "idx",
-        "file": "hiresw.t{cc:02d}z.arw_2p5km.f{ff:02d}.conus.grib2",
-        "dir": "/hiresw.{ymd}",
-        "idx": (f"{NOMADS}/pub/data/nccf/com/hiresw/prod/"
-                "hiresw.{ymd}/hiresw.t{cc:02d}z.arw_2p5km.f{ff:02d}"
-                ".conus.grib2.idx"),
-        "cycles": [0, 12],
-        "max_fhr": 48,
-        "products": {"REFD", "REFC", "VIS", "CEIL", "GUST"},
-        "note": "retires Oct 2026 (replaced by RRFS)",
-    },
-    "rrfs": {
-        "label": "RRFS",
-        "mechanism": "idx",
-        "file": "rrfs.t{cc:02d}z.prslev.3km.f{ff:03d}.conus.grib2",
-        "dir": "/rrfs.{ymd}/{cc:02d}",
-        "idx": (f"{NOMADS}/pub/data/nccf/com/rrfs/para/"
-                "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev.3km"
-                ".f{ff:03d}.conus.grib2.idx"),
-        "cycles": [0, 6, 12, 18],
-        "max_fhr": 60,
-        "products": {"REFD", "REFC", "VIS", "CEIL", "GUST"},
-        "note": ("parallel feed announced ~Aug 11 2026; "
-                 "'no cycle found' is expected until it starts"),
-    },
-}
+_started = False
+_lock = threading.Lock()
 
 
-def latest_cycle(
-    model: str, fhr: int, now: Optional[datetime] = None
-) -> Optional[datetime]:
-    """Newest cycle whose requested forecast hour exists (idx probe).
-    Walks back up to 30 hours to cover sparse-cycle models."""
-    cfg = MODELS[model]
-    now = now or datetime.now(timezone.utc)
-    for back in range(1, 31):
-        cyc = (now - timedelta(hours=back)).replace(
-            minute=0, second=0, microsecond=0
-        )
-        if cyc.hour not in cfg["cycles"]:
-            continue
-        url = cfg["idx"].format(ymd=cyc.strftime("%Y%m%d"),
-                                cc=cyc.hour, ff=fhr)
-        try:
-            r = requests.head(url, headers=_HEADERS, timeout=10)
-            if r.status_code == 200:
-                return cyc
-        except Exception:
-            continue
-    return None
+def _warm_dir(cache_root: Path) -> Path:
+    d = cache_root / "cam_warm"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
-def fetch_field(
-    model: str,
-    product: str,
-    cycle: datetime,
-    fhr: int,
-    lat: float,
-    lon: float,
-    zoom_deg: float,
-) -> bytes:
-    """Small subregion GRIB2 for one field via the model's filter CGI."""
-    cfg = MODELS[model]
-    if product not in cfg["products"]:
-        raise RuntimeError(f"{cfg['label']} does not provide {product}")
-    if cfg.get("mechanism") == "idx":
-        return _fetch_field_idx(cfg, product, cycle, fhr)
-    var_p, lev_candidates = PRODUCT_PARAMS[product]
-    pad = zoom_deg + 0.4
-    base = {
-        "file": cfg["file"].format(cc=cycle.hour, ff=fhr),
-        "dir": cfg["dir"].format(ymd=cycle.strftime("%Y%m%d"),
-                                 cc=cycle.hour),
-        "subregion": "",
-        "leftlon": f"{(lon - pad) % 360:.2f}",
-        "rightlon": f"{(lon + pad) % 360:.2f}",
-        "toplat": f"{lat + pad:.2f}",
-        "bottomlat": f"{lat - pad:.2f}",
-        **var_p,
-    }
-    if cfg.get("ds"):
-        base["ds"] = cfg["ds"]
-    last_detail = "no level candidates"
-    for lev_p in lev_candidates:
-        try:
-            r = requests.get(cfg["filter"], params={**base, **lev_p},
-                             headers=_HEADERS, timeout=90)
-        except Exception as e:
-            last_detail = f"{type(e).__name__}: {e}"
-            continue
-        if (r.status_code == 200 and len(r.content) >= 500
-                and r.content[:4] == b"GRIB"):
-            return r.content
-        last_detail = (
-            f"HTTP {r.status_code}, {len(r.content)} bytes "
-            f"with {list(lev_p)[0]}"
-        )
-    raise RuntimeError(
-        f"{cfg['label']} filter failed for {product} f{fhr:02d} "
-        f"(last attempt: {last_detail})"
-    )
+def _manifest_path(cache_root: Path, model: str) -> Path:
+    return _warm_dir(cache_root) / f"{model}.manifest.json"
 
 
-def _fetch_field_idx(cfg: dict, product: str, cycle, fhr: int) -> bytes:
-    """Byte-range fetch of a single GRIB message using the .idx sidecar
-    (the Herbie technique). Filter-independent: works for any NOMADS
-    GRIB that publishes an index, so it survives interface migrations.
-    Returns the full-domain field (~1-5 MB); the renderer crops to the
-    requested extent."""
-    idx_url = cfg["idx"].format(ymd=cycle.strftime("%Y%m%d"),
-                                cc=cycle.hour, ff=fhr)
-    grib_url = idx_url[:-4]  # strip ".idx"
-    r = requests.get(idx_url, headers=_HEADERS, timeout=30)
-    r.raise_for_status()
-
-    var_name, lev_sub = IDX_MATCHERS[product]
-    lines = r.text.splitlines()
-    start = end = None
-    for i, line in enumerate(lines):
-        # "n:offset:d=YYYYMMDDHH:VAR:LEVEL:fcst:..."
-        parts = line.split(":")
-        if len(parts) < 5:
-            continue
-        if parts[3] == var_name and lev_sub in parts[4].lower():
-            start = int(parts[1])
-            for nxt in lines[i + 1:]:
-                p2 = nxt.split(":")
-                if len(p2) >= 2:
-                    end = int(p2[1]) - 1
-                    break
-            break
-    if start is None:
-        available = sorted({
-            p[3] for p in (l.split(":") for l in lines) if len(p) > 3
-        })
-        raise RuntimeError(
-            f"{cfg['label']}: {var_name} ({lev_sub or 'any level'}) "
-            f"not in index. Vars present: {', '.join(available[:25])}"
-        )
-    headers = {**_HEADERS,
-               "Range": f"bytes={start}-{end}" if end else
-                        f"bytes={start}-"}
-    r2 = requests.get(grib_url, headers=headers, timeout=120)
-    if r2.status_code not in (200, 206):
-        raise RuntimeError(
-            f"{cfg['label']}: range request HTTP {r2.status_code}"
-        )
-    if r2.content[:4] != b"GRIB":
-        raise RuntimeError(
-            f"{cfg['label']}: range response not GRIB "
-            f"({len(r2.content)} bytes)"
-        )
-    return r2.content
-
-
-def decode_field(raw: bytes):
-    """(values_2d, lat_2d, lon_2d) from a single-message GRIB2."""
-    import xarray as xr
-
-    with tempfile.NamedTemporaryFile(suffix=".grib2", delete=False) as tf:
-        tf.write(raw)
-        path = tf.name
-    ds = xr.open_dataset(path, engine="cfgrib",
-                         backend_kwargs={"indexpath": ""})
-    var = list(ds.data_vars)[0]
-    vals = np.asarray(ds[var].values, dtype=float)
-    lats = np.asarray(ds["latitude"].values, dtype=float)
-    lons = np.asarray(ds["longitude"].values, dtype=float)
-    lons = np.where(lons > 180, lons - 360, lons)
-    ds.close()
-    return vals, lats, lons
-
-
-def fetch_and_decode(
-    model: str,
-    product: str,
-    cycle: datetime,
-    fhr: int,
-    lat: float,
-    lon: float,
-    zoom_deg: float,
-):
-    """fetch_field + decode_field in one call (thread-safe: pure I/O
-    and numpy, no matplotlib)."""
-    raw = fetch_field(model, product, cycle, fhr, lat, lon, zoom_deg)
-    return decode_field(raw)
-
-
-def parallel_fetch_decode(tasks: list[dict], max_workers: int = 6):
-    """Run many fetch_and_decode calls concurrently.
-
-    tasks: [{"key": anything-hashable, "model", "product", "cycle",
-             "fhr", "lat", "lon", "zoom_deg"}, ...]
-    Returns {key: (vals, lats, lons) | Exception}. Downloads and
-    decodes overlap across models and hours; rendering stays with the
-    caller (matplotlib is not thread-safe).
-    """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    out = {}
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futs = {
-            ex.submit(
-                fetch_and_decode, t["model"], t["product"], t["cycle"],
-                t["fhr"], t["lat"], t["lon"], t["zoom_deg"],
-            ): t["key"]
-            for t in tasks
-        }
-        for fut in as_completed(futs):
-            key = futs[fut]
-            try:
-                out[key] = fut.result()
-            except Exception as e:
-                out[key] = e
-    return out
-
-
-def render_field(
-    product: str,
-    vals: np.ndarray,
-    lats: np.ndarray,
-    lons: np.ndarray,
-    center_lat: float,
-    center_lon: float,
-    zoom_deg: float,
-    title: str,
-    aircraft=None,
-    routes=None,
-) -> bytes:
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from matplotlib.colors import BoundaryNorm, ListedColormap
-    import cartopy.crs as ccrs
-    import cartopy.feature as cfeature
-
-    data = np.ma.masked_invalid(vals)
-
-    if product in ("REFC", "REFD"):
-        from metpy.plots import colortables
-        norm, cmap = colortables.get_with_steps("NWSReflectivity", 5, 5)
-        # Standard CAM convention: mask < 5 dBZ so clear air stays clean
-        data = np.ma.masked_less(data, 5)
-    elif product == "RETOP":
-        data = np.ma.masked_less(data, 0) / 304.8
-        bounds = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 70]
-        colors = ["#C8C8C8", "#9BD4F5", "#4FA8E8", "#2E6FDB", "#22B14C",
-                  "#7CD934", "#FFF200", "#FFC90E", "#FF7F27", "#ED1C24",
-                  "#B21E28", "#A349A4", "#6F2DA8"]
-        cmap = ListedColormap(colors); norm = BoundaryNorm(bounds, cmap.N)
-    elif product == "VIS":
-        data = data / 1609.34
-        bounds = [0, 0.5, 1, 2, 3, 5, 7, 10]
-        colors = ["#FF80FF", "#FF4040", "#FF9900", "#FFFF00",
-                  "#B0E000", "#60C060", "#E8E8E8"]
-        cmap = ListedColormap(colors); norm = BoundaryNorm(bounds, cmap.N)
-    elif product == "CEIL":
-        data = data * 3.28084 / 100.0
-        data = np.ma.masked_greater(data, 300)
-        bounds = [0, 2, 4, 10, 20, 30, 50, 100, 300]
-        colors = ["#FF80FF", "#FF4040", "#FF9900", "#FFFF00",
-                  "#B0E000", "#60C060", "#A8D8A8", "#E8E8E8"]
-        cmap = ListedColormap(colors); norm = BoundaryNorm(bounds, cmap.N)
-    else:  # GUST
-        data = data * 1.94384
-        bounds = [0, 10, 15, 20, 25, 30, 35, 40, 50, 65]
-        colors = ["#E8E8E8", "#B0E0FF", "#60B0E0", "#FFFF00", "#FFC90E",
-                  "#FF9900", "#FF4040", "#B21E28", "#A349A4"]
-        cmap = ListedColormap(colors); norm = BoundaryNorm(bounds, cmap.N)
-
-    fig = plt.figure(figsize=(8, 7))
-    ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
-    ax.set_extent(
-        [center_lon - zoom_deg, center_lon + zoom_deg,
-         center_lat - zoom_deg, center_lat + zoom_deg],
-        crs=ccrs.PlateCarree(),
-    )
-    mesh = ax.pcolormesh(
-        lons, lats, data, cmap=cmap, norm=norm, shading="auto",
-        transform=ccrs.PlateCarree(), zorder=2,
-    )
+def _read_manifest(cache_root: Path, model: str) -> dict:
+    p = _manifest_path(cache_root, model)
+    if not p.exists():
+        return {}
     try:
-        coast = cfeature.COASTLINE.with_scale("10m")
-        states = cfeature.STATES.with_scale("10m")
-        next(iter(coast.geometries()))
-        ax.add_feature(coast, linewidth=0.8, zorder=3)
-        ax.add_feature(states, linewidth=0.5, zorder=3)
-    except Exception:
-        pass
-    gl = ax.gridlines(draw_labels=True, linewidth=0.3, linestyle=":",
-                      color="gray")
-    gl.top_labels = False
-    gl.right_labels = False
-    gl.xlabel_style = {"size": 8}
-    gl.ylabel_style = {"size": 8}
+        return json.loads(p.read_text())
+    except ValueError:
+        return {}
 
-    routes = routes or {}
-    for ac in aircraft or []:
-        rt = routes.get(ac.callsign)
-        if rt:
-            (olat, olon), (dlat, dlon) = rt["orig"], rt["dest"]
-            ax.plot(
-                [olon, dlon], [olat, dlat],
-                color="#0000CC", linewidth=1.0, linestyle="--",
-                alpha=0.55, zorder=9, transform=ccrs.Geodetic(),
+
+def _frame_path(cache_root: Path, model: str, cycle_iso: str,
+                icao: str, fhr: int) -> Path:
+    safe_cycle = cycle_iso.replace(":", "").replace("+", "")
+    d = _warm_dir(cache_root) / model / safe_cycle
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{icao}_{WARM_PRODUCT}_f{fhr:02d}.png"
+
+
+def warm_get(cache_root: Path, model: str, icao: str,
+             fhr: int) -> Optional[tuple[bytes, str]]:
+    """Pre-rendered frame if one exists for the model's warmed cycle.
+    Returns (png_bytes, cycle_iso) or None."""
+    man = _read_manifest(cache_root, model)
+    cycle_iso = man.get("cycle")
+    if not cycle_iso or icao.upper() not in HUBS:
+        return None
+    if fhr not in WARM_HOURS:
+        return None
+    p = _frame_path(cache_root, model, cycle_iso, icao.upper(), fhr)
+    if not p.exists():
+        return None
+    try:
+        return p.read_bytes(), cycle_iso
+    except OSError:
+        return None
+
+
+def warm_status(cache_root: Path) -> dict:
+    """{model: cycle_iso or None} for the page caption."""
+    return {
+        m: _read_manifest(cache_root, m).get("cycle")
+        for m in WARM_MODELS
+    }
+
+
+def _warm_model(cache_root: Path, model: str, log) -> None:
+    """Warm one model for its newest cycle if not already done."""
+    from core.hrrr_cam import (
+        MODELS, latest_cycle, parallel_fetch_decode, render_field,
+    )
+
+    max_h = min(max(WARM_HOURS), MODELS[model]["max_fhr"])
+    hours = [h for h in WARM_HOURS if h <= max_h]
+    cyc = latest_cycle(model, max_h)
+    if cyc is None:
+        return
+    cycle_iso = cyc.isoformat()
+    man = _read_manifest(cache_root, model)
+    if (man.get("cycle") == cycle_iso and man.get("complete")
+            and man.get("product") == WARM_PRODUCT):
+        return
+
+    log(f"warming {model} cycle {cycle_iso}")
+    tasks = []
+    for icao, (lat, lon) in HUBS.items():
+        for h in hours:
+            tasks.append({
+                "key": (icao, h),
+                "model": model, "product": WARM_PRODUCT,
+                "cycle": cyc, "fhr": h,
+                "lat": lat, "lon": lon, "zoom_deg": WARM_ZOOM,
+            })
+    data = parallel_fetch_decode(tasks, max_workers=2)
+
+    n_ok = 0
+    for icao, (lat, lon) in HUBS.items():
+        for h in hours:
+            res = data.get((icao, h))
+            if isinstance(res, Exception) or res is None:
+                continue
+            vals, lats, lons = res
+            valid = cyc + timedelta(hours=h)
+            title = (
+                f"{MODELS[model]['label']} {cyc:%m/%d %H}Z  "
+                f"f{h:02d}  valid {valid:%m/%d %H}Z  [prewarmed]"
             )
-        ax.scatter(ac.lon, ac.lat, s=70, marker="^", color="#0000CC",
-                   edgecolors="white", linewidths=0.8, zorder=10,
-                   transform=ccrs.PlateCarree())
-        lbl = ac.callsign
-        if ac.alt_ft is not None:
-            lbl += f"\nFL{int(round(ac.alt_ft / 100)):03d}"
-        if rt:
-            lbl += f"\n{rt['label']}"
-        ax.annotate(lbl, xy=(ac.lon, ac.lat), xytext=(4, 4),
-                    textcoords="offset points", fontsize=6,
-                    fontweight="bold", color="#0000CC", zorder=10)
+            try:
+                png = render_field(
+                    WARM_PRODUCT, vals, lats, lons, lat, lon,
+                    WARM_ZOOM, title,
+                )
+            except Exception:
+                continue
+            _frame_path(cache_root, model, cycle_iso, icao,
+                        h).write_bytes(png)
+            n_ok += 1
+            del png, vals, lats, lons
+            import gc
+            gc.collect()
+            time.sleep(0.25)   # stay polite to user requests
 
-    ax.set_title(title, fontsize=10)
-    plt.colorbar(mesh, ax=ax, pad=0.02, shrink=0.85,
-                 label=PRODUCT_LABELS[product])
-    # NOTE: no bbox_inches="tight" - crops the GeoAxes (see core.radar).
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=100)
-    plt.close(fig)
-    buf.seek(0)
-    return buf.getvalue()
+    _manifest_path(cache_root, model).write_text(json.dumps({
+        "cycle": cycle_iso,
+        "product": WARM_PRODUCT,
+        "complete": True,
+        "frames": n_ok,
+        "warmed_at": datetime.now(timezone.utc).isoformat(),
+    }))
+    data.clear()
+    log(f"warmed {model}: {n_ok} frames")
+
+    # Prune older cycle dirs for this model (keep the newest 2)
+    mdir = _warm_dir(cache_root) / model
+    if mdir.exists():
+        dirs = sorted(d for d in mdir.iterdir() if d.is_dir())
+        for d in dirs[:-2]:
+            for f in d.iterdir():
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+
+
+def _daemon(cache_root: Path) -> None:
+    log_path = _warm_dir(cache_root) / "warmer.log"
+
+    def log(msg: str) -> None:
+        line = f"{datetime.now(timezone.utc):%m-%d %H:%M:%S} {msg}\n"
+        try:
+            with open(log_path, "a") as fh:
+                fh.write(line)
+        except OSError:
+            pass
+
+    log("warmer daemon started")
+    while True:
+        for model in WARM_MODELS:
+            try:
+                _warm_model(cache_root, model, log)
+            except Exception:
+                log(f"warm {model} failed:\n{traceback.format_exc()}")
+        time.sleep(CHECK_INTERVAL_S)
+
+
+def ensure_warmer_started(cache_root: Path) -> None:
+    """Idempotent: starts the background warmer thread once per
+    process. Safe to call on every page run. Set env CAM_WARMER=off
+    to disable entirely (kill switch)."""
+    import os
+    if os.environ.get("CAM_WARMER", "on").lower() == "off":
+        return
+    global _started
+    with _lock:
+        if _started:
+            return
+        t = threading.Thread(
+            target=_daemon, args=(cache_root,), daemon=True,
+            name="cam-hub-warmer",
+        )
+        t.start()
+        _started = True
