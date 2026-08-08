@@ -109,6 +109,26 @@ def fetch_and_render_radar_loop(
 
     scans.sort(key=lambda s: s.scan_time)
 
+    # Parallel prefetch: downloads dominate loop latency, and they are
+    # pure I/O - fetch every volume concurrently, then parse/render
+    # serially (matplotlib is not thread-safe).
+    from concurrent.futures import ThreadPoolExecutor
+
+    prefetch_dir = tempfile.mkdtemp(prefix="nexrad_l2_loop_")
+    prefetched: dict[str, str] = {}
+
+    def _prefetch(scan):
+        path = os.path.join(prefetch_dir, scan.filename)
+        try:
+            return scan.filename, _download_volume(scan, path)
+        except Exception:
+            return scan.filename, None
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        for fname, path in ex.map(_prefetch, scans):
+            if path:
+                prefetched[fname] = path
+
     refl_frames: list[tuple[bytes, str]] = []
     vel_frames: list[tuple[bytes, str]] = []
     for scan in scans:
@@ -130,12 +150,15 @@ def fetch_and_render_radar_loop(
                 trail=trail,
                 others_trails=others_trails,
                 routes=routes,
+                prefetched_path=prefetched.get(scan.filename),
             )
         except Exception:
             continue
         refl_frames.append((refl_png, name))
         if vel_png:
             vel_frames.append((vel_png, name))
+
+    shutil.rmtree(prefetch_dir, ignore_errors=True)
 
     if not refl_frames:
         raise ValueError("All volumes in the window failed to decode/render.")
@@ -270,6 +293,18 @@ def _find_scans_thredds(st4: str, start: datetime, end: datetime) -> list[_ScanR
 # ---------------------------------------------------------------------------
 # Download + decode + render
 # ---------------------------------------------------------------------------
+def _download_volume(scan: _ScanRef, local_path: str) -> str:
+    """Stream one volume to disk. Thread-safe (no matplotlib)."""
+    with requests.get(
+        scan.download_url, headers=_HEADERS, stream=True, timeout=300
+    ) as r:
+        r.raise_for_status()
+        with open(local_path, "wb") as fh:
+            for chunk in r.iter_content(chunk_size=1 << 20):
+                fh.write(chunk)
+    return local_path
+
+
 def _download_and_render(
     scan: _ScanRef, aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
     include_velocity: bool = True,
@@ -278,21 +313,20 @@ def _download_and_render(
     trail=None,
     others_trails=None,
     routes=None,
+    prefetched_path=None,
 ):
-    """Download one volume over HTTPS, render REF and VEL. With
-    return_geo, returns (refl_png, vel_png, name, geo, px_box)."""
+    """Download one volume over HTTPS (unless prefetched_path is
+    given), render REF and VEL. With return_geo, returns
+    (refl_png, vel_png, name, geo, px_box)."""
     from metpy.io import Level2File
 
     tmpdir = tempfile.mkdtemp(prefix="nexrad_l2_")
     try:
-        local_path = os.path.join(tmpdir, scan.filename)
-        with requests.get(
-            scan.download_url, headers=_HEADERS, stream=True, timeout=300
-        ) as r:
-            r.raise_for_status()
-            with open(local_path, "wb") as fh:
-                for chunk in r.iter_content(chunk_size=1 << 20):
-                    fh.write(chunk)
+        if prefetched_path is not None:
+            local_path = prefetched_path
+        else:
+            local_path = os.path.join(tmpdir, scan.filename)
+            _download_volume(scan, local_path)
 
         f = Level2File(local_path)
 
