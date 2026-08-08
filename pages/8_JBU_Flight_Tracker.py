@@ -1,672 +1,614 @@
-"""NEXRAD Level II radar fetching and plot rendering.
+"""JBU Flight Tracker — radar + IR satellite centered on a live flight.
 
-Hybrid data discovery (all plain HTTPS / proven-reachable services):
-
-  1. AWS public bucket XML listing — tried first, currently denies
-     anonymous listing (kept in case the policy is relaxed again).
-  2. Google Cloud public mirror (gcp-public-data-nexrad-l2) — deep
-     archive of past years, but stale for recent dates.
-  3. UCAR THREDDS "NEXRAD Level II Radar from IDD" via siphon — rolling
-     window of recent weeks; covers what the GCS mirror lacks.
-
-All three yield Level II volume files decoded identically with metpy
-Level2File (gzip handled transparently). Reflectivity from the lowest
-surveillance sweep, velocity from the lowest Doppler sweep (m/s → kt).
+Enter a JetBlue flight (e.g. JBU123). The page resolves its live
+position (adsb.lol), auto-selects the nearest WSR-88D, and renders
+radar centered on the aircraft with the target in red and other JBU
+traffic in blue. Radar products: Level III reflectivity (default,
+fast), Level III echo tops, Level II reflectivity (full res, slower),
+plus loop variants. IR satellite is opt-in.
 """
 from __future__ import annotations
 
-import io
-import os
-import re
-import tempfile
-import shutil
-import xml.etree.ElementTree as ET
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
-import numpy as np
-import requests
+import streamlit as st
+import streamlit.components.v1
 
-_AWS_BASE = "https://noaa-nexrad-level2.s3.amazonaws.com"
-_GCS_LIST = "https://storage.googleapis.com/storage/v1/b/gcp-public-data-nexrad-l2/o"
-_GCS_DL = "https://storage.googleapis.com/gcp-public-data-nexrad-l2"
-_S3_NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
-_THREDDS_BASE = "https://thredds.ucar.edu/thredds/"
-_THREDDS_L2_NAME = "NEXRAD Level II Radar from IDD"
-_MS_TO_KT = 1.94384
-# Matches KAMX20260724_211005 (6-digit time) and Level2_KAMX_20260724_2110 (4-digit)
-_TIME_RE = re.compile(r"(\d{8})_(\d{4,6})")
-_HEADERS = {"User-Agent": "BlueMet/1.0 (aviation weather tool)"}
-
-
-@dataclass
-class _ScanRef:
-    filename: str
-    scan_time: datetime
-    download_url: str
-
-
-# ---------------------------------------------------------------------------
-# Public API — single frame
-# ---------------------------------------------------------------------------
-def fetch_and_render_radar(
-    target_time: datetime,
-    aircraft_lat: float,
-    aircraft_lon: float,
-    callsign: str,
-    station: str,
-    zoom_deg: float,
-) -> tuple[bytes, bytes, str, str]:
-    """Fetch the Level II volume nearest target_time, render REF + VEL."""
-    tgt = target_time.replace(tzinfo=None)
-    scans = _find_scans(
-        station, tgt - timedelta(minutes=20), tgt + timedelta(minutes=20)
-    )
-    if not scans:
-        raise ValueError(
-            f"No Level II volumes found for {_station4(station)} within "
-            f"20 minutes of {target_time:%Y-%m-%d %H:%M UTC} in any source "
-            f"(archive mirror + recent THREDDS window)."
-        )
-
-    best = min(scans, key=lambda s: abs(s.scan_time - tgt))
-
-    refl_png, vel_png, name = _download_and_render(
-        best, aircraft_lat, aircraft_lon, callsign, station, zoom_deg
-    )
-    vel_time = name if vel_png else "not available"
-    return refl_png, vel_png, name, vel_time
-
-
-# ---------------------------------------------------------------------------
-# Public API — loop
-# ---------------------------------------------------------------------------
-def fetch_and_render_radar_loop(
-    start_time: datetime,
-    duration_min: int,
-    aircraft_lat: float,
-    aircraft_lon: float,
-    callsign: str,
-    station: str,
-    zoom_deg: float,
-    include_velocity: bool = True,
-    overlay_aircraft: list | None = None,
-    overlay_fn=None,
-    trail=None,
-    others_trails=None,
-    routes=None,
-) -> tuple[list[tuple[bytes, str]], list[tuple[bytes, str]]]:
-    """Fetch all Level II volumes in [start, start+duration], render each."""
-    start = start_time.replace(tzinfo=None)
-    end = start + timedelta(minutes=duration_min)
-
-    scans = _find_scans(station, start, end)
-    if not scans:
-        raise ValueError(
-            f"No Level II volumes found for {_station4(station)} between "
-            f"{start:%Y-%m-%d %H:%M} and {end:%H:%M UTC} in any source."
-        )
-
-    scans.sort(key=lambda s: s.scan_time)
-
-    # Parallel prefetch: downloads dominate loop latency, and they are
-    # pure I/O - fetch every volume concurrently, then parse/render
-    # serially (matplotlib is not thread-safe).
-    from concurrent.futures import ThreadPoolExecutor
-
-    prefetch_dir = tempfile.mkdtemp(prefix="nexrad_l2_loop_")
-    prefetched: dict[str, str] = {}
-
-    def _prefetch(scan):
-        path = os.path.join(prefetch_dir, scan.filename)
+def _embed_html(html: str, height: int) -> None:
+    """Render raw HTML: st.iframe on newer Streamlit, else the
+    deprecated components.v1.html (removed after 2026-06)."""
+    fn = getattr(st, "iframe", None)
+    if fn is not None:
         try:
-            return scan.filename, _download_volume(scan, path)
-        except Exception:
-            return scan.filename, None
+            fn(html, height=height)
+            return
+        except TypeError:
+            pass
+    st.components.v1.html(html, height=height)
 
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        for fname, path in ex.map(_prefetch, scans):
-            if path:
-                prefetched[fname] = path
 
-    refl_frames: list[tuple[bytes, str]] = []
-    vel_frames: list[tuple[bytes, str]] = []
-    for scan in scans:
-        # Per-frame overlay: overlay_fn(scan_time) -> positions at that
-        # moment (OpenSky time-travel), letting planes move frame to
-        # frame. Falls back to the static overlay_aircraft list ("now"
-        # positions repeated on every frame) when no callable is given.
-        frame_overlay = overlay_aircraft
-        if overlay_fn is not None:
-            try:
-                frame_overlay = overlay_fn(scan.scan_time)
-            except Exception:
-                frame_overlay = overlay_aircraft
-        try:
-            refl_png, vel_png, name = _download_and_render(
-                scan, aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
-                include_velocity=include_velocity,
-                overlay_aircraft=frame_overlay,
-                trail=trail,
-                others_trails=others_trails,
-                routes=routes,
-                prefetched_path=prefetched.get(scan.filename),
-            )
-        except Exception:
-            continue
-        refl_frames.append((refl_png, name))
-        if vel_png:
-            vel_frames.append((vel_png, name))
+st.set_page_config(
+    page_title="BlueMet — JBU Flight Tracker",
+    layout="wide",
+)
 
-    shutil.rmtree(prefetch_dir, ignore_errors=True)
+from retro_theme import apply_retro_theme
+apply_retro_theme()
 
-    if not refl_frames:
-        raise ValueError("All volumes in the window failed to decode/render.")
+from auth import check_password
+check_password()
 
-    return refl_frames, vel_frames
+
+_persistent = Path("/opt/render/project/src/cache")
+CACHE_ROOT = _persistent if _persistent.exists() else Path("/tmp/wx_compare_cache")
+CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+
+RANGE_WARN_KM = 200.0
 
 
 # ---------------------------------------------------------------------------
-# Discovery
+# Cached fetchers
 # ---------------------------------------------------------------------------
-def _station4(station: str) -> str:
-    s = station.strip().upper()
-    return s if len(s) == 4 else "K" + s
+@st.cache_data(ttl=60, show_spinner=False, max_entries=20)
+def cached_flight(callsign: str, minute_bucket: str):
+    from core.flights import fetch_callsign
+    return fetch_callsign(callsign)
 
 
-def _parse_time(filename: str) -> datetime | None:
-    m = _TIME_RE.search(filename)
-    if not m:
-        return None
-    timepart = m.group(2).ljust(6, "0")  # pad HHMM → HHMM00
+@st.cache_data(ttl=120, show_spinner=False, max_entries=20)
+def cached_others(lat: float, lon: float, radius: float, bucket: str):
+    from core.flights import fetch_positions_near
+    return fetch_positions_near(lat, lon, radius_deg=radius)
+
+
+def _routes_dict(routes_t):
+    """Rebuild {cs: {label, orig, dest}} from the hashable tuple form."""
+    return {
+        cs: {"label": lbl, "orig": o, "dest": d}
+        for cs, (lbl, o, d) in routes_t
+    }
+
+
+@st.cache_data(ttl=600, show_spinner=False, max_entries=10)
+def cached_fleet_routes(planes, bucket: str):
+    """Origin/destination for every visible aircraft, as a hashable
+    sorted tuple: ((cs, (label, (olat, olon), (dlat, dlon))), ...)."""
+    from core.flights import fetch_routes
     try:
-        return datetime.strptime(m.group(1) + timepart, "%Y%m%d%H%M%S")
-    except ValueError:
-        return None
-
-
-def _find_scans(station: str, start: datetime, end: datetime) -> list[_ScanRef]:
-    """Bucket sources first (AWS→GCS); THREDDS fallback for recent data."""
-    st4 = _station4(station)
-
-    scans = _find_scans_buckets(st4, start, end)
-    if scans:
-        return scans
-
-    try:
-        return _find_scans_thredds(st4, start, end)
-    except Exception as e:
-        print(f"[RADAR] THREDDS Level II fallback failed: {e}")
-        return []
-
-
-def _find_scans_buckets(st4: str, start: datetime, end: datetime) -> list[_ScanRef]:
-    scans: list[_ScanRef] = []
-    day = start.date()
-    while day <= end.date():
-        datepath = f"{day:%Y/%m/%d}"
-        for filename, url in _list_day_buckets(datepath, st4):
-            if "MDM" in filename:
-                continue
-            ts = _parse_time(filename)
-            if ts is None:
-                continue
-            if start <= ts <= end:
-                scans.append(
-                    _ScanRef(filename=filename, scan_time=ts, download_url=url)
-                )
-        day += timedelta(days=1)
-    return scans
-
-
-def _list_day_buckets(datepath: str, st4: str) -> list[tuple[str, str]]:
-    """List (filename, download_url) for one station-day. AWS, then GCS."""
-    prefix = f"{datepath}/{st4}/"
-
-    # AWS anonymous XML listing (currently denied; kept as first cheap try)
-    try:
-        r = requests.get(
-            f"{_AWS_BASE}/?list-type=2&prefix={prefix}",
-            headers=_HEADERS,
-            timeout=30,
-        )
-        if r.status_code == 200:
-            root = ET.fromstring(r.content)
-            out = []
-            for contents in root.findall(f"{_S3_NS}Contents"):
-                key = contents.find(f"{_S3_NS}Key").text
-                filename = key.rsplit("/", 1)[-1]
-                out.append((filename, f"{_AWS_BASE}/{key}"))
-            return out
+        routes = fetch_routes(list(planes))
     except Exception:
-        pass
-
-    # GCS public mirror JSON listing (deep archive; stale for recent dates)
-    out: list[tuple[str, str]] = []
-    try:
-        params: dict[str, str] = {"prefix": prefix, "maxResults": "1000"}
-        while True:
-            r = requests.get(
-                _GCS_LIST, params=params, headers=_HEADERS, timeout=60
-            )
-            r.raise_for_status()
-            payload = r.json()
-            for item in payload.get("items", []):
-                name = item["name"]
-                filename = name.rsplit("/", 1)[-1]
-                out.append((filename, f"{_GCS_DL}/{name}"))
-            token = payload.get("nextPageToken")
-            if not token:
-                break
-            params["pageToken"] = token
-    except Exception:
-        return []
-    return out
+        return tuple()
+    return tuple(sorted(
+        (cs, (rt["label"], rt["orig"], rt["dest"]))
+        for cs, rt in routes.items()
+    ))
 
 
-def _find_scans_thredds(st4: str, start: datetime, end: datetime) -> list[_ScanRef]:
-    """Recent Level II volumes from UCAR THREDDS (rolling window)."""
-    from siphon.radarserver import RadarServer, get_radarserver_datasets
-
-    datasets = get_radarserver_datasets(_THREDDS_BASE)
-    radar_ref = datasets[_THREDDS_L2_NAME]
-    rs = RadarServer(radar_ref.follow().catalog_url)
-
-    query = rs.query()
-    query.stations(st4).time_range(start, end)
-    catalog = rs.get_catalog(query)
-
-    scans: list[_ScanRef] = []
-    for name in sorted(catalog.datasets):
-        ds = catalog.datasets[name]
-        ts = _parse_time(name)
-        if ts is None:
-            continue
-        try:
-            url = ds.access_urls["HTTPServer"]
-        except Exception:
-            continue
-        scans.append(_ScanRef(filename=name, scan_time=ts, download_url=url))
-    return scans
-
-
-# ---------------------------------------------------------------------------
-# Download + decode + render
-# ---------------------------------------------------------------------------
-def _download_volume(scan: _ScanRef, local_path: str) -> str:
-    """Stream one volume to disk. Thread-safe (no matplotlib)."""
-    with requests.get(
-        scan.download_url, headers=_HEADERS, stream=True, timeout=300
-    ) as r:
-        r.raise_for_status()
-        with open(local_path, "wb") as fh:
-            for chunk in r.iter_content(chunk_size=1 << 20):
-                fh.write(chunk)
-    return local_path
-
-
-def _download_and_render(
-    scan: _ScanRef, aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
-    include_velocity: bool = True,
-    overlay_aircraft: list | None = None,
-    return_geo: bool = False,
-    trail=None,
-    others_trails=None,
-    routes=None,
-    prefetched_path=None,
-    newest_low_sweep=False,
-):
-    """Download one volume over HTTPS (unless prefetched_path is
-    given), render REF and VEL. With return_geo, returns
-    (refl_png, vel_png, name, geo, px_box)."""
-    from metpy.io import Level2File
-
-    tmpdir = tempfile.mkdtemp(prefix="nexrad_l2_")
-    try:
-        if prefetched_path is not None:
-            local_path = prefetched_path
-        else:
-            local_path = os.path.join(tmpdir, scan.filename)
-            _download_volume(scan, local_path)
-
-        f = Level2File(local_path)
-
-        radar_lat = float(f.sweeps[0][0][1].lat)
-        radar_lon = float(f.sweeps[0][0][1].lon)
-
-        name = scan.filename
-
-        az, rng_km, data = _extract_moment(f, b"REF", newest_low=newest_low_sweep)
-        geo = px_box = None
-        if return_geo:
-            refl_png, geo, px_box = _render_sweep(
-                az, rng_km, data, radar_lat, radar_lon,
-                aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
-                product="REF", title_prefix="Base Reflectivity (0.5°)",
-                overlay_aircraft=overlay_aircraft,
-                cbar_label="Reflectivity (dBZ)", volume_name=name,
-                return_geo=True, trail=trail,
-                others_trails=others_trails, routes=routes,
-            )
-        else:
-            refl_png = _render_sweep(
-                az, rng_km, data, radar_lat, radar_lon,
-                aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
-                product="REF", title_prefix="Base Reflectivity (0.5°)",
-                overlay_aircraft=overlay_aircraft,
-                cbar_label="Reflectivity (dBZ)", volume_name=name,
-                trail=trail, others_trails=others_trails,
-                routes=routes,
-            )
-
-        vel_png = b""
-        if not include_velocity:
-            if return_geo:
-                return refl_png, vel_png, name, geo, px_box
-            return refl_png, vel_png, name
-        try:
-            az_v, rng_km_v, data_v = _extract_moment(f, b"VEL")
-            data_v = data_v * _MS_TO_KT
-            vel_png = _render_sweep(
-                az_v, rng_km_v, data_v, radar_lat, radar_lon,
-                aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
-                product="VEL", title_prefix="Base Velocity (0.5°)",
-                cbar_label="Velocity (kt)", volume_name=name,
-            )
-        except Exception:
-            vel_png = b""
-
-        if return_geo:
-            return refl_png, vel_png, name, geo, px_box
-        return refl_png, vel_png, name
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
-
-
-def _extract_moment(f, moment: bytes, newest_low: bool = False):
-    """Pull (azimuths_deg, ranges_m, data) for a low sweep with moment.
-
-    Default: the FIRST matching sweep (volume start) - the historical
-    behavior. With newest_low=True: the LAST low-elevation (< 0.8 deg)
-    matching sweep, which on modern VCPs is a SAILS/MRLE mid-volume
-    0.5 deg re-scan - the freshest low-level data in the file. Used by
-    the real-time chunk path.
-    """
-    candidates = []
-    for sweep in f.sweeps:
-        if moment in sweep[0][4]:
-            el = getattr(sweep[0][0], "el_angle", None)
-            candidates.append((el, sweep))
-    if not candidates:
-        raise ValueError(f"Moment {moment!r} not found in any sweep.")
-    if newest_low:
-        low = [s for el, s in candidates
-               if el is not None and el < 0.8]
-        sweep = low[-1] if low else candidates[0][1]
-    else:
-        sweep = candidates[0][1]
-    az = np.array([ray[0].az_angle for ray in sweep])
-    hdr = sweep[0][4][moment][0]
-    # NOTE: metpy Level2File gate_width/first_gate are KILOMETERS
-    # (e.g. 0.25 km gates). Treating them as meters shrinks the
-    # whole sweep to a ~460 m dot — invisible on the map.
-    rng_km = np.arange(hdr.num_gates) * hdr.gate_width + hdr.first_gate
-    data = np.array(
-        [ray[4][moment][1] for ray in sweep], dtype=float
+@st.cache_data(ttl=120, show_spinner=False, max_entries=10)
+def cached_fleet_trails(planes, bucket: str):
+    """Trails for every visible aircraft (target + others). Returns
+    ({callsign: points_tuple} as sorted tuple, summary)."""
+    from core.flights import fetch_fleet_trails
+    trails, summary = fetch_fleet_trails(
+        list(planes), CACHE_ROOT / "tracks"
     )
-    data = np.ma.masked_invalid(data)
-    return az, rng_km, data
-
-
-def _render_sweep(
-    az, rng_km, data, radar_lat, radar_lon,
-    aircraft_lat, aircraft_lon, callsign, station, zoom_deg,
-    product, title_prefix, cbar_label, volume_name,
-    overlay_aircraft=None,
-    return_geo: bool = False,
-    trail=None,
-    others_trails=None,
-    routes=None,
-):
-    """Render one sweep to PNG bytes with the shared BlueMet radar styling."""
-    from metpy.calc import azimuth_range_to_lat_lon
-    from metpy.plots import colortables
-    from metpy.units import units
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    import cartopy.crs as ccrs
-    import cartopy.feature as cfeature
-
-    valid_frac = 1.0 - float(np.ma.getmaskarray(data).mean())
-
-    lon_grid, lat_grid = azimuth_range_to_lat_lon(
-        units.Quantity(az, "degrees"),
-        units.Quantity(rng_km, "kilometers"),
-        radar_lon,
-        radar_lat,
+    return (
+        tuple(sorted((cs, tuple(tr)) for cs, tr in trails.items())),
+        summary,
     )
 
-    if product == "REF":
-        norm, cmap = colortables.get_with_steps(
-            "NWSStormClearReflectivity", -20, 0.5
+
+@st.cache_data(ttl=300, show_spinner=False, max_entries=10)
+def cached_l3_frame(
+    product: str, site: str, clat: float, clon: float,
+    zoom: float, bucket: str, target, others, trail=tuple(),
+    others_trails=tuple(), routes_t=tuple(),
+) -> bytes:
+    from core.radar3 import fetch_latest, parse_l3, render_l3
+    raw = fetch_latest(product, site)
+    parsed = parse_l3(raw)
+    return render_l3(
+        parsed, product, clat, clon, zoom, site,
+        target_aircraft=target, other_aircraft=others,
+        title_note="latest", trail=trail,
+        others_trails=dict(others_trails),
+        routes=_routes_dict(routes_t),
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False, max_entries=6)
+def cached_l3_loop(
+    product: str, site: str, clat: float, clon: float,
+    zoom: float, bucket: str, target, others, n: int = 6,
+    trail=tuple(), others_trails=tuple(), routes_t=tuple(),
+):
+    from core.radar3 import fetch_recent, parse_l3, render_l3
+    files = fetch_recent(product, site, n=n)
+    frames = []
+    for raw, name in files:
+        try:
+            parsed = parse_l3(raw)
+            png = render_l3(
+                parsed, product, clat, clon, zoom, site,
+                target_aircraft=target, other_aircraft=others,
+                title_note=name, trail=trail,
+                others_trails=dict(others_trails),
+                routes=_routes_dict(routes_t),
+            )
+            frames.append((png, name))
+        except Exception:
+            continue
+    gif = _frames_to_gif(frames) if len(frames) > 1 else b""
+    return frames, gif
+
+
+@st.cache_data(ttl=90, show_spinner=False, max_entries=6)
+def cached_l2_realtime(
+    site: str, clat: float, clon: float, zoom: float,
+    bucket: str, callsign: str, others, trail=tuple(),
+    others_trails=tuple(), routes_t=tuple(),
+):
+    """Near-live Level II from the AWS chunk feed: the 0.5 deg sweep
+    ~1 minute into the volume instead of after the full scan. Returns
+    (png, info) - raises on any failure so the caller falls back to
+    the completed-volume IDD path."""
+    import os
+    import tempfile
+
+    from core.radar import _ScanRef, _download_and_render
+    from core.radar_l2rt import fetch_live_volume_bytes
+
+    blob, info = fetch_live_volume_bytes(site)
+    tmpdir = tempfile.mkdtemp(prefix="l2rt_")
+    path = os.path.join(tmpdir, f"{site}_rt")
+    with open(path, "wb") as fh:
+        fh.write(blob)
+    scan = _ScanRef(
+        filename=f"{site} live vol {info['volume']}",
+        scan_time=datetime.fromisoformat(info["chunk_time"]),
+        download_url="",
+    )
+    refl_png, _vel, _name = _download_and_render(
+        scan, clat, clon, callsign, site, zoom,
+        include_velocity=False,
+        overlay_aircraft=list(others),
+        trail=trail,
+        others_trails=dict(others_trails),
+        routes=_routes_dict(routes_t),
+        prefetched_path=path,
+        newest_low_sweep=True,
+    )
+    return refl_png, info
+
+
+@st.cache_data(ttl=300, show_spinner=False, max_entries=4)
+def cached_l2(
+    site: str, clat: float, clon: float, zoom: float,
+    bucket: str, callsign: str, others, loop: bool, trail=tuple(),
+    others_trails=tuple(), routes_t=tuple(),
+):
+    from core.radar import fetch_and_render_radar_loop
+    minutes = 45 if loop else 30   # single: wide window, newest frame kept
+    start = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    st4 = site[1:] if len(site) == 4 and site.startswith("K") else site
+    frames, _ = fetch_and_render_radar_loop(
+        start_time=start,
+        duration_min=minutes,
+        aircraft_lat=clat,
+        aircraft_lon=clon,
+        callsign=callsign,
+        station=st4,
+        zoom_deg=zoom,
+        include_velocity=False,
+        overlay_aircraft=others,
+        trail=trail,
+        others_trails=dict(others_trails),
+        routes=_routes_dict(routes_t),
+    )
+    if not loop:
+        frames = frames[-1:]
+    gif = _frames_to_gif(frames) if len(frames) > 1 else b""
+    return frames, gif
+
+
+@st.cache_data(ttl=300, show_spinner=False, max_entries=4)
+def cached_glm(clat: float, clon: float, zoom: float, bucket: str):
+    """GLM lightning flash locations from the last ~6 minutes within the
+    view window. Returns tuple of (lat, lon) pairs; empty on failure."""
+    import xarray as xr
+    from goes2go.data import goes_timerange
+
+    sat = "goes19" if clon > -105 else "goes18"
+    end = datetime.now(timezone.utc) - timedelta(minutes=6)
+    start = end - timedelta(minutes=6)
+    try:
+        files = goes_timerange(
+            start=start.replace(tzinfo=None),
+            end=end.replace(tzinfo=None),
+            satellite=sat,
+            product="GLM-L2-LCFA",
+            return_as="filelist",
+            download=True,
+            overwrite=False,
+            verbose=False,
+            save_dir=str(CACHE_ROOT / "glm"),
         )
-    else:
-        norm, cmap = colortables.get_with_steps("NWS8bitVel", -64, 0.5)
+    except Exception:
+        return tuple()
+    pts = []
+    base = CACHE_ROOT / "glm"
+    for _, row in files.iterrows():
+        try:
+            ds = xr.open_dataset(base / row["file"])
+            la = ds["flash_lat"].values
+            lo = ds["flash_lon"].values
+            ds.close()
+        except Exception:
+            continue
+        for a, o in zip(la, lo):
+            if (abs(float(a) - clat) <= zoom
+                    and abs(float(o) - clon) <= zoom):
+                pts.append((round(float(a), 3), round(float(o), 3)))
+    return tuple(pts)
 
-    fig = plt.figure(figsize=(12, 10))
-    ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
 
-    ax.set_extent(
-        [
-            aircraft_lon - zoom_deg,
-            aircraft_lon + zoom_deg,
-            aircraft_lat - zoom_deg,
-            aircraft_lat + zoom_deg,
+@st.cache_data(ttl=600, show_spinner=False, max_entries=4)
+def cached_ir(clat: float, clon: float, callsign: str, bucket: str,
+              lightning=tuple(), trail=tuple(),
+              others_trails=tuple(), routes_t=tuple()) -> bytes:
+    from core.satellite import fetch_goes_data, render_infrared
+    # GOES-19 became GOES-East in 2025 (GOES-16 retired); GOES-18 is West.
+    # ABI files land on S3 with real latency — ask 30 min back, and step
+    # further back if the nearest-time lookup finds nothing yet.
+    sat = "goes19" if clon > -105 else "goes18"
+    last_err = None
+    for minutes_back in (30, 75, 120):
+        try:
+            ds, scan_time = fetch_goes_data(
+                target_time=datetime.now(timezone.utc)
+                - timedelta(minutes=minutes_back),
+                satellite=sat,
+                cache_dir=CACHE_ROOT / "satellite",
+            )
+            return render_infrared(
+                ds, clat, clon, callsign, lightning=lightning,
+                trail=trail, others_trails=dict(others_trails),
+                routes=_routes_dict(routes_t),
+            )
+        except Exception as e:
+            last_err = e
+    raise RuntimeError(f"GOES {sat} unavailable back to 2h: {last_err}")
+
+
+def _frames_to_gif(
+    frames, width: int = 800, frame_ms: int = 450, last_hold_ms: int = 1400
+) -> bytes:
+    from io import BytesIO
+    from PIL import Image
+
+    imgs = []
+    for png, _name in frames:
+        im = Image.open(BytesIO(png)).convert("RGB")
+        w, h = im.size
+        if w > width:
+            im = im.resize((width, int(h * width / w)), Image.LANCZOS)
+        imgs.append(im.quantize(colors=256))
+    durations = [frame_ms] * (len(imgs) - 1) + [last_hold_ms]
+    buf = BytesIO()
+    imgs[0].save(buf, format="GIF", save_all=True, append_images=imgs[1:],
+                 duration=durations, loop=0, disposal=2)
+    return buf.getvalue()
+
+
+def _fmt_alt(alt_ft):
+    if alt_ft is None:
+        return "alt unknown"
+    return f"FL{int(round(alt_ft / 100)):03d}"
+
+
+def _client_scrubber(frames, key: str) -> str:
+    """HTML for an instant client-side frame scrubber with play/pause.
+    All frames ship as base64 once; swapping is pure browser JS - no
+    Streamlit rerun, no loading, per frame."""
+    import base64
+    import json as _json
+
+    srcs = ["data:image/png;base64," + base64.b64encode(p).decode()
+            for p, _n in frames]
+    names = [n for _p, n in frames]
+    n = len(srcs)
+    return (
+        "<style>"
+        ".scr{font:13px monospace}"
+        ".scr img{width:100%;border:1px solid #888}"
+        ".scr input[type=range]{width:55%;vertical-align:middle}"
+        ".scr button{font:bold 13px monospace;margin-right:6px;"
+        "padding:2px 10px}"
+        "</style>"
+        "<div class='scr'>"
+        "<img id='im_" + key + "'>"
+        "<div>"
+        "<button id='pb_" + key + "'>PAUSE</button>"
+        "<input type='range' id='sl_" + key + "' min='0' max='"
+        + str(n - 1) + "' value='" + str(n - 1) + "' step='1'>"
+        " <span id='lb_" + key + "'></span>"
+        "</div></div>"
+        "<script>"
+        "(function(){"
+        "const F=" + _json.dumps(srcs) + ";"
+        "const N=" + _json.dumps(names) + ";"
+        "const im=document.getElementById('im_" + key + "');"
+        "const sl=document.getElementById('sl_" + key + "');"
+        "const lb=document.getElementById('lb_" + key + "');"
+        "const pb=document.getElementById('pb_" + key + "');"
+        "let playing=true;let t=null;"
+        "function show(i){im.src=F[i];lb.textContent=N[i];}"
+        "function step(){let i=(+sl.value+1)%F.length;"
+        "sl.value=i;show(i);"
+        "t=setTimeout(step,i==F.length-1?1400:450);}"
+        "sl.addEventListener('input',function(){"
+        "clearTimeout(t);playing=false;pb.textContent='PLAY';"
+        "show(+sl.value);});"
+        "pb.addEventListener('click',function(){"
+        "if(playing){clearTimeout(t);playing=false;"
+        "pb.textContent='PLAY';}"
+        "else{playing=true;pb.textContent='PAUSE';step();}});"
+        "show(+sl.value);t=setTimeout(step,450);"
+        "})();"
+        "</script>"
+    )
+
+
+# ---------------------------------------------------------------------------
+# UI
+# ---------------------------------------------------------------------------
+st.title("JBU Flight Tracker")
+st.caption(
+    "Radar and IR satellite centered on a live JetBlue flight. "
+    "Radar site auto-selected nearest the aircraft."
+)
+
+with st.sidebar:
+    st.header("Flight")
+    flight_input = st.text_input(
+        "Flight (callsign or number)",
+        value="",
+        max_chars=8,
+        help="JBU123, B6123, or just 123 — all resolve to callsign JBU123.",
+    ).strip().upper()
+
+    zoom = st.slider("Zoom (degrees)", 0.5, 4.0, 1.5, 0.5)
+
+    radar_product = st.radio(
+        "Radar product",
+        options=[
+            "Level III Reflectivity (fast)",
+            "Level III Echo Tops",
+            "Level II Reflectivity (full res, slower)",
         ],
-        crs=ccrs.PlateCarree(),
+        index=0,
     )
+    loop_mode = st.checkbox("Loop (last ~30-45 min)", value=False)
 
-    mesh = ax.pcolormesh(
-        lon_grid,
-        lat_grid,
-        data,
-        cmap=cmap,
-        norm=norm,
-        shading="auto",
-        transform=ccrs.PlateCarree(),
+    show_ir = st.checkbox("IR Satellite (GOES C13)", value=False)
+
+    site_override = st.text_input(
+        "Radar site override (blank = auto)",
+        value="", max_chars=4,
+    ).strip().upper()
+
+    st.divider()
+    run_button = st.button("Track", type="primary", use_container_width=True)
+
+
+def _normalize_callsign(s: str) -> str:
+    s = s.replace(" ", "")
+    if s.startswith("JBU"):
+        return s
+    if s.startswith("B6"):
+        return "JBU" + s[2:]
+    if s.isdigit():
+        return "JBU" + s
+    return s
+
+
+if run_button and flight_input:
+    st.session_state["track_cs"] = _normalize_callsign(flight_input)
+
+track_cs = st.session_state.get("track_cs")
+
+if track_cs:
+    now = datetime.now(timezone.utc)
+    minute_bucket = now.strftime("%Y%m%d%H%M")
+    bucket5 = now.strftime("%Y%m%d%H") + str(now.minute // 5)
+
+    with st.spinner(f"Locating {track_cs}..."):
+        target = cached_flight(track_cs, minute_bucket)
+
+    if target is None:
+        st.warning(
+            f"**{track_cs}** not found on live ADS-B — it may not be "
+            "airborne yet, already landed, or briefly out of receiver "
+            "coverage. Try again in a minute, or check the flight number."
+        )
+        st.stop()
+
+    clat, clon = target.lat, target.lon
+
+    # Radar site selection
+    from core.nexrad_sites import nearest_site, site_coords
+    if site_override and site_coords(site_override):
+        site, dist_km = site_override, None
+        from core.nexrad_sites import _haversine_km
+        slat, slon = site_coords(site_override)
+        dist_km = _haversine_km(clat, clon, slat, slon)
+    else:
+        site, dist_km = nearest_site(clat, clon)
+
+    hdr = (
+        f"**{target.callsign}** \u00b7 {clat:.3f}\u00b0, {clon:.3f}\u00b0 "
+        f"\u00b7 {_fmt_alt(target.alt_ft)}"
     )
-
-    ax.coastlines(resolution="10m", color="black", linewidth=0.8)
-    ax.add_feature(
-        cfeature.BORDERS.with_scale("10m"),
-        edgecolor="black",
-        linewidth=0.6,
-    )
-    ax.add_feature(
-        cfeature.STATES.with_scale("10m"),
-        edgecolor="black",
-        linewidth=0.5,
-        facecolor="none",
-    )
-
-    gl = ax.gridlines(
-        crs=ccrs.PlateCarree(),
-        draw_labels=True,
-        linewidth=0.6,
-        color="gray",
-        alpha=0.7,
-        linestyle="--",
-    )
-    gl.top_labels = False
-    gl.right_labels = False
-    gl.xlabel_style = {"size": 9}
-    gl.ylabel_style = {"size": 9}
-
-    target_cs = callsign
-
-    # Route arcs (origin -> destination great circles): where each
-    # aircraft is GOING, dotted to contrast with the dashed been-trails
-    for _cs, _rt in (routes or {}).items():
-        (_ola, _olo), (_dla, _dlo) = _rt["orig"], _rt["dest"]
-        _is_t = (target_cs is not None and _cs == target_cs)
-        ax.plot(
-            [_olo, _dlo], [_ola, _dla],
-            color=("red" if _is_t else "#0000CC"),
-            linewidth=(1.3 if _is_t else 0.8), linestyle=":",
-            alpha=(0.7 if _is_t else 0.45), zorder=8,
-            transform=ccrs.Geodetic(),
+    if target.heading_deg is not None:
+        hdr += f" \u00b7 trk {int(target.heading_deg):03d}\u00b0"
+    hdr += f" \u00b7 radar **{site}** ({dist_km:.0f} km)"
+    st.info(hdr)
+    if dist_km and dist_km > RANGE_WARN_KM:
+        st.warning(
+            f"Aircraft is {dist_km:.0f} km from {site} — beyond "
+            f"~{RANGE_WARN_KM:.0f} km the beam overshoots low altitudes "
+            "and coverage degrades (no NEXRAD over open ocean)."
         )
 
-    # Other-aircraft trails (thin blue, under everything)
-    for _cs, _tr in (others_trails or {}).items():
-        if _tr and len(_tr) >= 2:
-            ax.plot(
-                [p[1] for p in _tr], [p[0] for p in _tr],
-                color="#0000CC", linewidth=0.8, linestyle="--",
-                alpha=0.45, zorder=8, transform=ccrs.PlateCarree(),
-            )
+    # Other JBU traffic in the window (target excluded)
+    others_all = cached_others(round(clat, 2), round(clon, 2), zoom, bucket5)
+    others = [a for a in others_all if a.callsign != target.callsign]
 
-    # Flight path trail (dashed, under the aircraft marker)
-    if trail and len(trail) >= 2:
-        ax.plot(
-            [p[1] for p in trail], [p[0] for p in trail],
-            color="red", linewidth=1.4, linestyle="--", alpha=0.85,
-            zorder=9, transform=ccrs.PlateCarree(),
+    # Flight path trails for the whole visible fleet
+    trails_t, trails_summary = cached_fleet_trails(
+        tuple([target] + others), now.strftime("%Y%m%d%H%M"),
+    )
+    all_trails = dict(trails_t)
+    trail = all_trails.pop(target.callsign, tuple())
+    others_trails_t = tuple(sorted(all_trails.items()))
+    routes_t = cached_fleet_routes(
+        tuple([target] + others), now.strftime("%Y%m%d%H")
+    )
+    st.caption(
+        f"Trails: {trails_summary} | Routes: {len(routes_t)} resolved"
+    )
+
+    # --- Radar ---
+    st.subheader("Radar")
+    ckey_lat, ckey_lon = round(clat, 2), round(clon, 2)
+    try:
+        # NOTE: "Level III...".startswith("Level II") is True (string
+        # prefix!) — branch on Level III explicitly, never on the
+        # "Level II" prefix.
+        if not radar_product.startswith("Level III"):
+            with st.spinner(
+                "Rendering Level II"
+                + (" loop (30-60s)..." if loop_mode else " (10-20s)...")
+            ):
+                if not loop_mode:
+                    try:
+                        rt_png, rt_info = cached_l2_realtime(
+                            site, ckey_lat, ckey_lon, zoom, bucket5,
+                            target.callsign, others, trail=trail,
+                            others_trails=others_trails_t,
+                            routes_t=routes_t,
+                        )
+                        frames, gif = [(rt_png, "live-chunks")], b""
+                        st.caption(
+                            f"Level II real-time: volume "
+                            f"{rt_info['volume']}, chunk "
+                            f"{rt_info['newest_chunk']}, ~"
+                            f"{rt_info['age_s']}s old "
+                            f"({rt_info['n_used']}/"
+                            f"{rt_info['n_chunks']} chunks)"
+                        )
+                    except Exception as rt_err:
+                        st.caption(
+                            f"Real-time chunk feed unavailable "
+                            f"({rt_err}); using completed volume."
+                        )
+                        frames, gif = cached_l2(
+                            site, ckey_lat, ckey_lon, zoom, bucket5,
+                            target.callsign, others, loop_mode,
+                            trail=trail,
+                            others_trails=others_trails_t,
+                            routes_t=routes_t,
+                        )
+                else:
+                    frames, gif = cached_l2(
+                        site, ckey_lat, ckey_lon, zoom, bucket5,
+                        target.callsign, others, loop_mode, trail=trail,
+                        others_trails=others_trails_t, routes_t=routes_t,
+                    )
+        else:
+            product = "ET" if "Echo Tops" in radar_product else "REF"
+            if loop_mode:
+                with st.spinner("Rendering Level III loop..."):
+                    frames, gif = cached_l3_loop(
+                        product, site, ckey_lat, ckey_lon, zoom, bucket5,
+                        target, others, trail=trail,
+                        others_trails=others_trails_t,
+                        routes_t=routes_t,
+                    )
+            else:
+                with st.spinner("Rendering Level III..."):
+                    png = cached_l3_frame(
+                        product, site, ckey_lat, ckey_lon, zoom, bucket5,
+                        target, others, trail=trail,
+                        others_trails=others_trails_t,
+                        routes_t=routes_t,
+                    )
+                    frames, gif = [(png, "sn.last")], b""
+    except Exception as e:
+        frames, gif = [], b""
+        st.error(f"Radar fetch/render failed: {e}")
+
+    if len(frames) > 1:
+        # Client-side scrubber: auto-plays like the old GIF, but the
+        # slider swaps frames instantly in the browser - no reloading.
+        _embed_html(
+            _client_scrubber(frames, key="rad"), height=760,
         )
-
-    ax.scatter(
-        aircraft_lon,
-        aircraft_lat,
-        s=180,
-        marker="x",
-        color="red",
-        zorder=10,
-        transform=ccrs.PlateCarree(),
-    )
-
-    # Live aircraft overlay: draw each plane with callsign + flight level
-    if overlay_aircraft:
-        for ac in overlay_aircraft:
-            ax.scatter(
-                ac.lon, ac.lat, s=90, marker="^", color="#0000CC",
-                edgecolors="white", linewidths=0.8, zorder=11,
-                transform=ccrs.PlateCarree(),
+        if gif:
+            st.download_button(
+                "Download loop GIF", data=gif,
+                file_name=f"tracker_{site}.gif", mime="image/gif",
+                key="dl_tracker_gif",
             )
-            _lbl = ac.callsign
-            if ac.alt_ft is not None:
-                _lbl += f"\nFL{int(round(ac.alt_ft / 100)):03d}"
-            ax.annotate(
-                _lbl,
-                xy=(ac.lon, ac.lat),
-                xytext=(5, 5), textcoords="offset points",
-                fontsize=7, fontweight="bold", color="#0000CC",
-                zorder=11,
-            )
-    ax.text(
-        aircraft_lon + 0.05,
-        aircraft_lat + 0.05,
-        callsign,
-        color="red",
-        fontsize=12,
-        zorder=10,
-        transform=ccrs.PlateCarree(),
-        weight="bold",
+    elif frames:
+        st.image(frames[-1][0], use_container_width=True)
+        st.caption(f"`{frames[-1][1]}`")
+
+    # --- IR Satellite (opt-in) ---
+    if show_ir:
+        st.subheader("IR Satellite (GOES Band 13) + GLM Lightning")
+        with st.spinner("Fetching GOES + GLM (15-40s first time)..."):
+            try:
+                flashes = cached_glm(ckey_lat, ckey_lon, zoom, bucket5)
+            except Exception:
+                flashes = tuple()
+            try:
+                ir_png = cached_ir(
+                    ckey_lat, ckey_lon, target.callsign, bucket5,
+                    lightning=flashes, trail=trail,
+                    others_trails=others_trails_t,
+                    routes_t=routes_t,
+                )
+                st.image(ir_png, use_container_width=True)
+                st.caption(
+                    f"{len(flashes)} GLM flashes (last ~6 min) in view"
+                    if flashes else
+                    "No GLM flashes in view (last ~6 min)"
+                )
+            except Exception as e:
+                st.warning(f"Satellite fetch failed: {e}")
+
+else:
+    st.info(
+        "Enter a JetBlue flight number in the sidebar and click **Track**."
     )
+    st.markdown(
+        """
+        ### What this does
 
-    echo_note = "" if valid_frac > 0.01 else "  ·  NO ECHOES DETECTED (clear)"
-    ax.set_title(
-        f"{_station4(station)} {title_prefix}{echo_note}\n"
-        f"Radar: {radar_lat:.2f}°, {radar_lon:.2f}°  ·  {volume_name}"
+        Locates a live JetBlue flight via ADS-B, auto-selects the nearest
+        NEXRAD site, and renders radar centered on the aircraft:
+
+        - **Level III Reflectivity** — fast (~20 KB products, updated
+          every volume scan)
+        - **Level III Echo Tops** — storm-top heights in kft, the
+          convective-avoidance view
+        - **Level II Reflectivity** — full 0.25 km resolution from raw
+          volume data (slower)
+        - **Loop** variants of each, plus opt-in **GOES IR satellite**
+
+        The tracked flight renders as a red triangle; other JetBlue
+        aircraft in the window render in blue.
+        """
     )
-
-    plt.colorbar(mesh, ax=ax, pad=0.02, label=cbar_label, shrink=0.8)
-
-    # NOTE: no bbox_inches="tight" — it crops the GeoAxes away and
-    # leaves only the colorbar on this matplotlib/cartopy combination.
-    geo = px_box = None
-    if return_geo:
-        # Axes pixel box + geographic extent for later PIL compositing
-        # (PlateCarree is linear in lon/lat so the mapping is affine).
-        fig.canvas.draw()
-        pos = ax.get_position()
-        fw, fh = fig.get_size_inches()
-        W, H = fw * 100, fh * 100  # dpi=100 below
-        px_box = (pos.x0 * W, (1 - pos.y1) * H, pos.x1 * W, (1 - pos.y0) * H)
-        west, east, south, north = ax.get_extent(crs=ccrs.PlateCarree())
-        geo = (west, east, south, north)
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=100)
-    plt.close(fig)
-    buf.seek(0)
-    if return_geo:
-        return buf.getvalue(), geo, px_box
-    return buf.getvalue()
-
-
-def fetch_and_render_base_frames(
-    start_time: datetime,
-    duration_min: int,
-    center_lat: float,
-    center_lon: float,
-    label: str,
-    station: str,
-    zoom_deg: float,
-) -> list[dict]:
-    """Reflectivity base frames WITHOUT aircraft overlay, each carrying
-    scan time and geo->pixel transform for later compositing."""
-    end_time = start_time + timedelta(minutes=duration_min)
-    scans = _find_scans(station, start_time, end_time)
-    out: list[dict] = []
-    for scan in scans:
-        try:
-            refl_png, _vel, name, geo, px_box = _download_and_render(
-                scan, center_lat, center_lon, label, station, zoom_deg,
-                include_velocity=False,
-                overlay_aircraft=None,
-                return_geo=True,
-            )
-        except Exception:
-            continue
-        out.append({
-            "png": refl_png,
-            "name": name,
-            "scan_time": scan.scan_time,
-            "geo": geo,
-            "px": px_box,
-        })
-    out.sort(key=lambda d: d["scan_time"])
-    return out
-
-
-def composite_aircraft(png_bytes: bytes, geo, px_box, aircraft) -> bytes:
-    """Draw aircraft triangles + labels onto a rendered frame with PIL."""
-    from PIL import Image, ImageDraw
-
-    im = Image.open(io.BytesIO(png_bytes)).convert("RGB")
-    draw = ImageDraw.Draw(im)
-    west, east, south, north = geo
-    x0, y0, x1, y1 = px_box
-
-    def to_px(lon, lat):
-        fx = (lon - west) / (east - west)
-        fy = (north - lat) / (north - south)
-        return x0 + fx * (x1 - x0), y0 + fy * (y1 - y0)
-
-    for ac in aircraft or []:
-        if not (west <= ac.lon <= east and south <= ac.lat <= north):
-            continue
-        cx, cy = to_px(ac.lon, ac.lat)
-        r = 7
-        draw.polygon(
-            [(cx, cy - r), (cx - r * 0.8, cy + r * 0.7),
-             (cx + r * 0.8, cy + r * 0.7)],
-            fill=(0, 0, 204), outline=(255, 255, 255),
-        )
-        lbl = ac.callsign
-        if ac.alt_ft is not None:
-            lbl += f" FL{int(round(ac.alt_ft / 100)):03d}"
-        draw.text((cx + 8, cy - 14), lbl, fill=(0, 0, 204))
-    buf = io.BytesIO()
-    im.save(buf, format="PNG")
-    return buf.getvalue()

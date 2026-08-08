@@ -11,6 +11,19 @@ from pathlib import Path
 import streamlit as st
 import streamlit.components.v1
 
+def _embed_html(html: str, height: int) -> None:
+    """Render raw HTML: st.iframe on newer Streamlit, else the
+    deprecated components.v1.html (removed after 2026-06)."""
+    fn = getattr(st, "iframe", None)
+    if fn is not None:
+        try:
+            fn(html, height=height)
+            return
+        except TypeError:
+            pass
+    st.components.v1.html(html, height=height)
+
+
 st.set_page_config(
     page_title="BlueMet - Hi-Res CAMs",
     layout="wide",
@@ -400,7 +413,7 @@ if active:
                 "</script>"
             )
             rows = (len(order) + 1) // 2
-            st.components.v1.html(html, height=140 + rows * 560)
+            _embed_html(html, height=140 + rows * 560)
             st.caption(
                 f"{sum(len(v) for v in frames.values())} frames "
                 f"preloaded across {len(order)} model(s). Scrub away."
