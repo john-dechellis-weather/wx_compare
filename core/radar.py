@@ -314,6 +314,7 @@ def _download_and_render(
     others_trails=None,
     routes=None,
     prefetched_path=None,
+    newest_low_sweep=False,
 ):
     """Download one volume over HTTPS (unless prefetched_path is
     given), render REF and VEL. With return_geo, returns
@@ -335,7 +336,7 @@ def _download_and_render(
 
         name = scan.filename
 
-        az, rng_km, data = _extract_moment(f, b"REF")
+        az, rng_km, data = _extract_moment(f, b"REF", newest_low=newest_low_sweep)
         geo = px_box = None
         if return_geo:
             refl_png, geo, px_box = _render_sweep(
@@ -382,22 +383,39 @@ def _download_and_render(
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def _extract_moment(f, moment: bytes):
-    """Pull (azimuths_deg, ranges_m, data) for the lowest sweep with moment."""
+def _extract_moment(f, moment: bytes, newest_low: bool = False):
+    """Pull (azimuths_deg, ranges_m, data) for a low sweep with moment.
+
+    Default: the FIRST matching sweep (volume start) - the historical
+    behavior. With newest_low=True: the LAST low-elevation (< 0.8 deg)
+    matching sweep, which on modern VCPs is a SAILS/MRLE mid-volume
+    0.5 deg re-scan - the freshest low-level data in the file. Used by
+    the real-time chunk path.
+    """
+    candidates = []
     for sweep in f.sweeps:
         if moment in sweep[0][4]:
-            az = np.array([ray[0].az_angle for ray in sweep])
-            hdr = sweep[0][4][moment][0]
-            # NOTE: metpy Level2File gate_width/first_gate are KILOMETERS
-            # (e.g. 0.25 km gates). Treating them as meters shrinks the
-            # whole sweep to a ~460 m dot — invisible on the map.
-            rng_km = np.arange(hdr.num_gates) * hdr.gate_width + hdr.first_gate
-            data = np.array(
-                [ray[4][moment][1] for ray in sweep], dtype=float
-            )
-            data = np.ma.masked_invalid(data)
-            return az, rng_km, data
-    raise ValueError(f"Moment {moment!r} not found in any sweep.")
+            el = getattr(sweep[0][0], "el_angle", None)
+            candidates.append((el, sweep))
+    if not candidates:
+        raise ValueError(f"Moment {moment!r} not found in any sweep.")
+    if newest_low:
+        low = [s for el, s in candidates
+               if el is not None and el < 0.8]
+        sweep = low[-1] if low else candidates[0][1]
+    else:
+        sweep = candidates[0][1]
+    az = np.array([ray[0].az_angle for ray in sweep])
+    hdr = sweep[0][4][moment][0]
+    # NOTE: metpy Level2File gate_width/first_gate are KILOMETERS
+    # (e.g. 0.25 km gates). Treating them as meters shrinks the
+    # whole sweep to a ~460 m dot — invisible on the map.
+    rng_km = np.arange(hdr.num_gates) * hdr.gate_width + hdr.first_gate
+    data = np.array(
+        [ray[4][moment][1] for ray in sweep], dtype=float
+    )
+    data = np.ma.masked_invalid(data)
+    return az, rng_km, data
 
 
 def _render_sweep(
