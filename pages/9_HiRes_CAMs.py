@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1
 
 st.set_page_config(
     page_title="BlueMet - Hi-Res CAMs",
@@ -135,12 +136,26 @@ with st.sidebar:
     }
     show_jbu = st.checkbox("Overlay live JBU aircraft", value=True)
 
-    fhr_all = st.slider(
-        "Forecast hour (all models)", 0, 60, 1,
-        help="One slider drives every panel. Models that don't reach "
-             "the selected hour clamp to their own maximum (HRRR f18, "
-             "ARW f48, NAM/RRFS f60).",
+    smooth = st.checkbox(
+        "Smooth scrub mode", value=False,
+        help="Preloads every hour in the range below, then scrubbing "
+             "is instant (frames swap in the browser, no reloading). "
+             "Preload takes a while on first run; hours cache on the "
+             "server, so rebuilding later is fast.",
     )
+    if smooth:
+        fhr_lo, fhr_hi = st.slider(
+            "Preload hours", 0, 60, (0, 12),
+            help="All hours in this range are fetched upfront. "
+             "Span capped at 24 hours to keep the page light.",
+        )
+    else:
+        fhr_all = st.slider(
+            "Forecast hour (all models)", 0, 60, 1,
+            help="One slider drives every panel. Models that don't "
+                 "reach the selected hour clamp to their own maximum "
+                 "(HRRR f18, ARW f48, NAM/RRFS f60).",
+        )
 
     st.divider()
     run_button = st.button("Render", type="primary",
@@ -229,17 +244,121 @@ if active:
         if cfg["note"]:
             st.caption(cfg["note"])
 
-    # 2x2 model grid - HRRR keeps the top-right quadrant
-    top_left, top_right = st.columns(2)
-    bot_left, bot_right = st.columns(2)
-    with top_left:
-        render_model_panel("nam_nest")
-    with top_right:
-        render_model_panel("hrrr")
-    with bot_left:
-        render_model_panel("hiresw_arw")
-    with bot_right:
-        render_model_panel("rrfs")
+    GRID_ORDER = ["nam_nest", "hrrr", "hiresw_arw", "rrfs"]
+
+    if smooth:
+        span = min(fhr_hi - fhr_lo, 24)
+        hours = list(range(fhr_lo, fhr_lo + span + 1))
+        active_models = [
+            m for m in GRID_ORDER
+            if show_models.get(m) and product in MODELS[m]["products"]
+        ]
+        frames = {}      # model -> {fhr: png}
+        skipped = []
+        total = sum(
+            len([h for h in hours if h <= MODELS[m]["max_fhr"]])
+            for m in active_models
+        )
+        done = 0
+        prog = st.progress(0.0, text="Preloading frames...")
+        for m in active_models:
+            cfg = MODELS[m]
+            mh = [h for h in hours if h <= cfg["max_fhr"]]
+            if not mh:
+                skipped.append(f"{cfg['label']}: range beyond its max")
+                continue
+            cycle_iso = cached_model_cycle(m, mh[-1], bucket10)
+            if cycle_iso is None:
+                skipped.append(f"{cfg['label']}: no cycle found")
+                continue
+            frames[m] = {}
+            for h in mh:
+                done += 1
+                prog.progress(
+                    done / max(total, 1),
+                    text=f"{cfg['label']} f{h:02d} ({done}/{total})",
+                )
+                try:
+                    frames[m][h] = cached_panel(
+                        m, product, cycle_iso, h,
+                        round(clat, 2), round(clon, 2), zoom,
+                        aircraft, routes=routes,
+                    )
+                except Exception:
+                    continue
+        prog.empty()
+        frames = {m: f for m, f in frames.items() if f}
+        if skipped:
+            st.caption(" | ".join(skipped))
+        if not frames:
+            st.error("No frames preloaded - check model/product/range.")
+        else:
+            import base64
+            import json as _json
+            model_arrays = {}
+            hour_axis = hours
+            for m, fd in frames.items():
+                arr = []
+                last = None
+                for h in hour_axis:
+                    if h in fd:
+                        last = ("data:image/png;base64,"
+                                + base64.b64encode(fd[h]).decode())
+                    arr.append(last or "")
+                model_arrays[m] = arr
+            labels = [f"f{h:02d}" for h in hour_axis]
+            order = [m for m in GRID_ORDER if m in model_arrays]
+            names = {m: MODELS[m]["label"] for m in order}
+            html = (
+                "<style>"
+                ".camgrid{display:grid;grid-template-columns:1fr 1fr;"
+                "gap:6px}"
+                ".camgrid img{width:100%;border:1px solid #888}"
+                ".camlbl{font:bold 13px monospace;margin:2px 0}"
+                ".ctl{font:13px monospace;margin:8px 0}"
+                "input[type=range]{width:70%}"
+                "</style>"
+                "<div class='ctl'>Forecast hour: "
+                "<span id='hlbl'></span><br>"
+                "<input type='range' id='hsl' min='0' max='"
+                + str(len(hour_axis) - 1) + "' value='0' step='1'>"
+                "</div><div class='camgrid'>"
+            )
+            for m in order:
+                html += ("<div><div class='camlbl'>" + names[m]
+                         + "</div><img id='img_" + m + "'></div>")
+            html += "</div><script>"
+            html += "const D=" + _json.dumps(model_arrays) + ";"
+            html += "const L=" + _json.dumps(labels) + ";"
+            html += (
+                "const sl=document.getElementById('hsl');"
+                "function upd(){const i=+sl.value;"
+                "document.getElementById('hlbl').textContent=L[i];"
+                "for(const m in D){const el="
+                "document.getElementById('img_'+m);"
+                "if(D[m][i]){el.src=D[m][i];el.style.display='';}"
+                "else{el.style.display='none';}}}"
+                "sl.addEventListener('input',upd);upd();"
+                "</script>"
+            )
+            rows = (len(order) + 1) // 2
+            st.components.v1.html(html, height=140 + rows * 560)
+            st.caption(
+                f"{sum(len(v) for v in frames.values())} frames "
+                f"preloaded across {len(order)} model(s). Scrub away."
+            )
+    else:
+        # 2x2 model grid - HRRR keeps the top-right quadrant
+        top_left, top_right = st.columns(2)
+        bot_left, bot_right = st.columns(2)
+        with top_left:
+            render_model_panel("nam_nest")
+        with top_right:
+            render_model_panel("hrrr")
+        with bot_left:
+            render_model_panel("hiresw_arw")
+        with bot_right:
+            render_model_panel("rrfs")
 
 else:
     st.info("Enter an airport in the sidebar and click **Render**.")
