@@ -264,6 +264,50 @@ def decode_field(raw: bytes):
     return vals, lats, lons
 
 
+def fetch_and_decode(
+    model: str,
+    product: str,
+    cycle: datetime,
+    fhr: int,
+    lat: float,
+    lon: float,
+    zoom_deg: float,
+):
+    """fetch_field + decode_field in one call (thread-safe: pure I/O
+    and numpy, no matplotlib)."""
+    raw = fetch_field(model, product, cycle, fhr, lat, lon, zoom_deg)
+    return decode_field(raw)
+
+
+def parallel_fetch_decode(tasks: list[dict], max_workers: int = 6):
+    """Run many fetch_and_decode calls concurrently.
+
+    tasks: [{"key": anything-hashable, "model", "product", "cycle",
+             "fhr", "lat", "lon", "zoom_deg"}, ...]
+    Returns {key: (vals, lats, lons) | Exception}. Downloads and
+    decodes overlap across models and hours; rendering stays with the
+    caller (matplotlib is not thread-safe).
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    out = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs = {
+            ex.submit(
+                fetch_and_decode, t["model"], t["product"], t["cycle"],
+                t["fhr"], t["lat"], t["lon"], t["zoom_deg"],
+            ): t["key"]
+            for t in tasks
+        }
+        for fut in as_completed(futs):
+            key = futs[fut]
+            try:
+                out[key] = fut.result()
+            except Exception as e:
+                out[key] = e
+    return out
+
+
 def render_field(
     product: str,
     vals: np.ndarray,

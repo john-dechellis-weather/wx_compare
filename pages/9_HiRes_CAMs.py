@@ -68,6 +68,64 @@ def cached_routes(aircraft, bucket: str):
         return {}
 
 
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=48)
+def cached_grid_frame(
+    model_cycle_fhr: tuple,   # ((model, cycle_iso, fhr), ...)
+    product: str,
+    clat: float, clon: float, zoom: float,
+    aircraft, routes_t=tuple(),
+):
+    """One forecast frame for MANY models: all fetch+decode run
+    concurrently (the slow, parallelizable part), then panels render
+    serially. Returns {model: png | error_string}."""
+    from core.hrrr_cam import (
+        MODELS, parallel_fetch_decode, render_field,
+    )
+    from datetime import timedelta as _td
+
+    tasks = []
+    for model, cycle_iso, fhr in model_cycle_fhr:
+        tasks.append({
+            "key": model,
+            "model": model,
+            "product": product,
+            "cycle": datetime.fromisoformat(cycle_iso),
+            "fhr": fhr,
+            "lat": clat, "lon": clon, "zoom_deg": zoom,
+        })
+    data = parallel_fetch_decode(tasks)
+
+    out = {}
+    routes = _routes_from_tuple(routes_t) if routes_t else {}
+    for model, cycle_iso, fhr in model_cycle_fhr:
+        res = data.get(model)
+        if isinstance(res, Exception) or res is None:
+            out[model] = f"error: {res}"
+            continue
+        vals, lats, lons = res
+        cycle = datetime.fromisoformat(cycle_iso)
+        valid = cycle + _td(hours=fhr)
+        title = (
+            f"{MODELS[model]['label']} {cycle:%m/%d %H}Z  f{fhr:02d}  "
+            f"valid {valid:%m/%d %H}Z"
+        )
+        try:
+            out[model] = render_field(
+                product, vals, lats, lons, clat, clon, zoom, title,
+                aircraft=aircraft, routes=routes,
+            )
+        except Exception as e:
+            out[model] = f"error: {e}"
+    return out
+
+
+def _routes_from_tuple(routes_t):
+    return {
+        cs: {"label": lbl, "orig": o, "dest": d}
+        for cs, (lbl, o, d) in routes_t
+    }
+
+
 @st.cache_data(ttl=1800, show_spinner=False, max_entries=96)
 def cached_panel(
     model: str, product: str, cycle_iso: str, fhr: int,
@@ -207,6 +265,32 @@ if active:
         "VIS": "Visibility", "CEIL": "Ceiling", "GUST": "Gusts",
     }
 
+    def _panel_specs():
+        """(model, cycle_iso, clamped_fhr) for every renderable model,
+        plus per-model skip reasons."""
+        specs, notes = [], {}
+        for m in GRID_ORDER:
+            cfg = MODELS[m]
+            if not show_models.get(m):
+                notes[m] = "(unchecked in sidebar)"
+                continue
+            if product not in cfg["products"]:
+                notes[m] = (
+                    f"{PRODUCT_LABELS_SHORT.get(product, product)} is "
+                    f"not available in {cfg['label']}."
+                )
+                continue
+            fh = min(fhr_all, cfg["max_fhr"])
+            cyc = cached_model_cycle(m, fh, bucket10)
+            if cyc is None:
+                msg = f"No complete {cfg['label']} cycle found."
+                if cfg["note"]:
+                    msg += f" ({cfg['note']})"
+                notes[m] = msg
+                continue
+            specs.append((m, cyc, fh))
+        return specs, notes
+
     def render_model_panel(model: str):
         cfg = MODELS[model]
         st.markdown(f"**{cfg['label']}**")
@@ -255,12 +339,11 @@ if active:
         ]
         frames = {}      # model -> {fhr: png}
         skipped = []
-        total = sum(
-            len([h for h in hours if h <= MODELS[m]["max_fhr"]])
-            for m in active_models
-        )
-        done = 0
-        prog = st.progress(0.0, text="Preloading frames...")
+        # Phase 1: every (model, hour) fetch+decode in PARALLEL
+        from core.hrrr_cam import parallel_fetch_decode, render_field
+        from datetime import timedelta as _td
+
+        plan = []      # (model, cycle_iso, hour)
         for m in active_models:
             cfg = MODELS[m]
             mh = [h for h in hours if h <= cfg["max_fhr"]]
@@ -271,21 +354,48 @@ if active:
             if cycle_iso is None:
                 skipped.append(f"{cfg['label']}: no cycle found")
                 continue
-            frames[m] = {}
             for h in mh:
-                done += 1
-                prog.progress(
-                    done / max(total, 1),
-                    text=f"{cfg['label']} f{h:02d} ({done}/{total})",
+                plan.append((m, cycle_iso, h))
+
+        prog = st.progress(
+            0.0, text=f"Downloading {len(plan)} fields in parallel..."
+        )
+        tasks = [{
+            "key": (m, h),
+            "model": m, "product": product,
+            "cycle": datetime.fromisoformat(cyc), "fhr": h,
+            "lat": round(clat, 2), "lon": round(clon, 2),
+            "zoom_deg": zoom,
+        } for m, cyc, h in plan]
+        data = parallel_fetch_decode(tasks, max_workers=8)
+        prog.progress(0.5, text="Rendering frames...")
+
+        # Phase 2: serial renders (matplotlib), with progress
+        for i, (m, cyc, h) in enumerate(plan):
+            prog.progress(
+                0.5 + 0.5 * (i + 1) / max(len(plan), 1),
+                text=f"Rendering {MODELS[m]['label']} f{h:02d} "
+                     f"({i + 1}/{len(plan)})",
+            )
+            res = data.get((m, h))
+            if isinstance(res, Exception) or res is None:
+                continue
+            vals, lats, lons = res
+            cycle = datetime.fromisoformat(cyc)
+            valid = cycle + _td(hours=h)
+            title = (
+                f"{MODELS[m]['label']} {cycle:%m/%d %H}Z  f{h:02d}  "
+                f"valid {valid:%m/%d %H}Z"
+            )
+            try:
+                png = render_field(
+                    product, vals, lats, lons,
+                    round(clat, 2), round(clon, 2), zoom, title,
+                    aircraft=aircraft, routes=routes,
                 )
-                try:
-                    frames[m][h] = cached_panel(
-                        m, product, cycle_iso, h,
-                        round(clat, 2), round(clon, 2), zoom,
-                        aircraft, routes=routes,
-                    )
-                except Exception:
-                    continue
+            except Exception:
+                continue
+            frames.setdefault(m, {})[h] = png
         prog.empty()
         frames = {m: f for m, f in frames.items() if f}
         if skipped:
@@ -348,17 +458,49 @@ if active:
                 f"preloaded across {len(order)} model(s). Scrub away."
             )
     else:
-        # 2x2 model grid - HRRR keeps the top-right quadrant
+        # 2x2 model grid - HRRR keeps the top-right quadrant. All
+        # models' data fetches run in PARALLEL inside
+        # cached_grid_frame; panels then display from the dict.
+        specs, notes = _panel_specs()
+        routes_tuple = tuple(sorted(
+            (cs, (rt["label"], rt["orig"], rt["dest"]))
+            for cs, rt in routes.items()
+        ))
+        grid = {}
+        if specs:
+            with st.spinner(
+                f"Fetching {len(specs)} model(s) in parallel..."
+            ):
+                grid = cached_grid_frame(
+                    tuple(specs), product,
+                    round(clat, 2), round(clon, 2), zoom,
+                    aircraft, routes_t=routes_tuple,
+                )
+
+        spec_fhr = {m: fh for m, _c, fh in specs}
         top_left, top_right = st.columns(2)
         bot_left, bot_right = st.columns(2)
-        with top_left:
-            render_model_panel("nam_nest")
-        with top_right:
-            render_model_panel("hrrr")
-        with bot_left:
-            render_model_panel("hiresw_arw")
-        with bot_right:
-            render_model_panel("rrfs")
+        for m, col in (("nam_nest", top_left), ("hrrr", top_right),
+                       ("hiresw_arw", bot_left), ("rrfs", bot_right)):
+            with col:
+                cfg = MODELS[m]
+                st.markdown(f"**{cfg['label']}**")
+                if m in notes:
+                    st.caption(notes[m])
+                    continue
+                res = grid.get(m)
+                if isinstance(res, (bytes, bytearray)):
+                    if spec_fhr.get(m, fhr_all) != fhr_all:
+                        st.caption(
+                            f"f{fhr_all:02d} beyond {cfg['label']} "
+                            f"range; showing f{spec_fhr[m]:02d} "
+                            f"(its max)."
+                        )
+                    st.image(res, use_container_width=True)
+                else:
+                    st.error(f"{cfg['label']}: {res}")
+                if cfg["note"]:
+                    st.caption(cfg["note"])
 
 else:
     st.info("Enter an airport in the sidebar and click **Render**.")
