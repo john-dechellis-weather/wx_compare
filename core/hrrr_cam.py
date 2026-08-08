@@ -32,6 +32,9 @@ NOMADS = "https://nomads.ncep.noaa.gov"
 # "entire_atmosphere_(considered_as_a_single_layer)"), so fetch_field
 # tries candidates in order until one returns GRIB.
 PRODUCT_PARAMS = {
+    "REFD": ({"var_REFD": "on"}, [
+        {"lev_1000_m_above_ground": "on"},
+    ]),
     "REFC": ({"var_REFC": "on"}, [
         {"lev_entire_atmosphere": "on"},
         {"lev_entire_atmosphere_(considered_as_a_single_layer)": "on"},
@@ -46,6 +49,7 @@ PRODUCT_PARAMS = {
 }
 
 PRODUCT_LABELS = {
+    "REFD": "1 km AGL Reflectivity (dBZ)",
     "REFC": "Composite Reflectivity (dBZ)",
     "RETOP": "Echo Tops (kft)",
     "VIS": "Visibility (SM)",
@@ -55,6 +59,7 @@ PRODUCT_LABELS = {
 
 # For idx-based fetching: (grib var name, level substring to match)
 IDX_MATCHERS = {
+    "REFD": ("REFD", "1000 m above ground"),
     "REFC": ("REFC", "entire atmosphere"),
     "RETOP": ("RETOP", ""),
     "VIS": ("VIS", "surface"),
@@ -73,7 +78,7 @@ MODELS = {
                 ".grib2.idx"),
         "cycles": list(range(24)),
         "max_fhr": 18,
-        "products": {"REFC", "RETOP", "VIS", "CEIL", "GUST"},
+        "products": {"REFD", "REFC", "RETOP", "VIS", "CEIL", "GUST"},
         "note": "",
     },
     "nam_nest": {
@@ -86,7 +91,7 @@ MODELS = {
                 ".tm00.grib2.idx"),
         "cycles": [0, 6, 12, 18],
         "max_fhr": 60,
-        "products": {"REFC", "VIS", "CEIL", "GUST"},
+        "products": {"REFD", "REFC", "VIS", "CEIL", "GUST"},
         "note": "retires Oct 2026 (replaced by RRFS)",
     },
     "hiresw_arw": {
@@ -99,7 +104,7 @@ MODELS = {
                 ".conus.grib2.idx"),
         "cycles": [0, 12],
         "max_fhr": 48,
-        "products": {"REFC", "VIS", "CEIL", "GUST"},
+        "products": {"REFD", "REFC", "VIS", "CEIL", "GUST"},
         "note": "retires Oct 2026 (replaced by RRFS)",
     },
     "rrfs": {
@@ -112,7 +117,7 @@ MODELS = {
                 ".f{ff:03d}.conus.grib2.idx"),
         "cycles": [0, 6, 12, 18],
         "max_fhr": 60,
-        "products": {"REFC", "VIS", "CEIL", "GUST"},
+        "products": {"REFD", "REFC", "VIS", "CEIL", "GUST"},
         "note": ("parallel feed announced ~Aug 11 2026; "
                  "'no cycle found' is expected until it starts"),
     },
@@ -329,7 +334,7 @@ def render_field(
 
     data = np.ma.masked_invalid(vals)
 
-    if product == "REFC":
+    if product in ("REFC", "REFD"):
         from metpy.plots import colortables
         norm, cmap = colortables.get_with_steps("NWSReflectivity", 5, 5)
         # Standard CAM convention: mask < 5 dBZ so clear air stays clean

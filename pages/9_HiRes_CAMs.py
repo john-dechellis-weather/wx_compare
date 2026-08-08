@@ -160,6 +160,7 @@ with st.sidebar:
     product_label = st.selectbox(
         "Product",
         options=[
+            "1km Reflectivity",
             "Composite Reflectivity",
             "Echo Tops",
             "Visibility",
@@ -169,6 +170,7 @@ with st.sidebar:
         index=0,
     )
     PRODUCT_KEY = {
+        "1km Reflectivity": "REFD",
         "Composite Reflectivity": "REFC",
         "Echo Tops": "RETOP",
         "Visibility": "VIS",
@@ -224,6 +226,7 @@ if active:
     from core.hrrr_cam import MODELS
 
     PRODUCT_LABELS_SHORT = {
+        "REFD": "1km reflectivity",
         "REFC": "Composite reflectivity", "RETOP": "Echo tops",
         "VIS": "Visibility", "CEIL": "Ceiling", "GUST": "Gusts",
     }
