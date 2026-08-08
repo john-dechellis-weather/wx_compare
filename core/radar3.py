@@ -224,6 +224,8 @@ def render_l3(
     other_aircraft=None,        # list[AircraftPos] (blue)
     title_note: str = "",
     trail=None,                 # [(lat, lon), ...] flight path so far
+    others_trails=None,         # {callsign: [(lat, lon), ...]}
+    routes=None,                # {callsign: {"orig", "dest", "label"}}
 ) -> bytes:
     import matplotlib
     matplotlib.use("Agg")
@@ -326,6 +328,30 @@ def render_l3(
         ax.annotate(lbl, xy=(ac.lon, ac.lat), xytext=(5, 5),
                     textcoords="offset points", fontsize=7,
                     fontweight="bold", color="#0000CC", zorder=10)
+
+    target_cs = getattr(target_aircraft, "callsign", None)
+
+    # Route arcs (origin -> destination great circles): where each
+    # aircraft is GOING, dotted to contrast with the dashed been-trails
+    for _cs, _rt in (routes or {}).items():
+        (_ola, _olo), (_dla, _dlo) = _rt["orig"], _rt["dest"]
+        _is_t = (target_cs is not None and _cs == target_cs)
+        ax.plot(
+            [_olo, _dlo], [_ola, _dla],
+            color=("red" if _is_t else "#0000CC"),
+            linewidth=(1.3 if _is_t else 0.8), linestyle=":",
+            alpha=(0.7 if _is_t else 0.45), zorder=8,
+            transform=ccrs.Geodetic(),
+        )
+
+    # Other-aircraft trails (thin blue, under everything)
+    for _cs, _tr in (others_trails or {}).items():
+        if _tr and len(_tr) >= 2:
+            ax.plot(
+                [p[1] for p in _tr], [p[0] for p in _tr],
+                color="#0000CC", linewidth=0.8, linestyle="--",
+                alpha=0.45, zorder=7, transform=ccrs.PlateCarree(),
+            )
 
     # Flight path trail (dashed, under the target marker)
     if trail and len(trail) >= 2:

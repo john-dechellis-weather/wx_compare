@@ -93,6 +93,8 @@ def fetch_and_render_radar_loop(
     overlay_aircraft: list | None = None,
     overlay_fn=None,
     trail=None,
+    others_trails=None,
+    routes=None,
 ) -> tuple[list[tuple[bytes, str]], list[tuple[bytes, str]]]:
     """Fetch all Level II volumes in [start, start+duration], render each."""
     start = start_time.replace(tzinfo=None)
@@ -126,6 +128,8 @@ def fetch_and_render_radar_loop(
                 include_velocity=include_velocity,
                 overlay_aircraft=frame_overlay,
                 trail=trail,
+                others_trails=others_trails,
+                routes=routes,
             )
         except Exception:
             continue
@@ -272,6 +276,8 @@ def _download_and_render(
     overlay_aircraft: list | None = None,
     return_geo: bool = False,
     trail=None,
+    others_trails=None,
+    routes=None,
 ):
     """Download one volume over HTTPS, render REF and VEL. With
     return_geo, returns (refl_png, vel_png, name, geo, px_box)."""
@@ -305,6 +311,7 @@ def _download_and_render(
                 overlay_aircraft=overlay_aircraft,
                 cbar_label="Reflectivity (dBZ)", volume_name=name,
                 return_geo=True, trail=trail,
+                others_trails=others_trails, routes=routes,
             )
         else:
             refl_png = _render_sweep(
@@ -313,7 +320,8 @@ def _download_and_render(
                 product="REF", title_prefix="Base Reflectivity (0.5°)",
                 overlay_aircraft=overlay_aircraft,
                 cbar_label="Reflectivity (dBZ)", volume_name=name,
-                trail=trail,
+                trail=trail, others_trails=others_trails,
+                routes=routes,
             )
 
         vel_png = b""
@@ -365,6 +373,8 @@ def _render_sweep(
     overlay_aircraft=None,
     return_geo: bool = False,
     trail=None,
+    others_trails=None,
+    routes=None,
 ):
     """Render one sweep to PNG bytes with the shared BlueMet radar styling."""
     from metpy.calc import azimuth_range_to_lat_lon
@@ -440,6 +450,30 @@ def _render_sweep(
     gl.right_labels = False
     gl.xlabel_style = {"size": 9}
     gl.ylabel_style = {"size": 9}
+
+    target_cs = callsign
+
+    # Route arcs (origin -> destination great circles): where each
+    # aircraft is GOING, dotted to contrast with the dashed been-trails
+    for _cs, _rt in (routes or {}).items():
+        (_ola, _olo), (_dla, _dlo) = _rt["orig"], _rt["dest"]
+        _is_t = (target_cs is not None and _cs == target_cs)
+        ax.plot(
+            [_olo, _dlo], [_ola, _dla],
+            color=("red" if _is_t else "#0000CC"),
+            linewidth=(1.3 if _is_t else 0.8), linestyle=":",
+            alpha=(0.7 if _is_t else 0.45), zorder=8,
+            transform=ccrs.Geodetic(),
+        )
+
+    # Other-aircraft trails (thin blue, under everything)
+    for _cs, _tr in (others_trails or {}).items():
+        if _tr and len(_tr) >= 2:
+            ax.plot(
+                [p[1] for p in _tr], [p[0] for p in _tr],
+                color="#0000CC", linewidth=0.8, linestyle="--",
+                alpha=0.45, zorder=8, transform=ccrs.PlateCarree(),
+            )
 
     # Flight path trail (dashed, under the aircraft marker)
     if trail and len(trail) >= 2:

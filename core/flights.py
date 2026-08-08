@@ -69,6 +69,7 @@ def _try_adsb_lol(lat, lon, radius_nm, prefix) -> Optional[list[AircraftPos]]:
                 lon=float(plon),
                 alt_ft=alt_ft,
                 heading_deg=float(trk) if trk is not None else None,
+                hex=(p.get("hex") or "").strip().lower() or None,
             ))
         return out
     except Exception:
@@ -579,3 +580,75 @@ def fetch_routes(planes: list[AircraftPos]) -> dict:
     except Exception as e:
         _route_error["msg"] = f"{type(e).__name__}: {e}"
         return {}
+
+
+def fetch_fleet_trails(
+    planes: list[AircraftPos],
+    track_dir: Path,
+) -> tuple[dict, str]:
+    """Trails for every aircraft: OpenSky tracks in parallel (with a
+    circuit breaker - if the first probes fail, OpenSky is skipped for
+    the rest), self-recorded trail as per-aircraft fallback. Always
+    banks current positions so fallback trails grow regardless.
+
+    Returns ({callsign: tuple((lat, lon), ...)}, summary_string).
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    # Bank everyone's current fix first (cheap, powers the fallback)
+    for p in planes:
+        try:
+            record_track_point(track_dir, p.callsign, p.lat, p.lon)
+        except Exception:
+            pass
+
+    trails: dict = {}
+    n_open = n_self = 0
+
+    # Circuit-breaker probe: try OpenSky on the first two hexed planes
+    probeable = [p for p in planes if p.hex]
+    opensky_alive = False
+    for p in probeable[:2]:
+        pts = fetch_track_opensky(p.hex)
+        if pts and len(pts) >= 2:
+            trails[p.callsign] = tuple(pts)
+            n_open += 1
+            opensky_alive = True
+    if opensky_alive:
+        remaining = [
+            p for p in probeable if p.callsign not in trails
+        ]
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            futs = {
+                ex.submit(fetch_track_opensky, p.hex): p
+                for p in remaining
+            }
+            for fut in as_completed(futs):
+                p = futs[fut]
+                try:
+                    pts = fut.result()
+                except Exception:
+                    pts = None
+                if pts and len(pts) >= 2:
+                    trails[p.callsign] = tuple(pts)
+                    n_open += 1
+
+    # Self-recorded fallback for everyone still trail-less
+    for p in planes:
+        if p.callsign in trails:
+            continue
+        own = load_track(track_dir, p.callsign)
+        if len(own) >= 2:
+            trails[p.callsign] = tuple(own)
+            n_self += 1
+
+    if n_open and n_self:
+        summary = f"{n_open} OpenSky, {n_self} self-recorded"
+    elif n_open:
+        summary = f"{n_open} OpenSky"
+    elif n_self:
+        summary = (f"{n_self} self-recorded "
+                   "(OpenSky unreachable; trails grow while tracking)")
+    else:
+        summary = "none yet (trails build as the page refreshes)"
+    return trails, summary

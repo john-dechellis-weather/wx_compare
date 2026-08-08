@@ -110,6 +110,8 @@ def render_infrared(
     callsign: str,
     lightning=None,
     trail=None,
+    others_trails=None,
+    routes=None,
 ) -> bytes:
     """Render Clean IR (Band 13) plot with aircraft marker. Returns PNG bytes."""
     ir_raw = ds["CMI_C13"].values
@@ -145,6 +147,8 @@ def render_infrared(
         cbar_label="Brightness Temperature (K)",
         lightning=lightning,
         trail=trail,
+        others_trails=others_trails,
+        routes=routes,
     )
 
 
@@ -165,6 +169,8 @@ def _render_plot(
     cbar_label: Optional[str],
     lightning=None,
     trail=None,
+    others_trails=None,
+    routes=None,
 ) -> bytes:
     """Shared rendering function for both True Color and IR plots."""
     import matplotlib.pyplot as plt
@@ -266,6 +272,30 @@ def _render_plot(
     gl.right_labels = False
     gl.xlabel_style = {"size": 9, "color": "white"}
     gl.ylabel_style = {"size": 9, "color": "white"}
+
+    target_cs = callsign
+
+    # Route arcs (origin -> destination great circles): where each
+    # aircraft is GOING, dotted to contrast with the dashed been-trails
+    for _cs, _rt in (routes or {}).items():
+        (_ola, _olo), (_dla, _dlo) = _rt["orig"], _rt["dest"]
+        _is_t = (target_cs is not None and _cs == target_cs)
+        ax.plot(
+            [_olo, _dlo], [_ola, _dla],
+            color=("red" if _is_t else "#00CCCC"),
+            linewidth=(1.3 if _is_t else 0.8), linestyle=":",
+            alpha=(0.7 if _is_t else 0.45), zorder=8,
+            transform=ccrs.Geodetic(),
+        )
+
+    # Other-aircraft trails (thin blue, under everything)
+    for _cs, _tr in (others_trails or {}).items():
+        if _tr and len(_tr) >= 2:
+            ax.plot(
+                [p[1] for p in _tr], [p[0] for p in _tr],
+                color="#00CCCC", linewidth=0.8, linestyle="--",
+                alpha=0.5, zorder=7, transform=ccrs.PlateCarree(),
+            )
 
     # Flight path trail (dashed red, under markers)
     if trail and len(trail) >= 2:
