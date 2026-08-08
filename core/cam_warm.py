@@ -35,8 +35,12 @@ HUBS = {
 WARM_ZOOM = 2.5
 WARM_PRODUCT = "REFC"
 WARM_HOURS = list(range(0, 13))
-WARM_MODELS = ["hrrr", "nam_nest", "hiresw_arw", "rrfs"]
-CHECK_INTERVAL_S = 300
+# HRRR only: its hub fetches are small filter subregions. The idx
+# models decode full-CONUS grids, and warming several concurrently
+# inside the web process can OOM a small instance (-> 502 crash
+# loop). Re-expand only with instance headroom.
+WARM_MODELS = ["hrrr"]
+CHECK_INTERVAL_S = 600
 
 _started = False
 _lock = threading.Lock()
@@ -123,7 +127,7 @@ def _warm_model(cache_root: Path, model: str, log) -> None:
                 "cycle": cyc, "fhr": h,
                 "lat": lat, "lon": lon, "zoom_deg": WARM_ZOOM,
             })
-    data = parallel_fetch_decode(tasks, max_workers=6)
+    data = parallel_fetch_decode(tasks, max_workers=2)
 
     n_ok = 0
     for icao, (lat, lon) in HUBS.items():
@@ -147,7 +151,10 @@ def _warm_model(cache_root: Path, model: str, log) -> None:
             _frame_path(cache_root, model, cycle_iso, icao,
                         h).write_bytes(png)
             n_ok += 1
-            time.sleep(0.05)   # stay polite to user requests
+            del png, vals, lats, lons
+            import gc
+            gc.collect()
+            time.sleep(0.25)   # stay polite to user requests
 
     _manifest_path(cache_root, model).write_text(json.dumps({
         "cycle": cycle_iso,
@@ -155,6 +162,7 @@ def _warm_model(cache_root: Path, model: str, log) -> None:
         "frames": n_ok,
         "warmed_at": datetime.now(timezone.utc).isoformat(),
     }))
+    data.clear()
     log(f"warmed {model}: {n_ok} frames")
 
     # Prune older cycle dirs for this model (keep the newest 2)
@@ -196,7 +204,11 @@ def _daemon(cache_root: Path) -> None:
 
 def ensure_warmer_started(cache_root: Path) -> None:
     """Idempotent: starts the background warmer thread once per
-    process. Safe to call on every page run."""
+    process. Safe to call on every page run. Set env CAM_WARMER=off
+    to disable entirely (kill switch)."""
+    import os
+    if os.environ.get("CAM_WARMER", "on").lower() == "off":
+        return
     global _started
     with _lock:
         if _started:

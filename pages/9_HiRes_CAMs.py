@@ -81,7 +81,7 @@ def cached_grid_frame(
             "fhr": fhr,
             "lat": clat, "lon": clon, "zoom_deg": zoom,
         })
-    data = parallel_fetch_decode(tasks)
+    data = parallel_fetch_decode(tasks, max_workers=2)
 
     out = {}
     for model, cycle_iso, fhr in model_cycle_fhr:
@@ -313,7 +313,7 @@ if active:
             "lat": round(clat, 2), "lon": round(clon, 2),
             "zoom_deg": zoom,
         } for m, cyc, h in plan]
-        data = parallel_fetch_decode(tasks, max_workers=8)
+        data = parallel_fetch_decode(tasks, max_workers=3)
         prog.progress(0.5, text="Rendering frames...")
 
         # Phase 2: serial renders (matplotlib), with progress
