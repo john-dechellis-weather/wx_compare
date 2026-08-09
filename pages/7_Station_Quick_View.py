@@ -1,21 +1,24 @@
-"""Airport Alerts — flags stations whose TAFs forecast VIS/CIG/TSRA
-below thresholds within a user-selected time window.
+"""Station Quick View — one-airport operational dashboard.
 
-Uses AWC's API + avwx-engine (see core/taf.py) for TAF parsing.
+Sections: current METAR, current TAF, live radar (NWS RIDGE loop OR raw
+Level II frames rendered from volume data), hourly NBM table, NOTAMs.
 
-Tables are hand-built HTML with inline styles (terminal green-on-black,
-matching the MOS Tables page) because st.dataframe ignores page CSS.
-Critical severity — vis < 1 sm or ceiling < 400 ft — highlights the
-ICAO and value cells in red.
+Architecture note: the Refresh button commits the station to
+st.session_state and the display gates on that (not on the button), so
+widget interactions like the Level II frame slider rerun the page
+without blanking it — every fetcher is cached, so reruns are instant.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
+import pandas as pd
+import requests
 import streamlit as st
 
 st.set_page_config(
-    page_title="BlueMet — Airport Alerts",
+    page_title="BlueMet — Station Quick View",
     layout="wide",
 )
 
@@ -26,465 +29,686 @@ from auth import check_password
 check_password()
 
 
-# ---------------------------------------------------------------------------
-# JetBlue destinations — static list
-# ---------------------------------------------------------------------------
-JETBLUE_ICAOS = [
-    # Northeast US
-    "KJFK", "KEWR", "KLGA", "KHPN", "KISP", "KPHL", "KBOS", "KORH", "KBDL",
-    "KPVD", "KPWM", "KPQI", "KACK", "KHYA", "KMVY", "KALB", "KSYR", "KROC",
-    "KBUF", "KPIT",
-    # Mid-Atlantic
-    "KDCA", "KBWI", "KRIC", "KORF", "KILM", "KRDU", "KCLT", "KCHS", "KSAV",
-    # Southeast + Florida
-    "KJAX", "KVPS", "KVRB", "KMCO", "KDAB", "KTPA", "KSRQ", "KRSW", "KDJT",
-    "KDJT", "KFLL", "KEYW",
-    # Midwest
-    "KORD", "KMKE", "KTVC", "KDTW", "KCLE", "KBNA", "KATL", "KMSY",
-    # Central / Texas
-    "KDFW", "KAUS", "KIAH", "KABQ", "KPHX",
-    # SoCal
-    "KBUR", "KLAX", "KSAN", "KONT", "KLAS",
-    # Northwest / Mountain
-    "KSFO", "KRNO", "KSMF", "KSLC", "KBZN", "KDEN", "KHDN", "KSEA", "KPDX",
-    "CYVR",
-    # Caribbean / Bermuda / Bahamas
-    "TXKF", "MYNN", "MBPV", "TJSJ", "TJPS", "TJBQ", "TIST", "TISX", "TNCM",
-    "TKPK", "TAPA", "TLPL", "TVSA", "TBPB", "TGPY", "TTPP",
-    # Guyana + Dominican Republic
-    "SYCJ", "MDST", "MDSD", "MDPP", "MDPC",
-    # Curacao / Aruba / Bonaire / Jamaica / Costa Rica
-    "TNCA", "TNCC", "TNCB", "MKJP", "MKJS", "MWCR",
-    # Colombia, Ecuador, Costa Rica, Guatemala, Belize, Honduras, Mexico
-    "SKCG", "SKRG", "SEGU", "MROC", "MRLB", "MGGT", "MZBZ", "MHLM",
-    "MMUN", "MMSD",
-    # Europe
-    "EGLL", "EGKK", "EIDW", "EGPF", "LFPG", "EHAM", "LEMD", "LEBL", "LIMC",
-    # Additional Colombia + Brazil
-    "SKCL", "SBAQ",
-    # Mid-Atlantic + Ohio / Indiana
-    "KCMH", "KIND",
-]
+_persistent = Path("/opt/render/project/src/cache")
+CACHE_ROOT = _persistent if _persistent.exists() else Path("/tmp/wx_compare_cache")
+CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 
-# Critical-severity thresholds (fixed): red highlight in tables
-CRITICAL_VIS_SM = 1.0
-CRITICAL_CIG_FT = 400
+_HEADERS = {"User-Agent": "BlueMet/1.0 (aviation weather tool)"}
+
+RADAR_FOR_AIRPORT = {
+    "KJFK": "KOKX", "KLGA": "KOKX", "KHPN": "KOKX", "KISP": "KOKX",
+    "KEWR": "KDIX", "KPHL": "KDIX",
+    "KBOS": "KBOX", "KPVD": "KBOX", "KORH": "KBOX",
+    "KDCA": "KLWX", "KBWI": "KLWX", "KIAD": "KLWX",
+    "KRIC": "KAKQ", "KORF": "KAKQ",
+    "KCLT": "KGSP", "KRDU": "KRAX", "KCHS": "KCLX", "KSAV": "KCLX",
+    "KJAX": "KJAX", "KMCO": "KMLB", "KDAB": "KMLB",
+    "KTPA": "KTBW", "KSRQ": "KTBW", "KRSW": "KTBW",
+    "KPBI": "KAMX", "KDJT": "KAMX", "KFLL": "KAMX", "KMIA": "KAMX",
+    "KEYW": "KBYX",
+    "KATL": "KFFC", "KMSY": "KLIX", "KBNA": "KOHX",
+    "KORD": "KLOT", "KMKE": "KMKX", "KDTW": "KDTX", "KCLE": "KCLE",
+    "KPIT": "KPBZ", "KBUF": "KBUF", "KROC": "KBUF",
+    "KDFW": "KFWS", "KIAH": "KHGX", "KAUS": "KEWX",
+    "KDEN": "KFTG", "KSLC": "KMTX", "KPHX": "KIWA", "KLAS": "KESX",
+    "KABQ": "KABX", "KSAN": "KNKX", "KSFO": "KMUX", "KSMF": "KDAX",
+    "KRNO": "KRGX", "KSEA": "KATX", "KPDX": "KRTX",
+    "TJSJ": "TJUA",
+}
 
 
 # ---------------------------------------------------------------------------
-# Terminal-style HTML table builders (st.dataframe ignores page CSS)
+# Data fetchers (all cached — reruns from widget interaction are instant)
 # ---------------------------------------------------------------------------
-_GREEN = "#00FF00"
-_BLACK = "#000000"
-_RED = "#CC0000"
-_WHITE = "#FFFFFF"
-_FONT = "'Courier New', Courier, monospace"
+@st.cache_data(ttl=300, show_spinner=False, max_entries=30)
+def cached_metar_history(icao: str, hours_back: int):
+    """All obs in the lookback window, oldest -> newest."""
+    from core.metar import fetch_metars
+
+    by_station = fetch_metars([icao], hours_back=hours_back)
+    return by_station.get(icao.upper(), [])
 
 
-def _td(text, bg=_BLACK, fg=_WHITE, bold=False, align="left") -> str:
-    weight = "bold" if bold else "normal"
+@st.cache_data(ttl=300, show_spinner=False, max_entries=30)
+def cached_taf_raw(icao: str) -> str | None:
+    try:
+        r = requests.get(
+            "https://aviationweather.gov/api/data/taf",
+            params={"ids": icao, "format": "raw"},
+            headers=_HEADERS,
+            timeout=30,
+        )
+        r.raise_for_status()
+        text = r.text.strip()
+        return text or None
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=600, show_spinner=False, max_entries=30)
+def cached_station_coords(icao: str):
+    from core.stations import StationResolver
+
+    resolver = StationResolver(cache_dir=CACHE_ROOT / "stations")
+    resolved, _ = resolver.resolve_many([icao])
+    if not resolved:
+        return None
+    stn = resolved[0]
+    return float(stn.lat), float(stn.lon)
+
+
+def _frames_to_gif(
+    frames: list[tuple[bytes, str]],
+    width: int = 800,
+    frame_ms: int = 450,
+    last_hold_ms: int = 1400,
+) -> bytes:
+    """Stitch rendered PNG frames into a looping radar-style GIF.
+    Downscaled for fast loading; newest frame held longer, like RIDGE."""
+    from io import BytesIO
+    from PIL import Image
+
+    imgs = []
+    for png, _name in frames:
+        im = Image.open(BytesIO(png)).convert("RGB")
+        w, h = im.size
+        if w > width:
+            im = im.resize((width, int(h * width / w)), Image.LANCZOS)
+        imgs.append(im.quantize(colors=256))
+    durations = [frame_ms] * (len(imgs) - 1) + [last_hold_ms]
+    buf = BytesIO()
+    imgs[0].save(
+        buf,
+        format="GIF",
+        save_all=True,
+        append_images=imgs[1:],
+        duration=durations,
+        loop=0,
+        disposal=2,
+    )
+    return buf.getvalue()
+
+
+@st.cache_data(ttl=300, show_spinner=False, max_entries=5)
+def cached_live_l2(
+    icao: str, radar_site: str, zoom_deg: float, bucket: str,
+    overlay_flights: bool = False,
+):
+    """Last ~45 min of Level II reflectivity as 1-minute sub-frames:
+    radar advances per scan (~5 min), aircraft advance per minute via
+    interpolated self-recorded snapshots. Returns (frames, gif, mode)."""
+    from core.radar import fetch_and_render_base_frames, composite_aircraft
+
+    coords = cached_station_coords(icao)
+    if coords is None:
+        raise ValueError(f"Cannot resolve coordinates for {icao}.")
+    lat, lon = coords
+
+    site = radar_site
+    if len(site) == 4 and site.startswith("K"):
+        site = site[1:]
+
+    start = datetime.now(timezone.utc) - timedelta(minutes=45)
+    base = fetch_and_render_base_frames(
+        start_time=start,
+        duration_min=45,
+        center_lat=lat,
+        center_lon=lon,
+        label=icao,
+        station=site,
+        zoom_deg=zoom_deg,
+    )
+    if not base:
+        return [], b"", "no radar volumes"
+
+    overlay_mode = "off"
+    frames: list[tuple[bytes, str]] = []
+
+    if not overlay_flights:
+        frames = [(b["png"], b["name"]) for b in base]
+    else:
+        try:
+            from core.flights import (
+                fetch_positions_near,
+                record_snapshot,
+                interpolate_at,
+                positions_at_time,
+            )
+            hist_dir = CACHE_ROOT / "flights"
+            current = fetch_positions_near(lat, lon, radius_deg=zoom_deg)
+            record_snapshot(hist_dir, icao, current)
+
+            # Sub-frame timeline: every minute from first scan to now
+            t0 = base[0]["scan_time"].timestamp()
+            t1 = datetime.now(timezone.utc).timestamp()
+            n_interp = 0
+            t = t0
+            while t <= t1:
+                # radar frame: latest scan at or before t
+                b = base[0]
+                for cand in base:
+                    if cand["scan_time"].timestamp() <= t:
+                        b = cand
+                    else:
+                        break
+                planes = interpolate_at(hist_dir, icao, t, tolerance_s=240)
+                if planes is None:
+                    planes = current
+                else:
+                    n_interp += 1
+                png = composite_aircraft(b["png"], b["geo"], b["px"], planes)
+                tstr = datetime.fromtimestamp(
+                    t, tz=timezone.utc
+                ).strftime("%H:%MZ")
+                frames.append((png, f"{tstr} \u00b7 {b['name']}"))
+                t += 60
+            n_total = len(frames)
+            overlay_mode = (
+                f"interpolated history ({n_interp}/{n_total} sub-frames "
+                f"from snapshots, rest use current; {len(current)} JBU "
+                "live). Fills in with continued use."
+            )
+        except Exception as e:
+            frames = [(b["png"], b["name"]) for b in base]
+            overlay_mode = f"failed ({type(e).__name__}: {e})"
+
+    # Faster flip for the denser timeline
+    gif = (
+        _frames_to_gif(frames, frame_ms=160, last_hold_ms=1200)
+        if len(frames) > 1 else b""
+    )
+    return frames, gif, overlay_mode
+
+
+@st.cache_data(ttl=600, show_spinner=False, max_entries=20)
+def cached_nbh_table(icao: str) -> pd.DataFrame:
+    from compare import compare_icaos
+    from core.stations import StationResolver
+    from core.cycle_select import find_latest_complete
+    from models import Nbm
+
+    resolver = StationResolver(cache_dir=CACHE_ROOT / "stations")
+    resolved_pre, _ = resolver.resolve_many([icao])
+    if not resolved_pre:
+        return pd.DataFrame()
+    cycle = find_latest_complete(
+        [Nbm(cache_dir=CACHE_ROOT / "nbm")], verbose=False
+    )
+    if cycle is None:
+        return pd.DataFrame()
+
+    df_long, resolved, _ = compare_icaos(
+        icaos=[icao],
+        cycle=cycle,
+        cache_root=CACHE_ROOT,
+        model_classes=[Nbm],
+    )
+    if not resolved or len(df_long) == 0:
+        return pd.DataFrame()
+
+    m = df_long[
+        (df_long["station_id"] == icao.upper())
+        & (df_long["model"] == "NBM")
+    ].sort_values("valid_time")
+    rows = []
+    for _, r in m.iterrows():
+        fhr = int((r["valid_time"] - cycle).total_seconds() // 3600)
+        if fhr > 25:
+            continue
+        rows.append({
+            "valid_time": r["valid_time"], "fhr": fhr,
+            "vis_sm": r.get("vsby_sm"),
+            "cig_ft": r.get("ceiling_ft"),
+            "cig_unl": r.get("ceiling_unlimited"),
+            "wdr": r.get("wind_dir_deg"),
+            "wsp": r.get("wind_speed_kt"),
+            "gst": r.get("wind_gust_kt"),
+        })
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=300, show_spinner=False, max_entries=12)
+def cached_jbu_movements(icao: str, hours_back: int, bucket: str):
+    from core.flights import (
+        fetch_airport_flights, last_airport_flights_error,
+    )
+    import time as _time
+    end = int(_time.time())
+    begin = end - hours_back * 3600
+    rows = fetch_airport_flights(icao, begin, end)
+    return rows, last_airport_flights_error()
+
+
+@st.cache_data(ttl=600, show_spinner=False, max_entries=20)
+def cached_notams(icao: str):
+    """FAA NOTAM Search JSON endpoint — unofficial.
+    Returns (rows, None) on success or (None, error_detail) on failure
+    so the page can show WHY it failed (status code vs timeout vs schema)."""
+    try:
+        r = requests.post(
+            "https://notams.aim.faa.gov/notamSearch/search",
+            data={"searchType": "0", "designatorsForLocation": icao},
+            headers=_HEADERS,
+            timeout=30,
+        )
+        if r.status_code != 200:
+            return None, f"HTTP {r.status_code} from notams.aim.faa.gov"
+        try:
+            payload = r.json()
+        except ValueError:
+            snippet = r.text[:120].replace("\n", " ")
+            return None, f"Non-JSON response (starts: {snippet!r})"
+        items = payload.get("notamList", [])
+        out = []
+        for it in items:
+            out.append({
+                "number": it.get("notamNumber", ""),
+                "text": (it.get("icaoMessage") or it.get("traditionalMessage")
+                         or it.get("plainLanguageMessage") or "").strip(),
+            })
+        return out, None
+    except requests.Timeout:
+        return None, "Timeout after 30s"
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Rendering helpers (terminal styling, sanitizer-proof: no !important)
+# ---------------------------------------------------------------------------
+def _cell(text, bg="#FFFFFF", fg="#000000", bold=False):
+    weight = "bold" if bold or bg != "#FFFFFF" else "normal"
     return (
-        f'<td style="background-color:{bg}; color:{fg}; -webkit-text-fill-color:{fg}; '
-        f"font-family:{_FONT}; font-size:11px; padding:3px 10px; "
-        f"border:1px solid {_GREEN}; font-weight:{weight}; "
-        f'text-align:{align}; white-space:nowrap;">{text}</td>'
+        f'<td style="background:{bg};color:{fg};'
+        f'-webkit-text-fill-color:{fg};'
+        f'font-family:Courier New,monospace;font-size:9px;'
+        f'font-weight:{weight};padding:2px 3px;text-align:center;'
+        f'border:1px solid #000000;white-space:nowrap;min-width:38px;">'
+        f"{text}</td>"
     )
 
 
-def _th(text, align="left") -> str:
+def _rowlabel(text):
     return (
-        f'<td style="background-color:{_BLACK}; color:{_WHITE}; '
-        f"-webkit-text-fill-color:{_WHITE}; "
-        f"font-family:{_FONT}; font-size:11px; padding:4px 10px; "
-        f"border:1px solid {_GREEN}; font-weight:bold; "
-        f'text-align:{align}; text-decoration:underline; '
-        f'white-space:nowrap;">{text}</td>'
+        f'<th style="background:#E0E0E0;color:#000000;'
+        f'-webkit-text-fill-color:#000000;'
+        f'font-family:Courier New,monospace;font-size:9px;font-weight:bold;'
+        f'padding:2px 4px;text-align:left;border:1px solid #000000;'
+        f'white-space:nowrap;min-width:60px;">{text}</th>'
     )
 
 
-def _table(header_cells: list[str], body_rows: list[str]) -> str:
-    return (
-        f'<table style="border-collapse:collapse; background-color:{_BLACK}; '
-        f'border:2px solid {_GREEN}; width:100%;">'
-        f"<tr>{''.join(header_cells)}</tr>"
-        f"{''.join(body_rows)}"
-        f"</table>"
-    )
+def _vis_colors(v):
+    if v is None or pd.isna(v): return None
+    if v <= 0.5: return ("#FF80FF", "#000000")
+    if v < 1: return ("#FF4040", "#000000")
+    if v < 2: return ("#FF9900", "#000000")
+    if v < 3: return ("#FFFF00", "#000000")
+    return None
 
 
-def _no_alerts() -> str:
-    return (
-        f'<div style="background-color:{_BLACK}; border:2px solid {_GREEN}; '
-        f"color:{_WHITE}; -webkit-text-fill-color:{_WHITE}; font-family:{_FONT}; font-size:11px; "
-        f'padding:6px 10px;">NO AIRPORTS FLAGGED</div>'
-    )
+def _cig_colors(c, u):
+    if u is True or c is None or pd.isna(c): return None
+    if c < 400: return ("#FF80FF", "#000000")
+    if c <= 1000: return ("#FF4040", "#000000")
+    if c <= 2000: return ("#FF9900", "#000000")
+    if c < 3000: return ("#FFFF00", "#000000")
+    return None
 
 
-def _fmt_vis(v: float) -> str:
-    """0.5 -> '0.5', 2.0 -> '2', 1.75 -> '1.75'."""
+def _wind_colors(w):
+    if w is None or pd.isna(w): return None
+    if w >= 40: return ("#FF80FF", "#000000")
+    if w >= 35: return ("#FF4040", "#000000")
+    if w >= 30: return ("#FF9900", "#000000")
+    if w >= 25: return ("#FFFF00", "#000000")
+    return None
+
+
+def _gust_colors(g):
+    if g is None or pd.isna(g): return None
+    if g >= 35: return ("#FF4040", "#000000")
+    if g >= 25: return ("#FF9900", "#000000")
+    return None
+
+
+def _fmt_vis(v):
+    if v is None or pd.isna(v): return "-"
     return f"{v:g}"
 
 
-def render_vis_table(alerts) -> str:
-    header = [_th("ICAO"), _th("MIN VIS (SM)", align="right"), _th("WORST PERIOD")]
-    rows = []
-    for a in alerts:
-        critical = a.min_vis_sm < CRITICAL_VIS_SM
-        bg = _RED if critical else _BLACK
-        fg = _WHITE
-        rows.append(
-            "<tr>"
-            + _td(a.icao, bg=bg, fg=fg, bold=critical)
-            + _td(_fmt_vis(a.min_vis_sm), bg=bg, fg=fg, bold=critical, align="right")
-            + _td(a.worst_period_label)
-            + "</tr>"
-        )
-    return _table(header, rows)
-
-
-def render_ceiling_table(alerts) -> str:
-    header = [_th("ICAO"), _th("MIN CIG (FT)", align="right"), _th("WORST PERIOD")]
-    rows = []
-    for a in alerts:
-        critical = a.min_ceiling_ft < CRITICAL_CIG_FT
-        bg = _RED if critical else _BLACK
-        fg = _WHITE
-        rows.append(
-            "<tr>"
-            + _td(a.icao, bg=bg, fg=fg, bold=critical)
-            + _td(str(a.min_ceiling_ft), bg=bg, fg=fg, bold=critical, align="right")
-            + _td(a.worst_period_label)
-            + "</tr>"
-        )
-    return _table(header, rows)
-
-
-def render_wind_table(alerts) -> str:
-    header = [_th("ICAO"), _th("WIND (KT)", align="right"), _th("WORST PERIOD")]
-    rows = []
-    for a in alerts:
-        rows.append(
-            "<tr>"
-            + _td(a.icao, bold=True)
-            + _td(a.wind_str, bold=True, align="right")
-            + _td(a.worst_period_label)
-            + "</tr>"
-        )
-    return _table(header, rows)
-
-
-def render_tsra_table(alerts) -> str:
-    header = [_th("ICAO"), _th("CODE"), _th("PERIOD")]
-    rows = []
-    for a in alerts:
-        rows.append(
-            "<tr>"
-            + _td(a.icao)
-            + _td(a.weather_code)
-            + _td(a.period_label)
-            + "</tr>"
-        )
-    return _table(header, rows)
-
-
-def _fmt_vis_obs(v) -> str:
-    if v is None:
-        return "-"
-    return f"{v:g}"
-
-
-def _fmt_cig_obs(c, unl) -> str:
-    if unl or c is None:
-        return "UNL"
+def _fmt_cig(c, u):
+    if u is True: return "UNL"
+    if c is None or pd.isna(c): return "-"
     return f"{int(round(c / 100)):03d}"
 
 
-def _fmt_wind_obs(spd, gst) -> str:
-    if spd is None:
-        return "-"
-    s = f"{int(spd):02d}"
-    return f"{s}G{int(gst):02d}" if gst else s
+def _fmt_wdr(d):
+    if d is None or pd.isna(d): return "VRB"
+    return f"{int(d):03d}"
 
 
-def render_metar_table(rows) -> str:
-    """rows: list of dicts with icao, obs_time, vis, cig, cig_unl, spd, gst,
-    raw, and breach flags vis_bad/cig_bad/wind_bad."""
-    header = [_th("ICAO"), _th("TIME"), _th("VIS", align="right"),
-              _th("CIG", align="right"), _th("WIND", align="right"),
-              _th("RAW METAR")]
-    body = []
-    for r in rows:
-        def cell(text, bad, align="right"):
-            if bad:
-                return _td(text, bg=_RED, fg=_WHITE, bold=True, align=align)
-            return _td(text, align=align)
-        body.append(
-            "<tr>"
-            + _td(r["icao"], bold=True)
-            + _td(r["obs_time"].strftime("%H:%MZ"))
-            + cell(_fmt_vis_obs(r["vis"]), r["vis_bad"])
-            + cell(_fmt_cig_obs(r["cig"], r["cig_unl"]), r["cig_bad"])
-            + cell(_fmt_wind_obs(r["spd"], r["gst"]), r["wind_bad"])
-            + _td(r["raw"])
-            + "</tr>"
+def _fmt_kt(x):
+    if x is None or pd.isna(x): return "-"
+    return f"{int(x):02d}"
+
+
+def build_nbh_table(df_m: pd.DataFrame) -> str:
+    header = [_rowlabel("Field")]
+    for t in df_m["valid_time"]:
+        tstr = pd.to_datetime(t).strftime("%m/%d<br>%HZ")
+        header.append(
+            f'<th style="background:#E0E0E0;color:#000000;'
+            f'-webkit-text-fill-color:#000000;'
+            f'font-family:Courier New,monospace;font-size:9px;'
+            f'font-weight:bold;padding:2px 3px;text-align:center;'
+            f'border:1px solid #000000;white-space:nowrap;min-width:38px;">'
+            f"{tstr}</th>"
         )
-    return _table(header, body)
+    rows = ["<tr>" + "".join(header) + "</tr>"]
+
+    r = [_rowlabel("F+")] + [_cell(f"f+{int(f)}") for f in df_m["fhr"]]
+    rows.append("<tr>" + "".join(r) + "</tr>")
+
+    r = [_rowlabel("VIS")]
+    for v in df_m["vis_sm"]:
+        c = _vis_colors(v)
+        r.append(_cell(_fmt_vis(v), *c) if c else _cell(_fmt_vis(v)))
+    rows.append("<tr>" + "".join(r) + "</tr>")
+
+    r = [_rowlabel("CIG")]
+    for cv, u in zip(df_m["cig_ft"], df_m["cig_unl"]):
+        c = _cig_colors(cv, u)
+        r.append(_cell(_fmt_cig(cv, u), *c) if c else _cell(_fmt_cig(cv, u)))
+    rows.append("<tr>" + "".join(r) + "</tr>")
+
+    r = [_rowlabel("WDR")] + [_cell(_fmt_wdr(d)) for d in df_m["wdr"]]
+    rows.append("<tr>" + "".join(r) + "</tr>")
+
+    r = [_rowlabel("WSP")]
+    for s in df_m["wsp"]:
+        c = _wind_colors(s)
+        r.append(_cell(_fmt_kt(s), *c) if c else _cell(_fmt_kt(s)))
+    rows.append("<tr>" + "".join(r) + "</tr>")
+
+    r = [_rowlabel("GST")]
+    for g in df_m["gst"]:
+        c = _gust_colors(g)
+        r.append(_cell(_fmt_kt(g), *c) if c else _cell(_fmt_kt(g)))
+    rows.append("<tr>" + "".join(r) + "</tr>")
+
+    return (
+        '<div style="overflow-x:auto;background:#FFFFFF;padding:4px;'
+        'border:2px solid #000000;">'
+        '<table style="border-collapse:collapse;margin:0;">'
+        + "".join(rows)
+        + "</table></div>"
+    )
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def cached_current_metars(
-    icaos_tuple: tuple[str, ...],
-    vis_threshold_sm: float,
-    ceiling_threshold_ft: int,
-    wind_threshold_kt: int,
-):
-    """Latest METAR per station; return rows breaching any threshold.
-    5-minute cache — METARs are hourly with specials in between."""
-    from core.metar import fetch_metars
-
-    by_station = fetch_metars(list(icaos_tuple), hours_back=2)
-    rows = []
-    for icao, obs_list in by_station.items():
-        if not obs_list:
-            continue
-        o = obs_list[-1]  # latest
-        vis_bad = o.vsby_sm is not None and o.vsby_sm < vis_threshold_sm
-        cig_bad = (not o.ceiling_unlimited and o.ceiling_ft is not None
-                   and o.ceiling_ft < ceiling_threshold_ft)
-        wind_max = max(
-            [x for x in (o.wind_speed_kt, o.wind_gust_kt) if x is not None],
-            default=None,
-        )
-        wind_bad = wind_max is not None and wind_max >= wind_threshold_kt
-        if vis_bad or cig_bad or wind_bad:
-            rows.append({
-                "icao": icao,
-                "obs_time": o.obs_time,
-                "vis": o.vsby_sm, "vis_bad": vis_bad,
-                "cig": o.ceiling_ft, "cig_unl": o.ceiling_unlimited,
-                "cig_bad": cig_bad,
-                "spd": o.wind_speed_kt, "gst": o.wind_gust_kt,
-                "wind_bad": wind_bad,
-                "raw": o.raw_text,
-            })
-    rows.sort(key=lambda r: r["icao"])
-    return rows
-
-
-# ---------------------------------------------------------------------------
-# Cached analysis — TAFs update every 6 hours; 15-min cache is fresh enough
-# ---------------------------------------------------------------------------
-@st.cache_data(ttl=900, show_spinner=False)
-def cached_analyze(
-    icaos_tuple: tuple[str, ...],
-    window_start_iso: str,
-    window_end_iso: str,
-    vis_threshold_sm: float,
-    ceiling_threshold_ft: int,
-    tsra_enabled: bool,
-):
-    """Run TAF analysis. Cached by exact parameter combination."""
-    from core.taf import analyze_tafs
-    return analyze_tafs(
-        icaos=list(icaos_tuple),
-        window_start=datetime.fromisoformat(window_start_iso),
-        window_end=datetime.fromisoformat(window_end_iso),
-        vis_threshold_sm=vis_threshold_sm,
-        ceiling_threshold_ft=ceiling_threshold_ft,
-        tsra_enabled=tsra_enabled,
+def mono_box(text: str) -> str:
+    from html import escape
+    return (
+        '<div style="background:#000000;border:2px solid #00FF00;'
+        'color:#FFFFFF;-webkit-text-fill-color:#FFFFFF;'
+        'font-family:Courier New,monospace;font-size:12px;'
+        'padding:8px 10px;white-space:pre-wrap;word-break:break-word;">'
+        f"{escape(text)}</div>"
     )
 
 
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
-st.title("Airport Alerts")
-st.caption(
-    f"Scans TAFs from {len(JETBLUE_ICAOS)} JetBlue destinations and flags "
-    "airports forecast to see low visibility, low ceilings, or thunderstorms."
-)
+st.title("Station Quick View")
+st.caption("Current conditions, forecast, radar, and NOTAMs for one airport.")
 
 with st.sidebar:
-    st.header("Alert thresholds")
+    st.header("Airport")
+    icao_sidebar = st.text_input(
+        "ICAO code",
+        value="KJFK",
+        max_chars=4,
+    ).strip().upper()
 
-    vis_threshold = st.slider(
-        "Visibility threshold (sm)",
-        min_value=0.5, max_value=6.0, value=2.0, step=0.5,
-        help="Flag airports forecast BELOW this value.",
+    radar_override = st.text_input(
+        "Radar site (blank = auto)",
+        value="",
+        max_chars=4,
+        help="NEXRAD site for the radar section, e.g. KOKX. "
+             "Auto-mapped for common airports.",
+    ).strip().upper()
+
+    n_metars = st.slider(
+        "METARs to show", 1, 12, 1,
+        help="1 = current only; more shows recent history, newest first.",
     )
-    ceiling_threshold = st.slider(
-        "Ceiling threshold (ft AGL)",
-        min_value=200, max_value=3000, value=1000, step=100,
-        help="Flag airports forecast BELOW this value.",
+
+    radar_mode = st.radio(
+        "Radar display",
+        options=[
+            "Windy interactive (instant, animated)",
+            "RIDGE loop (instant)",
+            "Raw Level II (slower, full res)",
+        ],
+        index=0,
     )
-    tsra_enabled = st.checkbox(
-        "Flag thunderstorms (TS/TSRA)",
+    l2_zoom = st.slider(
+        "Level II zoom (degrees)", 0.5, 3.0, 1.5, 0.5,
+        disabled=not radar_mode.startswith("Raw"),
+    )
+    l2_flights = st.checkbox(
+        "Overlay live JBU flights",
         value=True,
-        help="Includes TS, TSRA, +TSRA, -TSRA. Excludes VCTS (vicinity).",
-    )
-    wind_threshold = st.slider(
-        "Wind/gust threshold (kt) — METARs",
-        min_value=15, max_value=50, value=25, step=5,
-        help="Current-METAR section flags sustained or gust at/above this.",
+        disabled=not radar_mode.startswith("Raw"),
+        help="Current JetBlue aircraft positions (community ADS-B) drawn "
+             "on the newest Level II frame.",
     )
 
     st.divider()
-    st.header("Time window")
-
-    hours_ahead = st.slider(
-        "Alert horizon (hours from now)",
-        min_value=1, max_value=24, value=12, step=1,
-        help="How far into the future to scan. TAFs typically cover 24-30 hours.",
-    )
-
-    st.divider()
-    run_button = st.button(
-        "Refresh alerts", type="primary", use_container_width=True
-    )
-
-    st.divider()
-    st.markdown(
-        '<span style="color:#CC0000; -webkit-text-fill-color:#CC0000; font-weight:bold;">'
-        "RED highlight</span> = critical severity: "
-        f"vis &lt; {_fmt_vis(CRITICAL_VIS_SM)} sm or ceiling &lt; "
-        f"{CRITICAL_CIG_FT} ft.",
-        unsafe_allow_html=True,
-    )
+    run_button = st.button("Refresh", type="primary", use_container_width=True)
 
 
-# ---------------------------------------------------------------------------
-# Main content
-# ---------------------------------------------------------------------------
-if run_button:
-    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-    window_end = now + timedelta(hours=hours_ahead)
+if run_button and icao_sidebar:
+    st.session_state["status_icao"] = icao_sidebar
+    st.session_state.pop("live_l2", None)  # fresh loop on explicit refresh
 
-    st.info(
-        f"Window: **{now:%Y-%m-%d %H:%M UTC}** to **{window_end:%H:%M UTC}** "
-        f"(next {hours_ahead}h)"
-    )
+active_icao = st.session_state.get("status_icao")
 
-    with st.spinner(f"Fetching TAFs for {len(JETBLUE_ICAOS)} stations..."):
-        try:
-            results = cached_analyze(
-                icaos_tuple=tuple(JETBLUE_ICAOS),
-                window_start_iso=now.isoformat(),
-                window_end_iso=window_end.isoformat(),
-                vis_threshold_sm=vis_threshold,
-                ceiling_threshold_ft=ceiling_threshold,
-                tsra_enabled=tsra_enabled,
+if active_icao:
+    icao = active_icao
+    now = datetime.now(timezone.utc)
+    st.info(f"Station: **{icao}** · as of **{now:%Y-%m-%d %H:%M UTC}**")
+
+    # --- METAR ---
+    st.subheader("Current METAR" if n_metars == 1 else
+                 f"METARs (last {n_metars})")
+    # Hourly obs + specials: n+4 hours of lookback comfortably covers n obs.
+    with st.spinner("Fetching METARs..."):
+        obs_list = cached_metar_history(icao, hours_back=n_metars + 4)
+    if obs_list:
+        recent = obs_list[-n_metars:][::-1]  # newest first
+        st.markdown(
+            mono_box("\n".join(o.raw_text for o in recent)),
+            unsafe_allow_html=True,
+        )
+        latest = recent[0]
+        age_min = int((now - latest.obs_time).total_seconds() // 60)
+        st.caption(
+            f"Latest observed {latest.obs_time:%H:%MZ} ({age_min} min ago)"
+            + ("" if len(recent) == 1 else
+               f" · showing {len(recent)} obs, newest first")
+        )
+    else:
+        st.warning("No recent METAR found.")
+
+    # --- TAF ---
+    st.subheader("Current TAF")
+    with st.spinner("Fetching TAF..."):
+        taf_text = cached_taf_raw(icao)
+    if taf_text:
+        st.markdown(mono_box(taf_text), unsafe_allow_html=True)
+    else:
+        st.warning("No TAF available (station may not be a TAF site).")
+
+    # --- Radar ---
+    st.subheader("Live Radar")
+    radar_site = radar_override or RADAR_FOR_AIRPORT.get(icao, "")
+    if radar_mode.startswith("Windy"):
+        coords = cached_station_coords(icao)
+        if coords is None:
+            st.warning(f"Cannot resolve coordinates for {icao}.")
+        else:
+            w_lat, w_lon = coords
+            windy_url = (
+                "https://embed.windy.com/embed2.html"
+                f"?lat={w_lat:.3f}&lon={w_lon:.3f}"
+                f"&detailLat={w_lat:.3f}&detailLon={w_lon:.3f}"
+                "&zoom=8&level=surface&overlay=radar&menu=&message="
+                "&marker=true&calendar=now&pressure=&type=map"
+                "&location=coordinates&detail=&metricWind=default"
+                "&metricTemp=default&radarRange=-1"
             )
-        except Exception as e:
-            st.error(f"Failed to fetch TAFs: {e}")
-            st.stop()
-
-    # Four tables side-by-side
-    col_vis, col_ceil, col_tsra, col_wind = st.columns(4, gap="medium")
-
-    with col_vis:
-        st.subheader(f"Low visibility (<{_fmt_vis(vis_threshold)} sm)")
-        if results.vis_alerts:
-            st.markdown(render_vis_table(results.vis_alerts),
-                        unsafe_allow_html=True)
-        else:
-            st.markdown(_no_alerts(), unsafe_allow_html=True)
-
-    with col_ceil:
-        st.subheader(f"Low ceilings (<{ceiling_threshold} ft)")
-        if results.ceiling_alerts:
-            st.markdown(render_ceiling_table(results.ceiling_alerts),
-                        unsafe_allow_html=True)
-        else:
-            st.markdown(_no_alerts(), unsafe_allow_html=True)
-
-    with col_tsra:
-        st.subheader("Thunderstorms (TS/TSRA)")
-        if not tsra_enabled:
-            st.write("_TSRA alerts disabled in sidebar._")
-        elif results.tsra_alerts:
-            st.markdown(render_tsra_table(results.tsra_alerts),
-                        unsafe_allow_html=True)
-        else:
-            st.markdown(_no_alerts(), unsafe_allow_html=True)
-
-    with col_wind:
-        st.subheader("TAF winds (\u226535 kt)")
-        if results.wind_alerts:
-            st.markdown(render_wind_table(results.wind_alerts),
-                        unsafe_allow_html=True)
-        else:
-            st.markdown(_no_alerts(), unsafe_allow_html=True)
-
-    # Current METARs breaching thresholds
-    st.divider()
-    st.subheader("Current METARs at/beyond thresholds")
-    st.caption(
-        f"Latest observation per station · vis < {vis_threshold:g} sm · "
-        f"cig < {ceiling_threshold} ft · wind/gust \u2265 {wind_threshold} kt · "
-        "red cell = breaching value"
-    )
-    with st.spinner("Fetching current METARs..."):
-        try:
-            metar_rows = cached_current_metars(
-                icaos_tuple=tuple(JETBLUE_ICAOS),
-                vis_threshold_sm=vis_threshold,
-                ceiling_threshold_ft=ceiling_threshold,
-                wind_threshold_kt=wind_threshold,
+            st.components.v1.iframe(windy_url, height=520)
+            st.caption(
+                "Windy.com interactive radar — animated, pan/zoomable. "
+                "Press play on the bottom timeline for the loop."
             )
+    elif not radar_site:
+        st.warning(
+            f"No radar mapping for {icao}. Enter a NEXRAD site "
+            "(e.g. KOKX) in the sidebar."
+        )
+    elif radar_mode.startswith("RIDGE"):
+        loop_url = (
+            f"https://radar.weather.gov/ridge/standard/{radar_site}_loop.gif"
+        )
+        st.image(loop_url, use_container_width=True)
+        st.caption(
+            f"NWS RIDGE loop for {radar_site} — refreshes on page reload."
+        )
+    else:
+        # Raw Level II mode
+        bucket = (
+            datetime.now(timezone.utc).strftime("%Y%m%d%H")
+            + str(datetime.now(timezone.utc).minute // 5)
+        )
+        if "live_l2" not in st.session_state:
+            with st.spinner(
+                "Fetching raw Level II volumes (30-60s first time)..."
+            ):
+                try:
+                    frames, gif, ov_mode = cached_live_l2(
+                        icao, radar_site, l2_zoom, bucket,
+                        overlay_flights=l2_flights,
+                    )
+                    st.session_state["live_l2"] = frames
+                    st.session_state["live_l2_gif"] = gif
+                    st.session_state["live_l2_mode"] = ov_mode
+                except Exception as e:
+                    st.session_state["live_l2"] = []
+                    st.session_state["live_l2_gif"] = b""
+                    st.warning(f"Level II fetch failed: {e}")
+        frames = st.session_state.get("live_l2", [])
+        gif = st.session_state.get("live_l2_gif", b"")
+        if frames:
+            st.caption(
+                f"{len(frames)} raw volumes from {radar_site} "
+                "(last ~45 min), rendered from Level II data — "
+                "not NWS imagery. Flight overlay: "
+                f"{st.session_state.get('live_l2_mode', '?')}."
+            )
+            if gif:
+                st.image(gif, use_container_width=True)
+                st.download_button(
+                    "Download loop GIF",
+                    data=gif,
+                    file_name=f"l2_loop_{radar_site}.gif",
+                    mime="image/gif",
+                    key="dl_l2_gif",
+                )
+            with st.expander("Frame-by-frame (full resolution)",
+                             expanded=not gif):
+                if len(frames) > 1:
+                    idx = st.slider(
+                        "Frame", 0, len(frames) - 1, len(frames) - 1,
+                        key="live_l2_idx",
+                        help="Newest frame is rightmost.",
+                    )
+                else:
+                    idx = 0
+                png, name = frames[idx]
+                st.image(png, use_container_width=True)
+                st.caption(f"Frame {idx + 1} of {len(frames)} · `{name}`")
+        else:
+            st.caption("No Level II volumes returned for the window.")
+
+    # --- NBH MOS table ---
+    st.subheader("NBM Hourly (NBH, f+1–25)")
+    with st.spinner("Fetching NBM..."):
+        try:
+            nbh_df = cached_nbh_table(icao)
         except Exception as e:
-            metar_rows = None
-            st.warning(f"METAR fetch failed: {e}")
-    if metar_rows is not None:
-        if metar_rows:
-            st.markdown(render_metar_table(metar_rows), unsafe_allow_html=True)
-        else:
-            st.markdown(_no_alerts(), unsafe_allow_html=True)
+            nbh_df = pd.DataFrame()
+            st.warning(f"NBM fetch failed: {e}")
+    if len(nbh_df):
+        st.markdown(build_nbh_table(nbh_df), unsafe_allow_html=True)
+    else:
+        st.caption("No NBM data for this station.")
 
-    # TAF unavailable + parse errors — smaller notes at bottom
-    st.divider()
-    with st.expander(
-        f"TAF unavailable for {len(results.unavailable_icaos)} stations",
-        expanded=False,
-    ):
-        if results.unavailable_icaos:
-            st.write(", ".join(results.unavailable_icaos))
-        else:
-            st.write("All stations returned a TAF.")
+    # --- JBU movements (OpenSky) ---
+    st.subheader("JBU Arrivals & Departures")
+    mv_hours = st.selectbox(
+        "Window", [3, 6, 12, 24], index=1,
+        format_func=lambda h: f"Last {h} hours",
+        key="mv_hours",
+    )
+    with st.spinner("Querying OpenSky flights database..."):
+        movements, mv_err = cached_jbu_movements(
+            icao, mv_hours, now.strftime("%Y%m%d%H")
+        )
+    if mv_err:
+        st.warning(f"OpenSky flights unavailable - {mv_err}")
+    elif not movements:
+        st.caption(
+            f"No JBU movements found in the last {mv_hours}h. "
+            "Note: OpenSky's flights data is batch-processed and can "
+            "lag real time by an hour or more."
+        )
+    else:
+        import pandas as _pd
+        from datetime import datetime as _dt, timezone as _tz
+        df = _pd.DataFrame([{
+            "Flight": m_["callsign"],
+            "Type": ("Arrival" if m_["kind"] == "ARR"
+                     else "Departure"),
+            "From/To": m_["other"],
+            "Time (Z)": _dt.fromtimestamp(
+                m_["time_unix"], _tz.utc
+            ).strftime("%m/%d %H:%M") if m_["time_unix"] else "?",
+        } for m_ in movements])
+        n_arr = sum(1 for m_ in movements if m_["kind"] == "ARR")
+        st.caption(
+            f"{len(movements)} JBU movements ({n_arr} arrivals, "
+            f"{len(movements) - n_arr} departures) - times are "
+            f"first/last-seen by receivers, lagging ~1h+"
+        )
+        st.dataframe(df, use_container_width=True, hide_index=True)
 
-    if results.parse_errors:
-        with st.expander(
-            f"Parse errors on {len(results.parse_errors)} stations",
-            expanded=False,
-        ):
-            for icao, err in results.parse_errors.items():
-                st.write(f"**{icao}**: {err}")
+    # --- NOTAMs ---
+    st.subheader("Active NOTAMs")
+    with st.spinner("Fetching NOTAMs..."):
+        notams, notam_err = cached_notams(icao)
+    if notams is None:
+        st.warning(f"NOTAM service unavailable — {notam_err}")
+    elif not notams:
+        st.caption("No active NOTAMs returned.")
+    else:
+        st.caption(f"{len(notams)} NOTAMs")
+        for n in notams[:40]:
+            title = n["number"] or "NOTAM"
+            with st.expander(title, expanded=False):
+                st.markdown(mono_box(n["text"]), unsafe_allow_html=True)
 
 else:
-    st.info("Adjust thresholds and click **Refresh alerts** in the sidebar.")
-
-    st.markdown(
-        """
-        ### What this does
-
-        Scans the latest TAF for every JetBlue destination and flags airports
-        forecast to experience:
-
-        - **Low visibility** — below a threshold you set (default: 2 sm)
-        - **Low ceilings** — below a threshold you set (default: 1000 ft)
-        - **Thunderstorms** — TS, TSRA, or +TSRA (excludes VCTS)
-
-        Rows highlighted in **red** mark critical severity: visibility below
-        1 sm or ceiling below 400 ft.
-
-        Only forecast periods that overlap your chosen time window count.
-        A station is listed once per table with its worst value and the
-        forecast period responsible for it.
-
-        ### Sources
-
-        Latest raw TAFs from
-        [aviationweather.gov](https://aviationweather.gov/api/data/taf),
-        parsed with the [avwx-engine](https://github.com/avwx-rest/avwx-engine)
-        library. TAFs are cached for 15 minutes to reduce load on AWC.
-        """
-    )
+    st.info("Enter an ICAO code in the sidebar and click **Refresh**.")

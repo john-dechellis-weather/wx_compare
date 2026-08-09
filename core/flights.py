@@ -652,3 +652,89 @@ def fetch_fleet_trails(
     else:
         summary = "none yet (trails build as the page refreshes)"
     return trails, summary
+
+
+_airport_flights_error: dict = {"msg": None}
+
+
+def last_airport_flights_error():
+    return _airport_flights_error["msg"]
+
+
+def fetch_airport_flights(
+    icao: str,
+    begin_unix: int,
+    end_unix: int,
+    airline_prefix: str = "JBU",
+) -> list[dict]:
+    """Arrivals and departures at an airport over [begin, end] via
+    OpenSky's flights endpoints (anonymous; batch-processed upstream,
+    so expect an hour-plus lag behind real time). Filters callsigns by
+    airline_prefix. Tries renamed-airport aliases (e.g. KDJT also
+    queries KPBI) and merges.
+
+    Returns [{"callsign", "kind" (ARR/DEP), "other" (airport or "?"),
+              "time_unix"}], newest first. Empty list on failure with
+    the reason in last_airport_flights_error().
+    """
+    _airport_flights_error["msg"] = None
+    codes = [icao.upper()]
+    # Rename transition: OpenSky's aerodrome DB may know either code
+    renames = {"KDJT": "KPBI", "KPBI": "KDJT"}
+    if icao.upper() in renames:
+        codes.append(renames[icao.upper()])
+
+    rows: list[dict] = []
+    seen = set()
+    any_ok = False
+    last_err = None
+    for code in codes:
+        for kind, endpoint, other_key, t_key in (
+            ("ARR", "arrival", "estDepartureAirport", "lastSeen"),
+            ("DEP", "departure", "estArrivalAirport", "firstSeen"),
+        ):
+            try:
+                r = requests.get(
+                    f"https://opensky-network.org/api/flights/{endpoint}",
+                    params={"airport": code, "begin": begin_unix,
+                            "end": end_unix},
+                    headers=_HEADERS,
+                    timeout=15,
+                )
+            except Exception as e:
+                last_err = f"{type(e).__name__}: {e}"
+                continue
+            if r.status_code == 404:
+                # OpenSky returns 404 for "no flights found" - not an
+                # error for our purposes
+                any_ok = True
+                continue
+            if r.status_code != 200:
+                last_err = f"HTTP {r.status_code} on {endpoint}"
+                continue
+            any_ok = True
+            try:
+                payload = r.json() or []
+            except ValueError:
+                continue
+            for f in payload:
+                cs = (f.get("callsign") or "").strip().upper()
+                if not cs.startswith(airline_prefix.upper()):
+                    continue
+                t = f.get(t_key) or 0
+                dedup = (cs, kind, t)
+                if dedup in seen:
+                    continue
+                seen.add(dedup)
+                rows.append({
+                    "callsign": cs,
+                    "kind": kind,
+                    "other": (f.get(other_key) or "?").upper(),
+                    "time_unix": int(t),
+                })
+    if not any_ok:
+        _airport_flights_error["msg"] = (
+            last_err or "no response from OpenSky"
+        )
+    rows.sort(key=lambda x: -x["time_unix"])
+    return rows
