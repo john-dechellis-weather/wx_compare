@@ -1,770 +1,227 @@
-"""Station Quick View — one-airport operational dashboard.
+"""JBU movement sampler: BlueMet's own arrivals/departures log.
 
-Sections: current METAR, current TAF, live radar (NWS RIDGE loop OR raw
-Level II frames rendered from volume data), hourly NBM table, NOTAMs.
+OpenSky's flights database is unreachable from the app server, so we
+build the movement log ourselves from a source that IS reachable:
+adsb.lol (already the app's live-position source, JBU-filtered at the
+query). A background daemon polls each sampled airport every couple
+of minutes for low-altitude JetBlue aircraft and appends compact
+observations to the persistent disk. Movements are derived on read:
+an aircraft that appears low and climbs out is a departure; one that
+descends and disappears near the field is an arrival.
 
-Architecture note: the Refresh button commits the station to
-st.session_state and the display gates on that (not on the button), so
-widget interactions like the Level II frame slider rerun the page
-without blanking it — every fetcher is cached, so reruns are instant.
+Honest properties:
+  - JBU only, by construction (the position query is JBU-scoped).
+  - Coverage starts at deploy time; no history before day one.
+  - Fresh within ~2-4 minutes (vs OpenSky's hour-plus batch lag).
+  - Overflights don't trigger: flat-altitude transits match neither
+    the climb-out nor the descend-in rule.
+Env kill switch: MOV_SAMPLER=off.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+import json
+import os
+import threading
+import time
+import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 
-import pandas as pd
-import requests
-import streamlit as st
-
-st.set_page_config(
-    page_title="BlueMet — Station Quick View",
-    layout="wide",
-)
-
-from retro_theme import apply_retro_theme
-apply_retro_theme()
-
-from auth import check_password
-check_password()
-
-
-_persistent = Path("/opt/render/project/src/cache")
-CACHE_ROOT = _persistent if _persistent.exists() else Path("/tmp/wx_compare_cache")
-CACHE_ROOT.mkdir(parents=True, exist_ok=True)
-
-# BlueMet's own JBU movement log (OpenSky is unreachable from this
-# server): background sampler polls hub airports via adsb.lol.
-# Defensive import: a sampler problem must never kill the page.
-try:
-    from core.mov_sampler import (
-        SAMPLED_AIRPORTS, ensure_sampler_started, derive_movements,
-        sampling_since,
-    )
-    ensure_sampler_started(CACHE_ROOT)
-    _SAMPLER_OK = True
-    _SAMPLER_ERR = ""
-except Exception as _se:
-    _SAMPLER_OK = False
-    _SAMPLER_ERR = f"{type(_se).__name__}: {_se}"
-    SAMPLED_AIRPORTS = {}
-
-_HEADERS = {"User-Agent": "BlueMet/1.0 (aviation weather tool)"}
-
-RADAR_FOR_AIRPORT = {
-    "KJFK": "KOKX", "KLGA": "KOKX", "KHPN": "KOKX", "KISP": "KOKX",
-    "KEWR": "KDIX", "KPHL": "KDIX",
-    "KBOS": "KBOX", "KPVD": "KBOX", "KORH": "KBOX",
-    "KDCA": "KLWX", "KBWI": "KLWX", "KIAD": "KLWX",
-    "KRIC": "KAKQ", "KORF": "KAKQ",
-    "KCLT": "KGSP", "KRDU": "KRAX", "KCHS": "KCLX", "KSAV": "KCLX",
-    "KJAX": "KJAX", "KMCO": "KMLB", "KDAB": "KMLB",
-    "KTPA": "KTBW", "KSRQ": "KTBW", "KRSW": "KTBW",
-    "KPBI": "KAMX", "KDJT": "KAMX", "KFLL": "KAMX", "KMIA": "KAMX",
-    "KEYW": "KBYX",
-    "KATL": "KFFC", "KMSY": "KLIX", "KBNA": "KOHX",
-    "KORD": "KLOT", "KMKE": "KMKX", "KDTW": "KDTX", "KCLE": "KCLE",
-    "KPIT": "KPBZ", "KBUF": "KBUF", "KROC": "KBUF",
-    "KDFW": "KFWS", "KIAH": "KHGX", "KAUS": "KEWX",
-    "KDEN": "KFTG", "KSLC": "KMTX", "KPHX": "KIWA", "KLAS": "KESX",
-    "KABQ": "KABX", "KSAN": "KNKX", "KSFO": "KMUX", "KSMF": "KDAX",
-    "KRNO": "KRGX", "KSEA": "KATX", "KPDX": "KRTX",
-    "TJSJ": "TJUA",
+SAMPLED_AIRPORTS = {
+    "KJFK": (40.6413, -73.7781),
+    "KMCO": (28.4312, -81.3081),
+    "KFLL": (26.0726, -80.1527),
+    "KDCA": (38.8512, -77.0402),
+    "KDJT": (26.6832, -80.0956),   # ex-KPBI (renamed 2026-07-09)
 }
+POLL_INTERVAL_S = 120
+RADIUS_DEG = 0.6
+MAX_OBS_ALT_FT = 12000        # only record the terminal-area band
+OBS_RETENTION_DAYS = 3
 
+# Movement derivation thresholds
+SESSION_GAP_S = 900           # >15 min silence splits sessions
+LOW_ALT_FT = 4000             # "near the field" band
+TREND_FT = 1500               # required climb/descend across session
 
-# ---------------------------------------------------------------------------
-# Data fetchers (all cached — reruns from widget interaction are instant)
-# ---------------------------------------------------------------------------
-@st.cache_data(ttl=300, show_spinner=False, max_entries=30)
-def cached_metar_history(icao: str, hours_back: int):
-    """All obs in the lookback window, oldest -> newest."""
-    from core.metar import fetch_metars
+_started = False
+_lock = threading.Lock()
 
-    by_station = fetch_metars([icao], hours_back=hours_back)
-    return by_station.get(icao.upper(), [])
 
+def _obs_dir(cache_root: Path, icao: str) -> Path:
+    d = cache_root / "movements" / "obs" / icao.upper()
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
-@st.cache_data(ttl=300, show_spinner=False, max_entries=30)
-def cached_taf_raw(icao: str) -> str | None:
-    try:
-        r = requests.get(
-            "https://aviationweather.gov/api/data/taf",
-            params={"ids": icao, "format": "raw"},
-            headers=_HEADERS,
-            timeout=30,
-        )
-        r.raise_for_status()
-        text = r.text.strip()
-        return text or None
-    except Exception:
-        return None
 
-
-@st.cache_data(ttl=600, show_spinner=False, max_entries=30)
-def cached_station_coords(icao: str):
-    from core.stations import StationResolver
-
-    resolver = StationResolver(cache_dir=CACHE_ROOT / "stations")
-    resolved, _ = resolver.resolve_many([icao])
-    if not resolved:
-        return None
-    stn = resolved[0]
-    return float(stn.lat), float(stn.lon)
-
-
-def _frames_to_gif(
-    frames: list[tuple[bytes, str]],
-    width: int = 800,
-    frame_ms: int = 450,
-    last_hold_ms: int = 1400,
-) -> bytes:
-    """Stitch rendered PNG frames into a looping radar-style GIF.
-    Downscaled for fast loading; newest frame held longer, like RIDGE."""
-    from io import BytesIO
-    from PIL import Image
-
-    imgs = []
-    for png, _name in frames:
-        im = Image.open(BytesIO(png)).convert("RGB")
-        w, h = im.size
-        if w > width:
-            im = im.resize((width, int(h * width / w)), Image.LANCZOS)
-        imgs.append(im.quantize(colors=256))
-    durations = [frame_ms] * (len(imgs) - 1) + [last_hold_ms]
-    buf = BytesIO()
-    imgs[0].save(
-        buf,
-        format="GIF",
-        save_all=True,
-        append_images=imgs[1:],
-        duration=durations,
-        loop=0,
-        disposal=2,
-    )
-    return buf.getvalue()
-
-
-@st.cache_data(ttl=300, show_spinner=False, max_entries=5)
-def cached_live_l2(
-    icao: str, radar_site: str, zoom_deg: float, bucket: str,
-    overlay_flights: bool = False,
-):
-    """Last ~45 min of Level II reflectivity as 1-minute sub-frames:
-    radar advances per scan (~5 min), aircraft advance per minute via
-    interpolated self-recorded snapshots. Returns (frames, gif, mode)."""
-    from core.radar import fetch_and_render_base_frames, composite_aircraft
-
-    coords = cached_station_coords(icao)
-    if coords is None:
-        raise ValueError(f"Cannot resolve coordinates for {icao}.")
-    lat, lon = coords
-
-    site = radar_site
-    if len(site) == 4 and site.startswith("K"):
-        site = site[1:]
-
-    start = datetime.now(timezone.utc) - timedelta(minutes=45)
-    base = fetch_and_render_base_frames(
-        start_time=start,
-        duration_min=45,
-        center_lat=lat,
-        center_lon=lon,
-        label=icao,
-        station=site,
-        zoom_deg=zoom_deg,
-    )
-    if not base:
-        return [], b"", "no radar volumes"
-
-    overlay_mode = "off"
-    frames: list[tuple[bytes, str]] = []
-
-    if not overlay_flights:
-        frames = [(b["png"], b["name"]) for b in base]
-    else:
-        try:
-            from core.flights import (
-                fetch_positions_near,
-                record_snapshot,
-                interpolate_at,
-                positions_at_time,
-            )
-            hist_dir = CACHE_ROOT / "flights"
-            current = fetch_positions_near(lat, lon, radius_deg=zoom_deg)
-            record_snapshot(hist_dir, icao, current)
-
-            # Sub-frame timeline: every minute from first scan to now
-            t0 = base[0]["scan_time"].timestamp()
-            t1 = datetime.now(timezone.utc).timestamp()
-            n_interp = 0
-            t = t0
-            while t <= t1:
-                # radar frame: latest scan at or before t
-                b = base[0]
-                for cand in base:
-                    if cand["scan_time"].timestamp() <= t:
-                        b = cand
-                    else:
-                        break
-                planes = interpolate_at(hist_dir, icao, t, tolerance_s=240)
-                if planes is None:
-                    planes = current
-                else:
-                    n_interp += 1
-                png = composite_aircraft(b["png"], b["geo"], b["px"], planes)
-                tstr = datetime.fromtimestamp(
-                    t, tz=timezone.utc
-                ).strftime("%H:%MZ")
-                frames.append((png, f"{tstr} \u00b7 {b['name']}"))
-                t += 60
-            n_total = len(frames)
-            overlay_mode = (
-                f"interpolated history ({n_interp}/{n_total} sub-frames "
-                f"from snapshots, rest use current; {len(current)} JBU "
-                "live). Fills in with continued use."
-            )
-        except Exception as e:
-            frames = [(b["png"], b["name"]) for b in base]
-            overlay_mode = f"failed ({type(e).__name__}: {e})"
-
-    # Faster flip for the denser timeline
-    gif = (
-        _frames_to_gif(frames, frame_ms=160, last_hold_ms=1200)
-        if len(frames) > 1 else b""
-    )
-    return frames, gif, overlay_mode
-
-
-@st.cache_data(ttl=600, show_spinner=False, max_entries=20)
-def cached_nbh_table(icao: str) -> pd.DataFrame:
-    from compare import compare_icaos
-    from core.stations import StationResolver
-    from core.cycle_select import find_latest_complete
-    from models import Nbm
-
-    resolver = StationResolver(cache_dir=CACHE_ROOT / "stations")
-    resolved_pre, _ = resolver.resolve_many([icao])
-    if not resolved_pre:
-        return pd.DataFrame()
-    cycle = find_latest_complete(
-        [Nbm(cache_dir=CACHE_ROOT / "nbm")], verbose=False
-    )
-    if cycle is None:
-        return pd.DataFrame()
-
-    df_long, resolved, _ = compare_icaos(
-        icaos=[icao],
-        cycle=cycle,
-        cache_root=CACHE_ROOT,
-        model_classes=[Nbm],
-    )
-    if not resolved or len(df_long) == 0:
-        return pd.DataFrame()
-
-    m = df_long[
-        (df_long["station_id"] == icao.upper())
-        & (df_long["model"] == "NBM")
-    ].sort_values("valid_time")
-    rows = []
-    for _, r in m.iterrows():
-        fhr = int((r["valid_time"] - cycle).total_seconds() // 3600)
-        if fhr > 25:
-            continue
-        rows.append({
-            "valid_time": r["valid_time"], "fhr": fhr,
-            "vis_sm": r.get("vsby_sm"),
-            "cig_ft": r.get("ceiling_ft"),
-            "cig_unl": r.get("ceiling_unlimited"),
-            "wdr": r.get("wind_dir_deg"),
-            "wsp": r.get("wind_speed_kt"),
-            "gst": r.get("wind_gust_kt"),
-        })
-    return pd.DataFrame(rows)
-
-
-@st.cache_data(ttl=120, show_spinner=False, max_entries=12)
-def cached_jbu_movements(icao: str, hours_back: int, bucket: str):
-    """Movements from BlueMet's own sampler log."""
-    if not _SAMPLER_OK:
-        return [], None
-    try:
-        rows = derive_movements(CACHE_ROOT, icao, hours_back)
-        since = sampling_since(CACHE_ROOT, icao)
-        return rows, since
-    except Exception:
-        return [], None
-
-
-@st.cache_data(ttl=600, show_spinner=False, max_entries=20)
-def cached_notams(icao: str):
-    """FAA NOTAM Search JSON endpoint — unofficial.
-    Returns (rows, None) on success or (None, error_detail) on failure
-    so the page can show WHY it failed (status code vs timeout vs schema)."""
-    try:
-        r = requests.post(
-            "https://notams.aim.faa.gov/notamSearch/search",
-            data={"searchType": "0", "designatorsForLocation": icao},
-            headers=_HEADERS,
-            timeout=30,
-        )
-        if r.status_code != 200:
-            return None, f"HTTP {r.status_code} from notams.aim.faa.gov"
-        try:
-            payload = r.json()
-        except ValueError:
-            snippet = r.text[:120].replace("\n", " ")
-            return None, f"Non-JSON response (starts: {snippet!r})"
-        items = payload.get("notamList", [])
-        out = []
-        for it in items:
-            out.append({
-                "number": it.get("notamNumber", ""),
-                "text": (it.get("icaoMessage") or it.get("traditionalMessage")
-                         or it.get("plainLanguageMessage") or "").strip(),
-            })
-        return out, None
-    except requests.Timeout:
-        return None, "Timeout after 30s"
-    except Exception as e:
-        return None, f"{type(e).__name__}: {e}"
-
-
-# ---------------------------------------------------------------------------
-# Rendering helpers (terminal styling, sanitizer-proof: no !important)
-# ---------------------------------------------------------------------------
-def _cell(text, bg="#FFFFFF", fg="#000000", bold=False):
-    weight = "bold" if bold or bg != "#FFFFFF" else "normal"
-    return (
-        f'<td style="background:{bg};color:{fg};'
-        f'-webkit-text-fill-color:{fg};'
-        f'font-family:Courier New,monospace;font-size:9px;'
-        f'font-weight:{weight};padding:2px 3px;text-align:center;'
-        f'border:1px solid #000000;white-space:nowrap;min-width:38px;">'
-        f"{text}</td>"
-    )
-
-
-def _rowlabel(text):
-    return (
-        f'<th style="background:#E0E0E0;color:#000000;'
-        f'-webkit-text-fill-color:#000000;'
-        f'font-family:Courier New,monospace;font-size:9px;font-weight:bold;'
-        f'padding:2px 4px;text-align:left;border:1px solid #000000;'
-        f'white-space:nowrap;min-width:60px;">{text}</th>'
-    )
-
-
-def _vis_colors(v):
-    if v is None or pd.isna(v): return None
-    if v <= 0.5: return ("#FF80FF", "#000000")
-    if v < 1: return ("#FF4040", "#000000")
-    if v < 2: return ("#FF9900", "#000000")
-    if v < 3: return ("#FFFF00", "#000000")
-    return None
-
-
-def _cig_colors(c, u):
-    if u is True or c is None or pd.isna(c): return None
-    if c < 400: return ("#FF80FF", "#000000")
-    if c <= 1000: return ("#FF4040", "#000000")
-    if c <= 2000: return ("#FF9900", "#000000")
-    if c < 3000: return ("#FFFF00", "#000000")
-    return None
-
-
-def _wind_colors(w):
-    if w is None or pd.isna(w): return None
-    if w >= 40: return ("#FF80FF", "#000000")
-    if w >= 35: return ("#FF4040", "#000000")
-    if w >= 30: return ("#FF9900", "#000000")
-    if w >= 25: return ("#FFFF00", "#000000")
-    return None
-
-
-def _gust_colors(g):
-    if g is None or pd.isna(g): return None
-    if g >= 35: return ("#FF4040", "#000000")
-    if g >= 25: return ("#FF9900", "#000000")
-    return None
-
-
-def _fmt_vis(v):
-    if v is None or pd.isna(v): return "-"
-    return f"{v:g}"
-
-
-def _fmt_cig(c, u):
-    if u is True: return "UNL"
-    if c is None or pd.isna(c): return "-"
-    return f"{int(round(c / 100)):03d}"
-
-
-def _fmt_wdr(d):
-    if d is None or pd.isna(d): return "VRB"
-    return f"{int(d):03d}"
-
-
-def _fmt_kt(x):
-    if x is None or pd.isna(x): return "-"
-    return f"{int(x):02d}"
-
-
-def build_nbh_table(df_m: pd.DataFrame) -> str:
-    header = [_rowlabel("Field")]
-    for t in df_m["valid_time"]:
-        tstr = pd.to_datetime(t).strftime("%m/%d<br>%HZ")
-        header.append(
-            f'<th style="background:#E0E0E0;color:#000000;'
-            f'-webkit-text-fill-color:#000000;'
-            f'font-family:Courier New,monospace;font-size:9px;'
-            f'font-weight:bold;padding:2px 3px;text-align:center;'
-            f'border:1px solid #000000;white-space:nowrap;min-width:38px;">'
-            f"{tstr}</th>"
-        )
-    rows = ["<tr>" + "".join(header) + "</tr>"]
-
-    r = [_rowlabel("F+")] + [_cell(f"f+{int(f)}") for f in df_m["fhr"]]
-    rows.append("<tr>" + "".join(r) + "</tr>")
-
-    r = [_rowlabel("VIS")]
-    for v in df_m["vis_sm"]:
-        c = _vis_colors(v)
-        r.append(_cell(_fmt_vis(v), *c) if c else _cell(_fmt_vis(v)))
-    rows.append("<tr>" + "".join(r) + "</tr>")
-
-    r = [_rowlabel("CIG")]
-    for cv, u in zip(df_m["cig_ft"], df_m["cig_unl"]):
-        c = _cig_colors(cv, u)
-        r.append(_cell(_fmt_cig(cv, u), *c) if c else _cell(_fmt_cig(cv, u)))
-    rows.append("<tr>" + "".join(r) + "</tr>")
-
-    r = [_rowlabel("WDR")] + [_cell(_fmt_wdr(d)) for d in df_m["wdr"]]
-    rows.append("<tr>" + "".join(r) + "</tr>")
-
-    r = [_rowlabel("WSP")]
-    for s in df_m["wsp"]:
-        c = _wind_colors(s)
-        r.append(_cell(_fmt_kt(s), *c) if c else _cell(_fmt_kt(s)))
-    rows.append("<tr>" + "".join(r) + "</tr>")
-
-    r = [_rowlabel("GST")]
-    for g in df_m["gst"]:
-        c = _gust_colors(g)
-        r.append(_cell(_fmt_kt(g), *c) if c else _cell(_fmt_kt(g)))
-    rows.append("<tr>" + "".join(r) + "</tr>")
-
-    return (
-        '<div style="overflow-x:auto;background:#FFFFFF;padding:4px;'
-        'border:2px solid #000000;">'
-        '<table style="border-collapse:collapse;margin:0;">'
-        + "".join(rows)
-        + "</table></div>"
-    )
-
-
-def mono_box(text: str) -> str:
-    from html import escape
-    return (
-        '<div style="background:#000000;border:2px solid #00FF00;'
-        'color:#FFFFFF;-webkit-text-fill-color:#FFFFFF;'
-        'font-family:Courier New,monospace;font-size:12px;'
-        'padding:8px 10px;white-space:pre-wrap;word-break:break-word;">'
-        f"{escape(text)}</div>"
-    )
-
-
-# ---------------------------------------------------------------------------
-# UI
-# ---------------------------------------------------------------------------
-st.title("Station Quick View")
-st.caption("Current conditions, forecast, radar, and NOTAMs for one airport.")
-
-with st.sidebar:
-    st.header("Airport")
-    icao_sidebar = st.text_input(
-        "ICAO code",
-        value="KJFK",
-        max_chars=4,
-    ).strip().upper()
-
-    radar_override = st.text_input(
-        "Radar site (blank = auto)",
-        value="",
-        max_chars=4,
-        help="NEXRAD site for the radar section, e.g. KOKX. "
-             "Auto-mapped for common airports.",
-    ).strip().upper()
-
-    n_metars = st.slider(
-        "METARs to show", 1, 12, 1,
-        help="1 = current only; more shows recent history, newest first.",
-    )
-
-    radar_mode = st.radio(
-        "Radar display",
-        options=[
-            "Windy interactive (instant, animated)",
-            "RIDGE loop (instant)",
-            "Raw Level II (slower, full res)",
-        ],
-        index=0,
-    )
-    l2_zoom = st.slider(
-        "Level II zoom (degrees)", 0.5, 3.0, 1.5, 0.5,
-        disabled=not radar_mode.startswith("Raw"),
-    )
-    l2_flights = st.checkbox(
-        "Overlay live JBU flights",
-        value=True,
-        disabled=not radar_mode.startswith("Raw"),
-        help="Current JetBlue aircraft positions (community ADS-B) drawn "
-             "on the newest Level II frame.",
-    )
-
-    st.divider()
-    run_button = st.button("Refresh", type="primary", use_container_width=True)
-
-
-if run_button and icao_sidebar:
-    st.session_state["status_icao"] = icao_sidebar
-    st.session_state.pop("live_l2", None)  # fresh loop on explicit refresh
-
-active_icao = st.session_state.get("status_icao")
-
-if active_icao:
-    icao = active_icao
+def _record(cache_root: Path, icao: str, callsign: str,
+            alt_ft, lat: float, lon: float) -> None:
     now = datetime.now(timezone.utc)
-    st.info(f"Station: **{icao}** · as of **{now:%Y-%m-%d %H:%M UTC}**")
+    path = _obs_dir(cache_root, icao) / f"{now:%Y%m%d}.jsonl"
+    rec = {
+        "ts": int(now.timestamp()),
+        "cs": callsign.upper(),
+        "alt": int(alt_ft) if alt_ft is not None else None,
+        "lat": round(lat, 3),
+        "lon": round(lon, 3),
+    }
+    with open(path, "a") as fh:
+        fh.write(json.dumps(rec) + "\n")
 
-    # --- METAR ---
-    st.subheader("Current METAR" if n_metars == 1 else
-                 f"METARs (last {n_metars})")
-    # Hourly obs + specials: n+4 hours of lookback comfortably covers n obs.
-    with st.spinner("Fetching METARs..."):
-        obs_list = cached_metar_history(icao, hours_back=n_metars + 4)
-    if obs_list:
-        recent = obs_list[-n_metars:][::-1]  # newest first
-        st.markdown(
-            mono_box("\n".join(o.raw_text for o in recent)),
-            unsafe_allow_html=True,
-        )
-        latest = recent[0]
-        age_min = int((now - latest.obs_time).total_seconds() // 60)
-        st.caption(
-            f"Latest observed {latest.obs_time:%H:%MZ} ({age_min} min ago)"
-            + ("" if len(recent) == 1 else
-               f" · showing {len(recent)} obs, newest first")
-        )
-    else:
-        st.warning("No recent METAR found.")
 
-    # --- TAF ---
-    st.subheader("Current TAF")
-    with st.spinner("Fetching TAF..."):
-        taf_text = cached_taf_raw(icao)
-    if taf_text:
-        st.markdown(mono_box(taf_text), unsafe_allow_html=True)
-    else:
-        st.warning("No TAF available (station may not be a TAF site).")
+def _prune(cache_root: Path) -> None:
+    cutoff = datetime.now(timezone.utc).timestamp() \
+        - OBS_RETENTION_DAYS * 86400
+    base = cache_root / "movements" / "obs"
+    if not base.exists():
+        return
+    for adir in base.iterdir():
+        if not adir.is_dir():
+            continue
+        for f in adir.glob("*.jsonl"):
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+            except OSError:
+                pass
 
-    # --- Radar ---
-    st.subheader("Live Radar")
-    radar_site = radar_override or RADAR_FOR_AIRPORT.get(icao, "")
-    if radar_mode.startswith("Windy"):
-        coords = cached_station_coords(icao)
-        if coords is None:
-            st.warning(f"Cannot resolve coordinates for {icao}.")
-        else:
-            w_lat, w_lon = coords
-            windy_url = (
-                "https://embed.windy.com/embed2.html"
-                f"?lat={w_lat:.3f}&lon={w_lon:.3f}"
-                f"&detailLat={w_lat:.3f}&detailLon={w_lon:.3f}"
-                "&zoom=8&level=surface&overlay=radar&menu=&message="
-                "&marker=true&calendar=now&pressure=&type=map"
-                "&location=coordinates&detail=&metricWind=default"
-                "&metricTemp=default&radarRange=-1"
-            )
-            st.components.v1.iframe(windy_url, height=520)
-            st.caption(
-                "Windy.com interactive radar — animated, pan/zoomable. "
-                "Press play on the bottom timeline for the loop."
-            )
-    elif not radar_site:
-        st.warning(
-            f"No radar mapping for {icao}. Enter a NEXRAD site "
-            "(e.g. KOKX) in the sidebar."
-        )
-    elif radar_mode.startswith("RIDGE"):
-        loop_url = (
-            f"https://radar.weather.gov/ridge/standard/{radar_site}_loop.gif"
-        )
-        st.image(loop_url, use_container_width=True)
-        st.caption(
-            f"NWS RIDGE loop for {radar_site} — refreshes on page reload."
-        )
-    else:
-        # Raw Level II mode
-        bucket = (
-            datetime.now(timezone.utc).strftime("%Y%m%d%H")
-            + str(datetime.now(timezone.utc).minute // 5)
-        )
-        if "live_l2" not in st.session_state:
-            with st.spinner(
-                "Fetching raw Level II volumes (30-60s first time)..."
-            ):
-                try:
-                    frames, gif, ov_mode = cached_live_l2(
-                        icao, radar_site, l2_zoom, bucket,
-                        overlay_flights=l2_flights,
-                    )
-                    st.session_state["live_l2"] = frames
-                    st.session_state["live_l2_gif"] = gif
-                    st.session_state["live_l2_mode"] = ov_mode
-                except Exception as e:
-                    st.session_state["live_l2"] = []
-                    st.session_state["live_l2_gif"] = b""
-                    st.warning(f"Level II fetch failed: {e}")
-        frames = st.session_state.get("live_l2", [])
-        gif = st.session_state.get("live_l2_gif", b"")
-        if frames:
-            st.caption(
-                f"{len(frames)} raw volumes from {radar_site} "
-                "(last ~45 min), rendered from Level II data — "
-                "not NWS imagery. Flight overlay: "
-                f"{st.session_state.get('live_l2_mode', '?')}."
-            )
-            if gif:
-                st.image(gif, use_container_width=True)
-                st.download_button(
-                    "Download loop GIF",
-                    data=gif,
-                    file_name=f"l2_loop_{radar_site}.gif",
-                    mime="image/gif",
-                    key="dl_l2_gif",
-                )
-            with st.expander("Frame-by-frame (full resolution)",
-                             expanded=not gif):
-                if len(frames) > 1:
-                    idx = st.slider(
-                        "Frame", 0, len(frames) - 1, len(frames) - 1,
-                        key="live_l2_idx",
-                        help="Newest frame is rightmost.",
-                    )
-                else:
-                    idx = 0
-                png, name = frames[idx]
-                st.image(png, use_container_width=True)
-                st.caption(f"Frame {idx + 1} of {len(frames)} · `{name}`")
-        else:
-            st.caption("No Level II volumes returned for the window.")
 
-    # --- NBH MOS table ---
-    st.subheader("NBM Hourly (NBH, f+1–25)")
-    with st.spinner("Fetching NBM..."):
+def _sample_once(cache_root: Path, log) -> None:
+    from core.flights import fetch_positions_near
+
+    for icao, (lat, lon) in SAMPLED_AIRPORTS.items():
         try:
-            nbh_df = cached_nbh_table(icao)
-        except Exception as e:
-            nbh_df = pd.DataFrame()
-            st.warning(f"NBM fetch failed: {e}")
-    if len(nbh_df):
-        st.markdown(build_nbh_table(nbh_df), unsafe_allow_html=True)
-    else:
-        st.caption("No NBM data for this station.")
+            planes = fetch_positions_near(lat, lon,
+                                          radius_deg=RADIUS_DEG)
+        except Exception:
+            continue
+        n = 0
+        for p in planes:
+            if p.alt_ft is not None and p.alt_ft > MAX_OBS_ALT_FT:
+                continue
+            _record(cache_root, icao, p.callsign, p.alt_ft,
+                    p.lat, p.lon)
+            n += 1
+        if n:
+            log(f"{icao}: {n} obs")
 
-    # --- JBU movements (OpenSky) ---
-    st.subheader("JBU Arrivals & Departures")
-    mv_hours = st.selectbox(
-        "Window", [3, 6, 12, 24], index=1,
-        format_func=lambda h: f"Last {h} hours",
-        key="mv_hours",
-    )
-    movements, since_ts = cached_jbu_movements(
-        icao, mv_hours, now.strftime("%Y%m%d%H%M")[:11]
-    )
-    sampled_here = icao.upper() in SAMPLED_AIRPORTS or \
-        icao.upper() == "KPBI"
-    if not _SAMPLER_OK:
-        st.caption(f"Movement sampler unavailable ({_SAMPLER_ERR})")
-    elif not sampled_here:
-        st.caption(
-            f"{icao} is not in the sampled-airport list "
-            f"({', '.join(sorted(SAMPLED_AIRPORTS))}). Ask to add it."
-        )
-    elif not movements:
-        if since_ts:
-            from datetime import datetime as _dt, timezone as _tz
-            since = _dt.fromtimestamp(since_ts, _tz.utc)
-            st.caption(
-                f"No JBU movements derived in the last {mv_hours}h. "
-                f"(BlueMet has been sampling {icao} since "
-                f"{since:%m/%d %H:%M}Z.)"
-            )
-        else:
-            st.caption(
-                "Movement log is empty - the sampler records from "
-                "deploy time forward, so give it a few minutes of "
-                "airport activity."
-            )
-    else:
-        import pandas as _pd
-        from datetime import datetime as _dt, timezone as _tz
-        def _flight_no(cs: str) -> str:
-            """JBU1234 -> 'B6 1234' (the exact flight number)."""
-            if cs.startswith("JBU") and cs[3:]:
-                return f"B6 {cs[3:]}"
-            return cs
 
-        def _mv_df(rows):
-            return _pd.DataFrame([{
-                "Flight": _flight_no(m_["callsign"]),
-                "Callsign": m_["callsign"],
-                "Time (Z)": _dt.fromtimestamp(
-                    m_["time_unix"], _tz.utc
-                ).strftime("%m/%d %H:%M"),
-                "Alt band": f"{m_['alt_from']}-{m_['alt_to']} ft",
-            } for m_ in rows])
+def _daemon(cache_root: Path) -> None:
+    log_path = cache_root / "movements" / "sampler.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
 
-        arrivals = [m_ for m_ in movements if m_["kind"] == "ARR"]
-        departures = [m_ for m_ in movements if m_["kind"] == "DEP"]
-        st.caption(
-            f"{len(arrivals)} arrivals, {len(departures)} departures "
-            f"in {mv_hours}h (showing most recent 5 of each) - "
-            f"BlueMet's own terminal-area sampling, fresh to ~2-4 min"
-        )
-        col_a, col_d = st.columns(2)
-        with col_a:
-            st.markdown("**Arrivals**")
-            if arrivals:
-                st.dataframe(_mv_df(arrivals[:5]),
-                             use_container_width=True,
-                             hide_index=True)
+    def log(msg: str) -> None:
+        try:
+            with open(log_path, "a") as fh:
+                fh.write(
+                    f"{datetime.now(timezone.utc):%m-%d %H:%M:%S} "
+                    f"{msg}\n"
+                )
+        except OSError:
+            pass
+
+    log("movement sampler started")
+    cycles = 0
+    while True:
+        try:
+            _sample_once(cache_root, log)
+        except Exception:
+            log(f"sample failed:\n{traceback.format_exc()}")
+        cycles += 1
+        if cycles % 30 == 0:
+            _prune(cache_root)
+        time.sleep(POLL_INTERVAL_S)
+
+
+def ensure_sampler_started(cache_root: Path) -> None:
+    """Idempotent per-process start. MOV_SAMPLER=off disables."""
+    global _started
+    if os.environ.get("MOV_SAMPLER", "on").lower() == "off":
+        return
+    with _lock:
+        if _started:
+            return
+        threading.Thread(
+            target=_daemon, args=(cache_root,), daemon=True,
+            name="jbu-movement-sampler",
+        ).start()
+        _started = True
+
+
+def sampling_since(cache_root: Path, icao: str):
+    """Earliest observation timestamp for an airport, or None."""
+    d = cache_root / "movements" / "obs" / icao.upper()
+    if not d.exists():
+        return None
+    earliest = None
+    for f in sorted(d.glob("*.jsonl"))[:1]:
+        for line in f.read_text().splitlines()[:1]:
+            try:
+                earliest = json.loads(line)["ts"]
+            except (ValueError, KeyError):
+                pass
+    return earliest
+
+
+def derive_movements(cache_root: Path, icao: str,
+                     hours_back: int) -> list[dict]:
+    """Arrivals/departures derived from the observation log.
+
+    Returns [{"callsign", "kind" (ARR/DEP), "time_unix", "alt_from",
+    "alt_to"}], newest first.
+    """
+    icao = icao.upper()
+    # KDJT/KPBI are the same field; the sampler logs under KDJT
+    if icao == "KPBI":
+        icao = "KDJT"
+    d = cache_root / "movements" / "obs" / icao
+    if not d.exists():
+        return []
+    cutoff = time.time() - hours_back * 3600
+
+    obs_by_cs: dict[str, list] = {}
+    for f in sorted(d.glob("*.jsonl")):
+        for line in f.read_text().splitlines():
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if rec["ts"] < cutoff - SESSION_GAP_S:
+                continue
+            obs_by_cs.setdefault(rec["cs"], []).append(rec)
+
+    movements = []
+    for cs, obs in obs_by_cs.items():
+        obs.sort(key=lambda r: r["ts"])
+        # Split into sessions at silence gaps
+        sessions: list[list] = [[obs[0]]]
+        for rec in obs[1:]:
+            if rec["ts"] - sessions[-1][-1]["ts"] > SESSION_GAP_S:
+                sessions.append([rec])
             else:
-                st.caption("None derived in window.")
-        with col_d:
-            st.markdown("**Departures**")
-            if departures:
-                st.dataframe(_mv_df(departures[:5]),
-                             use_container_width=True,
-                             hide_index=True)
+                sessions[-1].append(rec)
+        for sess in sessions:
+            alts = [r["alt"] for r in sess if r["alt"] is not None]
+            if len(alts) < 2:
+                continue
+            first_a, last_a = alts[0], alts[-1]
+            t_first, t_last = sess[0]["ts"], sess[-1]["ts"]
+            if (first_a <= LOW_ALT_FT
+                    and last_a >= first_a + TREND_FT):
+                kind, t = "DEP", t_first
+            elif (last_a <= LOW_ALT_FT
+                    and first_a >= last_a + TREND_FT):
+                kind, t = "ARR", t_last
             else:
-                st.caption("None derived in window.")
-
-    # --- NOTAMs ---
-    st.subheader("Active NOTAMs")
-    with st.spinner("Fetching NOTAMs..."):
-        notams, notam_err = cached_notams(icao)
-    if notams is None:
-        st.warning(f"NOTAM service unavailable — {notam_err}")
-    elif not notams:
-        st.caption("No active NOTAMs returned.")
-    else:
-        st.caption(f"{len(notams)} NOTAMs")
-        for n in notams[:40]:
-            title = n["number"] or "NOTAM"
-            with st.expander(title, expanded=False):
-                st.markdown(mono_box(n["text"]), unsafe_allow_html=True)
-
-else:
-    st.info("Enter an ICAO code in the sidebar and click **Refresh**.")
+                continue
+            if t < cutoff:
+                continue
+            movements.append({
+                "callsign": cs,
+                "kind": kind,
+                "time_unix": t,
+                "alt_from": first_a,
+                "alt_to": last_a,
+            })
+    movements.sort(key=lambda m: -m["time_unix"])
+    return movements
