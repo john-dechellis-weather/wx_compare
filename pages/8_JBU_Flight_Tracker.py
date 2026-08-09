@@ -463,6 +463,10 @@ if track_cs:
             "airborne yet, already landed, or briefly out of receiver "
             "coverage. Try again in a minute, or check the flight number."
         )
+        from core.flights import last_callsign_diag
+        _diag = last_callsign_diag()
+        if _diag:
+            st.caption(f"Source-by-source: {_diag}")
         with st.spinner("Checking what IS airborne near the hubs..."):
             airborne = cached_airborne_sweep(bucket5)
         if airborne:
@@ -482,7 +486,9 @@ if track_cs:
             } for cs, a, near in airborne[:15]]),
                 use_container_width=True, hide_index=True)
             st.caption(
-                "Enter any of these callsigns above to track it."
+                "Enter any of these callsigns above to track it. "
+                "(Sweep covers hub vicinity only - a mid-country "
+                "flight can be airborne yet absent from this list.)"
             )
         else:
             st.error(
