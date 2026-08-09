@@ -1,37 +1,70 @@
 """Simple shared-password authentication for the app.
 
 Every page calls check_password() at the top. If the user hasn't
-authenticated in this session, they see a login form and the rest of
-the page is blocked from rendering.
+authenticated, they see a login form and the rest of the page is
+blocked from rendering.
+
+Persistence: Streamlit session_state only lives as long as one
+websocket session, so restarts and reconnects used to re-prompt.
+After a successful login we now also place a TOKEN (salted hash of
+the password - never the password itself) in the URL query string.
+New sessions that carry the token authenticate silently, so the
+password is entered once per browser, not once per session.
 
 Password is read from Streamlit secrets (or env var as fallback).
 Never store the password in code.
 """
+import hashlib
 import os
+
 import streamlit as st
+
+_SALT = "bluemet-url-token-v1"
+_PARAM = "k"
+
+
+def _token(password: str) -> str:
+    return hashlib.sha256(
+        (_SALT + password).encode("utf-8")
+    ).hexdigest()[:24]
 
 
 def check_password() -> bool:
-    """Returns True if the user has entered the correct password.
+    """Returns True if the user is authenticated.
 
-    If not authenticated, displays the login form and calls st.stop()
-    so the rest of the page doesn't render.
+    Order of checks: session_state (fast path within a session), then
+    the URL token (survives restarts and reconnects). Otherwise shows
+    the login form and st.stop()s.
     """
-    # Already authenticated in this session
-    if st.session_state.get("password_correct", False):
-        return True
-
-    # Get the expected password from secrets or env
     expected = _get_expected_password()
     if expected is None:
         st.error(
-            "⚠ Site is not configured with a password. "
+            "\u26a0 Site is not configured with a password. "
             "Contact the administrator."
         )
         st.stop()
 
+    tok = _token(expected)
+
+    # Already authenticated in this session: keep the URL token fresh
+    if st.session_state.get("password_correct", False):
+        try:
+            if st.query_params.get(_PARAM) != tok:
+                st.query_params[_PARAM] = tok
+        except Exception:
+            pass
+        return True
+
+    # New session, but the browser URL carries a valid token
+    try:
+        if st.query_params.get(_PARAM) == tok:
+            st.session_state["password_correct"] = True
+            return True
+    except Exception:
+        pass
+
     # Show login form
-    st.markdown("### 🔒 Restricted access")
+    st.markdown("### \U0001f512 Restricted access")
     st.write("This site is for authorized users only.")
 
     st.markdown(
@@ -58,11 +91,17 @@ def check_password() -> bool:
         unsafe_allow_html=True,
     )
 
-    password = st.text_input("Enter password:", type="password", key="password_input")
+    password = st.text_input(
+        "Enter password:", type="password", key="password_input"
+    )
 
     if password:
         if password == expected:
             st.session_state["password_correct"] = True
+            try:
+                st.query_params[_PARAM] = tok
+            except Exception:
+                pass
             st.rerun()
         else:
             st.error("Incorrect password.")
