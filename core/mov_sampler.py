@@ -27,15 +27,44 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
-SAMPLED_AIRPORTS = {
-    "KJFK": (40.6413, -73.7781),
-    "KMCO": (28.4312, -81.3081),
-    "KFLL": (26.0726, -80.1527),
-    "KDCA": (38.8512, -77.0402),
-    "KDJT": (26.6832, -80.0956),   # ex-KPBI (renamed 2026-07-09)
-}
-POLL_INTERVAL_S = 120
-RADIUS_DEG = 0.6
+# The full JBU destination network. Coordinates are resolved at daemon
+# start via the station resolver, then destinations are greedily
+# clustered into wide sweep circles - each poll cycle queries ~18-20
+# circles that together cover every terminal area, catching all
+# low-altitude JBU network-wide for about the cost of the old
+# five-airport design. Airports whose coordinates fail to resolve are
+# skipped (and logged) rather than fatal.
+JBU_AIRPORT_ICAOS = [
+    "KJFK", "KEWR", "KLGA", "KHPN", "KISP", "KPHL", "KBOS", "KORH",
+    "KBDL", "KPVD", "KPWM", "KPQI", "KACK", "KHYA", "KMVY", "KALB",
+    "KSYR", "KROC", "KBUF", "KPIT",
+    "KDCA", "KBWI", "KRIC", "KORF", "KILM", "KRDU", "KCLT", "KCHS",
+    "KSAV",
+    "KJAX", "KVPS", "KVRB", "KMCO", "KDAB", "KTPA", "KSRQ", "KRSW",
+    "KDJT", "KFLL", "KEYW",
+    "KORD", "KMKE", "KTVC", "KDTW", "KCLE", "KBNA", "KATL", "KMSY",
+    "KDFW", "KAUS", "KIAH", "KABQ", "KPHX",
+    "KBUR", "KLAX", "KSAN", "KONT", "KLAS",
+    "KSFO", "KRNO", "KSMF", "KSLC", "KBZN", "KDEN", "KHDN", "KSEA",
+    "KPDX", "CYVR",
+    "TXKF", "MYNN", "MBPV", "TJSJ", "TJPS", "TJBQ", "TIST", "TISX",
+    "TNCM", "TKPK", "TAPA", "TLPL", "TVSA", "TBPB", "TGPY", "TTPP",
+    "SYCJ", "MDST", "MDSD", "MDPP", "MDPC",
+    "TNCA", "TNCC", "TNCB", "MKJP", "MKJS", "MWCR",
+]
+
+ICAO_ALIASES = {"KPBI": "KDJT"}
+
+
+def is_sampled(icao: str) -> bool:
+    code = icao.upper()
+    code = ICAO_ALIASES.get(code, code)
+    return code in JBU_AIRPORT_ICAOS
+
+
+POLL_INTERVAL_S = 180
+SWEEP_RADIUS_DEG = 3.5        # per sweep circle (~210 nm)
+ATTRIB_RADIUS_DEG = 0.35      # obs -> nearest airport within ~35 km
 MAX_OBS_ALT_FT = 12000        # only record the terminal-area band
 OBS_RETENTION_DAYS = 3
 
@@ -86,27 +115,83 @@ def _prune(cache_root: Path) -> None:
                 pass
 
 
+_resolved: dict = {}      # icao -> (lat, lon), built once
+_sweep_centers: list = []  # [(lat, lon), ...]
+_cache_root_holder: list = [Path("/tmp/wx_compare_cache")]
+
+
+def _prepare_network(log) -> None:
+    """Resolve airport coordinates and cluster into sweep circles.
+    Runs once at daemon start; safe to re-run."""
+    from core.stations import StationResolver
+
+    if _sweep_centers:
+        return
+    resolver = StationResolver(cache_dir=_cache_root_holder[0]
+                               / "stations")
+    misses = []
+    for icao in JBU_AIRPORT_ICAOS:
+        try:
+            stn = resolver.resolve(icao)
+        except Exception:
+            stn = None
+        if stn is None:
+            misses.append(icao)
+            continue
+        _resolved[icao] = (float(stn.lat), float(stn.lon))
+    if misses:
+        log(f"unresolved (skipped): {', '.join(misses)}")
+
+    # Greedy clustering: each airport joins an existing center within
+    # SWEEP_RADIUS - ATTRIB margin, else seeds a new one.
+    for lat, lon in _resolved.values():
+        for i, (cla, clo) in enumerate(_sweep_centers):
+            if (abs(lat - cla) <= SWEEP_RADIUS_DEG - 0.5
+                    and abs(lon - clo) <= SWEEP_RADIUS_DEG - 0.5):
+                break
+        else:
+            _sweep_centers.append((lat, lon))
+    log(f"network: {len(_resolved)} airports in "
+        f"{len(_sweep_centers)} sweep circles")
+
+
+def _nearest_airport(lat: float, lon: float):
+    best, best_d = None, ATTRIB_RADIUS_DEG
+    for icao, (ala, alo) in _resolved.items():
+        d = max(abs(lat - ala), abs(lon - alo))
+        if d < best_d:
+            best, best_d = icao, d
+    return best
+
+
 def _sample_once(cache_root: Path, log) -> None:
     from core.flights import fetch_positions_near
 
-    for icao, (lat, lon) in SAMPLED_AIRPORTS.items():
+    _prepare_network(log)
+    n_total = 0
+    for cla, clo in _sweep_centers:
         try:
-            planes = fetch_positions_near(lat, lon,
-                                          radius_deg=RADIUS_DEG)
+            planes = fetch_positions_near(
+                cla, clo, radius_deg=SWEEP_RADIUS_DEG
+            )
         except Exception:
             continue
-        n = 0
         for p in planes:
             if p.alt_ft is not None and p.alt_ft > MAX_OBS_ALT_FT:
                 continue
+            icao = _nearest_airport(p.lat, p.lon)
+            if icao is None:
+                continue
             _record(cache_root, icao, p.callsign, p.alt_ft,
                     p.lat, p.lon)
-            n += 1
-        if n:
-            log(f"{icao}: {n} obs")
+            n_total += 1
+        time.sleep(0.3)   # gentle pacing between sweep queries
+    if n_total:
+        log(f"sweep: {n_total} obs across network")
 
 
 def _daemon(cache_root: Path) -> None:
+    _cache_root_holder[0] = cache_root
     log_path = cache_root / "movements" / "sampler.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -171,9 +256,7 @@ def derive_movements(cache_root: Path, icao: str,
     "alt_to"}], newest first.
     """
     icao = icao.upper()
-    # KDJT/KPBI are the same field; the sampler logs under KDJT
-    if icao == "KPBI":
-        icao = "KDJT"
+    icao = ICAO_ALIASES.get(icao, icao)
     d = cache_root / "movements" / "obs" / icao
     if not d.exists():
         return []
