@@ -412,17 +412,50 @@ def interpolate_at(
     return out
 
 
+# Community ADS-B aggregators sharing the same /v2 API schema. If the
+# primary's callsign lookup fails or comes back empty, the mirrors are
+# asked the same question - a flight visible to any of them is found.
+_ADSB_SOURCES = [
+    ("adsb.lol", "https://api.adsb.lol/v2/callsign/{cs}"),
+    ("adsb.fi", "https://opendata.adsb.fi/api/v2/callsign/{cs}"),
+    ("airplanes.live", "https://api.airplanes.live/v2/callsign/{cs}"),
+]
+
+_callsign_diag: dict = {"msg": None}
+
+
+def last_callsign_diag():
+    return _callsign_diag["msg"]
+
+
 def fetch_callsign(callsign: str) -> Optional[AircraftPos]:
-    """Live position of a specific flight by exact callsign (adsb.lol).
-    Returns None when not found / not airborne / service down."""
+    """Live position of a specific flight by exact callsign, tried
+    across multiple ADS-B aggregators. Returns None only when every
+    source says not-found/unreachable; last_callsign_diag() then holds
+    a per-source summary for display."""
     cs = callsign.strip().upper()
+    diags = []
+    for src_name, url_t in _ADSB_SOURCES:
+        pos = _try_callsign_source(cs, url_t, diags, src_name)
+        if pos is not None:
+            _callsign_diag["msg"] = None
+            return pos
+    _callsign_diag["msg"] = "; ".join(diags)
+    return None
+
+
+def _try_callsign_source(
+    cs: str, url_t: str, diags: list, src_name: str
+) -> Optional[AircraftPos]:
     try:
         r = requests.get(
-            f"https://api.adsb.lol/v2/callsign/{cs}",
+            url_t.format(cs=cs),
             headers=_HEADERS,
-            timeout=20,
+            timeout=12,
         )
-        r.raise_for_status()
+        if r.status_code != 200:
+            diags.append(f"{src_name}: HTTP {r.status_code}")
+            return None
         planes = r.json().get("ac", []) or []
         for p in planes:
             plat, plon = p.get("lat"), p.get("lon")
@@ -438,21 +471,41 @@ def fetch_callsign(callsign: str) -> Optional[AircraftPos]:
                 heading_deg=float(trk) if trk is not None else None,
                 hex=(p.get("hex") or "").strip().lower() or None,
             )
+        diags.append(f"{src_name}: no aircraft with that callsign")
         return None
-    except Exception:
+    except Exception as e:
+        diags.append(f"{src_name}: {type(e).__name__}")
         return None
+
+
+# OpenSky reachability memory: the host is confirmed blocked from
+# some deployment environments (ConnectTimeout). After any connection
+# failure we skip OpenSky entirely for a cooldown window rather than
+# paying a timeout on every call.
+_opensky_dead_until: list[float] = [0.0]
+_OPENSKY_COOLDOWN_S = 1800
+
+
+def _opensky_available() -> bool:
+    return _time.time() >= _opensky_dead_until[0]
+
+
+def _mark_opensky_dead() -> None:
+    _opensky_dead_until[0] = _time.time() + _OPENSKY_COOLDOWN_S
 
 
 def fetch_track_opensky(icao24: str) -> Optional[list[tuple[float, float]]]:
     """Waypoints of the aircraft's current flight via OpenSky's tracks
     endpoint (anonymous, experimental). None on failure — including the
     host being unreachable from the server — so callers can fall back."""
+    if not _opensky_available():
+        return None
     try:
         r = requests.get(
             "https://opensky-network.org/api/tracks/all",
             params={"icao24": icao24.lower(), "time": 0},
             headers=_HEADERS,
-            timeout=12,
+            timeout=6,
         )
         if r.status_code != 200:
             return None
@@ -463,6 +516,9 @@ def fetch_track_opensky(icao24: str) -> Optional[list[tuple[float, float]]]:
             if wp[1] is not None and wp[2] is not None:
                 pts.append((float(wp[1]), float(wp[2])))
         return pts if pts else None
+    except requests.exceptions.ConnectionError:
+        _mark_opensky_dead()
+        return None
     except Exception:
         return None
 
@@ -678,6 +734,12 @@ def fetch_airport_flights(
     the reason in last_airport_flights_error().
     """
     _airport_flights_error["msg"] = None
+    if not _opensky_available():
+        _airport_flights_error["msg"] = (
+            "OpenSky is unreachable from this server (host blocked); "
+            "skipping until cooldown expires"
+        )
+        return []
     codes = [icao.upper()]
     # Rename transition: OpenSky's aerodrome DB may know either code
     renames = {"KDJT": "KPBI", "KPBI": "KDJT"}
@@ -701,6 +763,10 @@ def fetch_airport_flights(
                     headers=_HEADERS,
                     timeout=15,
                 )
+            except requests.exceptions.ConnectionError as e:
+                last_err = f"{type(e).__name__}: host unreachable"
+                _mark_opensky_dead()
+                continue
             except Exception as e:
                 last_err = f"{type(e).__name__}: {e}"
                 continue
