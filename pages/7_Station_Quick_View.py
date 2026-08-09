@@ -7,7 +7,7 @@ Architecture note: the Refresh button commits the station to
 st.session_state and the display gates on that (not on the button), so
 widget interactions like the Level II frame slider rerun the page
 without blanking it — every fetcher is cached, so reruns are instant.
-"""
+"""ç=
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -710,24 +710,46 @@ if active_icao:
     else:
         import pandas as _pd
         from datetime import datetime as _dt, timezone as _tz
-        show = movements[:5]   # most recent five only
-        df = _pd.DataFrame([{
-            "Flight": m_["callsign"],
-            "Type": ("Arrival" if m_["kind"] == "ARR"
-                     else "Departure"),
-            "Time (Z)": _dt.fromtimestamp(
-                m_["time_unix"], _tz.utc
-            ).strftime("%m/%d %H:%M"),
-            "Altitude band": f"{m_['alt_from']}-{m_['alt_to']} ft",
-        } for m_ in show])
-        n_arr = sum(1 for m_ in movements if m_["kind"] == "ARR")
+        def _flight_no(cs: str) -> str:
+            """JBU1234 -> 'B6 1234' (the exact flight number)."""
+            if cs.startswith("JBU") and cs[3:]:
+                return f"B6 {cs[3:]}"
+            return cs
+
+        def _mv_df(rows):
+            return _pd.DataFrame([{
+                "Flight": _flight_no(m_["callsign"]),
+                "Callsign": m_["callsign"],
+                "Time (Z)": _dt.fromtimestamp(
+                    m_["time_unix"], _tz.utc
+                ).strftime("%m/%d %H:%M"),
+                "Alt band": f"{m_['alt_from']}-{m_['alt_to']} ft",
+            } for m_ in rows])
+
+        arrivals = [m_ for m_ in movements if m_["kind"] == "ARR"]
+        departures = [m_ for m_ in movements if m_["kind"] == "DEP"]
         st.caption(
-            f"Most recent {len(show)} of {len(movements)} JBU "
-            f"movements in {mv_hours}h ({n_arr} arrivals, "
-            f"{len(movements) - n_arr} departures) - BlueMet's own "
-            f"terminal-area sampling, fresh to ~2-4 min"
+            f"{len(arrivals)} arrivals, {len(departures)} departures "
+            f"in {mv_hours}h (showing most recent 5 of each) - "
+            f"BlueMet's own terminal-area sampling, fresh to ~2-4 min"
         )
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        col_a, col_d = st.columns(2)
+        with col_a:
+            st.markdown("**Arrivals**")
+            if arrivals:
+                st.dataframe(_mv_df(arrivals[:5]),
+                             use_container_width=True,
+                             hide_index=True)
+            else:
+                st.caption("None derived in window.")
+        with col_d:
+            st.markdown("**Departures**")
+            if departures:
+                st.dataframe(_mv_df(departures[:5]),
+                             use_container_width=True,
+                             hide_index=True)
+            else:
+                st.caption("None derived in window.")
 
     # --- NOTAMs ---
     st.subheader("Active NOTAMs")
