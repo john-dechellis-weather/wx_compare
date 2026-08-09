@@ -638,6 +638,79 @@ def fetch_routes(planes: list[AircraftPos]) -> dict:
         return {}
 
 
+# Globe trace endpoints: full recorded path of an airframe since 00Z,
+# served per-hex by the aggregators' map backends. Directory sharding
+# is by the LAST TWO hex characters.
+_TRACE_SOURCES = [
+    ("adsb.lol trace",
+     "https://globe.adsb.lol/data/traces/{shard}/trace_full_{hex}.json"),
+    ("adsb.fi trace",
+     "https://globe.adsb.fi/data/traces/{shard}/trace_full_{hex}.json"),
+    ("airplanes.live trace",
+     "https://globe.airplanes.live/data/traces/{shard}/"
+     "trace_full_{hex}.json"),
+]
+
+
+def fetch_track_trace(
+    icao24: str,
+) -> tuple[Optional[list[tuple[float, float]]], Optional[str]]:
+    """Complete current-flight path from a globe trace file.
+
+    Returns (points, source_name) or (None, None). The trace covers
+    the whole day, so we slice to the CURRENT airborne segment: points
+    after the last ground contact / >20 min gap.
+    """
+    hx = icao24.lower().strip()
+    if len(hx) < 2:
+        return None, None
+    shard = hx[-2:]
+    for src_name, url_t in _TRACE_SOURCES:
+        try:
+            r = requests.get(
+                url_t.format(shard=shard, hex=hx),
+                headers=_HEADERS,
+                timeout=10,
+            )
+            if r.status_code != 200:
+                continue
+            data = r.json()
+        except Exception:
+            continue
+        base_ts = data.get("timestamp")
+        trace = data.get("trace") or []
+        if not trace or base_ts is None:
+            continue
+        # Walk the day's trace; restart the segment at ground contact
+        # or a long silence gap - what remains is the current flight.
+        seg: list[tuple[float, float]] = []
+        prev_t = None
+        for p in trace:
+            try:
+                t_off, lat, lon, alt = p[0], p[1], p[2], p[3]
+            except (IndexError, TypeError):
+                continue
+            if lat is None or lon is None:
+                continue
+            on_ground = (alt == "ground")
+            gap = (prev_t is not None
+                   and (t_off - prev_t) > 1200)
+            if on_ground or gap:
+                seg = []
+                prev_t = t_off
+                if on_ground:
+                    continue
+            prev_t = t_off
+            seg.append((round(float(lat), 4), round(float(lon), 4)))
+        if len(seg) >= 2:
+            # Thin very dense traces for rendering sanity
+            if len(seg) > 600:
+                step = len(seg) // 600 + 1
+                seg = seg[::step] + [seg[-1]]
+            return seg, src_name
+    return None, None
+
+
 def fetch_fleet_trails(
     planes: list[AircraftPos],
     track_dir: Path,
@@ -659,35 +732,25 @@ def fetch_fleet_trails(
             pass
 
     trails: dict = {}
-    n_open = n_self = 0
+    n_trace = n_self = 0
 
-    # Circuit-breaker probe: try OpenSky on the first two hexed planes
+    # Primary: globe trace files (complete takeoff-to-now path),
+    # fetched in parallel across the fleet.
     probeable = [p for p in planes if p.hex]
-    opensky_alive = False
-    for p in probeable[:2]:
-        pts = fetch_track_opensky(p.hex)
-        if pts and len(pts) >= 2:
-            trails[p.callsign] = tuple(pts)
-            n_open += 1
-            opensky_alive = True
-    if opensky_alive:
-        remaining = [
-            p for p in probeable if p.callsign not in trails
-        ]
-        with ThreadPoolExecutor(max_workers=8) as ex:
-            futs = {
-                ex.submit(fetch_track_opensky, p.hex): p
-                for p in remaining
-            }
-            for fut in as_completed(futs):
-                p = futs[fut]
-                try:
-                    pts = fut.result()
-                except Exception:
-                    pts = None
-                if pts and len(pts) >= 2:
-                    trails[p.callsign] = tuple(pts)
-                    n_open += 1
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futs = {
+            ex.submit(fetch_track_trace, p.hex): p
+            for p in probeable
+        }
+        for fut in as_completed(futs):
+            p = futs[fut]
+            try:
+                pts, _src = fut.result()
+            except Exception:
+                pts = None
+            if pts and len(pts) >= 2:
+                trails[p.callsign] = tuple(pts)
+                n_trace += 1
 
     # Self-recorded fallback for everyone still trail-less
     for p in planes:
@@ -698,13 +761,14 @@ def fetch_fleet_trails(
             trails[p.callsign] = tuple(own)
             n_self += 1
 
-    if n_open and n_self:
-        summary = f"{n_open} OpenSky, {n_self} self-recorded"
-    elif n_open:
-        summary = f"{n_open} OpenSky"
+    if n_trace and n_self:
+        summary = (f"{n_trace} full traces, "
+                   f"{n_self} self-recorded")
+    elif n_trace:
+        summary = f"{n_trace} full traces (takeoff to now)"
     elif n_self:
-        summary = (f"{n_self} self-recorded "
-                   "(OpenSky unreachable; trails grow while tracking)")
+        summary = (f"{n_self} self-recorded (trace endpoints "
+                   "unreachable; trails grow while tracking)")
     else:
         summary = "none yet (trails build as the page refreshes)"
     return trails, summary
