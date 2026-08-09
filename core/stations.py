@@ -18,6 +18,12 @@ OPENFLIGHTS_URL = (
     "https://raw.githubusercontent.com/jpatokal/openflights/master/data/airports.dat"
 )
 
+# Airport identifier renames. FAA retired KPBI on 2026-07-09 (Palm
+# Beach became President Donald J. Trump Intl, KDJT); the OpenFlights
+# dataset may lag, so we normalize input AND inject the new code from
+# the old entry's coordinates when the dataset lacks it.
+ICAO_RENAMES = {"KPBI": "KDJT"}
+
 
 @dataclass(frozen=True)
 class Station:
@@ -36,13 +42,17 @@ class StationResolver:
 
     def resolve(self, icao: str) -> Optional[Station]:
         self._ensure_loaded()
-        return self._table.get(icao.upper())
+        code = icao.upper()
+        code = ICAO_RENAMES.get(code, code)
+        return self._table.get(code)
 
     def resolve_many(self, icaos):
         self._ensure_loaded()
         found, missing = [], []
         for code in icaos:
-            stn = self._table.get(code.upper())
+            code = code.upper()
+            code = ICAO_RENAMES.get(code, code)
+            stn = self._table.get(code)
             if stn is not None:
                 found.append(stn)
             else:
@@ -51,7 +61,8 @@ class StationResolver:
 
     def __contains__(self, icao: str) -> bool:
         self._ensure_loaded()
-        return icao.upper() in self._table
+        code = icao.upper()
+        return ICAO_RENAMES.get(code, code) in self._table
 
     def _ensure_loaded(self):
         if self._table is not None:
@@ -62,6 +73,15 @@ class StationResolver:
             r.raise_for_status()
             cached.write_text(r.text)
         self._table = self._parse(cached)
+        # Inject renamed identifiers the dataset doesn't know yet,
+        # cloning coordinates from the retired code's entry.
+        for old_code, new_code in ICAO_RENAMES.items():
+            if new_code not in self._table and old_code in self._table:
+                e = self._table[old_code]
+                self._table[new_code] = Station(
+                    icao=new_code, lat=e.lat, lon=e.lon,
+                    elev_ft=e.elev_ft, name=e.name,
+                )
 
     def _parse(self, path: Path) -> dict:
         table = {}

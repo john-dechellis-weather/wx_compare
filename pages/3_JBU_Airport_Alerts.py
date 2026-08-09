@@ -15,7 +15,7 @@ from datetime import datetime, timezone, timedelta
 import streamlit as st
 
 st.set_page_config(
-    page_title="BlueMet — JBU Airport Alerts",
+    page_title="BlueMet — Airport Alerts",
     layout="wide",
 )
 
@@ -37,7 +37,7 @@ JETBLUE_ICAOS = [
     # Mid-Atlantic
     "KDCA", "KBWI", "KRIC", "KORF", "KILM", "KRDU", "KCLT", "KCHS", "KSAV",
     # Southeast + Florida
-    "KJAX", "KVPS", "KVRB", "KMCO", "KDAB", "KTPA", "KSRQ", "KRSW", "KPBI",
+    "KJAX", "KVPS", "KVRB", "KMCO", "KDAB", "KTPA", "KSRQ", "KRSW", "KDJT",
     "KDJT", "KFLL", "KEYW",
     # Midwest
     "KORD", "KMKE", "KTVC", "KDTW", "KCLE", "KBNA", "KATL", "KMSY",
@@ -298,7 +298,7 @@ def cached_analyze(
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
-st.title("JBU Airport Alerts")
+st.title("Airport Alerts")
 st.caption(
     f"Scans TAFs from {len(JETBLUE_ICAOS)} JetBlue destinations and flags "
     "airports forecast to see low visibility, low ceilings, or thunderstorms."
