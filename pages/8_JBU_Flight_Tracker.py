@@ -62,6 +62,31 @@ def cached_flight(callsign: str, minute_bucket: str):
     return fetch_callsign(callsign)
 
 
+@st.cache_data(ttl=120, show_spinner=False, max_entries=4)
+def cached_airborne_sweep(bucket: str):
+    """JBU aircraft currently airborne near the hub network - used
+    when a requested flight isn't found, both as suggestions and as a
+    live diagnostic (empty mid-day = position feed problem, not a
+    landed flight)."""
+    from core.flights import fetch_positions_near
+    hubs = {
+        "JFK": (40.64, -73.78), "BOS": (42.36, -71.01),
+        "MCO": (28.43, -81.31), "FLL": (26.07, -80.15),
+        "DCA": (38.85, -77.04), "LAX": (33.94, -118.41),
+    }
+    seen = {}
+    for name, (la, lo) in hubs.items():
+        try:
+            for p in fetch_positions_near(la, lo, radius_deg=3.0):
+                if p.callsign not in seen:
+                    seen[p.callsign] = (p, name)
+        except Exception:
+            continue
+    return [
+        (cs, p.alt_ft, near) for cs, (p, near) in sorted(seen.items())
+    ]
+
+
 @st.cache_data(ttl=120, show_spinner=False, max_entries=20)
 def cached_others(lat: float, lon: float, radius: float, bucket: str):
     from core.flights import fetch_positions_near
@@ -438,6 +463,34 @@ if track_cs:
             "airborne yet, already landed, or briefly out of receiver "
             "coverage. Try again in a minute, or check the flight number."
         )
+        with st.spinner("Checking what IS airborne near the hubs..."):
+            airborne = cached_airborne_sweep(bucket5)
+        if airborne:
+            st.markdown(
+                f"**{len(airborne)} JBU currently airborne near the "
+                f"hub network** (position feed is healthy - the "
+                f"requested flight just isn't up):"
+            )
+            import pandas as _pd
+            st.dataframe(_pd.DataFrame([{
+                "Flight": (f"B6 {cs[3:]}" if cs.startswith("JBU")
+                           else cs),
+                "Callsign": cs,
+                "Altitude": (f"{int(a):,} ft" if a is not None
+                             else "?"),
+                "Near": near,
+            } for cs, a, near in airborne[:15]]),
+                use_container_width=True, hide_index=True)
+            st.caption(
+                "Enter any of these callsigns above to track it."
+            )
+        else:
+            st.error(
+                "Hub sweep found ZERO airborne JBU - during normal "
+                "operating hours that means the position feed "
+                "(adsb.lol) is failing, not that flights are landed. "
+                "Tell Claude this happened."
+            )
         st.stop()
 
     clat, clon = target.lat, target.lon
