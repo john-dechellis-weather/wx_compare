@@ -44,6 +44,9 @@ _persistent = Path("/opt/render/project/src/cache")
 CACHE_ROOT = _persistent if _persistent.exists() else Path("/tmp/wx_compare_cache")
 CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 
+from core.mov_sampler import ensure_sampler_started
+ensure_sampler_started(CACHE_ROOT)
+
 RANGE_WARN_KM = 200.0
 
 
