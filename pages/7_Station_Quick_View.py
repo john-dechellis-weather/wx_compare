@@ -7,7 +7,7 @@ Architecture note: the Refresh button commits the station to
 st.session_state and the display gates on that (not on the button), so
 widget interactions like the Level II frame slider rerun the page
 without blanking it — every fetcher is cached, so reruns are instant.
-"""ç=
+"""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
