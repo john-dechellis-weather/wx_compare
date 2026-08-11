@@ -1,7 +1,8 @@
 """Hi-Res CAMs - convection-allowing model viewer, 2x2 model grid.
 
-2x2 grid of CAMs (HRRR, NAM Nest, HRW ARW, RRFS) with a hub
-pre-warmer serving JFK/MCO/FLL/DCA reflectivity instantly.
+HRRR viewer (single-model for now) with a hub pre-warmer
+serving JFK/MCO/FLL/DCA reflectivity instantly. Other CAM configs
+stay dormant in core.hrrr_cam for later re-enable.
 """
 from __future__ import annotations
 
@@ -144,7 +145,7 @@ def cached_panel(
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
-st.title("Hi-Res CAMs")
+st.title("Hi-Res CAMs (HRRR)")
 st.caption(
     "Convection-allowing model viewer - aviation products, "
     "hourly-updating, with prewarmed hub views."
@@ -161,13 +162,10 @@ with st.sidebar:
             st.session_state["cam_icao"] = hub
     zoom = st.slider("Zoom (degrees)", 1.0, 6.0, 2.5, 0.5)
 
-    st.header("Models")
-    show_models = {
-        "hrrr": st.checkbox("HRRR", value=True),
-        "nam_nest": st.checkbox("NAM 3km Nest", value=True),
-        "hiresw_arw": st.checkbox("HRW ARW", value=True),
-        "rrfs": st.checkbox("RRFS", value=True),
-    }
+    # HRRR-only for now (NAM/ARW retire Oct 2026; RRFS pending).
+    # The other model configs stay dormant in core.hrrr_cam for
+    # one-line re-enable.
+    show_models = {"hrrr": True}
 
     st.header("Product")
     product_label = st.selectbox(
@@ -207,9 +205,8 @@ with st.sidebar:
     else:
         fhr_all = st.slider(
             "Forecast hour (all models)", 0, 60, 1,
-            help="One slider drives every panel. Models that don't "
-                 "reach the selected hour clamp to their own maximum "
-                 "(HRRR f18, ARW f48, NAM/RRFS f60).",
+            help="HRRR reaches f18 hourly (f48 on 00/06/12/18Z "
+                 "cycles); the panel clamps to its available max.",
         )
 
     st.divider()
@@ -270,7 +267,7 @@ if active:
             specs.append((m, cyc, fh))
         return specs, notes
 
-    GRID_ORDER = ["nam_nest", "hrrr", "hiresw_arw", "rrfs"]
+    GRID_ORDER = ["hrrr"]
 
     if smooth:
         span = min(fhr_hi - fhr_lo, 24)
@@ -457,29 +454,23 @@ if active:
                 ))
 
         spec_fhr = {m: fh for m, _c, fh in specs}
-        top_left, top_right = st.columns(2)
-        bot_left, bot_right = st.columns(2)
-        for m, col in (("nam_nest", top_left), ("hrrr", top_right),
-                       ("hiresw_arw", bot_left), ("rrfs", bot_right)):
-            with col:
-                cfg = MODELS[m]
-                st.markdown(f"**{cfg['label']}**")
-                if m in notes:
-                    st.caption(notes[m])
-                    continue
-                res = grid.get(m)
-                if isinstance(res, (bytes, bytearray)):
-                    if spec_fhr.get(m, fhr_all) != fhr_all:
-                        st.caption(
-                            f"f{fhr_all:02d} beyond {cfg['label']} "
-                            f"range; showing f{spec_fhr[m]:02d} "
-                            f"(its max)."
-                        )
-                    st.image(res, use_container_width=True)
-                else:
-                    st.error(f"{cfg['label']}: {res}")
-                if cfg["note"]:
-                    st.caption(cfg["note"])
+        for m in GRID_ORDER:
+            cfg = MODELS[m]
+            st.markdown(f"**{cfg['label']}**")
+            if m in notes:
+                st.caption(notes[m])
+                continue
+            res = grid.get(m)
+            if isinstance(res, (bytes, bytearray)):
+                if spec_fhr.get(m, fhr_all) != fhr_all:
+                    st.caption(
+                        f"f{fhr_all:02d} beyond {cfg['label']} "
+                        f"range; showing f{spec_fhr[m]:02d} "
+                        f"(its max)."
+                    )
+                st.image(res, use_container_width=True)
+            else:
+                st.error(f"{cfg['label']}: {res}")
 
 else:
     st.info("Enter an airport in the sidebar and click **Render**.")
@@ -487,11 +478,9 @@ else:
         """
         ### What this page is
 
-        A 2\u00d72 grid of convection-allowing models centered on your
-        airport, aviation products only. **HRRR** (top right) is live:
-        composite reflectivity, echo tops, visibility, ceiling, and
-        gusts, forecast hours f00\u2013f18, updating every hour, with
-        Hub buttons (JFK/MCO/FLL/DCA) serve prewarmed
-        reflectivity instantly.
+        HRRR centered on your airport, aviation products only: 1km
+        reflectivity, echo tops, visibility, ceiling, and gusts,
+        with smooth scrubbing across forecast hours. Hub buttons
+        (JFK/MCO/FLL/DCA) serve prewarmed reflectivity instantly.
         """
     )
