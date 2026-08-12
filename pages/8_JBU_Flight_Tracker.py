@@ -339,9 +339,9 @@ def _fmt_alt(alt_ft):
 
 
 def _client_scrubber(frames, key: str) -> str:
-    """HTML for an instant client-side frame scrubber with play/pause.
-    All frames ship as base64 once; swapping is pure browser JS - no
-    Streamlit rerun, no loading, per frame."""
+    """Instant client-side frame scrubber with play/pause plus
+    wheel-zoom (toward cursor), drag-pan, and double-click reset.
+    All pure browser JS on the already-shipped frames."""
     import base64
     import json as _json
 
@@ -352,13 +352,25 @@ def _client_scrubber(frames, key: str) -> str:
     return (
         "<style>"
         ".scr{font:13px monospace}"
-        ".scr img{width:100%;border:1px solid #888}"
+        ".scr .vp{overflow:hidden;border:1px solid #888;"
+        "cursor:zoom-in;position:relative}"
+        ".scr .vp.z{cursor:grab}"
+        ".scr .vp.drag{cursor:grabbing}"
+        ".scr img{width:100%;display:block;"
+        "transform-origin:0 0;user-select:none;"
+        "-webkit-user-drag:none}"
         ".scr input[type=range]{width:55%;vertical-align:middle}"
         ".scr button{font:bold 13px monospace;margin-right:6px;"
         "padding:2px 10px}"
+        ".scr .zl{position:absolute;right:4px;top:4px;"
+        "background:#000a;color:#0f0;padding:1px 6px;"
+        "font:11px monospace;display:none}"
         "</style>"
         "<div class='scr'>"
+        "<div class='vp' id='vp_" + key + "'>"
         "<img id='im_" + key + "'>"
+        "<span class='zl' id='zl_" + key + "'></span>"
+        "</div>"
         "<div>"
         "<button id='pb_" + key + "'>PAUSE</button>"
         "<input type='range' id='sl_" + key + "' min='0' max='"
@@ -370,10 +382,44 @@ def _client_scrubber(frames, key: str) -> str:
         "const F=" + _json.dumps(srcs) + ";"
         "const N=" + _json.dumps(names) + ";"
         "const im=document.getElementById('im_" + key + "');"
+        "const vp=document.getElementById('vp_" + key + "');"
+        "const zl=document.getElementById('zl_" + key + "');"
         "const sl=document.getElementById('sl_" + key + "');"
         "const lb=document.getElementById('lb_" + key + "');"
         "const pb=document.getElementById('pb_" + key + "');"
         "let playing=true;let t=null;"
+        "let s=1,tx=0,ty=0;"
+        "function apply(){"
+        "im.style.transform='translate('+tx+'px,'+ty+'px) "
+        "scale('+s+')';"
+        "vp.classList.toggle('z',s>1);"
+        "zl.style.display=s>1?'block':'none';"
+        "zl.textContent=s.toFixed(1)+'x';}"
+        "function clamp(){"
+        "const w=vp.clientWidth,h=vp.clientHeight;"
+        "tx=Math.min(0,Math.max(tx,w-w*s));"
+        "ty=Math.min(0,Math.max(ty,h-h*s));}"
+        "vp.addEventListener('wheel',function(e){"
+        "e.preventDefault();"
+        "const r=vp.getBoundingClientRect();"
+        "const mx=e.clientX-r.left,my=e.clientY-r.top;"
+        "const s0=s;"
+        "s=Math.min(6,Math.max(1,s*(e.deltaY<0?1.2:1/1.2)));"
+        "tx=mx-(mx-tx)*(s/s0);ty=my-(my-ty)*(s/s0);"
+        "if(s===1){tx=0;ty=0;}"
+        "clamp();apply();},{passive:false});"
+        "let dragging=false,dx=0,dy=0;"
+        "vp.addEventListener('mousedown',function(e){"
+        "if(s<=1)return;dragging=true;"
+        "vp.classList.add('drag');"
+        "dx=e.clientX-tx;dy=e.clientY-ty;e.preventDefault();});"
+        "window.addEventListener('mousemove',function(e){"
+        "if(!dragging)return;"
+        "tx=e.clientX-dx;ty=e.clientY-dy;clamp();apply();});"
+        "window.addEventListener('mouseup',function(){"
+        "dragging=false;vp.classList.remove('drag');});"
+        "vp.addEventListener('dblclick',function(){"
+        "s=1;tx=0;ty=0;apply();});"
         "function show(i){im.src=F[i];lb.textContent=N[i];}"
         "function step(){let i=(+sl.value+1)%F.length;"
         "sl.value=i;show(i);"
@@ -385,7 +431,7 @@ def _client_scrubber(frames, key: str) -> str:
         "if(playing){clearTimeout(t);playing=false;"
         "pb.textContent='PLAY';}"
         "else{playing=true;pb.textContent='PAUSE';step();}});"
-        "show(+sl.value);t=setTimeout(step,450);"
+        "show(+sl.value);t=setTimeout(step,450);apply();"
         "})();"
         "</script>"
     )
@@ -543,6 +589,11 @@ if track_cs:
     st.caption(
         f"Trails: {trails_summary} | Routes: {len(routes_t)} resolved"
     )
+    if not routes_t:
+        from core.flights import last_route_error
+        _rerr = last_route_error()
+        if _rerr:
+            st.caption(f"Route lookup: {_rerr}")
 
     # --- Radar ---
     st.subheader("Radar")
