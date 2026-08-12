@@ -109,42 +109,37 @@ MODELS = {
     },
     "rrfs": {
         "label": "RRFS",
-        "mechanism": "idx",
-        # The parallel feed's exact path spelling is unverified from
-        # here, so the config self-discovers: candidates are probed
-        # in order and the first that answers is memoized for the
-        # session. Spellings cover para/prod trees and both filename
-        # conventions seen during RRFS development.
-        # Filename per Service Change Notice 26-48 (operational):
-        #   rrfs.YYYYMMDD/CC/rrfs.tCCz.prslev.3km.fFFF.conus.grib2
-        # Tried across the plausible trees (para first - the SCN's
-        # parallel feed landed ~Aug 11 2026); older dev spellings
-        # kept as trailing fallbacks.
-        "idx_candidates": [
-            (f"{NOMADS}/pub/data/nccf/com/rrfs/para/"
-             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev.3km"
-             ".f{ff:03d}.conus.grib2.idx"),
-            (f"{NOMADS}/pub/data/nccf/com/rrfs/prod/"
-             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev.3km"
-             ".f{ff:03d}.conus.grib2.idx"),
+        # v1.0 feed on NOMADS publishes NO .idx sidecars (verified
+        # by directory listing 8/12), and full files run 330-370 MB,
+        # so RRFS uses the grib-filter CGI like HRRR. Cycle detection
+        # HEAD-probes the grib file itself (zero-byte check). The
+        # 2dfld file carries all six of our 2-D products.
+        "file": "rrfs.t{cc:02d}z.2dfld.3km.f{ff:03d}.conus.grib2",
+        "probe_candidates": [
             (f"{NOMADS}/pub/data/nccf/com/rrfs/v1.0/"
-             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev.3km"
-             ".f{ff:03d}.conus.grib2.idx"),
+             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.2dfld.3km"
+             ".f{ff:03d}.conus.grib2"),
             (f"{NOMADS}/pub/data/nccf/com/rrfs/para/"
-             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev"
-             ".f{ff:03d}.conus_3km.grib2.idx"),
-            (f"{NOMADS}/pub/data/nccf/com/rrfs/v1.0/"
-             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev"
-             ".f{ff:03d}.conus_3km.grib2.idx"),
+             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.2dfld.3km"
+             ".f{ff:03d}.conus.grib2"),
         ],
-        "idx": (f"{NOMADS}/pub/data/nccf/com/rrfs/para/"
-                "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev.3km"
-                ".f{ff:03d}.conus.grib2.idx"),
+        "filter_candidates": [
+            f"{NOMADS}/cgi-bin/filter_rrfs_2d.pl",
+            f"{NOMADS}/cgi-bin/filter_rrfs.pl",
+            f"{NOMADS}/cgi-bin/filter_rrfs_3km.pl",
+            f"{NOMADS}/cgi-bin/filter_rrfs_conus.pl",
+        ],
+        "dir_candidates": [
+            "/rrfs.{ymd}/{cc:02d}",
+            "/v1.0/rrfs.{ymd}/{cc:02d}",
+            "/para/rrfs.{ymd}/{cc:02d}",
+        ],
         "cycles": list(range(24)),
         "max_fhr": 60,
-        "products": {"REFD", "REFC", "VIS", "CEIL", "GUST"},
-        "note": ("RRFS parallel feed (pre-operational until Oct "
-                 "2026); path self-discovered, products may vary"),
+        "products": {"REFD", "REFC", "RETOP", "VIS", "CEIL",
+                     "GUST"},
+        "note": ("RRFS v1.0 feed via grib filter; pre-operational "
+                 "until Oct 2026"),
     },
 }
 
@@ -160,7 +155,9 @@ def latest_cycle(
     Walks back up to 30 hours to cover sparse-cycle models."""
     cfg = MODELS[model]
     now = now or datetime.now(timezone.utc)
-    candidates = cfg.get("idx_candidates") or [cfg["idx"]]
+    candidates = (cfg.get("probe_candidates")
+                  or cfg.get("idx_candidates")
+                  or [cfg["idx"]])
     if cfg.get("_idx_resolved"):
         candidates = [cfg["_idx_resolved"]]
     max_back = 31 if len(candidates) == 1 else 13
@@ -183,7 +180,8 @@ def latest_cycle(
             except Exception:
                 continue
             if r.status_code == 200:
-                cfg["_idx_resolved"] = tmpl
+                if cfg.get("idx_candidates"):
+                    cfg["_idx_resolved"] = tmpl
                 return cyc
     return None
 
@@ -207,8 +205,6 @@ def fetch_field(
     pad = zoom_deg + 0.4
     base = {
         "file": cfg["file"].format(cc=cycle.hour, ff=fhr),
-        "dir": cfg["dir"].format(ymd=cycle.strftime("%Y%m%d"),
-                                 cc=cycle.hour),
         "subregion": "",
         "leftlon": f"{(lon - pad) % 360:.2f}",
         "rightlon": f"{(lon + pad) % 360:.2f}",
@@ -218,21 +214,52 @@ def fetch_field(
     }
     if cfg.get("ds"):
         base["ds"] = cfg["ds"]
-    last_detail = "no level candidates"
-    for lev_p in lev_candidates:
-        try:
-            r = requests.get(cfg["filter"], params={**base, **lev_p},
-                             headers=_HEADERS, timeout=90)
-        except Exception as e:
-            last_detail = f"{type(e).__name__}: {e}"
+
+    # Filter URL and dir may each have several plausible spellings
+    # (RRFS is brand-new); the first working (filter, dir) pair is
+    # memoized for the session.
+    if cfg.get("_filter_resolved"):
+        filter_urls = [cfg["_filter_resolved"][0]]
+        dir_tmpls = [cfg["_filter_resolved"][1]]
+    else:
+        filter_urls = (cfg.get("filter_candidates")
+                       or [cfg["filter"]])
+        dir_tmpls = cfg.get("dir_candidates") or [cfg["dir"]]
+
+    last_detail = "no attempts made"
+    for f_url in filter_urls:
+        if f_url in _dead_candidates:
             continue
-        if (r.status_code == 200 and len(r.content) >= 500
-                and r.content[:4] == b"GRIB"):
-            return r.content
-        last_detail = (
-            f"HTTP {r.status_code}, {len(r.content)} bytes "
-            f"with {list(lev_p)[0]}"
-        )
+        for d_tmpl in dir_tmpls:
+            d = d_tmpl.format(ymd=cycle.strftime("%Y%m%d"),
+                              cc=cycle.hour)
+            for lev_p in lev_candidates:
+                try:
+                    r = requests.get(
+                        f_url, params={**base, "dir": d, **lev_p},
+                        headers=_HEADERS, timeout=90,
+                    )
+                except requests.exceptions.ConnectionError as e:
+                    _dead_candidates.add(f_url)
+                    last_detail = f"{type(e).__name__}"
+                    break
+                except Exception as e:
+                    last_detail = f"{type(e).__name__}: {e}"
+                    continue
+                if (r.status_code == 200 and len(r.content) >= 500
+                        and r.content[:4] == b"GRIB"):
+                    cfg["_filter_resolved"] = (f_url, d_tmpl)
+                    return r.content
+                last_detail = (
+                    f"HTTP {r.status_code}, {len(r.content)}B via "
+                    f"{f_url.rsplit('/', 1)[-1]} dir={d_tmpl}"
+                )
+                # 404 on the script itself: skip its dir variants
+                if r.status_code == 404 and len(r.content) < 500:
+                    break
+            else:
+                continue
+            break
     raise RuntimeError(
         f"{cfg['label']} filter failed for {product} f{fhr:02d} "
         f"(last attempt: {last_detail})"
