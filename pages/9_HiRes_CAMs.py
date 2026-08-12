@@ -145,7 +145,7 @@ def cached_panel(
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
-st.title("Hi-Res CAMs (HRRR)")
+st.title("Hi-Res CAMs (HRRR + RRFS)")
 st.caption(
     "Convection-allowing model viewer - aviation products, "
     "hourly-updating, with prewarmed hub views."
@@ -162,10 +162,9 @@ with st.sidebar:
             st.session_state["cam_icao"] = hub
     zoom = st.slider("Zoom (degrees)", 1.0, 6.0, 2.5, 0.5)
 
-    # HRRR-only for now (NAM/ARW retire Oct 2026; RRFS pending).
-    # The other model configs stay dormant in core.hrrr_cam for
-    # one-line re-enable.
-    show_models = {"hrrr": True}
+    # HRRR + RRFS (parallel feed). NAM/ARW stay dormant in
+    # core.hrrr_cam (they retire Oct 2026).
+    show_models = {"hrrr": True, "rrfs": True}
 
     st.header("Product")
     product_label = st.selectbox(
@@ -205,8 +204,9 @@ with st.sidebar:
     else:
         fhr_all = st.slider(
             "Forecast hour (all models)", 0, 60, 1,
-            help="HRRR reaches f18 hourly (f48 on 00/06/12/18Z "
-                 "cycles); the panel clamps to its available max.",
+            help="HRRR f18 hourly (f48 synoptic); RRFS to f60 "
+                 "on synoptic cycles. Panels clamp to their own "
+                 "max.",
         )
 
     st.divider()
@@ -267,7 +267,7 @@ if active:
             specs.append((m, cyc, fh))
         return specs, notes
 
-    GRID_ORDER = ["hrrr"]
+    GRID_ORDER = ["hrrr", "rrfs"]
 
     if smooth:
         span = min(fhr_hi - fhr_lo, 24)
@@ -454,23 +454,27 @@ if active:
                 ))
 
         spec_fhr = {m: fh for m, _c, fh in specs}
-        for m in GRID_ORDER:
-            cfg = MODELS[m]
-            st.markdown(f"**{cfg['label']}**")
-            if m in notes:
-                st.caption(notes[m])
-                continue
-            res = grid.get(m)
-            if isinstance(res, (bytes, bytearray)):
-                if spec_fhr.get(m, fhr_all) != fhr_all:
-                    st.caption(
-                        f"f{fhr_all:02d} beyond {cfg['label']} "
-                        f"range; showing f{spec_fhr[m]:02d} "
-                        f"(its max)."
-                    )
-                st.image(res, use_container_width=True)
-            else:
-                st.error(f"{cfg['label']}: {res}")
+        model_cols = st.columns(len(GRID_ORDER))
+        for m, col in zip(GRID_ORDER, model_cols):
+            with col:
+                cfg = MODELS[m]
+                st.markdown(f"**{cfg['label']}**")
+                if m in notes:
+                    st.caption(notes[m])
+                    continue
+                res = grid.get(m)
+                if isinstance(res, (bytes, bytearray)):
+                    if spec_fhr.get(m, fhr_all) != fhr_all:
+                        st.caption(
+                            f"f{fhr_all:02d} beyond {cfg['label']} "
+                            f"range; showing f{spec_fhr[m]:02d} "
+                            f"(its max)."
+                        )
+                    st.image(res, use_container_width=True)
+                else:
+                    st.error(f"{cfg['label']}: {res}")
+                if cfg.get("note"):
+                    st.caption(cfg["note"])
 
 else:
     st.info("Enter an airport in the sidebar and click **Render**.")
@@ -478,9 +482,10 @@ else:
         """
         ### What this page is
 
-        HRRR centered on your airport, aviation products only: 1km
-        reflectivity, echo tops, visibility, ceiling, and gusts,
-        with smooth scrubbing across forecast hours. Hub buttons
-        (JFK/MCO/FLL/DCA) serve prewarmed reflectivity instantly.
+        HRRR and RRFS (parallel feed) side by side, centered on
+        your airport, aviation products only: 1km reflectivity,
+        echo tops, visibility, ceiling, and gusts, with smooth
+        scrubbing. Hub buttons serve prewarmed HRRR reflectivity
+        instantly; RRFS renders live.
         """
     )
