@@ -651,7 +651,7 @@ def mono_box(text: str) -> str:
     )
 
 
-@st.cache_data(ttl=120, show_spinner=False, max_entries=12)
+@st.cache_data(ttl=25, show_spinner=False, max_entries=12)
 def cached_l3_planes(clat: float, clon: float, zoom: float,
                      bucket: str):
     from core.flights import fetch_positions_near
@@ -664,25 +664,35 @@ def cached_l3_planes(clat: float, clon: float, zoom: float,
 @st.cache_data(ttl=300, show_spinner=False, max_entries=12)
 def cached_l3_station_loop(
     product: str, site: str, clat: float, clon: float, zoom: float,
-    bucket: str, others=tuple(), n: int = 6,
+    bucket: str, n: int = 6,
 ):
-    """Recent Level III frames (REF or ET) centered on the station
-    (oldest first), same pipeline as the Flight Tracker, optionally
-    with live JBU aircraft overlaid."""
+    """Recent Level III frames (REF or ET) centered on the station,
+    rendered AIRCRAFT-FREE with pixel geometry. Live JBU triangles
+    are stamped at display time (milliseconds), so positions update
+    without re-rendering radar - same architecture as the warm store.
+    Returns [(png, name, geom), ...] oldest first."""
     from core.radar3 import fetch_recent, parse_l3, render_l3
     frames = []
     for raw, name in fetch_recent(product, site, n=n):
         try:
             parsed = parse_l3(raw)
-            png = render_l3(
+            png, geom = render_l3(
                 parsed, product, clat, clon, zoom, site,
-                other_aircraft=list(others),
-                title_note=name,
+                title_note=name, return_geometry=True,
             )
-            frames.append((png, name))
+            frames.append((png, name, geom))
         except Exception:
             continue
     return frames
+
+
+def _stamp_all(frames_g, planes):
+    """[(png, name, geom)] + live planes -> [(stamped_png, name)]."""
+    try:
+        from core.radar_warm import stamp_aircraft
+    except Exception:
+        return [(p, n) for p, n, _g in frames_g]
+    return [(stamp_aircraft(p, g, planes), n) for p, n, g in frames_g]
 
 
 def _embed_html(html: str, height: int) -> None:
@@ -696,10 +706,14 @@ def _embed_html(html: str, height: int) -> None:
     st.components.v1.html(html, height=height)
 
 
-def _client_scrubber(frames, key: str) -> str:
-    """Instant client-side frame scrubber with play/pause plus
-    wheel-zoom (toward cursor), drag-pan, and double-click reset.
-    All pure browser JS on the already-shipped frames."""
+def _client_scrubber(frames, key: str, live=None) -> str:
+    """Instant client-side frame scrubber with play/pause, wheel-zoom,
+    drag-pan, double-click reset - and optionally a LIVE aircraft
+    canvas: the browser polls adsb.lol directly every ~5s and draws
+    JBU triangles over the radar without touching the loop. live =
+    {"geom": {...}, "lat": .., "lon": .., "radius_nm": ..,
+     "planes": [[lat, lon, hdg, callsign], ...]} (initial fallback).
+    """
     import base64
     import json as _json
 
@@ -707,6 +721,7 @@ def _client_scrubber(frames, key: str) -> str:
             for p, _n in frames]
     names = [n for _p, n in frames]
     n = len(srcs)
+    live_js = _json.dumps(live) if live else "null"
     return (
         "<style>"
         ".scr{font:13px monospace}"
@@ -714,9 +729,14 @@ def _client_scrubber(frames, key: str) -> str:
         "cursor:zoom-in;position:relative}"
         ".scr .vp.z{cursor:grab}"
         ".scr .vp.drag{cursor:grabbing}"
-        ".scr img{width:100%;display:block;"
-        "transform-origin:0 0;user-select:none;"
+        ".scr .tf{transform-origin:0 0;position:relative}"
+        ".scr img{width:100%;display:block;user-select:none;"
         "-webkit-user-drag:none}"
+        ".scr canvas{position:absolute;left:0;top:0;"
+        "pointer-events:none}"
+        ".scr .lv{position:absolute;left:4px;top:4px;"
+        "background:#000a;color:#0f0;padding:1px 6px;"
+        "font:11px monospace}"
         ".scr input[type=range]{width:55%;vertical-align:middle}"
         ".scr button{font:bold 13px monospace;margin-right:6px;"
         "padding:2px 10px}"
@@ -726,8 +746,12 @@ def _client_scrubber(frames, key: str) -> str:
         "</style>"
         "<div class='scr'>"
         "<div class='vp' id='vp_" + key + "'>"
+        "<div class='tf' id='tf_" + key + "'>"
         "<img id='im_" + key + "'>"
+        "<canvas id='cv_" + key + "'></canvas>"
+        "</div>"
         "<span class='zl' id='zl_" + key + "'></span>"
+        "<span class='lv' id='lv_" + key + "'></span>"
         "</div>"
         "<div>"
         "<button id='pb_" + key + "'>PAUSE</button>"
@@ -740,6 +764,10 @@ def _client_scrubber(frames, key: str) -> str:
         "const F=" + _json.dumps(srcs) + ";"
         "const N=" + _json.dumps(names) + ";"
         "const im=document.getElementById('im_" + key + "');"
+        "const tf=document.getElementById('tf_" + key + "');"
+        "const cv=document.getElementById('cv_" + key + "');"
+        "const lv=document.getElementById('lv_" + key + "');"
+        "const LIVE=" + live_js + ";"
         "const vp=document.getElementById('vp_" + key + "');"
         "const zl=document.getElementById('zl_" + key + "');"
         "const sl=document.getElementById('sl_" + key + "');"
@@ -748,7 +776,7 @@ def _client_scrubber(frames, key: str) -> str:
         "let playing=true;let t=null;"
         "let s=1,tx=0,ty=0;"
         "function apply(){"
-        "im.style.transform='translate('+tx+'px,'+ty+'px) "
+        "tf.style.transform='translate('+tx+'px,'+ty+'px) "
         "scale('+s+')';"
         "vp.classList.toggle('z',s>1);"
         "zl.style.display=s>1?'block':'none';"
@@ -790,6 +818,60 @@ def _client_scrubber(frames, key: str) -> str:
         "pb.textContent='PLAY';}"
         "else{playing=true;pb.textContent='PAUSE';step();}});"
         "show(+sl.value);t=setTimeout(step,450);apply();"
+        "if(LIVE){"
+        "const G=LIVE.geom;"
+        "function drawPlanes(pl,tag){"
+        "const w=im.clientWidth;if(!w)return;"
+        "const fw=1200,fh=1000;"
+        "const k=w/fw;"
+        "cv.width=w;cv.height=im.clientHeight;"
+        "const c=cv.getContext('2d');"
+        "c.clearRect(0,0,cv.width,cv.height);"
+        "let shown=0;"
+        "for(const p of pl){"
+        "const la=p[0],lo=p[1],hd=(p[2]||0)*Math.PI/180,cs=p[3];"
+        "if(la<G.lat0||la>G.lat1||lo<G.lon0||lo>G.lon1)continue;"
+        "const fx=(lo-G.lon0)/(G.lon1-G.lon0);"
+        "const fy=(G.lat1-la)/(G.lat1-G.lat0);"
+        "const x=(G.x0+fx*(G.x1-G.x0))*k;"
+        "const y=(G.y_top+fy*(G.y_bot-G.y_top))*k;"
+        "c.beginPath();"
+        "const S=9;"
+        "c.moveTo(x+S*Math.sin(hd),y-S*Math.cos(hd));"
+        "c.lineTo(x+S*0.7*Math.sin(hd+2.5),"
+        "y-S*0.7*Math.cos(hd+2.5));"
+        "c.lineTo(x+S*0.35*Math.sin(hd+Math.PI),"
+        "y-S*0.35*Math.cos(hd+Math.PI));"
+        "c.lineTo(x+S*0.7*Math.sin(hd-2.5),"
+        "y-S*0.7*Math.cos(hd-2.5));"
+        "c.closePath();"
+        "c.fillStyle='#00BFFF';c.fill();"
+        "c.strokeStyle='#FFF';c.stroke();"
+        "c.font='11px monospace';c.fillStyle='#00BFFF';"
+        "c.fillText(cs,x+8,y+12);"
+        "shown++;}"
+        "lv.textContent=shown+' JBU '+tag;}"
+        "drawPlanes(LIVE.planes||[],'(page load)');"
+        "async function poll(){"
+        "try{"
+        "const r=await fetch('https://api.adsb.lol/v2/point/'"
+        "+LIVE.lat+'/'+LIVE.lon+'/'+LIVE.radius_nm);"
+        "if(!r.ok)throw 0;"
+        "const j=await r.json();"
+        "const pl=(j.ac||[]).filter(function(a){"
+        "return((a.flight||'').trim().toUpperCase()"
+        ".indexOf('JBU')==0);})"
+        ".map(function(a){return[a.lat,a.lon,"
+        "a.track||a.true_heading||0,"
+        "(a.flight||'').trim()];});"
+        "const d=new Date();"
+        "drawPlanes(pl,'live '+d.toISOString().substr(11,8)+'Z');"
+        "}catch(e){}"
+        "}"
+        "poll();setInterval(poll,5000);"
+        "window.addEventListener('resize',function(){"
+        "drawPlanes(LIVE.planes||[],'');poll();});"
+        "}"
         "})();"
         "</script>"
     )
@@ -833,6 +915,14 @@ with st.sidebar:
     l3_zoom = st.slider(
         "Level III zoom (degrees)", 0.5, 3.0, 1.5, 0.5,
         disabled=not radar_mode.startswith("Level III"),
+    )
+    l3_auto = st.checkbox(
+        "Live aircraft layer (~5s)",
+        value=True,
+        key="l3_auto",
+        help="Your browser polls adsb.lol directly every ~5 seconds "
+             "and redraws JBU triangles over the radar - no page "
+             "refresh, zoom and loop state preserved.",
     )
     l3_flights = st.checkbox(
         "Overlay live JBU flights",
@@ -879,68 +969,91 @@ if active_icao:
             "(e.g. KOKX) in the sidebar."
         )
     else:
-        # Two-panel radar deck: reflectivity (chosen mode) LEFT,
-        # Level III echo tops RIGHT, both looping with live JBU
-        # aircraft overlaid.
-        coords = cached_station_coords(icao)
-        if coords is None:
-            st.warning(f"Cannot resolve coordinates for {icao}.")
-            s_lat = s_lon = None
-        else:
+        # Two-panel radar deck inside a live fragment: radar frames
+        # are cached aircraft-free; JBU triangles re-stamp on a
+        # timer, so positions stay current on a static loop.
+        _deck_kwargs = dict(
+            icao=icao, radar_site=radar_site,
+            radar_mode=radar_mode, l3_zoom=l3_zoom,
+            l3_flights=l3_flights, l2_zoom=l2_zoom,
+            l2_flights=l2_flights,
+        )
+
+        @st.fragment
+        def _radar_deck(icao, radar_site, radar_mode, l3_zoom,
+                        l3_flights, l2_zoom, l2_flights):
+            now_f = datetime.now(timezone.utc)
+            coords = cached_station_coords(icao)
+            if coords is None:
+                st.warning(f"Cannot resolve coordinates for {icao}.")
+                return
             s_lat, s_lon = coords
-        bucket5 = now.strftime("%Y%m%d%H") + str(now.minute // 5)
-        l3_planes = []
-        if l3_flights and s_lat is not None:
-            l3_planes = cached_l3_planes(
-                round(s_lat, 2), round(s_lon, 2), l3_zoom, bucket5,
-            )
+            bucket5 = (now_f.strftime("%Y%m%d%H")
+                       + str(now_f.minute // 5))
+            plane_bucket = str(int(now_f.timestamp()) // 30)
+            l3_planes = []
+            if l3_flights:
+                l3_planes = cached_l3_planes(
+                    round(s_lat, 2), round(s_lon, 2), l3_zoom,
+                    plane_bucket,
+                )
 
-        col_ref, col_et = st.columns(2)
+            col_ref, col_et = st.columns(2)
 
-        with col_ref:
-            st.markdown("**Reflectivity**")
-            if radar_mode.startswith("Level III"):
-                if s_lat is None:
-                    pass
-                else:
-                    ref_frames = []
+            with col_ref:
+                st.markdown("**Reflectivity**")
+                if radar_mode.startswith("Level III"):
+                    ref_g = None
                     ref_warm = False
                     if _RADAR_WARM_OK:
-                        warm = warm_get_loop(
+                        ref_g = warm_get_loop(
                             CACHE_ROOT, icao, "REF", l3_zoom
                         )
-                        if warm:
-                            ref_frames = [
-                                (stamp_aircraft(png, geom, l3_planes),
-                                 name)
-                                for png, name, geom in warm
-                            ]
-                            ref_warm = True
-                    if not ref_frames:
+                        ref_warm = bool(ref_g)
+                    if not ref_g:
                         with st.spinner(
                             "Rendering Level III loop..."
                         ):
                             try:
-                                ref_frames = cached_l3_station_loop(
-                                    "REF", radar_site, s_lat, s_lon,
-                                    l3_zoom, bucket5,
-                                    others=tuple(l3_planes),
+                                ref_g = cached_l3_station_loop(
+                                    "REF", radar_site, s_lat,
+                                    s_lon, l3_zoom, bucket5,
                                 )
                             except Exception as e:
-                                ref_frames = []
+                                ref_g = []
                                 st.warning(
                                     f"Level III loop failed: {e}"
                                 )
+                    ref_frames = [(p, n) for p, n, _g in
+                                  (ref_g or [])]
+                    live_cfg = None
+                    if ref_g and l3_flights and l3_auto:
+                        live_cfg = {
+                            "geom": ref_g[0][2],
+                            "lat": round(s_lat, 3),
+                            "lon": round(s_lon, 3),
+                            "radius_nm": int(l3_zoom * 60),
+                            "planes": [
+                                [p.lat, p.lon, p.heading_deg or 0,
+                                 p.callsign]
+                                for p in l3_planes
+                            ],
+                        }
+                    elif ref_g and l3_planes:
+                        ref_frames = _stamp_all(ref_g, l3_planes)
                     if len(ref_frames) > 1:
                         _embed_html(
-                            _client_scrubber(ref_frames, key="qvl3"),
+                            _client_scrubber(ref_frames, key="qvl3",
+                                             live=live_cfg),
                             height=560,
                         )
                         st.caption(
                             f"L3 reflectivity, {radar_site}, frames "
                             f"~5 min apart"
-                            + (f" | {len(l3_planes)} JBU (current "
-                               f"positions)" if l3_planes else "")
+                            + (" | live JBU layer (see overlay)"
+                               if live_cfg else
+                               (f" | {len(l3_planes)} JBU stamped"
+                                if l3_planes else ""))
                             + (" | prewarmed" if ref_warm else "")
                         )
                     elif ref_frames:
@@ -948,94 +1061,111 @@ if active_icao:
                                  use_container_width=True)
                     else:
                         st.caption("No Level III frames returned.")
-            else:
-                # Raw Level II mode
-                bucket = bucket5
-                if "live_l2" not in st.session_state:
-                    with st.spinner(
-                        "Fetching raw Level II volumes (30-60s "
-                        "first time)..."
-                    ):
-                        try:
-                            frames, gif, ov_mode = cached_live_l2(
-                                icao, radar_site, l2_zoom, bucket,
-                                overlay_flights=l2_flights,
-                            )
-                            st.session_state["live_l2"] = frames
-                            st.session_state["live_l2_gif"] = gif
-                            st.session_state["live_l2_mode"] = ov_mode
-                        except Exception as e:
-                            st.session_state["live_l2"] = []
-                            st.session_state["live_l2_gif"] = b""
-                            st.warning(f"Level II fetch failed: {e}")
-                frames = st.session_state.get("live_l2", [])
-                gif = st.session_state.get("live_l2_gif", b"")
-                if frames:
-                    st.caption(
-                        f"{len(frames)} raw L2 volumes from "
-                        f"{radar_site} (last ~45 min). Flight "
-                        f"overlay: "
-                        f"{st.session_state.get('live_l2_mode', '?')}."
-                    )
-                    if len(frames) > 1:
-                        _embed_html(
-                            _client_scrubber(frames, key="qvl2"),
-                            height=560,
-                        )
-                    else:
-                        st.image(frames[-1][0],
-                                 use_container_width=True)
-                    if gif:
-                        st.download_button(
-                            "Download loop GIF", data=gif,
-                            file_name=f"l2_loop_{radar_site}.gif",
-                            mime="image/gif", key="dl_l2_gif",
-                        )
                 else:
-                    st.caption(
-                        "No Level II volumes returned for the window."
-                    )
+                    # Raw Level II mode: planes baked at render
+                    # time (its pipeline differs), so no live
+                    # re-stamping here.
+                    bucket = bucket5
+                    if "live_l2" not in st.session_state:
+                        with st.spinner(
+                            "Fetching raw Level II volumes (30-60s "
+                            "first time)..."
+                        ):
+                            try:
+                                frames, gif, ov_mode = cached_live_l2(
+                                    icao, radar_site, l2_zoom,
+                                    bucket,
+                                    overlay_flights=l2_flights,
+                                )
+                                st.session_state["live_l2"] = frames
+                                st.session_state["live_l2_gif"] = gif
+                                st.session_state["live_l2_mode"] = \
+                                    ov_mode
+                            except Exception as e:
+                                st.session_state["live_l2"] = []
+                                st.session_state["live_l2_gif"] = b""
+                                st.warning(
+                                    f"Level II fetch failed: {e}"
+                                )
+                    frames = st.session_state.get("live_l2", [])
+                    gif = st.session_state.get("live_l2_gif", b"")
+                    if frames:
+                        st.caption(
+                            f"{len(frames)} raw L2 volumes from "
+                            f"{radar_site} (last ~45 min). Flight "
+                            f"overlay: "
+                            f"{st.session_state.get('live_l2_mode', '?')}"
+                            f" (baked at render)."
+                        )
+                        if len(frames) > 1:
+                            _embed_html(
+                                _client_scrubber(frames, key="qvl2"),
+                                height=560,
+                            )
+                        else:
+                            st.image(frames[-1][0],
+                                     use_container_width=True)
+                        if gif:
+                            st.download_button(
+                                "Download loop GIF", data=gif,
+                                file_name=f"l2_loop_{radar_site}.gif",
+                                mime="image/gif", key="dl_l2_gif",
+                            )
+                    else:
+                        st.caption(
+                            "No Level II volumes returned for the "
+                            "window."
+                        )
 
-        with col_et:
-            st.markdown("**Echo Tops (L3)**")
-            if s_lat is None:
-                pass
-            else:
-                et_frames = []
+            with col_et:
+                st.markdown("**Echo Tops (L3)**")
+                et_g = None
                 et_warm = False
                 if _RADAR_WARM_OK:
-                    warm = warm_get_loop(
+                    et_g = warm_get_loop(
                         CACHE_ROOT, icao, "ET", l3_zoom
                     )
-                    if warm:
-                        et_frames = [
-                            (stamp_aircraft(png, geom, l3_planes),
-                             name)
-                            for png, name, geom in warm
-                        ]
-                        et_warm = True
-                if not et_frames:
+                    et_warm = bool(et_g)
+                if not et_g:
                     with st.spinner("Rendering echo tops loop..."):
                         try:
-                            et_frames = cached_l3_station_loop(
+                            et_g = cached_l3_station_loop(
                                 "ET", radar_site, s_lat, s_lon,
                                 l3_zoom, bucket5,
-                                others=tuple(l3_planes),
                             )
                         except Exception as e:
-                            et_frames = []
+                            et_g = []
                             st.warning(
                                 f"Echo tops loop failed: {e}"
                             )
+                et_frames = [(p, n) for p, n, _g in (et_g or [])]
+                live_cfg_et = None
+                if et_g and l3_flights and l3_auto:
+                    live_cfg_et = {
+                        "geom": et_g[0][2],
+                        "lat": round(s_lat, 3),
+                        "lon": round(s_lon, 3),
+                        "radius_nm": int(l3_zoom * 60),
+                        "planes": [
+                            [p.lat, p.lon, p.heading_deg or 0,
+                             p.callsign]
+                            for p in l3_planes
+                        ],
+                    }
+                elif et_g and l3_planes:
+                    et_frames = _stamp_all(et_g, l3_planes)
                 if len(et_frames) > 1:
                     _embed_html(
-                        _client_scrubber(et_frames, key="qvet"),
+                        _client_scrubber(et_frames, key="qvet",
+                                         live=live_cfg_et),
                         height=560,
                     )
                     st.caption(
                         f"L3 echo tops (kft), {radar_site}"
-                        + (f" | {len(l3_planes)} JBU (current "
-                           f"positions)" if l3_planes else "")
+                        + (" | live JBU layer (see overlay)"
+                           if live_cfg_et else
+                           (f" | {len(l3_planes)} JBU stamped"
+                            if l3_planes else ""))
                         + (" | prewarmed" if et_warm else "")
                     )
                 elif et_frames:
@@ -1043,6 +1173,8 @@ if active_icao:
                              use_container_width=True)
                 else:
                     st.caption("No echo tops frames returned.")
+
+        _radar_deck(**_deck_kwargs)
 
     # --- METAR ---
     st.subheader("Current METAR" if n_metars == 1 else
@@ -1094,39 +1226,49 @@ if active_icao:
 
     # --- Live inbound (instant, from ADS-B positions) ---
     st.subheader("JBU Inbound Now")
-    _mv_coords = cached_station_coords(icao)
-    if _mv_coords is None:
-        live = []
-        st.caption(f"Cannot resolve coordinates for {icao}.")
-    else:
-        live = cached_live_inbound(
-            icao, _mv_coords[0], _mv_coords[1],
-            now.strftime("%Y%m%d%H%M")[:11],
-        )
-    inbound = [r for r in live if r["status"] == "Inbound"]
-    if inbound:
-        import pandas as _pd2
-        df_in = _pd2.DataFrame([{
-            "Flight": (f"B6 {r['cs'][3:]}" if r["cs"].startswith("JBU")
-                       else r["cs"]),
-            "Callsign": r["cs"],
-            "Altitude": (f"{int(r['alt']):,} ft"
-                         if r["alt"] is not None else "?"),
-            "Distance": f"{r['dist_km']:.0f} km",
-        } for r in inbound[:8]])
-        st.dataframe(df_in, use_container_width=True, hide_index=True)
-        st.caption(
-            f"{len(inbound)} JBU inbound within ~100 km (live ADS-B, "
-            f"heading toward the field, below 18,000 ft)"
-        )
-    else:
-        n_other = len(live) - len(inbound)
-        st.caption(
-            "No JBU currently inbound within ~100 km"
-            + (f" ({n_other} JBU in area, outbound or heading "
-               f"unknown)" if n_other else "")
-            + "."
-        )
+
+    @st.fragment(run_every=30)
+    def _inbound_live(icao):
+        now = datetime.now(timezone.utc)
+        _inbound_body(icao, now)
+
+    def _inbound_body(icao, now):
+        _mv_coords = cached_station_coords(icao)
+        if _mv_coords is None:
+            live = []
+            st.caption(f"Cannot resolve coordinates for {icao}.")
+        else:
+            live = cached_live_inbound(
+                icao, _mv_coords[0], _mv_coords[1],
+                now.strftime("%Y%m%d%H%M")[:11],
+            )
+        inbound = [r for r in live if r["status"] == "Inbound"]
+        if inbound:
+            import pandas as _pd2
+            df_in = _pd2.DataFrame([{
+                "Flight": (f"B6 {r['cs'][3:]}" if r["cs"].startswith("JBU")
+                           else r["cs"]),
+                "Callsign": r["cs"],
+                "Altitude": (f"{int(r['alt']):,} ft"
+                             if r["alt"] is not None else "?"),
+                "Distance": f"{r['dist_km']:.0f} km",
+            } for r in inbound[:8]])
+            st.dataframe(df_in, use_container_width=True, hide_index=True)
+            st.caption(
+                f"{len(inbound)} JBU inbound within ~100 km (live ADS-B, "
+                f"heading toward the field, below 18,000 ft)"
+            )
+        else:
+            n_other = len(live) - len(inbound)
+            st.caption(
+                "No JBU currently inbound within ~100 km"
+                + (f" ({n_other} JBU in area, outbound or heading "
+                   f"unknown)" if n_other else "")
+                + "."
+            )
+
+
+    _inbound_live(icao)
 
     # --- Sampled arrivals/departures history ---
     st.subheader("JBU Arrivals & Departures")
