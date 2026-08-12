@@ -89,10 +89,30 @@ def ensure_live_api() -> bool:
             ]
             if not apps:
                 return False
+            ok = False
             for app in apps:
-                app.add_handlers(
-                    r".*", [(r"/jbu_pos", JbuPosHandler)]
+                # Streamlit's route group ends in a catch-all that
+                # serves index.html for any path, so a rule APPENDED
+                # after it never matches (proven: /jbu_pos returned
+                # the SPA's HTML). Insert our URLSpec at the FRONT of
+                # the wildcard router so it wins the ordering.
+                router = getattr(app, "wildcard_router", None)
+                if router is None or not hasattr(router, "rules"):
+                    continue
+                already = any(
+                    getattr(getattr(r, "matcher", None),
+                            "regex", None) is not None
+                    and r.matcher.regex.pattern.startswith("/jbu_pos")
+                    for r in router.rules
                 )
+                if not already:
+                    router.rules.insert(
+                        0,
+                        tornado.web.url(r"/jbu_pos", JbuPosHandler),
+                    )
+                ok = True
+            if not ok:
+                return False
             _registered = True
             return True
         except Exception:
