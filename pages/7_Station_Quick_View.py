@@ -817,41 +817,6 @@ if active_icao:
     now = datetime.now(timezone.utc)
     st.info(f"Station: **{icao}** · as of **{now:%Y-%m-%d %H:%M UTC}**")
 
-    # --- METAR ---
-    st.subheader("Current METAR" if n_metars == 1 else
-                 f"METARs (last {n_metars})")
-    # Hourly obs + specials: n+4 hours of lookback comfortably covers n obs.
-    with st.spinner("Fetching METARs..."):
-        obs_list = cached_metar_history(icao, hours_back=n_metars + 4)
-    if obs_list:
-        recent = obs_list[-n_metars:][::-1]  # newest first
-        st.markdown(
-            wx_colored_box([o.raw_text for o in recent]),
-            unsafe_allow_html=True,
-        )
-        latest = recent[0]
-        age_min = int((now - latest.obs_time).total_seconds() // 60)
-        st.caption(
-            f"Latest observed {latest.obs_time:%H:%MZ} ({age_min} min ago)"
-            + ("" if len(recent) == 1 else
-               f" · showing {len(recent)} obs, newest first")
-        )
-    else:
-        st.warning("No recent METAR found.")
-
-    # --- TAF ---
-    st.subheader("Current TAF")
-    with st.spinner("Fetching TAF..."):
-        taf_text = cached_taf_raw(icao)
-    if taf_text:
-        st.markdown(
-            wx_colored_box(taf_text.splitlines(), taf_mode=True),
-            unsafe_allow_html=True,
-        )
-        st.caption(_WX_LEGEND)
-    else:
-        st.warning("No TAF available (station may not be a TAF site).")
-
     # --- Radar ---
     st.subheader("Live Radar")
     radar_site = radar_override or RADAR_FOR_AIRPORT.get(icao, "")
@@ -989,6 +954,41 @@ if active_icao:
                              use_container_width=True)
                 else:
                     st.caption("No echo tops frames returned.")
+
+    # --- METAR ---
+    st.subheader("Current METAR" if n_metars == 1 else
+                 f"METARs (last {n_metars})")
+    # Hourly obs + specials: n+4 hours of lookback comfortably covers n obs.
+    with st.spinner("Fetching METARs..."):
+        obs_list = cached_metar_history(icao, hours_back=n_metars + 4)
+    if obs_list:
+        recent = obs_list[-n_metars:][::-1]  # newest first
+        st.markdown(
+            wx_colored_box([o.raw_text for o in recent]),
+            unsafe_allow_html=True,
+        )
+        latest = recent[0]
+        age_min = int((now - latest.obs_time).total_seconds() // 60)
+        st.caption(
+            f"Latest observed {latest.obs_time:%H:%MZ} ({age_min} min ago)"
+            + ("" if len(recent) == 1 else
+               f" · showing {len(recent)} obs, newest first")
+        )
+    else:
+        st.warning("No recent METAR found.")
+
+    # --- TAF ---
+    st.subheader("Current TAF")
+    with st.spinner("Fetching TAF..."):
+        taf_text = cached_taf_raw(icao)
+    if taf_text:
+        st.markdown(
+            wx_colored_box(taf_text.splitlines(), taf_mode=True),
+            unsafe_allow_html=True,
+        )
+        st.caption(_WX_LEGEND)
+    else:
+        st.warning("No TAF available (station may not be a TAF site).")
 
     # --- NBH MOS table ---
     st.subheader("NBM Hourly (NBH, f+1–25)")
