@@ -32,10 +32,12 @@ check_password()
 # Same-origin proxy for browser polling (aggregators block CORS -
 # proven by this page's own diagnostics on 8/9)
 try:
-    from core.live_api import ensure_live_api
-    _PROXY_OK = ensure_live_api()
-except Exception:
+    from core.live_api import ensure_live_api_debug
+    _PROXY_OK, _PROXY_DETAIL = ensure_live_api_debug()
+except Exception as _e:
+    import traceback
     _PROXY_OK = False
+    _PROXY_DETAIL = "import/call EXC: " + traceback.format_exc()
 
 _persistent = Path("/opt/render/project/src/cache")
 CACHE_ROOT = _persistent if _persistent.exists() \
@@ -277,15 +279,16 @@ if st.session_state.get("lt_icao"):
             st.error(f"Base frame failed: {e}")
             st.stop()
     st.caption(
-        ("Proxy endpoint registered - expect 'proxy OK' lines. "
-         if _PROXY_OK else
-         "PROXY REGISTRATION FAILED - externals will CORS-fail; "
-         "tell Claude. ")
+        ("Proxy endpoint registered. "
+         if _PROXY_OK else "PROXY REGISTRATION FAILED. ")
         + f"Base: L3 REF from {site} ({name}), static. Triangles: "
         f"browser-drawn, polling every {interval}s. Watch the "
         f"diagnostic box - it reports each poll's source, latency, "
         f"and any error verbatim."
     )
+    with st.expander("Proxy registration report",
+                     expanded=not _PROXY_OK):
+        st.code(_PROXY_DETAIL)
     _embed(
         live_test_html(png, geom, lat, lon,
                        radius_nm=int(zoom * 60),
