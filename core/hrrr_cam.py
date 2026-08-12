@@ -252,7 +252,7 @@ def fetch_field(
         ]
         dir_tmpls = cfg.get("dir_candidates") or [cfg["dir"]]
 
-    last_detail = "no attempts made"
+    attempts: list = []
     for f_spec in filter_specs:
         f_url, f_ds = f_spec
         if (f_url, f_ds) in _dead_candidates:
@@ -271,10 +271,12 @@ def fetch_field(
                     )
                 except requests.exceptions.ConnectionError as e:
                     _dead_candidates.add((f_url, f_ds))
-                    last_detail = f"{type(e).__name__}"
+                    attempts.append(
+                        f"{f_url.rsplit('/', 1)[-1]}: ConnErr"
+                    )
                     break
                 except Exception as e:
-                    last_detail = f"{type(e).__name__}: {e}"
+                    attempts.append(f"{type(e).__name__}")
                     continue
                 if (r.status_code == 200 and len(r.content) >= 500
                         and r.content[:4] == b"GRIB"):
@@ -283,9 +285,9 @@ def fetch_field(
                 tag = f_url.rsplit('/', 1)[-1]
                 if f_ds:
                     tag += f"?ds={f_ds}"
-                last_detail = (
-                    f"HTTP {r.status_code}, {len(r.content)}B via "
-                    f"{tag} dir={d_tmpl}"
+                attempts.append(
+                    f"{tag} dir={d_tmpl.split('/')[1][:9]}: "
+                    f"HTTP {r.status_code} {len(r.content)}B"
                 )
                 # 404 on the script itself: skip its dir variants
                 if r.status_code == 404 and len(r.content) < 500:
@@ -293,9 +295,15 @@ def fetch_field(
             else:
                 continue
             break
+    # Report EVERY distinct attempt - the informative failure is
+    # often mid-list, not last.
+    seen = []
+    for a in attempts:
+        if a not in seen:
+            seen.append(a)
     raise RuntimeError(
-        f"{cfg['label']} filter failed for {product} f{fhr:02d} "
-        f"(last attempt: {last_detail})"
+        f"{cfg['label']} filter failed for {product} f{fhr:02d}. "
+        f"Attempts: " + " | ".join(seen[:10])
     )
 
 
