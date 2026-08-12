@@ -39,15 +39,23 @@ def _fetch_planes(lat: float, lon: float, radius_deg: float):
 
 
 def ensure_live_api() -> bool:
+    ok, _detail = ensure_live_api_debug()
+    return ok
+
+
+def ensure_live_api_debug():
     """Register /jbu_pos on the running Tornado app (idempotent).
-    Returns True if the route is (now) registered."""
+    Returns (ok, detail_str) - detail carries counts and any
+    traceback verbatim, because silent registration failure has
+    already cost us a debugging round."""
     global _registered
     with _lock:
         if _registered:
-            return True
+            return True, "already registered"
         try:
             import gc
 
+            import tornado
             import tornado.web
 
             class JbuPosHandler(tornado.web.RequestHandler):
@@ -87,8 +95,22 @@ def ensure_live_api() -> bool:
                 o for o in gc.get_objects()
                 if isinstance(o, tornado.web.Application)
             ]
+            detail = [f"tornado {getattr(tornado, 'version', '?')}",
+                      f"{len(apps)} Application object(s)"]
             if not apps:
-                return False
+                # Fallback sweep: any object with a wildcard_router
+                cands = [
+                    o for o in gc.get_objects()
+                    if hasattr(o, "wildcard_router")
+                ]
+                detail.append(
+                    f"fallback: {len(cands)} wildcard_router "
+                    f"holder(s): "
+                    + ", ".join(type(c).__name__ for c in cands[:5])
+                )
+                apps = cands
+            if not apps:
+                return False, "; ".join(detail)
             ok = False
             for app in apps:
                 # Streamlit's route group ends in a catch-all that
@@ -98,6 +120,9 @@ def ensure_live_api() -> bool:
                 # the wildcard router so it wins the ordering.
                 router = getattr(app, "wildcard_router", None)
                 if router is None or not hasattr(router, "rules"):
+                    detail.append(
+                        f"{type(app).__name__}: no wildcard_router"
+                    )
                     continue
                 already = any(
                     getattr(getattr(r, "matcher", None),
@@ -110,10 +135,15 @@ def ensure_live_api() -> bool:
                         0,
                         tornado.web.url(r"/jbu_pos", JbuPosHandler),
                     )
+                detail.append(
+                    f"{type(app).__name__}: rule inserted "
+                    f"(rules now {len(router.rules)})"
+                )
                 ok = True
             if not ok:
-                return False
+                return False, "; ".join(detail)
             _registered = True
-            return True
+            return True, "; ".join(detail)
         except Exception:
-            return False
+            import traceback
+            return False, "EXC: " + traceback.format_exc()
