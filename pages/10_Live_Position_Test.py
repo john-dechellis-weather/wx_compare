@@ -29,6 +29,14 @@ apply_retro_theme()
 from auth import check_password
 check_password()
 
+# Same-origin proxy for browser polling (aggregators block CORS -
+# proven by this page's own diagnostics on 8/9)
+try:
+    from core.live_api import ensure_live_api
+    _PROXY_OK = ensure_live_api()
+except Exception:
+    _PROXY_OK = False
+
 _persistent = Path("/opt/render/project/src/cache")
 CACHE_ROOT = _persistent if _persistent.exists() \
     else Path("/tmp/wx_compare_cache")
@@ -102,6 +110,7 @@ def live_test_html(png_bytes: bytes, geom: dict, lat: float,
   const LAT = {lat}, LON = {lon}, RAD = {radius_nm};
   const INTERVAL = {interval_ms};
   const SOURCES = [
+    ["proxy", "/jbu_pos"],
     ["adsb.lol", "https://api.adsb.lol/v2/point/"],
     ["adsb.fi", "https://opendata.adsb.fi/api/v2/lat/"],
     ["airplanes.live", "https://api.airplanes.live/v2/point/"]
@@ -175,7 +184,10 @@ def live_test_html(png_bytes: bytes, geom: dict, lat: float,
   async function trySource(idx) {{
     const name = SOURCES[idx][0];
     let url;
-    if (name === "adsb.fi") {{
+    if (name === "proxy") {{
+      url = SOURCES[idx][1] + "?lat=" + LAT + "&lon=" + LON +
+            "&r=" + (RAD / 60.0).toFixed(2);
+    }} else if (name === "adsb.fi") {{
       url = SOURCES[idx][1] + LAT + "/lon/" + LON +
             "/dist/" + RAD;
     }} else {{
@@ -186,6 +198,11 @@ def live_test_html(png_bytes: bytes, geom: dict, lat: float,
     const ms = Math.round(performance.now() - t0);
     if (!r.ok) throw new Error(name + " HTTP " + r.status);
     const j = await r.json();
+    if (name === "proxy") {{
+      if (!j.ok) throw new Error("proxy err " + (j.err || "?"));
+      return {{name: name, planes: j.planes || [], ms: ms,
+               total: (j.planes || []).length}};
+    }}
     const planes = parseAc(j);
     return {{name: name, planes: planes, ms: ms,
              total: (j.ac || []).length}};
@@ -260,7 +277,11 @@ if st.session_state.get("lt_icao"):
             st.error(f"Base frame failed: {e}")
             st.stop()
     st.caption(
-        f"Base: L3 REF from {site} ({name}), static. Triangles: "
+        ("Proxy endpoint registered - expect 'proxy OK' lines. "
+         if _PROXY_OK else
+         "PROXY REGISTRATION FAILED - externals will CORS-fail; "
+         "tell Claude. ")
+        + f"Base: L3 REF from {site} ({name}), static. Triangles: "
         f"browser-drawn, polling every {interval}s. Watch the "
         f"diagnostic box - it reports each poll's source, latency, "
         f"and any error verbatim."
