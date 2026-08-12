@@ -518,138 +518,109 @@ def build_nbh_table(df_m: pd.DataFrame) -> str:
     )
 
 
-# --- Flight-category + hazard parsing for METAR/TAF coloring ---
-# Ladder (per JBU spec): LIFR cig<500 or vis<1; IFR cig<1000 or
-# vis<3; MVFR cig<2000 (tightened from the standard 3000). Gust
-# badges: G30+ orange, G35+ red, G40+ magenta. TS badge red.
-_CAT_COLORS = {
-    "VFR": "#00FF00", "MVFR": "#FFFF00",
-    "IFR": "#FF4040", "LIFR": "#FF00FF",
-}
+# --- Token-level METAR/TAF hazard coloring ---
+# All text renders white; ONLY the specific token that meets a
+# criterion is colored:
+#   visibility  <1 SM magenta, <3 SM red
+#   ceiling     BKN/OVC/VV <500 magenta, <1000 red, <2000 yellow
+#   wind gust   G30+ orange, G35+ red, G40+ magenta (whole wind token)
+#   TS weather  red (TSRA, +TSRA, VCTS, ...)
+_MAGENTA, _RED, _YELLOW, _ORANGE = (
+    "#FF00FF", "#FF4040", "#FFFF00", "#FF9900",
+)
 
 
-def _parse_wx_line(line: str):
-    """(vis_sm or None, ceiling_ft or None, gust_kt or None, has_ts)"""
+def _span(token: str, color: str) -> str:
+    return (f'<span style="color:{color};'
+            f'-webkit-text-fill-color:{color};font-weight:bold;">'
+            f"{token}</span>")
+
+
+def _vis_value(tok: str):
+    t = tok[1:] if tok.startswith("M") else tok
+    t = t[:-2]  # strip SM
+    try:
+        if " " in t:
+            whole, frac = t.split()
+            num, den = frac.split("/")
+            v = float(whole) + float(num) / float(den)
+        elif "/" in t:
+            num, den = t.split("/")
+            v = float(num) / float(den)
+        else:
+            v = float(t)
+    except (ValueError, ZeroDivisionError):
+        return None
+    if tok.startswith("M"):
+        v = max(v - 0.01, 0.0)
+    return v
+
+
+def _colorize_line(line: str) -> str:
+    """Escape a METAR/TAF line, then wrap qualifying tokens in
+    colored spans. Everything else stays white via the box style."""
     import re
-    vis = None
-    m = re.search(r"(?:^|\s)(P6SM|M?(\d+)\s+(\d)/(\d)SM|"
-                  r"M?(\d+)/(\d+)SM|M?(\d+)SM)(?=\s|$)", line)
-    if m:
+    from html import escape
+
+    s = escape(line.rstrip())
+
+    def vis_sub(m):
         tok = m.group(1)
         if tok == "P6SM":
-            vis = 6.0
-        else:
-            neg = tok.startswith("M")
-            t = tok[1:] if neg else tok
-            t = t[:-2]  # strip SM
-            try:
-                if " " in t:
-                    whole, frac = t.split()
-                    num, den = frac.split("/")
-                    vis = float(whole) + float(num) / float(den)
-                elif "/" in t:
-                    num, den = t.split("/")
-                    vis = float(num) / float(den)
-                else:
-                    vis = float(t)
-                if neg:
-                    vis = max(vis - 0.01, 0.0)
-            except (ValueError, ZeroDivisionError):
-                vis = None
-    ceil = None
-    for mm in re.finditer(r"(?:^|\s)(BKN|OVC|VV)(\d{3})", line):
-        ft = int(mm.group(2)) * 100
-        if ceil is None or ft < ceil:
-            ceil = ft
-    gust = None
-    mg = re.search(r"G(\d{2,3})KT", line)
-    if mg:
-        gust = int(mg.group(1))
-    has_ts = bool(re.search(r"(?:^|\s)[+-]?(?:VC)?TS[A-Z]*", line))
-    return vis, ceil, gust, has_ts
+            return tok
+        v = _vis_value(tok)
+        if v is None:
+            return tok
+        if v < 1:
+            return _span(tok, _MAGENTA)
+        if v < 3:
+            return _span(tok, _RED)
+        return tok
+    s = re.sub(
+        r"(?<![A-Z0-9/])(P6SM|M?\d+\s+\d/\dSM|M?\d+/\d+SM|"
+        r"M?\d+SM)(?![A-Z0-9])",
+        vis_sub, s,
+    )
 
+    def cig_sub(m):
+        tok = m.group(0)
+        ft = int(m.group(2)) * 100
+        if ft < 500:
+            return _span(tok, _MAGENTA)
+        if ft < 1000:
+            return _span(tok, _RED)
+        if ft < 2000:
+            return _span(tok, _YELLOW)
+        return tok
+    s = re.sub(r"(BKN|OVC|VV)(\d{3})(CB|TCU)?", cig_sub, s)
 
-def _category(vis, ceil) -> str:
-    def worst(v_cat, c_cat):
-        order = ["VFR", "MVFR", "IFR", "LIFR"]
-        return order[max(order.index(v_cat), order.index(c_cat))]
-    v_cat = "VFR"
-    if vis is not None:
-        if vis < 1:
-            v_cat = "LIFR"
-        elif vis < 3:
-            v_cat = "IFR"
-    c_cat = "VFR"
-    if ceil is not None:
-        if ceil < 500:
-            c_cat = "LIFR"
-        elif ceil < 1000:
-            c_cat = "IFR"
-        elif ceil < 2000:
-            c_cat = "MVFR"
-    return worst(v_cat, c_cat)
+    def wind_sub(m):
+        tok = m.group(0)
+        g = int(m.group(1))
+        if g >= 40:
+            return _span(tok, _MAGENTA)
+        if g >= 35:
+            return _span(tok, _RED)
+        if g >= 30:
+            return _span(tok, _ORANGE)
+        return tok
+    s = re.sub(r"(?:\d{3}|VRB)\d{2,3}G(\d{2,3})KT", wind_sub, s)
 
-
-def _badges(gust, has_ts) -> str:
-    out = ""
-    if gust is not None and gust >= 30:
-        color = ("#FF00FF" if gust >= 40 else
-                 "#FF4040" if gust >= 35 else "#FF9900")
-        out += (f' <span style="color:{color};'
-                f'-webkit-text-fill-color:{color};font-weight:bold;">'
-                f"[G{gust}]</span>")
-    # TS carries no badge - thunderstorm lines color red instead
-    # (the TSRA text itself is the indicator).
-    return out
+    s = re.sub(
+        r"(?<![A-Z])([+-]?(?:VC)?TS[A-Z]*)",
+        lambda m: _span(m.group(1), _RED),
+        s,
+    )
+    return s
 
 
 def wx_colored_box(lines: list, taf_mode: bool = False) -> str:
-    """Retro box with per-line flight-category coloring and hazard
-    badges. In TAF mode, group lines missing vis or ceiling inherit
-    the base group's values (TEMPO/PROB overlay without updating the
-    base; FM/BECMG update it)."""
-    from html import escape
-
-    html_lines = []
-    base_vis = base_ceil = None
-    for raw in lines:
-        line = raw.rstrip()
-        if not line.strip():
-            html_lines.append("")
-            continue
-        vis, ceil, gust, has_ts = _parse_wx_line(line)
-        if taf_mode:
-            stripped = line.lstrip()
-            is_overlay = stripped.startswith(
-                ("TEMPO", "PROB", "INTER")
-            )
-            eff_vis = vis if vis is not None else base_vis
-            eff_ceil = ceil if ceil is not None else base_ceil
-            if not is_overlay:
-                if vis is not None:
-                    base_vis = vis
-                if ceil is not None:
-                    base_ceil = ceil
-                # FM groups reset sky unless stated: a group with vis
-                # but no cloud layer means no ceiling
-                if stripped.startswith(("FM", "BECMG"))                         and ceil is None and vis is not None:
-                    base_ceil = None
-                    eff_ceil = None
-        else:
-            eff_vis, eff_ceil = vis, ceil
-        cat = _category(eff_vis, eff_ceil)
-        color = _CAT_COLORS[cat]
-        # Thunderstorm lines render red (LIFR magenta still outranks)
-        if has_ts and cat != "LIFR":
-            color = _CAT_COLORS["IFR"]
-        html_lines.append(
-            f'<span style="color:{color};'
-            f'-webkit-text-fill-color:{color};">'
-            f"{escape(line)}</span>{_badges(gust, has_ts)}"
-        )
-    body = "\n".join(html_lines)
+    """Retro box (green border, black background, white text) with
+    token-level hazard coloring."""
+    body = "\n".join(_colorize_line(ln) for ln in lines)
     return (
         '<div style="background:#000000;border:2px solid #00FF00;'
+        'color:#FFFFFF;-webkit-text-fill-color:#FFFFFF;'
         'font-family:Courier New,monospace;font-size:12px;'
         'padding:8px 10px;white-space:pre-wrap;word-break:break-word;">'
         f"{body}</div>"
@@ -657,9 +628,9 @@ def wx_colored_box(lines: list, taf_mode: bool = False) -> str:
 
 
 _WX_LEGEND = (
-    "VFR green | MVFR yellow (cig<2000 ladder) | IFR red | "
-    "LIFR magenta | TS lines red | gusts: G30+ orange, G35+ red, "
-    "G40+ magenta"
+    "colored values only: vis <1SM magenta / <3SM red | "
+    "cig <500 magenta / <1000 red / <2000 yellow | "
+    "gusts G30+ orange / G35+ red / G40+ magenta | TS red"
 )
 
 
