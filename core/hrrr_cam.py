@@ -123,11 +123,17 @@ MODELS = {
              "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.2dfld.3km"
              ".f{ff:03d}.conus.grib2"),
         ],
+        # Modern NOMADS filter is gribfilter.php?ds=NAME (hrrr_2d
+        # convention suggests rrfs_2d for the 2dfld files); entries
+        # are (url, ds_or_None). Legacy .pl spellings trail as
+        # fallbacks.
         "filter_candidates": [
-            f"{NOMADS}/cgi-bin/filter_rrfs_2d.pl",
-            f"{NOMADS}/cgi-bin/filter_rrfs.pl",
-            f"{NOMADS}/cgi-bin/filter_rrfs_3km.pl",
-            f"{NOMADS}/cgi-bin/filter_rrfs_conus.pl",
+            (f"{NOMADS}/gribfilter.php", "rrfs_2d"),
+            (f"{NOMADS}/gribfilter.php", "rrfs"),
+            (f"{NOMADS}/gribfilter.php", "rrfs_3km"),
+            (f"{NOMADS}/gribfilter.php", "rrfs_conus_2d"),
+            (f"{NOMADS}/cgi-bin/filter_rrfs_2d.pl", None),
+            (f"{NOMADS}/cgi-bin/filter_rrfs.pl", None),
         ],
         "dir_candidates": [
             "/rrfs.{ymd}/{cc:02d}",
@@ -158,6 +164,8 @@ def latest_cycle(
     candidates = (cfg.get("probe_candidates")
                   or cfg.get("idx_candidates")
                   or [cfg["idx"]])
+    diag: dict = {}
+    cfg["_probe_diag"] = diag
     if cfg.get("_idx_resolved"):
         candidates = [cfg["_idx_resolved"]]
     max_back = 31 if len(candidates) == 1 else 13
@@ -174,12 +182,26 @@ def latest_cycle(
                               cc=cyc.hour, ff=fhr)
             try:
                 r = requests.head(url, headers=_HEADERS, timeout=8)
-            except requests.exceptions.ConnectionError:
+            except requests.exceptions.ConnectionError as e:
                 _dead_candidates.add(tmpl)
+                diag[tmpl] = f"ConnectionError: {e}"[:120]
                 continue
-            except Exception:
+            except Exception as e:
+                diag[tmpl] = f"{type(e).__name__}: {e}"[:120]
                 continue
-            if r.status_code == 200:
+            # Some servers reject HEAD; retry as a zero-range GET
+            if r.status_code in (403, 405):
+                try:
+                    r = requests.get(
+                        url, headers={**_HEADERS,
+                                      "Range": "bytes=0-0"},
+                        timeout=8,
+                    )
+                except Exception as e:
+                    diag[tmpl] = f"{type(e).__name__}"[:120]
+                    continue
+            diag[tmpl] = f"HTTP {r.status_code} @{cyc:%d/%H}z"
+            if r.status_code in (200, 206):
                 if cfg.get("idx_candidates"):
                     cfg["_idx_resolved"] = tmpl
                 return cyc
@@ -219,28 +241,36 @@ def fetch_field(
     # (RRFS is brand-new); the first working (filter, dir) pair is
     # memoized for the session.
     if cfg.get("_filter_resolved"):
-        filter_urls = [cfg["_filter_resolved"][0]]
+        filter_specs = [cfg["_filter_resolved"][0]]
         dir_tmpls = [cfg["_filter_resolved"][1]]
     else:
-        filter_urls = (cfg.get("filter_candidates")
-                       or [cfg["filter"]])
+        raw_specs = (cfg.get("filter_candidates")
+                     or [cfg["filter"]])
+        filter_specs = [
+            s if isinstance(s, tuple) else (s, cfg.get("ds"))
+            for s in raw_specs
+        ]
         dir_tmpls = cfg.get("dir_candidates") or [cfg["dir"]]
 
     last_detail = "no attempts made"
-    for f_url in filter_urls:
-        if f_url in _dead_candidates:
+    for f_spec in filter_specs:
+        f_url, f_ds = f_spec
+        if (f_url, f_ds) in _dead_candidates:
             continue
         for d_tmpl in dir_tmpls:
             d = d_tmpl.format(ymd=cycle.strftime("%Y%m%d"),
                               cc=cycle.hour)
+            params = {**base, "dir": d}
+            if f_ds:
+                params["ds"] = f_ds
             for lev_p in lev_candidates:
                 try:
                     r = requests.get(
-                        f_url, params={**base, "dir": d, **lev_p},
+                        f_url, params={**params, **lev_p},
                         headers=_HEADERS, timeout=90,
                     )
                 except requests.exceptions.ConnectionError as e:
-                    _dead_candidates.add(f_url)
+                    _dead_candidates.add((f_url, f_ds))
                     last_detail = f"{type(e).__name__}"
                     break
                 except Exception as e:
@@ -248,11 +278,14 @@ def fetch_field(
                     continue
                 if (r.status_code == 200 and len(r.content) >= 500
                         and r.content[:4] == b"GRIB"):
-                    cfg["_filter_resolved"] = (f_url, d_tmpl)
+                    cfg["_filter_resolved"] = (f_spec, d_tmpl)
                     return r.content
+                tag = f_url.rsplit('/', 1)[-1]
+                if f_ds:
+                    tag += f"?ds={f_ds}"
                 last_detail = (
                     f"HTTP {r.status_code}, {len(r.content)}B via "
-                    f"{f_url.rsplit('/', 1)[-1]} dir={d_tmpl}"
+                    f"{tag} dir={d_tmpl}"
                 )
                 # 404 on the script itself: skip its dir variants
                 if r.status_code == 404 and len(r.content) < 500:
