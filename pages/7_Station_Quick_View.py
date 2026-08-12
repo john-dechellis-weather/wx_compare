@@ -38,7 +38,7 @@ CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 # Defensive import: a sampler problem must never kill the page.
 try:
     from core.mov_sampler import (
-        SAMPLED_AIRPORTS, ensure_sampler_started, derive_movements,
+        is_sampled, ensure_sampler_started, derive_movements,
         sampling_since,
     )
     ensure_sampler_started(CACHE_ROOT)
@@ -47,7 +47,8 @@ try:
 except Exception as _se:
     _SAMPLER_OK = False
     _SAMPLER_ERR = f"{type(_se).__name__}: {_se}"
-    SAMPLED_AIRPORTS = {}
+    def is_sampled(_i):
+        return False
 
 _HEADERS = {"User-Agent": "BlueMet/1.0 (aviation weather tool)"}
 
@@ -517,6 +518,150 @@ def build_nbh_table(df_m: pd.DataFrame) -> str:
     )
 
 
+# --- Flight-category + hazard parsing for METAR/TAF coloring ---
+# Ladder (per JBU spec): LIFR cig<500 or vis<1; IFR cig<1000 or
+# vis<3; MVFR cig<2000 (tightened from the standard 3000). Gust
+# badges: G30+ orange, G35+ red, G40+ magenta. TS badge red.
+_CAT_COLORS = {
+    "VFR": "#00FF00", "MVFR": "#FFFF00",
+    "IFR": "#FF4040", "LIFR": "#FF00FF",
+}
+
+
+def _parse_wx_line(line: str):
+    """(vis_sm or None, ceiling_ft or None, gust_kt or None, has_ts)"""
+    import re
+    vis = None
+    m = re.search(r"(?:^|\s)(P6SM|M?(\d+)\s+(\d)/(\d)SM|"
+                  r"M?(\d+)/(\d+)SM|M?(\d+)SM)(?=\s|$)", line)
+    if m:
+        tok = m.group(1)
+        if tok == "P6SM":
+            vis = 6.0
+        else:
+            neg = tok.startswith("M")
+            t = tok[1:] if neg else tok
+            t = t[:-2]  # strip SM
+            try:
+                if " " in t:
+                    whole, frac = t.split()
+                    num, den = frac.split("/")
+                    vis = float(whole) + float(num) / float(den)
+                elif "/" in t:
+                    num, den = t.split("/")
+                    vis = float(num) / float(den)
+                else:
+                    vis = float(t)
+                if neg:
+                    vis = max(vis - 0.01, 0.0)
+            except (ValueError, ZeroDivisionError):
+                vis = None
+    ceil = None
+    for mm in re.finditer(r"(?:^|\s)(BKN|OVC|VV)(\d{3})", line):
+        ft = int(mm.group(2)) * 100
+        if ceil is None or ft < ceil:
+            ceil = ft
+    gust = None
+    mg = re.search(r"G(\d{2,3})KT", line)
+    if mg:
+        gust = int(mg.group(1))
+    has_ts = bool(re.search(r"(?:^|\s)[+-]?(?:VC)?TS[A-Z]*", line))
+    return vis, ceil, gust, has_ts
+
+
+def _category(vis, ceil) -> str:
+    def worst(v_cat, c_cat):
+        order = ["VFR", "MVFR", "IFR", "LIFR"]
+        return order[max(order.index(v_cat), order.index(c_cat))]
+    v_cat = "VFR"
+    if vis is not None:
+        if vis < 1:
+            v_cat = "LIFR"
+        elif vis < 3:
+            v_cat = "IFR"
+    c_cat = "VFR"
+    if ceil is not None:
+        if ceil < 500:
+            c_cat = "LIFR"
+        elif ceil < 1000:
+            c_cat = "IFR"
+        elif ceil < 2000:
+            c_cat = "MVFR"
+    return worst(v_cat, c_cat)
+
+
+def _badges(gust, has_ts) -> str:
+    out = ""
+    if gust is not None and gust >= 30:
+        color = ("#FF00FF" if gust >= 40 else
+                 "#FF4040" if gust >= 35 else "#FF9900")
+        out += (f' <span style="color:{color};'
+                f'-webkit-text-fill-color:{color};font-weight:bold;">'
+                f"[G{gust}]</span>")
+    if has_ts:
+        out += (' <span style="color:#FF4040;'
+                '-webkit-text-fill-color:#FF4040;font-weight:bold;">'
+                "[TS]</span>")
+    return out
+
+
+def wx_colored_box(lines: list, taf_mode: bool = False) -> str:
+    """Retro box with per-line flight-category coloring and hazard
+    badges. In TAF mode, group lines missing vis or ceiling inherit
+    the base group's values (TEMPO/PROB overlay without updating the
+    base; FM/BECMG update it)."""
+    from html import escape
+
+    html_lines = []
+    base_vis = base_ceil = None
+    for raw in lines:
+        line = raw.rstrip()
+        if not line.strip():
+            html_lines.append("")
+            continue
+        vis, ceil, gust, has_ts = _parse_wx_line(line)
+        if taf_mode:
+            stripped = line.lstrip()
+            is_overlay = stripped.startswith(
+                ("TEMPO", "PROB", "INTER")
+            )
+            eff_vis = vis if vis is not None else base_vis
+            eff_ceil = ceil if ceil is not None else base_ceil
+            if not is_overlay:
+                if vis is not None:
+                    base_vis = vis
+                if ceil is not None:
+                    base_ceil = ceil
+                # FM groups reset sky unless stated: a group with vis
+                # but no cloud layer means no ceiling
+                if stripped.startswith(("FM", "BECMG"))                         and ceil is None and vis is not None:
+                    base_ceil = None
+                    eff_ceil = None
+        else:
+            eff_vis, eff_ceil = vis, ceil
+        cat = _category(eff_vis, eff_ceil)
+        color = _CAT_COLORS[cat]
+        html_lines.append(
+            f'<span style="color:{color};'
+            f'-webkit-text-fill-color:{color};">'
+            f"{escape(line)}</span>{_badges(gust, has_ts)}"
+        )
+    body = "\n".join(html_lines)
+    return (
+        '<div style="background:#000000;border:2px solid #00FF00;'
+        'font-family:Courier New,monospace;font-size:12px;'
+        'padding:8px 10px;white-space:pre-wrap;word-break:break-word;">'
+        f"{body}</div>"
+    )
+
+
+_WX_LEGEND = (
+    "VFR green | MVFR yellow (cig<2000/vis<3 ladder) | IFR red | "
+    "LIFR magenta | badges: G30+ orange, G35+ red, G40+ magenta, "
+    "TS red"
+)
+
+
 def mono_box(text: str) -> str:
     from html import escape
     return (
@@ -600,7 +745,7 @@ if active_icao:
     if obs_list:
         recent = obs_list[-n_metars:][::-1]  # newest first
         st.markdown(
-            mono_box("\n".join(o.raw_text for o in recent)),
+            wx_colored_box([o.raw_text for o in recent]),
             unsafe_allow_html=True,
         )
         latest = recent[0]
@@ -618,7 +763,11 @@ if active_icao:
     with st.spinner("Fetching TAF..."):
         taf_text = cached_taf_raw(icao)
     if taf_text:
-        st.markdown(mono_box(taf_text), unsafe_allow_html=True)
+        st.markdown(
+            wx_colored_box(taf_text.splitlines(), taf_mode=True),
+            unsafe_allow_html=True,
+        )
+        st.caption(_WX_LEGEND)
     else:
         st.warning("No TAF available (station may not be a TAF site).")
 
@@ -773,14 +922,14 @@ if active_icao:
     movements, since_ts = cached_jbu_movements(
         icao, mv_hours, now.strftime("%Y%m%d%H%M")[:11]
     )
-    sampled_here = icao.upper() in SAMPLED_AIRPORTS or \
-        icao.upper() == "KPBI"
+    sampled_here = is_sampled(icao)
     if not _SAMPLER_OK:
         st.caption(f"Movement sampler unavailable ({_SAMPLER_ERR})")
     elif not sampled_here:
         st.caption(
-            f"{icao} is not in the sampled-airport list "
-            f"({', '.join(sorted(SAMPLED_AIRPORTS))}). Ask to add it."
+            f"{icao} is not a JBU destination, so the movement "
+            f"sampler does not cover it (the whole JBU network is "
+            f"sampled)."
         )
     elif not movements:
         if since_ts:
