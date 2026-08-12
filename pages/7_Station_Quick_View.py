@@ -1,6 +1,6 @@
 """Station Quick View — one-airport operational dashboard.
 
-Sections: current METAR, current TAF, live radar (NWS RIDGE loop OR raw
+Sections: current METAR, current TAF, live radar (Level III loop OR raw
 Level II frames rendered from volume data), hourly NBM table, NOTAMs.
 
 Architecture note: the Refresh button commits the station to
@@ -598,10 +598,8 @@ def _badges(gust, has_ts) -> str:
         out += (f' <span style="color:{color};'
                 f'-webkit-text-fill-color:{color};font-weight:bold;">'
                 f"[G{gust}]</span>")
-    if has_ts:
-        out += (' <span style="color:#FF4040;'
-                '-webkit-text-fill-color:#FF4040;font-weight:bold;">'
-                "[TS]</span>")
+    # TS carries no badge - thunderstorm lines color red instead
+    # (the TSRA text itself is the indicator).
     return out
 
 
@@ -641,6 +639,9 @@ def wx_colored_box(lines: list, taf_mode: bool = False) -> str:
             eff_vis, eff_ceil = vis, ceil
         cat = _category(eff_vis, eff_ceil)
         color = _CAT_COLORS[cat]
+        # Thunderstorm lines render red (LIFR magenta still outranks)
+        if has_ts and cat != "LIFR":
+            color = _CAT_COLORS["IFR"]
         html_lines.append(
             f'<span style="color:{color};'
             f'-webkit-text-fill-color:{color};">'
@@ -656,9 +657,9 @@ def wx_colored_box(lines: list, taf_mode: bool = False) -> str:
 
 
 _WX_LEGEND = (
-    "VFR green | MVFR yellow (cig<2000/vis<3 ladder) | IFR red | "
-    "LIFR magenta | badges: G30+ orange, G35+ red, G40+ magenta, "
-    "TS red"
+    "VFR green | MVFR yellow (cig<2000 ladder) | IFR red | "
+    "LIFR magenta | TS lines red | gusts: G30+ orange, G35+ red, "
+    "G40+ magenta"
 )
 
 
@@ -670,6 +671,91 @@ def mono_box(text: str) -> str:
         'font-family:Courier New,monospace;font-size:12px;'
         'padding:8px 10px;white-space:pre-wrap;word-break:break-word;">'
         f"{escape(text)}</div>"
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False, max_entries=6)
+def cached_l3_station_loop(
+    site: str, clat: float, clon: float, zoom: float, bucket: str,
+    n: int = 6,
+):
+    """Recent Level III REF frames centered on the station (oldest
+    first), rendered by the same pipeline as the Flight Tracker."""
+    from core.radar3 import fetch_recent, parse_l3, render_l3
+    frames = []
+    for raw, name in fetch_recent("REF", site, n=n):
+        try:
+            parsed = parse_l3(raw)
+            png = render_l3(
+                parsed, "REF", clat, clon, zoom, site,
+                title_note=name,
+            )
+            frames.append((png, name))
+        except Exception:
+            continue
+    return frames
+
+
+def _embed_html(html: str, height: int) -> None:
+    fn = getattr(st, "iframe", None)
+    if fn is not None:
+        try:
+            fn(html, height=height)
+            return
+        except TypeError:
+            pass
+    st.components.v1.html(html, height=height)
+
+
+def _client_scrubber(frames, key: str) -> str:
+    """Instant client-side frame scrubber with play/pause (same as
+    the Flight Tracker's)."""
+    import base64
+    import json as _json
+
+    srcs = ["data:image/png;base64," + base64.b64encode(p).decode()
+            for p, _n in frames]
+    names = [n for _p, n in frames]
+    n = len(srcs)
+    return (
+        "<style>"
+        ".scr{font:13px monospace}"
+        ".scr img{width:100%;border:1px solid #888}"
+        ".scr input[type=range]{width:55%;vertical-align:middle}"
+        ".scr button{font:bold 13px monospace;margin-right:6px;"
+        "padding:2px 10px}"
+        "</style>"
+        "<div class='scr'>"
+        "<img id='im_" + key + "'>"
+        "<div>"
+        "<button id='pb_" + key + "'>PAUSE</button>"
+        "<input type='range' id='sl_" + key + "' min='0' max='"
+        + str(n - 1) + "' value='" + str(n - 1) + "' step='1'>"
+        " <span id='lb_" + key + "'></span>"
+        "</div></div>"
+        "<script>"
+        "(function(){"
+        "const F=" + _json.dumps(srcs) + ";"
+        "const N=" + _json.dumps(names) + ";"
+        "const im=document.getElementById('im_" + key + "');"
+        "const sl=document.getElementById('sl_" + key + "');"
+        "const lb=document.getElementById('lb_" + key + "');"
+        "const pb=document.getElementById('pb_" + key + "');"
+        "let playing=true;let t=null;"
+        "function show(i){im.src=F[i];lb.textContent=N[i];}"
+        "function step(){let i=(+sl.value+1)%F.length;"
+        "sl.value=i;show(i);"
+        "t=setTimeout(step,i==F.length-1?1400:450);}"
+        "sl.addEventListener('input',function(){"
+        "clearTimeout(t);playing=false;pb.textContent='PLAY';"
+        "show(+sl.value);});"
+        "pb.addEventListener('click',function(){"
+        "if(playing){clearTimeout(t);playing=false;"
+        "pb.textContent='PLAY';}"
+        "else{playing=true;pb.textContent='PAUSE';step();}});"
+        "show(+sl.value);t=setTimeout(step,450);"
+        "})();"
+        "</script>"
     )
 
 
@@ -703,11 +789,14 @@ with st.sidebar:
     radar_mode = st.radio(
         "Radar display",
         options=[
-            "Windy interactive (instant, animated)",
-            "RIDGE loop (instant)",
+            "Level III loop (fast, high res)",
             "Raw Level II (slower, full res)",
         ],
         index=0,
+    )
+    l3_zoom = st.slider(
+        "Level III zoom (degrees)", 0.5, 3.0, 1.5, 0.5,
+        disabled=not radar_mode.startswith("Level III"),
     )
     l2_zoom = st.slider(
         "Level II zoom (degrees)", 0.5, 3.0, 1.5, 0.5,
@@ -774,39 +863,43 @@ if active_icao:
     # --- Radar ---
     st.subheader("Live Radar")
     radar_site = radar_override or RADAR_FOR_AIRPORT.get(icao, "")
-    if radar_mode.startswith("Windy"):
-        coords = cached_station_coords(icao)
-        if coords is None:
-            st.warning(f"Cannot resolve coordinates for {icao}.")
-        else:
-            w_lat, w_lon = coords
-            windy_url = (
-                "https://embed.windy.com/embed2.html"
-                f"?lat={w_lat:.3f}&lon={w_lon:.3f}"
-                f"&detailLat={w_lat:.3f}&detailLon={w_lon:.3f}"
-                "&zoom=8&level=surface&overlay=radar&menu=&message="
-                "&marker=true&calendar=now&pressure=&type=map"
-                "&location=coordinates&detail=&metricWind=default"
-                "&metricTemp=default&radarRange=-1"
-            )
-            st.components.v1.iframe(windy_url, height=520)
-            st.caption(
-                "Windy.com interactive radar — animated, pan/zoomable. "
-                "Press play on the bottom timeline for the loop."
-            )
-    elif not radar_site:
+    if not radar_site:
         st.warning(
             f"No radar mapping for {icao}. Enter a NEXRAD site "
             "(e.g. KOKX) in the sidebar."
         )
-    elif radar_mode.startswith("RIDGE"):
-        loop_url = (
-            f"https://radar.weather.gov/ridge/standard/{radar_site}_loop.gif"
-        )
-        st.image(loop_url, use_container_width=True)
-        st.caption(
-            f"NWS RIDGE loop for {radar_site} — refreshes on page reload."
-        )
+    elif radar_mode.startswith("Level III"):
+        # Our own Level III rendering: same pipeline as the Flight
+        # Tracker - station-centered, full product resolution, with
+        # an instant client-side scrubber. Replaces the low-res
+        # RIDGE GIF.
+        coords = cached_station_coords(icao)
+        if coords is None:
+            st.warning(f"Cannot resolve coordinates for {icao}.")
+        else:
+            s_lat, s_lon = coords
+            bucket5 = (
+                now.strftime("%Y%m%d%H") + str(now.minute // 5)
+            )
+            with st.spinner("Rendering Level III loop (10-25s)..."):
+                try:
+                    l3_frames = cached_l3_station_loop(
+                        radar_site, s_lat, s_lon, l3_zoom, bucket5,
+                    )
+                except Exception as e:
+                    l3_frames = []
+                    st.warning(f"Level III loop failed: {e}")
+            if len(l3_frames) > 1:
+                _embed_html(
+                    _client_scrubber(l3_frames, key="qvl3"),
+                    height=740,
+                )
+                st.caption(
+                    f"Level III reflectivity from {radar_site} - "
+                    f"instant scrubbing, frames ~5 min apart."
+                )
+            elif l3_frames:
+                st.image(l3_frames[0][0], use_container_width=True)
     else:
         # Raw Level II mode
         bucket = (
