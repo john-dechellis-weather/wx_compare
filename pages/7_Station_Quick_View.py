@@ -645,20 +645,32 @@ def mono_box(text: str) -> str:
     )
 
 
-@st.cache_data(ttl=300, show_spinner=False, max_entries=6)
+@st.cache_data(ttl=120, show_spinner=False, max_entries=12)
+def cached_l3_planes(clat: float, clon: float, zoom: float,
+                     bucket: str):
+    from core.flights import fetch_positions_near
+    try:
+        return fetch_positions_near(clat, clon, radius_deg=zoom)
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=300, show_spinner=False, max_entries=12)
 def cached_l3_station_loop(
-    site: str, clat: float, clon: float, zoom: float, bucket: str,
-    n: int = 6,
+    product: str, site: str, clat: float, clon: float, zoom: float,
+    bucket: str, others=tuple(), n: int = 6,
 ):
-    """Recent Level III REF frames centered on the station (oldest
-    first), rendered by the same pipeline as the Flight Tracker."""
+    """Recent Level III frames (REF or ET) centered on the station
+    (oldest first), same pipeline as the Flight Tracker, optionally
+    with live JBU aircraft overlaid."""
     from core.radar3 import fetch_recent, parse_l3, render_l3
     frames = []
-    for raw, name in fetch_recent("REF", site, n=n):
+    for raw, name in fetch_recent(product, site, n=n):
         try:
             parsed = parse_l3(raw)
             png = render_l3(
-                parsed, "REF", clat, clon, zoom, site,
+                parsed, product, clat, clon, zoom, site,
+                other_aircraft=list(others),
                 title_note=name,
             )
             frames.append((png, name))
@@ -769,6 +781,15 @@ with st.sidebar:
         "Level III zoom (degrees)", 0.5, 3.0, 1.5, 0.5,
         disabled=not radar_mode.startswith("Level III"),
     )
+    l3_flights = st.checkbox(
+        "Overlay live JBU flights",
+        value=True,
+        disabled=not radar_mode.startswith("Level III"),
+        key="l3_flights",
+        help="Current JetBlue positions (community ADS-B) drawn on "
+             "every loop frame. Positions are as-of-now even on "
+             "older frames.",
+    )
     l2_zoom = st.slider(
         "Level II zoom (degrees)", 0.5, 3.0, 1.5, 0.5,
         disabled=not radar_mode.startswith("Raw"),
@@ -839,93 +860,135 @@ if active_icao:
             f"No radar mapping for {icao}. Enter a NEXRAD site "
             "(e.g. KOKX) in the sidebar."
         )
-    elif radar_mode.startswith("Level III"):
-        # Our own Level III rendering: same pipeline as the Flight
-        # Tracker - station-centered, full product resolution, with
-        # an instant client-side scrubber. Replaces the low-res
-        # RIDGE GIF.
+    else:
+        # Two-panel radar deck: reflectivity (chosen mode) LEFT,
+        # Level III echo tops RIGHT, both looping with live JBU
+        # aircraft overlaid.
         coords = cached_station_coords(icao)
         if coords is None:
             st.warning(f"Cannot resolve coordinates for {icao}.")
+            s_lat = s_lon = None
         else:
             s_lat, s_lon = coords
-            bucket5 = (
-                now.strftime("%Y%m%d%H") + str(now.minute // 5)
+        bucket5 = now.strftime("%Y%m%d%H") + str(now.minute // 5)
+        l3_planes = []
+        if l3_flights and s_lat is not None:
+            l3_planes = cached_l3_planes(
+                round(s_lat, 2), round(s_lon, 2), l3_zoom, bucket5,
             )
-            with st.spinner("Rendering Level III loop (10-25s)..."):
-                try:
-                    l3_frames = cached_l3_station_loop(
-                        radar_site, s_lat, s_lon, l3_zoom, bucket5,
-                    )
-                except Exception as e:
-                    l3_frames = []
-                    st.warning(f"Level III loop failed: {e}")
-            if len(l3_frames) > 1:
-                _embed_html(
-                    _client_scrubber(l3_frames, key="qvl3"),
-                    height=740,
-                )
-                st.caption(
-                    f"Level III reflectivity from {radar_site} - "
-                    f"instant scrubbing, frames ~5 min apart."
-                )
-            elif l3_frames:
-                st.image(l3_frames[0][0], use_container_width=True)
-    else:
-        # Raw Level II mode
-        bucket = (
-            datetime.now(timezone.utc).strftime("%Y%m%d%H")
-            + str(datetime.now(timezone.utc).minute // 5)
-        )
-        if "live_l2" not in st.session_state:
-            with st.spinner(
-                "Fetching raw Level II volumes (30-60s first time)..."
-            ):
-                try:
-                    frames, gif, ov_mode = cached_live_l2(
-                        icao, radar_site, l2_zoom, bucket,
-                        overlay_flights=l2_flights,
-                    )
-                    st.session_state["live_l2"] = frames
-                    st.session_state["live_l2_gif"] = gif
-                    st.session_state["live_l2_mode"] = ov_mode
-                except Exception as e:
-                    st.session_state["live_l2"] = []
-                    st.session_state["live_l2_gif"] = b""
-                    st.warning(f"Level II fetch failed: {e}")
-        frames = st.session_state.get("live_l2", [])
-        gif = st.session_state.get("live_l2_gif", b"")
-        if frames:
-            st.caption(
-                f"{len(frames)} raw volumes from {radar_site} "
-                "(last ~45 min), rendered from Level II data — "
-                "not NWS imagery. Flight overlay: "
-                f"{st.session_state.get('live_l2_mode', '?')}."
-            )
-            if gif:
-                st.image(gif, use_container_width=True)
-                st.download_button(
-                    "Download loop GIF",
-                    data=gif,
-                    file_name=f"l2_loop_{radar_site}.gif",
-                    mime="image/gif",
-                    key="dl_l2_gif",
-                )
-            with st.expander("Frame-by-frame (full resolution)",
-                             expanded=not gif):
-                if len(frames) > 1:
-                    idx = st.slider(
-                        "Frame", 0, len(frames) - 1, len(frames) - 1,
-                        key="live_l2_idx",
-                        help="Newest frame is rightmost.",
-                    )
+
+        col_ref, col_et = st.columns(2)
+
+        with col_ref:
+            st.markdown("**Reflectivity**")
+            if radar_mode.startswith("Level III"):
+                if s_lat is None:
+                    pass
                 else:
-                    idx = 0
-                png, name = frames[idx]
-                st.image(png, use_container_width=True)
-                st.caption(f"Frame {idx + 1} of {len(frames)} · `{name}`")
-        else:
-            st.caption("No Level II volumes returned for the window.")
+                    with st.spinner("Rendering Level III loop..."):
+                        try:
+                            ref_frames = cached_l3_station_loop(
+                                "REF", radar_site, s_lat, s_lon,
+                                l3_zoom, bucket5,
+                                others=tuple(l3_planes),
+                            )
+                        except Exception as e:
+                            ref_frames = []
+                            st.warning(f"Level III loop failed: {e}")
+                    if len(ref_frames) > 1:
+                        _embed_html(
+                            _client_scrubber(ref_frames, key="qvl3"),
+                            height=560,
+                        )
+                        st.caption(
+                            f"L3 reflectivity, {radar_site}, frames "
+                            f"~5 min apart"
+                            + (f" | {len(l3_planes)} JBU (current "
+                               f"positions)" if l3_planes else "")
+                        )
+                    elif ref_frames:
+                        st.image(ref_frames[0][0],
+                                 use_container_width=True)
+                    else:
+                        st.caption("No Level III frames returned.")
+            else:
+                # Raw Level II mode
+                bucket = bucket5
+                if "live_l2" not in st.session_state:
+                    with st.spinner(
+                        "Fetching raw Level II volumes (30-60s "
+                        "first time)..."
+                    ):
+                        try:
+                            frames, gif, ov_mode = cached_live_l2(
+                                icao, radar_site, l2_zoom, bucket,
+                                overlay_flights=l2_flights,
+                            )
+                            st.session_state["live_l2"] = frames
+                            st.session_state["live_l2_gif"] = gif
+                            st.session_state["live_l2_mode"] = ov_mode
+                        except Exception as e:
+                            st.session_state["live_l2"] = []
+                            st.session_state["live_l2_gif"] = b""
+                            st.warning(f"Level II fetch failed: {e}")
+                frames = st.session_state.get("live_l2", [])
+                gif = st.session_state.get("live_l2_gif", b"")
+                if frames:
+                    st.caption(
+                        f"{len(frames)} raw L2 volumes from "
+                        f"{radar_site} (last ~45 min). Flight "
+                        f"overlay: "
+                        f"{st.session_state.get('live_l2_mode', '?')}."
+                    )
+                    if len(frames) > 1:
+                        _embed_html(
+                            _client_scrubber(frames, key="qvl2"),
+                            height=560,
+                        )
+                    else:
+                        st.image(frames[-1][0],
+                                 use_container_width=True)
+                    if gif:
+                        st.download_button(
+                            "Download loop GIF", data=gif,
+                            file_name=f"l2_loop_{radar_site}.gif",
+                            mime="image/gif", key="dl_l2_gif",
+                        )
+                else:
+                    st.caption(
+                        "No Level II volumes returned for the window."
+                    )
+
+        with col_et:
+            st.markdown("**Echo Tops (L3)**")
+            if s_lat is None:
+                pass
+            else:
+                with st.spinner("Rendering echo tops loop..."):
+                    try:
+                        et_frames = cached_l3_station_loop(
+                            "ET", radar_site, s_lat, s_lon,
+                            l3_zoom, bucket5,
+                            others=tuple(l3_planes),
+                        )
+                    except Exception as e:
+                        et_frames = []
+                        st.warning(f"Echo tops loop failed: {e}")
+                if len(et_frames) > 1:
+                    _embed_html(
+                        _client_scrubber(et_frames, key="qvet"),
+                        height=560,
+                    )
+                    st.caption(
+                        f"L3 echo tops (kft), {radar_site}"
+                        + (f" | {len(l3_planes)} JBU (current "
+                           f"positions)" if l3_planes else "")
+                    )
+                elif et_frames:
+                    st.image(et_frames[0][0],
+                             use_container_width=True)
+                else:
+                    st.caption("No echo tops frames returned.")
 
     # --- NBH MOS table ---
     st.subheader("NBM Hourly (NBH, f+1–25)")
