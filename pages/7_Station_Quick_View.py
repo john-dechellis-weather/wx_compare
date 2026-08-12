@@ -43,12 +43,18 @@ try:
     )
     ensure_sampler_started(CACHE_ROOT)
     _SAMPLER_OK = True
+    from core.radar_warm import (
+        ensure_radar_warmer_started, warm_get_loop, stamp_aircraft,
+    )
+    ensure_radar_warmer_started(CACHE_ROOT)
+    _RADAR_WARM_OK = True
     _SAMPLER_ERR = ""
 except Exception as _se:
     _SAMPLER_OK = False
     _SAMPLER_ERR = f"{type(_se).__name__}: {_se}"
     def is_sampled(_i):
         return False
+    _RADAR_WARM_OK = False
 
 _HEADERS = {"User-Agent": "BlueMet/1.0 (aviation weather tool)"}
 
@@ -850,16 +856,34 @@ if active_icao:
                 if s_lat is None:
                     pass
                 else:
-                    with st.spinner("Rendering Level III loop..."):
-                        try:
-                            ref_frames = cached_l3_station_loop(
-                                "REF", radar_site, s_lat, s_lon,
-                                l3_zoom, bucket5,
-                                others=tuple(l3_planes),
-                            )
-                        except Exception as e:
-                            ref_frames = []
-                            st.warning(f"Level III loop failed: {e}")
+                    ref_frames = []
+                    ref_warm = False
+                    if _RADAR_WARM_OK:
+                        warm = warm_get_loop(
+                            CACHE_ROOT, icao, "REF", l3_zoom
+                        )
+                        if warm:
+                            ref_frames = [
+                                (stamp_aircraft(png, geom, l3_planes),
+                                 name)
+                                for png, name, geom in warm
+                            ]
+                            ref_warm = True
+                    if not ref_frames:
+                        with st.spinner(
+                            "Rendering Level III loop..."
+                        ):
+                            try:
+                                ref_frames = cached_l3_station_loop(
+                                    "REF", radar_site, s_lat, s_lon,
+                                    l3_zoom, bucket5,
+                                    others=tuple(l3_planes),
+                                )
+                            except Exception as e:
+                                ref_frames = []
+                                st.warning(
+                                    f"Level III loop failed: {e}"
+                                )
                     if len(ref_frames) > 1:
                         _embed_html(
                             _client_scrubber(ref_frames, key="qvl3"),
@@ -870,6 +894,7 @@ if active_icao:
                             f"~5 min apart"
                             + (f" | {len(l3_planes)} JBU (current "
                                f"positions)" if l3_planes else "")
+                            + (" | prewarmed" if ref_warm else "")
                         )
                     elif ref_frames:
                         st.image(ref_frames[0][0],
@@ -929,16 +954,32 @@ if active_icao:
             if s_lat is None:
                 pass
             else:
-                with st.spinner("Rendering echo tops loop..."):
-                    try:
-                        et_frames = cached_l3_station_loop(
-                            "ET", radar_site, s_lat, s_lon,
-                            l3_zoom, bucket5,
-                            others=tuple(l3_planes),
-                        )
-                    except Exception as e:
-                        et_frames = []
-                        st.warning(f"Echo tops loop failed: {e}")
+                et_frames = []
+                et_warm = False
+                if _RADAR_WARM_OK:
+                    warm = warm_get_loop(
+                        CACHE_ROOT, icao, "ET", l3_zoom
+                    )
+                    if warm:
+                        et_frames = [
+                            (stamp_aircraft(png, geom, l3_planes),
+                             name)
+                            for png, name, geom in warm
+                        ]
+                        et_warm = True
+                if not et_frames:
+                    with st.spinner("Rendering echo tops loop..."):
+                        try:
+                            et_frames = cached_l3_station_loop(
+                                "ET", radar_site, s_lat, s_lon,
+                                l3_zoom, bucket5,
+                                others=tuple(l3_planes),
+                            )
+                        except Exception as e:
+                            et_frames = []
+                            st.warning(
+                                f"Echo tops loop failed: {e}"
+                            )
                 if len(et_frames) > 1:
                     _embed_html(
                         _client_scrubber(et_frames, key="qvet"),
@@ -948,6 +989,7 @@ if active_icao:
                         f"L3 echo tops (kft), {radar_site}"
                         + (f" | {len(l3_planes)} JBU (current "
                            f"positions)" if l3_planes else "")
+                        + (" | prewarmed" if et_warm else "")
                     )
                 elif et_frames:
                     st.image(et_frames[0][0],
