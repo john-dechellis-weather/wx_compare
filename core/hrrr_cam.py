@@ -110,18 +110,47 @@ MODELS = {
     "rrfs": {
         "label": "RRFS",
         "mechanism": "idx",
-        "file": "rrfs.t{cc:02d}z.prslev.3km.f{ff:03d}.conus.grib2",
-        "dir": "/rrfs.{ymd}/{cc:02d}",
+        # The parallel feed's exact path spelling is unverified from
+        # here, so the config self-discovers: candidates are probed
+        # in order and the first that answers is memoized for the
+        # session. Spellings cover para/prod trees and both filename
+        # conventions seen during RRFS development.
+        # Filename per Service Change Notice 26-48 (operational):
+        #   rrfs.YYYYMMDD/CC/rrfs.tCCz.prslev.3km.fFFF.conus.grib2
+        # Tried across the plausible trees (para first - the SCN's
+        # parallel feed landed ~Aug 11 2026); older dev spellings
+        # kept as trailing fallbacks.
+        "idx_candidates": [
+            (f"{NOMADS}/pub/data/nccf/com/rrfs/para/"
+             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev.3km"
+             ".f{ff:03d}.conus.grib2.idx"),
+            (f"{NOMADS}/pub/data/nccf/com/rrfs/prod/"
+             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev.3km"
+             ".f{ff:03d}.conus.grib2.idx"),
+            (f"{NOMADS}/pub/data/nccf/com/rrfs/v1.0/"
+             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev.3km"
+             ".f{ff:03d}.conus.grib2.idx"),
+            (f"{NOMADS}/pub/data/nccf/com/rrfs/para/"
+             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev"
+             ".f{ff:03d}.conus_3km.grib2.idx"),
+            (f"{NOMADS}/pub/data/nccf/com/rrfs/v1.0/"
+             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev"
+             ".f{ff:03d}.conus_3km.grib2.idx"),
+        ],
         "idx": (f"{NOMADS}/pub/data/nccf/com/rrfs/para/"
                 "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev.3km"
                 ".f{ff:03d}.conus.grib2.idx"),
-        "cycles": [0, 6, 12, 18],
+        "cycles": list(range(24)),
         "max_fhr": 60,
         "products": {"REFD", "REFC", "VIS", "CEIL", "GUST"},
-        "note": ("parallel feed announced ~Aug 11 2026; "
-                 "'no cycle found' is expected until it starts"),
+        "note": ("RRFS parallel feed (pre-operational until Oct "
+                 "2026); path self-discovered, products may vary"),
     },
 }
+
+# Candidates that connection-error get dropped for the session so
+# repeated timeouts don't tax every cycle probe.
+_dead_candidates: set = set()
 
 
 def latest_cycle(
@@ -131,20 +160,31 @@ def latest_cycle(
     Walks back up to 30 hours to cover sparse-cycle models."""
     cfg = MODELS[model]
     now = now or datetime.now(timezone.utc)
-    for back in range(1, 31):
+    candidates = cfg.get("idx_candidates") or [cfg["idx"]]
+    if cfg.get("_idx_resolved"):
+        candidates = [cfg["_idx_resolved"]]
+    max_back = 31 if len(candidates) == 1 else 13
+    for back in range(1, max_back):
         cyc = (now - timedelta(hours=back)).replace(
             minute=0, second=0, microsecond=0
         )
         if cyc.hour not in cfg["cycles"]:
             continue
-        url = cfg["idx"].format(ymd=cyc.strftime("%Y%m%d"),
-                                cc=cyc.hour, ff=fhr)
-        try:
-            r = requests.head(url, headers=_HEADERS, timeout=10)
+        for tmpl in candidates:
+            if tmpl in _dead_candidates:
+                continue
+            url = tmpl.format(ymd=cyc.strftime("%Y%m%d"),
+                              cc=cyc.hour, ff=fhr)
+            try:
+                r = requests.head(url, headers=_HEADERS, timeout=8)
+            except requests.exceptions.ConnectionError:
+                _dead_candidates.add(tmpl)
+                continue
+            except Exception:
+                continue
             if r.status_code == 200:
+                cfg["_idx_resolved"] = tmpl
                 return cyc
-        except Exception:
-            continue
     return None
 
 
@@ -205,8 +245,9 @@ def _fetch_field_idx(cfg: dict, product: str, cycle, fhr: int) -> bytes:
     GRIB that publishes an index, so it survives interface migrations.
     Returns the full-domain field (~1-5 MB); the renderer crops to the
     requested extent."""
-    idx_url = cfg["idx"].format(ymd=cycle.strftime("%Y%m%d"),
-                                cc=cycle.hour, ff=fhr)
+    tmpl = cfg.get("_idx_resolved") or cfg["idx"]
+    idx_url = tmpl.format(ymd=cycle.strftime("%Y%m%d"),
+                          cc=cycle.hour, ff=fhr)
     grib_url = idx_url[:-4]  # strip ".idx"
     r = requests.get(idx_url, headers=_HEADERS, timeout=30)
     r.raise_for_status()
