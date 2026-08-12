@@ -706,14 +706,10 @@ def _embed_html(html: str, height: int) -> None:
     st.components.v1.html(html, height=height)
 
 
-def _client_scrubber(frames, key: str, live=None) -> str:
-    """Instant client-side frame scrubber with play/pause, wheel-zoom,
-    drag-pan, double-click reset - and optionally a LIVE aircraft
-    canvas: the browser polls adsb.lol directly every ~5s and draws
-    JBU triangles over the radar without touching the loop. live =
-    {"geom": {...}, "lat": .., "lon": .., "radius_nm": ..,
-     "planes": [[lat, lon, hdg, callsign], ...]} (initial fallback).
-    """
+def _client_scrubber(frames, key: str) -> str:
+    """Instant client-side frame scrubber with play/pause plus
+    wheel-zoom (toward cursor), drag-pan, and double-click reset.
+    All pure browser JS on the already-shipped frames."""
     import base64
     import json as _json
 
@@ -721,7 +717,6 @@ def _client_scrubber(frames, key: str, live=None) -> str:
             for p, _n in frames]
     names = [n for _p, n in frames]
     n = len(srcs)
-    live_js = _json.dumps(live) if live else "null"
     return (
         "<style>"
         ".scr{font:13px monospace}"
@@ -729,14 +724,9 @@ def _client_scrubber(frames, key: str, live=None) -> str:
         "cursor:zoom-in;position:relative}"
         ".scr .vp.z{cursor:grab}"
         ".scr .vp.drag{cursor:grabbing}"
-        ".scr .tf{transform-origin:0 0;position:relative}"
-        ".scr img{width:100%;display:block;user-select:none;"
+        ".scr img{width:100%;display:block;"
+        "transform-origin:0 0;user-select:none;"
         "-webkit-user-drag:none}"
-        ".scr canvas{position:absolute;left:0;top:0;"
-        "pointer-events:none}"
-        ".scr .lv{position:absolute;left:4px;top:4px;"
-        "background:#000a;color:#0f0;padding:1px 6px;"
-        "font:11px monospace}"
         ".scr input[type=range]{width:55%;vertical-align:middle}"
         ".scr button{font:bold 13px monospace;margin-right:6px;"
         "padding:2px 10px}"
@@ -746,12 +736,8 @@ def _client_scrubber(frames, key: str, live=None) -> str:
         "</style>"
         "<div class='scr'>"
         "<div class='vp' id='vp_" + key + "'>"
-        "<div class='tf' id='tf_" + key + "'>"
         "<img id='im_" + key + "'>"
-        "<canvas id='cv_" + key + "'></canvas>"
-        "</div>"
         "<span class='zl' id='zl_" + key + "'></span>"
-        "<span class='lv' id='lv_" + key + "'></span>"
         "</div>"
         "<div>"
         "<button id='pb_" + key + "'>PAUSE</button>"
@@ -764,10 +750,6 @@ def _client_scrubber(frames, key: str, live=None) -> str:
         "const F=" + _json.dumps(srcs) + ";"
         "const N=" + _json.dumps(names) + ";"
         "const im=document.getElementById('im_" + key + "');"
-        "const tf=document.getElementById('tf_" + key + "');"
-        "const cv=document.getElementById('cv_" + key + "');"
-        "const lv=document.getElementById('lv_" + key + "');"
-        "const LIVE=" + live_js + ";"
         "const vp=document.getElementById('vp_" + key + "');"
         "const zl=document.getElementById('zl_" + key + "');"
         "const sl=document.getElementById('sl_" + key + "');"
@@ -776,7 +758,7 @@ def _client_scrubber(frames, key: str, live=None) -> str:
         "let playing=true;let t=null;"
         "let s=1,tx=0,ty=0;"
         "function apply(){"
-        "tf.style.transform='translate('+tx+'px,'+ty+'px) "
+        "im.style.transform='translate('+tx+'px,'+ty+'px) "
         "scale('+s+')';"
         "vp.classList.toggle('z',s>1);"
         "zl.style.display=s>1?'block':'none';"
@@ -818,60 +800,6 @@ def _client_scrubber(frames, key: str, live=None) -> str:
         "pb.textContent='PLAY';}"
         "else{playing=true;pb.textContent='PAUSE';step();}});"
         "show(+sl.value);t=setTimeout(step,450);apply();"
-        "if(LIVE){"
-        "const G=LIVE.geom;"
-        "function drawPlanes(pl,tag){"
-        "const w=im.clientWidth;if(!w)return;"
-        "const fw=1200,fh=1000;"
-        "const k=w/fw;"
-        "cv.width=w;cv.height=im.clientHeight;"
-        "const c=cv.getContext('2d');"
-        "c.clearRect(0,0,cv.width,cv.height);"
-        "let shown=0;"
-        "for(const p of pl){"
-        "const la=p[0],lo=p[1],hd=(p[2]||0)*Math.PI/180,cs=p[3];"
-        "if(la<G.lat0||la>G.lat1||lo<G.lon0||lo>G.lon1)continue;"
-        "const fx=(lo-G.lon0)/(G.lon1-G.lon0);"
-        "const fy=(G.lat1-la)/(G.lat1-G.lat0);"
-        "const x=(G.x0+fx*(G.x1-G.x0))*k;"
-        "const y=(G.y_top+fy*(G.y_bot-G.y_top))*k;"
-        "c.beginPath();"
-        "const S=9;"
-        "c.moveTo(x+S*Math.sin(hd),y-S*Math.cos(hd));"
-        "c.lineTo(x+S*0.7*Math.sin(hd+2.5),"
-        "y-S*0.7*Math.cos(hd+2.5));"
-        "c.lineTo(x+S*0.35*Math.sin(hd+Math.PI),"
-        "y-S*0.35*Math.cos(hd+Math.PI));"
-        "c.lineTo(x+S*0.7*Math.sin(hd-2.5),"
-        "y-S*0.7*Math.cos(hd-2.5));"
-        "c.closePath();"
-        "c.fillStyle='#00BFFF';c.fill();"
-        "c.strokeStyle='#FFF';c.stroke();"
-        "c.font='11px monospace';c.fillStyle='#00BFFF';"
-        "c.fillText(cs,x+8,y+12);"
-        "shown++;}"
-        "lv.textContent=shown+' JBU '+tag;}"
-        "drawPlanes(LIVE.planes||[],'(page load)');"
-        "async function poll(){"
-        "try{"
-        "const r=await fetch('https://api.adsb.lol/v2/point/'"
-        "+LIVE.lat+'/'+LIVE.lon+'/'+LIVE.radius_nm);"
-        "if(!r.ok)throw 0;"
-        "const j=await r.json();"
-        "const pl=(j.ac||[]).filter(function(a){"
-        "return((a.flight||'').trim().toUpperCase()"
-        ".indexOf('JBU')==0);})"
-        ".map(function(a){return[a.lat,a.lon,"
-        "a.track||a.true_heading||0,"
-        "(a.flight||'').trim()];});"
-        "const d=new Date();"
-        "drawPlanes(pl,'live '+d.toISOString().substr(11,8)+'Z');"
-        "}catch(e){}"
-        "}"
-        "poll();setInterval(poll,5000);"
-        "window.addEventListener('resize',function(){"
-        "drawPlanes(LIVE.planes||[],'');poll();});"
-        "}"
         "})();"
         "</script>"
     )
@@ -917,12 +845,12 @@ with st.sidebar:
         disabled=not radar_mode.startswith("Level III"),
     )
     l3_auto = st.checkbox(
-        "Live aircraft layer (~5s)",
+        "Auto-refresh aircraft (60s)",
         value=True,
         key="l3_auto",
-        help="Your browser polls adsb.lol directly every ~5 seconds "
-             "and redraws JBU triangles over the radar - no page "
-             "refresh, zoom and loop state preserved.",
+        help="Re-stamps current JBU positions onto the radar loops "
+             "every minute without re-rendering radar. Resets "
+             "zoom/pause state on each tick.",
     )
     l3_flights = st.checkbox(
         "Overlay live JBU flights",
@@ -979,7 +907,7 @@ if active_icao:
             l2_flights=l2_flights,
         )
 
-        @st.fragment
+        @st.fragment(run_every=60 if l3_auto else None)
         def _radar_deck(icao, radar_site, radar_mode, l3_zoom,
                         l3_flights, l2_zoom, l2_flights):
             now_f = datetime.now(timezone.utc)
@@ -1024,36 +952,18 @@ if active_icao:
                                 st.warning(
                                     f"Level III loop failed: {e}"
                                 )
-                    ref_frames = [(p, n) for p, n, _g in
-                                  (ref_g or [])]
-                    live_cfg = None
-                    if ref_g and l3_flights and l3_auto:
-                        live_cfg = {
-                            "geom": ref_g[0][2],
-                            "lat": round(s_lat, 3),
-                            "lon": round(s_lon, 3),
-                            "radius_nm": int(l3_zoom * 60),
-                            "planes": [
-                                [p.lat, p.lon, p.heading_deg or 0,
-                                 p.callsign]
-                                for p in l3_planes
-                            ],
-                        }
-                    elif ref_g and l3_planes:
-                        ref_frames = _stamp_all(ref_g, l3_planes)
+                    ref_frames = _stamp_all(ref_g or [], l3_planes)
                     if len(ref_frames) > 1:
                         _embed_html(
-                            _client_scrubber(ref_frames, key="qvl3",
-                                             live=live_cfg),
+                            _client_scrubber(ref_frames, key="qvl3"),
                             height=560,
                         )
                         st.caption(
                             f"L3 reflectivity, {radar_site}, frames "
                             f"~5 min apart"
-                            + (" | live JBU layer (see overlay)"
-                               if live_cfg else
-                               (f" | {len(l3_planes)} JBU stamped"
-                                if l3_planes else ""))
+                            + (f" | {len(l3_planes)} JBU as of "
+                               f"{now_f:%H:%M:%S}Z"
+                               if l3_planes else "")
                             + (" | prewarmed" if ref_warm else "")
                         )
                     elif ref_frames:
@@ -1138,34 +1048,17 @@ if active_icao:
                             st.warning(
                                 f"Echo tops loop failed: {e}"
                             )
-                et_frames = [(p, n) for p, n, _g in (et_g or [])]
-                live_cfg_et = None
-                if et_g and l3_flights and l3_auto:
-                    live_cfg_et = {
-                        "geom": et_g[0][2],
-                        "lat": round(s_lat, 3),
-                        "lon": round(s_lon, 3),
-                        "radius_nm": int(l3_zoom * 60),
-                        "planes": [
-                            [p.lat, p.lon, p.heading_deg or 0,
-                             p.callsign]
-                            for p in l3_planes
-                        ],
-                    }
-                elif et_g and l3_planes:
-                    et_frames = _stamp_all(et_g, l3_planes)
+                et_frames = _stamp_all(et_g or [], l3_planes)
                 if len(et_frames) > 1:
                     _embed_html(
-                        _client_scrubber(et_frames, key="qvet",
-                                         live=live_cfg_et),
+                        _client_scrubber(et_frames, key="qvet"),
                         height=560,
                     )
                     st.caption(
                         f"L3 echo tops (kft), {radar_site}"
-                        + (" | live JBU layer (see overlay)"
-                           if live_cfg_et else
-                           (f" | {len(l3_planes)} JBU stamped"
-                            if l3_planes else ""))
+                        + (f" | {len(l3_planes)} JBU as of "
+                           f"{now_f:%H:%M:%S}Z"
+                           if l3_planes else "")
                         + (" | prewarmed" if et_warm else "")
                     )
                 elif et_frames:
