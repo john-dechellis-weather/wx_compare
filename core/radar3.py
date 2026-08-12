@@ -226,7 +226,8 @@ def render_l3(
     trail=None,                 # [(lat, lon), ...] flight path so far
     others_trails=None,         # {callsign: [(lat, lon), ...]}
     routes=None,                # {callsign: {"orig", "dest", "label"}}
-) -> bytes:
+    return_geometry: bool = False,   # also return px<->deg mapping
+):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -384,7 +385,27 @@ def render_l3(
 
     # NOTE: no bbox_inches="tight" — crops the GeoAxes (see core.radar).
     buf = io.BytesIO()
+    if return_geometry:
+        # Pin the axes so the saved-PNG pixel box is knowable, then
+        # record the mapping for millisecond aircraft stamping onto
+        # the finished PNG (PlateCarree = linear lat/lon <-> px).
+        fig.canvas.draw()
+        bbox = ax.get_window_extent()
+        fig_h_px = fig.get_size_inches()[1] * 100  # dpi=100
+        geometry = {
+            "x0": float(bbox.x0), "x1": float(bbox.x1),
+            # matplotlib bbox origin is bottom-left; PNG rows are
+            # top-down, so flip y against figure height.
+            "y_top": float(fig_h_px - bbox.y1),
+            "y_bot": float(fig_h_px - bbox.y0),
+            "lon0": center_lon - zoom_deg,
+            "lon1": center_lon + zoom_deg,
+            "lat0": center_lat - zoom_deg,
+            "lat1": center_lat + zoom_deg,
+        }
     fig.savefig(buf, format="png", dpi=100)
     plt.close(fig)
     buf.seek(0)
+    if return_geometry:
+        return buf.getvalue(), geometry
     return buf.getvalue()
