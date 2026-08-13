@@ -251,10 +251,28 @@ def cached_current_metars(
 # ---------------------------------------------------------------------------
 # Airport status board: one row per alerting airport, worst-first
 # ---------------------------------------------------------------------------
+# Low-density major-city labels for the alert map (curated for
+# geographic spread; hardcoded so the interactive map needs no
+# shapefile machinery)
+_MAP_CITIES = [
+    ("Seattle", 47.61, -122.33), ("Portland", 45.52, -122.68),
+    ("San Francisco", 37.77, -122.42), ("Los Angeles", 34.05, -118.24),
+    ("San Diego", 32.72, -117.16), ("Las Vegas", 36.17, -115.14),
+    ("Phoenix", 33.45, -112.07), ("Salt Lake City", 40.76, -111.89),
+    ("Denver", 39.74, -104.99), ("Dallas", 32.78, -96.80),
+    ("Houston", 29.76, -95.37), ("Minneapolis", 44.98, -93.27),
+    ("Kansas City", 39.10, -94.58), ("Chicago", 41.88, -87.63),
+    ("St. Louis", 38.63, -90.20), ("Atlanta", 33.75, -84.39),
+    ("New Orleans", 29.95, -90.07), ("Miami", 25.76, -80.19),
+    ("Charlotte", 35.23, -80.84), ("Washington", 38.90, -77.04),
+    ("New York", 40.71, -74.01), ("Boston", 42.36, -71.06),
+]
+
+
 _MAGENTA = "#FF00FF"
 _YELLOW = "#FFFF00"
 _ORANGE = "#FF9900"
-_LT_YELLOW = "#FFF8B0"   # TSRA highlight
+_LT_RED = "#FF9999"      # TSRA (plain) highlight; +TSRA gets _RED
 
 
 def _wind_max_kt(wind_str: str):
@@ -317,7 +335,8 @@ def build_status_board(results, metar_rows):
             col = (_MAGENTA, _RED, _YELLOW)[tier]
             cands.append((tier, f"CIG {c}", col, e["ceil_p"]))
         if e["ts"]:
-            cands.append((1, e["ts"], _LT_YELLOW, e["ts_p"]))
+            ts_col = _RED if e["ts"].startswith("+") else _LT_RED
+            cands.append((1, e["ts"], ts_col, e["ts_p"]))
         if e["wind"]:
             w = _wind_max_kt(e["wind"])
             if w is not None and w >= 40:
@@ -345,7 +364,7 @@ def render_status_board(rows) -> str:
     for rank, icao, chip, color, period, e in rows:
         def dim(v):
             return str(v) if v not in (None, "") else "-"
-        fg = ("#000000" if color in (_YELLOW, _ORANGE, _LT_YELLOW)
+        fg = ("#000000" if color in (_YELLOW, _ORANGE, _LT_RED)
               else _WHITE)
         body.append(
             "<tr>"
@@ -353,7 +372,11 @@ def render_status_board(rows) -> str:
             + _td(chip, bg=color, fg=fg, bold=True)
             + _td(dim(e["vis"]), align="right")
             + _td(dim(e["ceil"]), align="right")
-            + (_td(e["ts"], bg=_LT_YELLOW, fg="#000000",
+            + (_td(e["ts"],
+                   bg=(_RED if e["ts"].startswith("+")
+                       else _LT_RED),
+                   fg=(_WHITE if e["ts"].startswith("+")
+                       else "#000000"),
                    bold=True)
                if e["ts"] else _td("-"))
             + _td(dim(e["wind"]), align="right")
@@ -537,6 +560,25 @@ if run_button:
                     "alert": chip, "period": period,
                 })
             if data:
+                city_data = [
+                    {"name": n, "lat": la, "lon": lo}
+                    for n, la, lo in _MAP_CITIES
+                ]
+                city_layer = pdk.Layer(
+                    "TextLayer", data=city_data,
+                    get_position="[lon, lat]",
+                    get_text="name", get_size=11,
+                    get_color=[90, 90, 90, 200],
+                    get_text_anchor='"start"',
+                    get_pixel_offset=[6, 0],
+                )
+                city_dots = pdk.Layer(
+                    "ScatterplotLayer", data=city_data,
+                    get_position="[lon, lat]",
+                    get_fill_color=[120, 120, 120, 180],
+                    get_radius=6000, radius_min_pixels=2,
+                    radius_max_pixels=4,
+                )
                 layer = pdk.Layer(
                     "ScatterplotLayer", data=data,
                     get_position="[lon, lat]",
@@ -546,19 +588,23 @@ if run_button:
                     stroked=True, get_line_color=[0, 0, 0],
                     line_width_min_pixels=1.5, pickable=True,
                 )
-                st.pydeck_chart(pdk.Deck(
-                    layers=[layer],
-                    initial_view_state=pdk.ViewState(
-                        latitude=38.5, longitude=-96.5, zoom=3.2,
-                    ),
-                    map_style="light",
-                    tooltip={"html": "<b>{icao}</b> - {alert} - "
-                                     "{period}"},
-                ), height=420)
-                st.caption(
-                    "Zoom/pan freely; hover a dot for the driving "
-                    "condition. Dot color = ALERT-chip severity."
-                )
+                map_col, _spacer = st.columns([1, 1])
+                with map_col:
+                    st.pydeck_chart(pdk.Deck(
+                        layers=[city_dots, city_layer, layer],
+                        initial_view_state=pdk.ViewState(
+                            latitude=38.5, longitude=-96.5,
+                            zoom=2.8, min_zoom=2.7, max_zoom=11,
+                        ),
+                        map_style="light",
+                        tooltip={"html": "<b>{icao}</b> - {alert} "
+                                         "- {period}"},
+                    ), height=380)
+                    st.caption(
+                        "Zoom/pan; hover a dot for the driving "
+                        "condition. Dot color = ALERT-chip "
+                        "severity."
+                    )
         except Exception as e:
             st.caption(f"Alert map unavailable: {e}")
 
