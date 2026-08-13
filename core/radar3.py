@@ -291,6 +291,7 @@ def render_l3(
     others_trails=None,         # {callsign: [(lat, lon), ...]}
     routes=None,                # {callsign: {"orig", "dest", "label"}}
     return_geometry: bool = False,   # also return px<->deg mapping
+    lightning=None,             # [(lat, lon), ...] GLM flashes
     mark_center: bool = False,  # blue ring at the center point
                                 # (airport on Quick View; OFF on the
                                 # Tracker where center is an aircraft)
@@ -391,6 +392,25 @@ def render_l3(
         ax.add_feature(states, linewidth=0.5, zorder=3)
     except Exception:
         pass
+    if lightning:
+        try:
+            import matplotlib.patheffects as _lpe
+            ll = [p for p in lightning
+                  if center_lat - zoom_deg <= p[0]
+                  <= center_lat + zoom_deg
+                  and center_lon - zoom_deg <= p[1]
+                  <= center_lon + zoom_deg]
+            if ll:
+                ax.scatter(
+                    [p[1] for p in ll], [p[0] for p in ll],
+                    marker="+", s=42, c="#FFD700",
+                    linewidths=1.6, zorder=4,
+                    transform=ccrs.PlateCarree(),
+                    path_effects=[_lpe.withStroke(
+                        linewidth=3, foreground="#000000")],
+                )
+        except Exception:
+            pass
     if mark_center:
         try:
             # Blue ring at the field + geographically true 20 nm
