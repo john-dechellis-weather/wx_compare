@@ -145,7 +145,7 @@ def cached_panel(
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
-st.title("Hi-Res CAMs (HRRR + RRFS)")
+st.title("Hi-Res CAMs (HRRR)")
 st.caption(
     "Convection-allowing model viewer - aviation products, "
     "hourly-updating, with prewarmed hub views."
@@ -162,9 +162,11 @@ with st.sidebar:
             st.session_state["cam_icao"] = hub
     zoom = st.slider("Zoom (degrees)", 1.0, 6.0, 2.5, 0.5)
 
-    # HRRR + RRFS (parallel feed). NAM/ARW stay dormant in
-    # core.hrrr_cam (they retire Oct 2026).
-    show_models = {"hrrr": True, "rrfs": True}
+    # HRRR-only. RRFS is PAUSED (8/12: v1.0 files are on NOMADS
+    # but neither .idx sidecars nor a gribfilter ds exist yet, so no
+    # viable fetch path). All RRFS machinery stays in core.hrrr_cam;
+    # to unpause, set rrfs True here and add it to GRID_ORDER below.
+    show_models = {"hrrr": True}
 
     st.header("Product")
     product_label = st.selectbox(
@@ -204,9 +206,8 @@ with st.sidebar:
     else:
         fhr_all = st.slider(
             "Forecast hour (all models)", 0, 60, 1,
-            help="HRRR f18 hourly (f48 synoptic); RRFS to f60 "
-                 "on synoptic cycles. Panels clamp to their own "
-                 "max.",
+            help="HRRR reaches f18 hourly (f48 on 00/06/12/18Z "
+                 "cycles); the panel clamps to its available max.",
         )
 
     st.divider()
@@ -262,12 +263,19 @@ if active:
                 msg = f"No complete {cfg['label']} cycle found."
                 if cfg["note"]:
                     msg += f" ({cfg['note']})"
+                pd = cfg.get("_probe_diag") or {}
+                if pd:
+                    msg += " Probe verdicts: " + "; ".join(
+                        f"{u.split('/com/')[-1].split('/rrfs.')[0]}"
+                        f" -> {v}"
+                        for u, v in list(pd.items())[:4]
+                    )
                 notes[m] = msg
                 continue
             specs.append((m, cyc, fh))
         return specs, notes
 
-    GRID_ORDER = ["hrrr", "rrfs"]
+    GRID_ORDER = ["hrrr"]
 
     if smooth:
         span = min(fhr_hi - fhr_lo, 24)
@@ -291,7 +299,12 @@ if active:
                 continue
             cycle_iso = cached_model_cycle(m, mh[-1], bucket10)
             if cycle_iso is None:
-                skipped.append(f"{cfg['label']}: no cycle found")
+                pd = MODELS[m].get("_probe_diag") or {}
+                extra = ("; probes: " + "; ".join(
+                    list(pd.values())[:3]) if pd else "")
+                skipped.append(
+                    f"{cfg['label']}: no cycle found{extra}"
+                )
                 continue
             for h in mh:
                 plan.append((m, cycle_iso, h))
@@ -355,6 +368,8 @@ if active:
                 continue
             frames.setdefault(m, {})[h] = png
         prog.empty()
+        if skipped:
+            st.warning(" | ".join(skipped))
         frames = {m: f for m, f in frames.items() if f}
         if skipped:
             st.caption(" | ".join(skipped))
@@ -482,10 +497,9 @@ else:
         """
         ### What this page is
 
-        HRRR and RRFS (parallel feed) side by side, centered on
-        your airport, aviation products only: 1km reflectivity,
-        echo tops, visibility, ceiling, and gusts, with smooth
-        scrubbing. Hub buttons serve prewarmed HRRR reflectivity
-        instantly; RRFS renders live.
+        HRRR centered on your airport, aviation products only: 1km
+        reflectivity, echo tops, visibility, ceiling, and gusts,
+        with smooth scrubbing across forecast hours. Hub buttons
+        (JFK/MCO/FLL/DCA) serve prewarmed reflectivity instantly.
         """
     )
