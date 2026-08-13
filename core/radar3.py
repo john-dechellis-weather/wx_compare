@@ -411,16 +411,21 @@ def render_l3(
                 r_lat * np.sin(th)
                 / np.cos(np.radians(center_lat))
             )
+            import matplotlib.patheffects as _pe
             ax.plot(
                 ring_lons, ring_lats, color="#FFFFFF",
-                linewidth=4.8, linestyle="--", alpha=0.9,
+                linewidth=4.8, linestyle="--", alpha=0.95,
                 zorder=5, transform=ccrs.PlateCarree(),
+                path_effects=[_pe.withStroke(linewidth=7.0,
+                                             foreground="#000000")],
             )
             ax.text(
                 center_lon, center_lat + r_lat, " 20 nm",
-                fontsize=6.5, color="#FFFFFF", va="bottom",
-                ha="center", zorder=5,
+                fontsize=7, color="#FFFFFF", va="bottom",
+                ha="center", zorder=5, fontweight="bold",
                 transform=ccrs.PlateCarree(),
+                path_effects=[_pe.withStroke(linewidth=2.5,
+                                             foreground="#000000")],
             )
         except Exception:
             pass
