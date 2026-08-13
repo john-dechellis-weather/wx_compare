@@ -413,50 +413,70 @@ _FLEET_TILES = [
 
 @st.cache_data(ttl=60, show_spinner=False, max_entries=2)
 def cached_fleet(bucket: str):
-    """All airborne JBU over CONUS via tiled point queries,
-    deduped by callsign; plus route strings where known."""
+    """All airborne JBU over CONUS via tiled point queries.
+
+    Direct aggregator calls only - the shared fetch's OpenSky
+    fallback is a blocked host on Render, and 15 workers hammering
+    simultaneously rate-limited the API (which is why only the
+    first-answering region's flights appeared). Three workers,
+    short timeouts, one polite retry, no route lookups. Returns
+    (planes, ok_tiles, total_tiles) so coverage is honest."""
+    import time as _time
     from concurrent.futures import ThreadPoolExecutor
 
-    from core.flights import fetch_positions_near, fetch_routes
+    import requests as _rq
 
-    seen = {}
+    HDRS = {"User-Agent": "bluemet.org ops dashboard"}
 
     def one(tile):
-        try:
-            return fetch_positions_near(tile[0], tile[1],
-                                        radius_deg=4.1)
-        except Exception:
-            return []
+        la, lo = tile
+        url = (f"https://api.adsb.lol/v2/point/"
+               f"{la:.2f}/{lo:.2f}/246")
+        for attempt in (0, 1):
+            try:
+                r = _rq.get(url, headers=HDRS, timeout=4)
+                if r.status_code == 200:
+                    out = []
+                    for p in r.json().get("ac", []):
+                        cs = (p.get("flight") or "").strip()
+                        if not cs.upper().startswith("JBU"):
+                            continue
+                        if p.get("lat") is None:
+                            continue
+                        alt = p.get("alt_baro")
+                        out.append((cs, float(p["lat"]),
+                                    float(p["lon"]),
+                                    alt if isinstance(
+                                        alt, (int, float))
+                                    else None))
+                    return out
+            except Exception:
+                pass
+            if attempt == 0:
+                _time.sleep(0.35)
+        return None
 
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        for planes in pool.map(one, _FLEET_TILES):
-            for p in planes:
-                if p.callsign and p.callsign not in seen:
-                    seen[p.callsign] = p
-
-    routes = {}
-    try:
-        routes = fetch_routes(list(seen.values())) or {}
-    except Exception:
-        pass
+    seen = {}
+    ok = 0
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        for res in pool.map(one, _FLEET_TILES):
+            if res is None:
+                continue
+            ok += 1
+            for cs, la, lo, alt in res:
+                if cs not in seen:
+                    seen[cs] = (la, lo, alt)
 
     out = []
-    for cs, p in seen.items():
-        r = routes.get(cs) or {}
-        label = r.get("label") or (
-            f"{r.get('orig', '?')}-{r.get('dest', '?')}"
-            if r.get("orig") or r.get("dest") else "route n/a"
-        )
-        alt = (f"FL{int(p.alt_ft // 100):03d}"
-               if p.alt_ft and p.alt_ft >= 18000
-               else (f"{int(p.alt_ft):,} ft" if p.alt_ft
-                     else "alt n/a"))
+    for cs, (la, lo, alt) in seen.items():
+        alt_s = (f"FL{int(alt // 100):03d}"
+                 if alt and alt >= 18000
+                 else (f"{int(alt):,} ft" if alt else "alt n/a"))
         out.append({
-            "callsign": cs, "lat": p.lat, "lon": p.lon,
-            "tip": f"{cs} | {label} | {alt}",
+            "callsign": cs, "lat": la, "lon": lo,
+            "tip": f"{cs} | {alt_s}",
         })
-    return out
-
+    return out, ok, len(_FLEET_TILES)
 
 # ---------------------------------------------------------------------------
 # Cached analysis — TAFs update every 6 hours; 15-min cache is fresh enough
@@ -605,9 +625,9 @@ if run_button:
 
         bucket1 = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
         try:
-            fleet = cached_fleet(bucket1)
+            fleet, ok_tiles, n_tiles = cached_fleet(bucket1)
         except Exception:
-            fleet = []
+            fleet, ok_tiles, n_tiles = [], 0, 0
 
         city_data = [
             {"name": n, "lat": la, "lon": lo}
@@ -670,10 +690,12 @@ if run_button:
                 map_style="light",
                 tooltip={"html": "<b>{tip}</b>"},
             ), height=660)
+            cov = (f" (coverage {ok_tiles}/{n_tiles} tiles)"
+                   if ok_tiles < n_tiles else "")
             st.caption(
                 f"Alert dots in chip colors; {len(fleet)} JBU "
-                "airborne (blue, ~60s refresh). Hover anything "
-                "for details."
+                f"airborne (blue, ~60s refresh){cov}. Hover for "
+                "callsign/altitude."
             )
     except Exception as e:
         st.caption(f"Map unavailable: {e}")
