@@ -353,10 +353,12 @@ def _client_scrubber(frames, key: str) -> str:
         "<style>"
         ".scr{font:13px monospace}"
         ".scr .vp{overflow:hidden;border:1px solid #888;"
-        "cursor:zoom-in;position:relative}"
+        "cursor:zoom-in;position:relative;"
+        "height:700px}"
         ".scr .vp.z{cursor:grab}"
         ".scr .vp.drag{cursor:grabbing}"
-        ".scr img{width:100%;display:block;"
+        ".scr img{max-width:100%;max-height:100%;"
+        "width:auto;height:auto;display:block;"
         "transform-origin:0 0;user-select:none;"
         "-webkit-user-drag:none}"
         ".scr input[type=range]{width:55%;vertical-align:middle}"
@@ -396,7 +398,7 @@ def _client_scrubber(frames, key: str) -> str:
         "zl.style.display=s>1?'block':'none';"
         "zl.textContent=s.toFixed(1)+'x';}"
         "function clamp(){"
-        "const w=vp.clientWidth,h=vp.clientHeight;"
+        "const w=im.clientWidth,h=im.clientHeight;"
         "tx=Math.min(0,Math.max(tx,w-w*s));"
         "ty=Math.min(0,Math.max(ty,h-h*s));}"
         "vp.addEventListener('wheel',function(e){"
@@ -669,7 +671,7 @@ if track_cs:
         # Client-side scrubber: auto-plays like the old GIF, but the
         # slider swaps frames instantly in the browser - no reloading.
         _embed_html(
-            _client_scrubber(frames, key="rad"), height=760,
+            _client_scrubber(frames, key="rad"), height=770,
         )
         if gif:
             st.download_button(

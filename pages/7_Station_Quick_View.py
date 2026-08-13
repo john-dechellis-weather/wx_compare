@@ -721,10 +721,12 @@ def _client_scrubber(frames, key: str) -> str:
         "<style>"
         ".scr{font:13px monospace}"
         ".scr .vp{overflow:hidden;border:1px solid #888;"
-        "cursor:zoom-in;position:relative}"
+        "cursor:zoom-in;position:relative;"
+        "height:540px}"
         ".scr .vp.z{cursor:grab}"
         ".scr .vp.drag{cursor:grabbing}"
-        ".scr img{width:100%;display:block;"
+        ".scr img{max-width:100%;max-height:100%;"
+        "width:auto;height:auto;display:block;"
         "transform-origin:0 0;user-select:none;"
         "-webkit-user-drag:none}"
         ".scr input[type=range]{width:55%;vertical-align:middle}"
@@ -764,7 +766,7 @@ def _client_scrubber(frames, key: str) -> str:
         "zl.style.display=s>1?'block':'none';"
         "zl.textContent=s.toFixed(1)+'x';}"
         "function clamp(){"
-        "const w=vp.clientWidth,h=vp.clientHeight;"
+        "const w=im.clientWidth,h=im.clientHeight;"
         "tx=Math.min(0,Math.max(tx,w-w*s));"
         "ty=Math.min(0,Math.max(ty,h-h*s));}"
         "vp.addEventListener('wheel',function(e){"
@@ -888,6 +890,17 @@ if active_icao:
     now = datetime.now(timezone.utc)
     st.info(f"Station: **{icao}** · as of **{now:%Y-%m-%d %H:%M UTC}**")
 
+    # Tighten vertical rhythm between sections.
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stVerticalBlock"] {gap: 0.5rem;}
+        h3 {margin-top: 0.5rem; margin-bottom: 0.2rem;}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     # --- METAR ---
     st.subheader("Current METAR" if n_metars == 1 else
                  f"METARs (last {n_metars})")
@@ -978,7 +991,7 @@ if active_icao:
                     if len(ref_frames) > 1:
                         _embed_html(
                             _client_scrubber(ref_frames, key="qvl3"),
-                            height=560,
+                            height=610,
                         )
                         st.caption(
                             f"L3 reflectivity, {radar_site}, frames "
@@ -1032,7 +1045,7 @@ if active_icao:
                         if len(frames) > 1:
                             _embed_html(
                                 _client_scrubber(frames, key="qvl2"),
-                                height=560,
+                                height=610,
                             )
                         else:
                             st.image(frames[-1][0],
@@ -1074,7 +1087,7 @@ if active_icao:
                 if len(et_frames) > 1:
                     _embed_html(
                         _client_scrubber(et_frames, key="qvet"),
-                        height=560,
+                        height=610,
                     )
                     st.caption(
                         f"L3 echo tops (kft), {radar_site}"
