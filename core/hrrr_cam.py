@@ -441,10 +441,51 @@ def fetch_and_decode(
     lon: float,
     zoom_deg: float,
 ):
-    """fetch_field + decode_field in one call (thread-safe: pure I/O
-    and numpy, no matplotlib)."""
+    """fetch_field + decode_field + CROP in one call (thread-safe:
+    pure I/O and numpy, no matplotlib).
+
+    Cropping here is the memory diet: full grids (NBM CONUS is
+    2345x1597 - ~90 MB of float64 per decode) shrink to the view
+    window before anything else touches them, and everything is
+    downcast to float32. Two concurrent full-grid decodes were
+    enough to OOM the small instance; post-crop frames are a few
+    hundred KB.
+    """
+    import gc
+
+    import numpy as np
+
     raw = fetch_field(model, product, cycle, fhr, lat, lon, zoom_deg)
-    return decode_field(raw)
+    vals, lats, lons = decode_field(raw)
+    del raw
+
+    pad = zoom_deg + 0.6
+    lons_w = np.where(lons > 180, lons - 360, lons)
+    mask = (
+        (lats >= lat - pad) & (lats <= lat + pad)
+        & (lons_w >= lon - pad) & (lons_w <= lon + pad)
+    )
+    if mask.any() and mask.ndim == 2:
+        rows = np.where(mask.any(axis=1))[0]
+        cols = np.where(mask.any(axis=0))[0]
+        r0, r1 = rows[0], rows[-1] + 1
+        c0, c1 = cols[0], cols[-1] + 1
+        vals = np.ascontiguousarray(
+            vals[r0:r1, c0:c1], dtype=np.float32
+        )
+        lats = np.ascontiguousarray(
+            lats[r0:r1, c0:c1], dtype=np.float32
+        )
+        lons = np.ascontiguousarray(
+            lons_w[r0:r1, c0:c1], dtype=np.float32
+        )
+    else:
+        vals = vals.astype(np.float32, copy=False)
+        lats = lats.astype(np.float32, copy=False)
+        lons = lons_w.astype(np.float32, copy=False)
+    del mask, lons_w
+    gc.collect()
+    return vals, lats, lons
 
 
 def parallel_fetch_decode(tasks: list[dict], max_workers: int = 6):
