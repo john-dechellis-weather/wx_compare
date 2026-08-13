@@ -213,6 +213,70 @@ def parse_l3(raw: bytes):
     return {"kind": "raster", "data": data, "half_km": half_km, **meta}
 
 
+
+# --- Major-city labels (Natural Earth populated_places) ---
+_city_cache: dict = {}
+
+
+def _city_records():
+    """Load NE 10m populated places once per process."""
+    if "recs" in _city_cache:
+        return _city_cache["recs"]
+    try:
+        from cartopy.io import shapereader
+        path = shapereader.natural_earth(
+            resolution="10m", category="cultural",
+            name="populated_places",
+        )
+        recs = []
+        for r in shapereader.Reader(path).records():
+            a = r.attributes
+            recs.append((
+                float(r.geometry.y), float(r.geometry.x),
+                a.get("NAME") or "",
+                int(a.get("SCALERANK") or 10),
+                int(a.get("POP_MAX") or 0),
+            ))
+        _city_cache["recs"] = recs
+    except Exception:
+        _city_cache["recs"] = []
+    return _city_cache["recs"]
+
+
+def _plot_cities(ax, lat0, lat1, lon0, lon1, max_n=9):
+    """Label the most significant cities in the view: dot + outlined
+    name, count-limited and overlap-thinned for readability."""
+    import matplotlib.patheffects as pe
+
+    import cartopy.crs as ccrs
+
+    in_view = [
+        c for c in _city_records()
+        if lat0 <= c[0] <= lat1 and lon0 <= c[1] <= lon1
+    ]
+    in_view.sort(key=lambda c: (c[3], -c[4]))
+    shown = []
+    min_sep = (lat1 - lat0) * 0.07
+    for lat, lon, name, _rank, _pop in in_view:
+        if len(shown) >= max_n:
+            break
+        if any(abs(lat - sa) < min_sep and abs(lon - so) < min_sep
+               for sa, so in shown):
+            continue
+        ax.plot(lon, lat, marker="o", markersize=2.5,
+                color="#FFFFFF", markeredgecolor="#000000",
+                markeredgewidth=0.5, zorder=4,
+                transform=ccrs.PlateCarree())
+        ax.text(
+            lon, lat, "  " + name, fontsize=7, color="#FFFFFF",
+            zorder=4, va="center",
+            path_effects=[pe.withStroke(linewidth=2,
+                                        foreground="#000000")],
+            transform=ccrs.PlateCarree(),
+        )
+        shown.append((lat, lon))
+
+
 def render_l3(
     parsed: dict,
     product: str,
@@ -313,6 +377,14 @@ def render_l3(
         ax.add_feature(states, linewidth=0.5, zorder=3)
     except Exception:
         pass
+    try:
+        _plot_cities(
+            ax,
+            center_lat - zoom_deg, center_lat + zoom_deg,
+            center_lon - zoom_deg, center_lon + zoom_deg,
+        )
+    except Exception:
+        pass   # cities are decoration; never block the render
 
     gl = ax.gridlines(draw_labels=True, linewidth=0.3, linestyle=":",
                       color="gray")

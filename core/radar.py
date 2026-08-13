@@ -492,6 +492,15 @@ def _render_sweep(
         linewidth=0.5,
         facecolor="none",
     )
+    try:
+        from core.radar3 import _plot_cities
+        _plot_cities(
+            ax,
+            aircraft_lat - zoom_deg, aircraft_lat + zoom_deg,
+            aircraft_lon - zoom_deg, aircraft_lon + zoom_deg,
+        )
+    except Exception:
+        pass   # cities are decoration; never block the render
 
     gl = ax.gridlines(
         crs=ccrs.PlateCarree(),

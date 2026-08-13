@@ -33,7 +33,7 @@ RADAR_WARM_HUBS = {
 # Bump when radar RENDERING changes (thresholds, colormaps): a
 # mismatch forces immediate re-warm instead of stale frames aging
 # out over half an hour.
-STYLE_V = 2
+STYLE_V = 3
 
 WARM_ZOOM = 1.5
 WARM_PRODUCTS = ["REF", "ET"]
