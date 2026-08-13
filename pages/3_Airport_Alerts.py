@@ -253,22 +253,6 @@ def cached_current_metars(
 # ---------------------------------------------------------------------------
 # Airport status board: one row per alerting airport, worst-first
 # ---------------------------------------------------------------------------
-# Low-density major-city labels for the alert map (curated for
-# geographic spread; hardcoded so the interactive map needs no
-# shapefile machinery)
-_MAP_CITIES = [
-    ("Seattle", 47.61, -122.33), ("Portland", 45.52, -122.68),
-    ("San Francisco", 37.77, -122.42), ("Los Angeles", 34.05, -118.24),
-    ("San Diego", 32.72, -117.16), ("Las Vegas", 36.17, -115.14),
-    ("Phoenix", 33.45, -112.07), ("Salt Lake City", 40.76, -111.89),
-    ("Denver", 39.74, -104.99), ("Dallas", 32.78, -96.80),
-    ("Houston", 29.76, -95.37), ("Minneapolis", 44.98, -93.27),
-    ("Kansas City", 39.10, -94.58), ("Chicago", 41.88, -87.63),
-    ("St. Louis", 38.63, -90.20), ("Atlanta", 33.75, -84.39),
-    ("New Orleans", 29.95, -90.07), ("Miami", 25.76, -80.19),
-    ("Charlotte", 35.23, -80.84), ("Washington", 38.90, -77.04),
-    ("New York", 40.71, -74.01), ("Boston", 42.36, -71.06),
-]
 
 
 _MAGENTA = "#FF00FF"
@@ -358,6 +342,70 @@ def build_status_board(results, metar_rows):
     return rows
 
 
+def _metar_severity(r):
+    """(color, token_str) for a breaching METAR row, on the same
+    severity ladder as the TAF tiers."""
+    toks = []
+    tier = 3
+    if r.get("vis_bad") and r.get("vis") is not None:
+        v = r["vis"]
+        t = 0 if v < 1 else (1 if v < 3 else 2)
+        tier = min(tier, t)
+        toks.append(f"{v:g}SM")
+    if r.get("cig_bad") and r.get("cig") is not None:
+        c = int(r["cig"])
+        t = 0 if c < 500 else (1 if c < 1000 else 2)
+        tier = min(tier, t)
+        toks.append(f"CIG {c}")
+    if r.get("wind_bad"):
+        w = max([x for x in (r.get("spd"), r.get("gst"))
+                 if x is not None], default=None)
+        if w is not None:
+            t = 0 if w >= 40 else (1 if w >= 35 else 2)
+            tier = min(tier, t)
+            toks.append(f"{int(w)}KT")
+    if not toks:
+        return None, ""
+    color = (_MAGENTA, _RED, _ORANGE)[min(tier, 2)]
+    return color, "/".join(toks)
+
+
+def build_map_markers(board_rows, metar_rows, coords):
+    """Merge TAF board + breaching METARs into ring/fill datasets.
+    Solid fill = current METAR breach; ring = TAF forecast;
+    concentric when both. Each carries its own severity color."""
+    taf = {r[1]: (r[3], r[6]) for r in board_rows}
+    met = {}
+    for r in (metar_rows or []):
+        color, toks = _metar_severity(r)
+        if color:
+            met[r["icao"]] = (color, toks)
+
+    def _rgb(hexc):
+        h = hexc.lstrip("#")
+        return [int(h[k:k+2], 16) for k in (0, 2, 4)]
+
+    fills, rings = [], []
+    for icao in sorted(set(taf) | set(met)):
+        if icao not in coords:
+            continue
+        la, lo = coords[icao]
+        parts = []
+        if icao in met:
+            parts.append(f"NOW: {met[icao][1]}")
+        if icao in taf:
+            parts.append(f"TAF: {taf[icao][1]}")
+        tip = f"{icao} | " + " | ".join(parts)
+        base = {"lat": la, "lon": lo, "tip": tip}
+        if icao in met:
+            fills.append({**base,
+                          "color": _rgb(met[icao][0]) + [235]})
+        if icao in taf:
+            rings.append({**base,
+                          "color": _rgb(taf[icao][0]) + [235]})
+    return fills, rings
+
+
 def render_status_board(rows) -> str:
     # Yellow is unreadable as text on white; display-darken it.
     _TEXT_COLOR = {_YELLOW: "#B8860B", _ORANGE: "#CC6600",
@@ -433,10 +481,22 @@ def cached_fleet(bucket: str):
 
     HDRS = {"User-Agent": "bluemet.org ops dashboard"}
 
-    def one(tile):
-        la, lo = tile
-        url = (f"https://api.adsb.lol/v2/point/"
-               f"{la:.2f}/{lo:.2f}/246")
+    def _url(host_i, la, lo):
+        if host_i == 0:
+            return (f"https://api.adsb.lol/v2/point/"
+                    f"{la:.2f}/{lo:.2f}/246")
+        if host_i == 1:
+            return (f"https://opendata.adsb.fi/api/v2/lat/"
+                    f"{la:.2f}/lon/{lo:.2f}/dist/246")
+        return (f"https://api.airplanes.live/v2/point/"
+                f"{la:.2f}/{lo:.2f}/246")
+
+    def one(args):
+        idx, (la, lo) = args
+        # Round-robin hosts so no single aggregator sees more than
+        # ~5 calls (15 on one host rate-limited and silently
+        # amputated the western half of the fleet: 7/15 coverage)
+        url = _url(idx % 3, la, lo)
         for attempt in (0, 1):
             try:
                 r = _rq.get(url, headers=HDRS, timeout=4)
@@ -464,7 +524,7 @@ def cached_fleet(bucket: str):
     seen = {}
     ok = 0
     with ThreadPoolExecutor(max_workers=3) as pool:
-        for res in pool.map(one, _FLEET_TILES):
+        for res in pool.map(one, enumerate(_FLEET_TILES)):
             if res is None:
                 continue
             ok += 1
@@ -612,21 +672,9 @@ if run_button:
 
         coords = cached_station_coords(tuple(JETBLUE_ICAOS))
 
-        def _rgb(hexc):
-            h = hexc.lstrip("#")
-            return [int(h[k:k+2], 16) for k in (0, 2, 4)]
-
-        alert_data = []
-        for rank, icao, chip, color, period, _e, all_txt \
-                in board_rows:
-            if icao not in coords:
-                continue
-            la, lo = coords[icao]
-            alert_data.append({
-                "lat": la, "lon": lo,
-                "color": _rgb(color) + [230],
-                "tip": f"{icao} | {all_txt}",
-            })
+        fills, rings = build_map_markers(
+            board_rows, metar_rows, coords
+        )
 
         bucket1 = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
         try:
@@ -634,27 +682,9 @@ if run_button:
         except Exception:
             fleet, ok_tiles, n_tiles = [], 0, 0
 
-        city_data = [
-            {"name": n, "lat": la, "lon": lo}
-            for n, la, lo in _MAP_CITIES
-        ]
-        layers = [
-            pdk.Layer(
-                "ScatterplotLayer", data=city_data,
-                get_position="[lon, lat]",
-                get_fill_color=[120, 120, 120, 180],
-                get_radius=6000, radius_min_pixels=2,
-                radius_max_pixels=4,
-            ),
-            pdk.Layer(
-                "TextLayer", data=city_data,
-                get_position="[lon, lat]",
-                get_text="name", get_size=11,
-                get_color=[90, 90, 90, 200],
-                get_text_anchor='"start"',
-                get_pixel_offset=[6, 0],
-            ),
-        ]
+        # No custom city layer: the light basemap already labels
+        # major cities at these zooms (ours doubled them)
+        layers = []
         if fleet:
             layers.append(pdk.Layer(
                 "ScatterplotLayer", data=fleet,
@@ -668,20 +698,33 @@ if run_button:
             layers.append(pdk.Layer(
                 "TextLayer", data=fleet,
                 get_position="[lon, lat]",
-                get_text="callsign", get_size=9,
-                get_color=[0, 70, 190, 230],
+                get_text="callsign", get_size=8,
+                get_color=[0, 70, 190, 175],
                 get_text_anchor='"start"',
-                get_pixel_offset=[7, -7],
+                get_pixel_offset=[6, -6],
             ))
-        if alert_data:
+        if fills:
+            # Solid core: current METAR breach (trouble NOW)
             layers.append(pdk.Layer(
-                "ScatterplotLayer", data=alert_data,
+                "ScatterplotLayer", data=fills,
                 get_position="[lon, lat]",
                 get_fill_color="color",
-                get_radius=28000,
-                radius_min_pixels=6, radius_max_pixels=22,
+                get_radius=15000,
+                radius_min_pixels=5, radius_max_pixels=13,
                 stroked=True, get_line_color=[0, 0, 0],
-                line_width_min_pixels=1.5, pickable=True,
+                line_width_min_pixels=1, pickable=True,
+            ))
+        if rings:
+            # Hollow ring: TAF forecast breach (trouble COMING);
+            # concentric around a core when both apply
+            layers.append(pdk.Layer(
+                "ScatterplotLayer", data=rings,
+                get_position="[lon, lat]",
+                get_line_color="color",
+                get_radius=30000,
+                radius_min_pixels=10, radius_max_pixels=24,
+                filled=False, stroked=True,
+                line_width_min_pixels=3.5, pickable=True,
             ))
 
         _l, map_col, _r = st.columns([1, 2, 1])
@@ -689,8 +732,8 @@ if run_button:
             st.pydeck_chart(pdk.Deck(
                 layers=layers,
                 initial_view_state=pdk.ViewState(
-                    latitude=38.8, longitude=-96.5,
-                    zoom=3.0, min_zoom=2.9, max_zoom=11,
+                    latitude=38.3, longitude=-96.0,
+                    zoom=3.5, min_zoom=3.4, max_zoom=11,
                 ),
                 map_style="light",
                 tooltip={"html": "<b>{tip}</b>"},
@@ -698,14 +741,15 @@ if run_button:
             cov = (f" (coverage {ok_tiles}/{n_tiles} tiles)"
                    if ok_tiles < n_tiles else "")
             st.caption(
-                f"Alert dots in chip colors; {len(fleet)} JBU "
-                f"airborne (blue, ~60s refresh){cov}. Hover for "
-                "callsign/altitude."
+                "Solid dot = METAR breaching NOW; ring = TAF "
+                "forecast; concentric = both (each in its own "
+                f"severity color). {len(fleet)} JBU airborne "
+                f"(blue{cov}). Hover for details."
             )
     except Exception as e:
         st.caption(f"Map unavailable: {e}")
 
-    col_taf, col_metar = st.columns(2, gap="medium")
+    col_taf, col_metar = st.columns([1, 2], gap="medium")
 
     with col_taf:
         st.subheader("TAF alerts")
