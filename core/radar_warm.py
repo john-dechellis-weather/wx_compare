@@ -251,3 +251,56 @@ def stamp_aircraft(png_bytes: bytes, geom: dict,
     buf = io.BytesIO()
     im.save(buf, format="PNG")
     return buf.getvalue()
+
+
+def stamp_scene(png_bytes: bytes, geom: dict, target=None,
+                others=(), trail=()) -> bytes:
+    """Full-scene stamp for the Tracker's fast loop: trail polyline,
+    fleet triangles (blue), and the tracked aircraft highlighted
+    (red, larger). Milliseconds of PIL work per frame."""
+    import io
+    import math
+    from PIL import Image, ImageDraw
+
+    im = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    dr = ImageDraw.Draw(im)
+    x0, x1 = geom["x0"], geom["x1"]
+    yt, yb = geom["y_top"], geom["y_bot"]
+    lon0, lon1 = geom["lon0"], geom["lon1"]
+    lat0, lat1 = geom["lat0"], geom["lat1"]
+
+    def to_px(lat, lon):
+        fx = (lon - lon0) / (lon1 - lon0)
+        fy = (lat1 - lat) / (lat1 - lat0)
+        return x0 + fx * (x1 - x0), yt + fy * (yb - yt)
+
+    def in_frame(lat, lon):
+        return lat0 <= lat <= lat1 and lon0 <= lon <= lon1
+
+    # Trail polyline (cyan, thin)
+    pts = [to_px(la, lo) for la, lo in trail if in_frame(la, lo)]
+    if len(pts) >= 2:
+        dr.line(pts, fill="#00E5FF", width=2)
+
+    def triangle(p, color, size):
+        hdg = math.radians(p.heading_deg or 0)
+        x, y = to_px(p.lat, p.lon)
+        poly = []
+        for ang, r in ((0, size), (2.5, size * 0.7),
+                       (math.pi, size * 0.35),
+                       (-2.5, size * 0.7)):
+            a = hdg + ang
+            poly.append((x + r * math.sin(a),
+                         y - r * math.cos(a)))
+        dr.polygon(poly, fill=color, outline="#FFFFFF")
+        dr.text((x + 9, y + 6), p.callsign, fill=color)
+
+    for p in others:
+        if in_frame(p.lat, p.lon):
+            triangle(p, "#00BFFF", 10.0)
+    if target is not None and in_frame(target.lat, target.lon):
+        triangle(target, "#FF3333", 14.0)
+
+    buf = io.BytesIO()
+    im.save(buf, format="PNG")
+    return buf.getvalue()
