@@ -588,18 +588,18 @@ if run_button:
                     stroked=True, get_line_color=[0, 0, 0],
                     line_width_min_pixels=1.5, pickable=True,
                 )
-                map_col, _spacer = st.columns([1, 1])
+                _l, map_col, _r = st.columns([1, 2, 1])
                 with map_col:
                     st.pydeck_chart(pdk.Deck(
                         layers=[city_dots, city_layer, layer],
                         initial_view_state=pdk.ViewState(
-                            latitude=38.5, longitude=-96.5,
-                            zoom=2.8, min_zoom=2.7, max_zoom=11,
+                            latitude=38.8, longitude=-96.5,
+                            zoom=3.0, min_zoom=2.9, max_zoom=11,
                         ),
                         map_style="light",
                         tooltip={"html": "<b>{icao}</b> - {alert} "
                                          "- {period}"},
-                    ), height=380)
+                    ), height=660)
                     st.caption(
                         "Zoom/pan; hover a dot for the driving "
                         "condition. Dot color = ALERT-chip "
