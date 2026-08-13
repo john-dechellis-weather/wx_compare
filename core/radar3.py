@@ -315,6 +315,13 @@ def render_l3(
          center_lat - zoom_deg, center_lat + zoom_deg],
         crs=ccrs.PlateCarree(),
     )
+    # True-scale aspect: without this, equal-degree axes over-stretch
+    # east-west at latitude (the oval-ring tell). Set after
+    # set_extent so cartopy keeps it.
+    try:
+        ax.set_aspect(1.0 / np.cos(np.radians(center_lat)))
+    except Exception:
+        pass
 
     if product == "REF":
         norm, cmap = colortables.get_with_steps(
