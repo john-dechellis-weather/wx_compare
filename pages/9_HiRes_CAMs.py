@@ -142,6 +142,67 @@ def cached_panel(
     )
 
 
+def build_scrub_html(frames: dict, hour_axis: list,
+                     order: list) -> tuple:
+    """Client-side shared-slider grid from {model: {fhr: png}}.
+    Returns (html, height). Used by smooth-scrub mode AND the
+    instant-open warm path."""
+    import base64
+    import json as _json
+
+    from core.hrrr_cam import MODELS
+
+    model_arrays = {}
+    for m in order:
+        if m not in frames or not frames[m]:
+            continue
+        arr = []
+        for h in hour_axis:
+            png = frames[m].get(h)
+            arr.append(
+                "data:image/png;base64,"
+                + base64.b64encode(png).decode() if png else None
+            )
+        model_arrays[m] = arr
+    labels = [f"f{h:02d}" for h in hour_axis]
+    order = [m for m in order if m in model_arrays]
+    names = {m: MODELS[m]["label"] for m in order}
+    html = (
+        "<style>"
+        ".camgrid{display:grid;grid-template-columns:1fr 1fr;"
+        "gap:6px}"
+        ".camgrid img{width:100%;border:1px solid #888}"
+        ".camlbl{font:bold 13px monospace;margin:2px 0}"
+        ".ctl{font:13px monospace;margin:8px 0}"
+        "input[type=range]{width:70%}"
+        "</style>"
+        "<div class='ctl'>Forecast hour: "
+        "<span id='hlbl'></span><br>"
+        "<input type='range' id='hsl' min='0' max='"
+        + str(len(hour_axis) - 1) + "' value='0' step='1'>"
+        "</div><div class='camgrid'>"
+    )
+    for m in order:
+        html += ("<div><div class='camlbl'>" + names[m]
+                 + "</div><img id='img_" + m + "'></div>")
+    html += "</div><script>"
+    html += "const D=" + _json.dumps(model_arrays) + ";"
+    html += "const L=" + _json.dumps(labels) + ";"
+    html += (
+        "const sl=document.getElementById('hsl');"
+        "function upd(){const i=+sl.value;"
+        "document.getElementById('hlbl').textContent=L[i];"
+        "for(const m in D){const el="
+        "document.getElementById('img_'+m);"
+        "if(D[m][i]){el.src=D[m][i];el.style.display='';}"
+        "else{el.style.display='none';}}}"
+        "sl.addEventListener('input',upd);upd();"
+        "</script>"
+    )
+    rows = (len(order) + 1) // 2
+    return html, 140 + rows * 560
+
+
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
@@ -377,54 +438,10 @@ if active:
         else:
             import base64
             import json as _json
-            model_arrays = {}
-            hour_axis = hours
-            for m, fd in frames.items():
-                arr = []
-                last = None
-                for h in hour_axis:
-                    if h in fd:
-                        last = ("data:image/png;base64,"
-                                + base64.b64encode(fd[h]).decode())
-                    arr.append(last or "")
-                model_arrays[m] = arr
-            labels = [f"f{h:02d}" for h in hour_axis]
-            order = [m for m in GRID_ORDER if m in model_arrays]
-            names = {m: MODELS[m]["label"] for m in order}
-            html = (
-                "<style>"
-                ".camgrid{display:grid;grid-template-columns:1fr 1fr;"
-                "gap:6px}"
-                ".camgrid img{width:100%;border:1px solid #888}"
-                ".camlbl{font:bold 13px monospace;margin:2px 0}"
-                ".ctl{font:13px monospace;margin:8px 0}"
-                "input[type=range]{width:70%}"
-                "</style>"
-                "<div class='ctl'>Forecast hour: "
-                "<span id='hlbl'></span><br>"
-                "<input type='range' id='hsl' min='0' max='"
-                + str(len(hour_axis) - 1) + "' value='0' step='1'>"
-                "</div><div class='camgrid'>"
+            html, hgt = build_scrub_html(
+                frames, hour_axis, GRID_ORDER
             )
-            for m in order:
-                html += ("<div><div class='camlbl'>" + names[m]
-                         + "</div><img id='img_" + m + "'></div>")
-            html += "</div><script>"
-            html += "const D=" + _json.dumps(model_arrays) + ";"
-            html += "const L=" + _json.dumps(labels) + ";"
-            html += (
-                "const sl=document.getElementById('hsl');"
-                "function upd(){const i=+sl.value;"
-                "document.getElementById('hlbl').textContent=L[i];"
-                "for(const m in D){const el="
-                "document.getElementById('img_'+m);"
-                "if(D[m][i]){el.src=D[m][i];el.style.display='';}"
-                "else{el.style.display='none';}}}"
-                "sl.addEventListener('input',upd);upd();"
-                "</script>"
-            )
-            rows = (len(order) + 1) // 2
-            _embed_html(html, height=140 + rows * 560)
+            _embed_html(html, height=hgt)
             st.caption(
                 f"{sum(len(v) for v in frames.values())} frames "
                 f"preloaded across {len(order)} model(s). Scrub away."
@@ -491,7 +508,43 @@ if active:
                     st.caption(cfg["note"])
 
 else:
-    st.info("Enter an airport in the sidebar and click **Render**.")
+    # INSTANT-OPEN: before any click, serve the prewarmed default-hub
+    # scrub straight from disk (sub-second). Custom anything = the
+    # normal Render flow.
+    _open_hub = "KJFK"
+    _OPEN_ORDER = ["hrrr", "nbm"]
+    _warm_frames: dict = {}
+    try:
+        for _m in _OPEN_ORDER:
+            for _h in WARM_HOURS:
+                got = warm_get(CACHE_ROOT, _m, _open_hub, _h)
+                if got:
+                    _warm_frames.setdefault(_m, {})[_h] = got[0]
+    except Exception:
+        _warm_frames = {}
+    _n_warm = sum(len(v) for v in _warm_frames.values())
+    if _n_warm >= 6:
+        st.info(
+            f"**{_open_hub}** | 1km Reflectivity | prewarmed - "
+            f"scrub instantly, or set up a custom view in the "
+            f"sidebar and click **Render**."
+        )
+        _axis = sorted({h for v in _warm_frames.values()
+                        for h in v})
+        _html, _hgt = build_scrub_html(
+            _warm_frames, _axis, _OPEN_ORDER
+        )
+        _embed_html(_html, height=_hgt)
+        st.caption(
+            f"{_n_warm} prewarmed frames served from disk at page "
+            f"open."
+        )
+    else:
+        st.info(
+            "Enter an airport in the sidebar and click **Render**. "
+            "(Instant-open view appears once the hub warmer has "
+            "built its first frames.)"
+        )
     st.markdown(
         """
         ### What this page is
