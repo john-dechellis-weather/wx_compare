@@ -349,38 +349,22 @@ def build_status_board(results, metar_rows):
             continue
         cands.sort(key=lambda c: c[0])
         rank, chip, color, period = cands[0]
-        rows.append((rank, icao, chip, color, period, e))
+        all_txt = " / ".join(c[1] for c in cands)
+        rows.append((rank, icao, chip, color, period, e, all_txt))
     rows.sort(key=lambda r: (r[0], r[1]))
     return rows
 
 
 def render_status_board(rows) -> str:
-    header = [
-        _th("ICAO"), _th("ALERT"), _th("VIS", align="right"),
-        _th("CIG", align="right"), _th("TS"),
-        _th("WIND", align="right"), _th("WORST PERIOD"),
-    ]
+    header = [_th("ICAO"), _th("ALERTS (worst-condition color)")]
     body = []
-    for rank, icao, chip, color, period, e in rows:
-        def dim(v):
-            return str(v) if v not in (None, "") else "-"
+    for rank, icao, chip, color, period, e, all_txt in rows:
         fg = ("#000000" if color in (_YELLOW, _ORANGE, _LT_RED)
               else _WHITE)
         body.append(
             "<tr>"
             + _td(icao, bold=True)
-            + _td(chip, bg=color, fg=fg, bold=True)
-            + _td(dim(e["vis"]), align="right")
-            + _td(dim(e["ceil"]), align="right")
-            + (_td(e["ts"],
-                   bg=(_RED if e["ts"].startswith("+")
-                       else _LT_RED),
-                   fg=(_WHITE if e["ts"].startswith("+")
-                       else "#000000"),
-                   bold=True)
-               if e["ts"] else _td("-"))
-            + _td(dim(e["wind"]), align="right")
-            + _td(period)
+            + _td(all_txt, bg=color, fg=fg, bold=True)
             + "</tr>"
         )
     return _table(header, body)
@@ -608,14 +592,15 @@ if run_button:
             return [int(h[k:k+2], 16) for k in (0, 2, 4)]
 
         alert_data = []
-        for rank, icao, chip, color, period, _e in board_rows:
+        for rank, icao, chip, color, period, _e, all_txt \
+                in board_rows:
             if icao not in coords:
                 continue
             la, lo = coords[icao]
             alert_data.append({
                 "lat": la, "lon": lo,
                 "color": _rgb(color) + [230],
-                "tip": f"{icao} | {chip} | {period}",
+                "tip": f"{icao} | {all_txt}",
             })
 
         bucket1 = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
