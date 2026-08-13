@@ -415,6 +415,9 @@ def _extract_moment(f, moment: bytes, newest_low: bool = False):
         [ray[4][moment][1] for ray in sweep], dtype=float
     )
     data = np.ma.masked_invalid(data)
+    if b"REF" in moment.upper():
+        # Suppress clear-air/light clutter: only >= 15 dBZ draws
+        data = np.ma.masked_less(data, 15.0)
     return az, rng_km, data
 
 
