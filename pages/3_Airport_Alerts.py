@@ -415,6 +415,65 @@ def cached_station_coords(icaos_tuple: tuple):
     return out
 
 
+# CONUS tile centers for fleet-wide position queries (each point
+# query covers ~250 nm; rows sized so circles overlap coast to
+# coast including Florida/Gulf)
+_FLEET_TILES = [
+    (26.5, -81.5), (26.5, -90.5), (26.5, -99.5),
+    (34.0, -118.0), (34.0, -109.0), (34.0, -100.0),
+    (34.0, -91.0), (34.0, -82.0), (34.0, -76.0),
+    (41.5, -122.0), (41.5, -112.0), (41.5, -102.0),
+    (41.5, -92.0), (41.5, -82.0), (41.5, -73.0),
+]
+
+
+@st.cache_data(ttl=60, show_spinner=False, max_entries=2)
+def cached_fleet(bucket: str):
+    """All airborne JBU over CONUS via tiled point queries,
+    deduped by callsign; plus route strings where known."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from core.flights import fetch_positions_near, fetch_routes
+
+    seen = {}
+
+    def one(tile):
+        try:
+            return fetch_positions_near(tile[0], tile[1],
+                                        radius_deg=4.1)
+        except Exception:
+            return []
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        for planes in pool.map(one, _FLEET_TILES):
+            for p in planes:
+                if p.callsign and p.callsign not in seen:
+                    seen[p.callsign] = p
+
+    routes = {}
+    try:
+        routes = fetch_routes(list(seen.values())) or {}
+    except Exception:
+        pass
+
+    out = []
+    for cs, p in seen.items():
+        r = routes.get(cs) or {}
+        label = r.get("label") or (
+            f"{r.get('orig', '?')}-{r.get('dest', '?')}"
+            if r.get("orig") or r.get("dest") else "route n/a"
+        )
+        alt = (f"FL{int(p.alt_ft // 100):03d}"
+               if p.alt_ft and p.alt_ft >= 18000
+               else (f"{int(p.alt_ft):,} ft" if p.alt_ft
+                     else "alt n/a"))
+        out.append({
+            "callsign": cs, "lat": p.lat, "lon": p.lon,
+            "tip": f"{cs} | {label} | {alt}",
+        })
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Cached analysis — TAFs update every 6 hours; 15-min cache is fresh enough
 # ---------------------------------------------------------------------------
@@ -536,77 +595,103 @@ if run_button:
             metar_rows = []
             st.warning(f"METAR fetch failed: {e}")
 
-    # Interactive alert map: zoomable CONUS, one colored dot per
-    # alerting airport, hover for the driving condition.
+    # Interactive CONUS map: alert dots (chip colors) + live JBU
+    # fleet (blue, callsign-labeled, hover for route/altitude).
     board_rows = build_status_board(results, metar_rows)
-    if board_rows:
+    try:
+        import pydeck as pdk
+
+        coords = cached_station_coords(tuple(JETBLUE_ICAOS))
+
+        def _rgb(hexc):
+            h = hexc.lstrip("#")
+            return [int(h[k:k+2], 16) for k in (0, 2, 4)]
+
+        alert_data = []
+        for rank, icao, chip, color, period, _e in board_rows:
+            if icao not in coords:
+                continue
+            la, lo = coords[icao]
+            alert_data.append({
+                "lat": la, "lon": lo,
+                "color": _rgb(color) + [230],
+                "tip": f"{icao} | {chip} | {period}",
+            })
+
+        bucket1 = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
         try:
-            import pydeck as pdk
+            fleet = cached_fleet(bucket1)
+        except Exception:
+            fleet = []
 
-            coords = cached_station_coords(tuple(JETBLUE_ICAOS))
+        city_data = [
+            {"name": n, "lat": la, "lon": lo}
+            for n, la, lo in _MAP_CITIES
+        ]
+        layers = [
+            pdk.Layer(
+                "ScatterplotLayer", data=city_data,
+                get_position="[lon, lat]",
+                get_fill_color=[120, 120, 120, 180],
+                get_radius=6000, radius_min_pixels=2,
+                radius_max_pixels=4,
+            ),
+            pdk.Layer(
+                "TextLayer", data=city_data,
+                get_position="[lon, lat]",
+                get_text="name", get_size=11,
+                get_color=[90, 90, 90, 200],
+                get_text_anchor='"start"',
+                get_pixel_offset=[6, 0],
+            ),
+        ]
+        if fleet:
+            layers.append(pdk.Layer(
+                "ScatterplotLayer", data=fleet,
+                get_position="[lon, lat]",
+                get_fill_color=[0, 90, 220, 230],
+                get_radius=12000, radius_min_pixels=4,
+                radius_max_pixels=9, stroked=True,
+                get_line_color=[255, 255, 255],
+                line_width_min_pixels=1, pickable=True,
+            ))
+            layers.append(pdk.Layer(
+                "TextLayer", data=fleet,
+                get_position="[lon, lat]",
+                get_text="callsign", get_size=9,
+                get_color=[0, 70, 190, 230],
+                get_text_anchor='"start"',
+                get_pixel_offset=[7, -7],
+            ))
+        if alert_data:
+            layers.append(pdk.Layer(
+                "ScatterplotLayer", data=alert_data,
+                get_position="[lon, lat]",
+                get_fill_color="color",
+                get_radius=28000,
+                radius_min_pixels=6, radius_max_pixels=22,
+                stroked=True, get_line_color=[0, 0, 0],
+                line_width_min_pixels=1.5, pickable=True,
+            ))
 
-            def _rgb(hexc):
-                h = hexc.lstrip("#")
-                return [int(h[k:k+2], 16) for k in (0, 2, 4)]
-
-            data = []
-            for rank, icao, chip, color, period, _e in board_rows:
-                if icao not in coords:
-                    continue
-                la, lo = coords[icao]
-                data.append({
-                    "icao": icao, "lat": la, "lon": lo,
-                    "color": _rgb(color) + [230],
-                    "alert": chip, "period": period,
-                })
-            if data:
-                city_data = [
-                    {"name": n, "lat": la, "lon": lo}
-                    for n, la, lo in _MAP_CITIES
-                ]
-                city_layer = pdk.Layer(
-                    "TextLayer", data=city_data,
-                    get_position="[lon, lat]",
-                    get_text="name", get_size=11,
-                    get_color=[90, 90, 90, 200],
-                    get_text_anchor='"start"',
-                    get_pixel_offset=[6, 0],
-                )
-                city_dots = pdk.Layer(
-                    "ScatterplotLayer", data=city_data,
-                    get_position="[lon, lat]",
-                    get_fill_color=[120, 120, 120, 180],
-                    get_radius=6000, radius_min_pixels=2,
-                    radius_max_pixels=4,
-                )
-                layer = pdk.Layer(
-                    "ScatterplotLayer", data=data,
-                    get_position="[lon, lat]",
-                    get_fill_color="color",
-                    get_radius=28000,
-                    radius_min_pixels=6, radius_max_pixels=22,
-                    stroked=True, get_line_color=[0, 0, 0],
-                    line_width_min_pixels=1.5, pickable=True,
-                )
-                _l, map_col, _r = st.columns([1, 2, 1])
-                with map_col:
-                    st.pydeck_chart(pdk.Deck(
-                        layers=[city_dots, city_layer, layer],
-                        initial_view_state=pdk.ViewState(
-                            latitude=38.8, longitude=-96.5,
-                            zoom=3.0, min_zoom=2.9, max_zoom=11,
-                        ),
-                        map_style="light",
-                        tooltip={"html": "<b>{icao}</b> - {alert} "
-                                         "- {period}"},
-                    ), height=660)
-                    st.caption(
-                        "Zoom/pan; hover a dot for the driving "
-                        "condition. Dot color = ALERT-chip "
-                        "severity."
-                    )
-        except Exception as e:
-            st.caption(f"Alert map unavailable: {e}")
+        _l, map_col, _r = st.columns([1, 2, 1])
+        with map_col:
+            st.pydeck_chart(pdk.Deck(
+                layers=layers,
+                initial_view_state=pdk.ViewState(
+                    latitude=38.8, longitude=-96.5,
+                    zoom=3.0, min_zoom=2.9, max_zoom=11,
+                ),
+                map_style="light",
+                tooltip={"html": "<b>{tip}</b>"},
+            ), height=660)
+            st.caption(
+                f"Alert dots in chip colors; {len(fleet)} JBU "
+                "airborne (blue, ~60s refresh). Hover anything "
+                "for details."
+            )
+    except Exception as e:
+        st.caption(f"Map unavailable: {e}")
 
     col_taf, col_metar = st.columns(2, gap="medium")
 
