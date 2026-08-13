@@ -81,22 +81,23 @@ _WHITE = "#FFFFFF"
 _FONT = "'Courier New', Courier, monospace"
 
 
-def _td(text, bg=_BLACK, fg=_WHITE, bold=False, align="left") -> str:
+def _td(text, bg="#FFFFFF", fg="#000000", bold=False,
+        align="left") -> str:
     weight = "bold" if bold else "normal"
     return (
         f'<td style="background-color:{bg}; color:{fg}; -webkit-text-fill-color:{fg}; '
         f"font-family:{_FONT}; font-size:11px; padding:3px 10px; "
-        f"border:1px solid {_GREEN}; font-weight:{weight}; "
+        f"border:1px solid {_WHITE}; font-weight:{weight}; "
         f'text-align:{align}; white-space:nowrap;">{text}</td>'
     )
 
 
 def _th(text, align="left") -> str:
     return (
-        f'<td style="background-color:{_BLACK}; color:{_WHITE}; '
-        f"-webkit-text-fill-color:{_WHITE}; "
+        f'<td style="background-color:#FFFFFF; color:#000000; '
+        f"-webkit-text-fill-color:#000000; "
         f"font-family:{_FONT}; font-size:11px; padding:4px 10px; "
-        f"border:1px solid {_GREEN}; font-weight:bold; "
+        f"border:1px solid {_WHITE}; font-weight:bold; "
         f'text-align:{align}; text-decoration:underline; '
         f'white-space:nowrap;">{text}</td>'
     )
@@ -104,8 +105,8 @@ def _th(text, align="left") -> str:
 
 def _table(header_cells: list[str], body_rows: list[str]) -> str:
     return (
-        f'<table style="border-collapse:collapse; background-color:{_BLACK}; '
-        f'border:2px solid {_GREEN}; width:100%;">'
+        f'<table style="border-collapse:collapse; background-color:#FFFFFF; '
+        f'border:2px solid {_WHITE}; width:100%;">'
         f"<tr>{''.join(header_cells)}</tr>"
         f"{''.join(body_rows)}"
         f"</table>"
@@ -114,8 +115,8 @@ def _table(header_cells: list[str], body_rows: list[str]) -> str:
 
 def _no_alerts() -> str:
     return (
-        f'<div style="background-color:{_BLACK}; border:2px solid {_GREEN}; '
-        f"color:{_WHITE}; -webkit-text-fill-color:{_WHITE}; font-family:{_FONT}; font-size:11px; "
+        f'<div style="background-color:#FFFFFF; border:2px solid {_WHITE}; '
+        f"color:#000000; -webkit-text-fill-color:#000000; font-family:{_FONT}; font-size:11px; "
         f'padding:6px 10px;">NO AIRPORTS FLAGGED</div>'
     )
 
@@ -362,15 +363,11 @@ def render_status_board(rows) -> str:
         _th("ICAO"), _th("ALERT"), _th("VIS", align="right"),
         _th("CIG", align="right"), _th("TS"),
         _th("WIND", align="right"), _th("WORST PERIOD"),
-        _th("CURRENT METAR"),
     ]
     body = []
     for rank, icao, chip, color, period, e in rows:
         def dim(v):
             return str(v) if v not in (None, "") else "-"
-        raw = e["raw"]
-        if len(raw) > 70:
-            raw = raw[:67] + "..."
         fg = "#000000" if color in (_YELLOW, _ORANGE) else _WHITE
         body.append(
             "<tr>"
@@ -381,7 +378,6 @@ def render_status_board(rows) -> str:
             + _td(dim(e["ts"]))
             + _td(dim(e["wind"]), align="right")
             + _td(period)
-            + _td((e["obs"] + " " + raw).strip() if raw else "-")
             + "</tr>"
         )
     return _table(header, body)
@@ -508,26 +504,41 @@ if run_button:
             metar_rows = []
             st.warning(f"METAR fetch failed: {e}")
 
-    st.subheader("Airport status board")
-    st.caption(
-        "One row per alerting airport, worst first. ALERT chip = "
-        "the driving condition (magenta severe / red / "
-        "yellow-orange advisory). CURRENT METAR appears when the "
-        "latest ob also breaches thresholds."
-    )
-    if not tsra_enabled:
-        st.caption("TSRA alerts disabled in sidebar.")
-    board_rows = build_status_board(results, metar_rows)
-    if board_rows:
-        st.markdown(render_status_board(board_rows),
-                    unsafe_allow_html=True)
-        n_sev = sum(1 for r in board_rows if r[0] == 0)
+    col_taf, col_metar = st.columns(2, gap="medium")
+
+    with col_taf:
+        st.subheader("TAF alerts")
         st.caption(
-            f"{len(board_rows)} airports alerting"
-            + (f" | {n_sev} severe" if n_sev else "")
+            "Forecast to breach thresholds - worst first. Chip = "
+            "driving condition (magenta severe / red / "
+            "yellow-orange advisory)."
         )
-    else:
-        st.markdown(_no_alerts(), unsafe_allow_html=True)
+        if not tsra_enabled:
+            st.caption("TSRA alerts disabled in sidebar.")
+        board_rows = build_status_board(results, metar_rows)
+        if board_rows:
+            st.markdown(render_status_board(board_rows),
+                        unsafe_allow_html=True)
+            n_sev = sum(1 for r in board_rows if r[0] == 0)
+            st.caption(
+                f"{len(board_rows)} airports alerting"
+                + (f" | {n_sev} severe" if n_sev else "")
+            )
+        else:
+            st.markdown(_no_alerts(), unsafe_allow_html=True)
+
+    with col_metar:
+        st.subheader("Current METARs at/beyond thresholds")
+        st.caption(
+            f"Latest ob per station - vis < {vis_threshold:g} sm, "
+            f"cig < {ceiling_threshold} ft, wind >= "
+            f"{wind_threshold} kt. Red cell = breaching value."
+        )
+        if metar_rows:
+            st.markdown(render_metar_table(metar_rows),
+                        unsafe_allow_html=True)
+        else:
+            st.markdown(_no_alerts(), unsafe_allow_html=True)
 
     # TAF unavailable + parse errors — smaller notes at bottom
     st.divider()
