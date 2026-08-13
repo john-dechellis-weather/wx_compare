@@ -194,6 +194,9 @@ def parse_l3(raw: bytes):
             return m if np.isfinite(m) else -1.0
         arr = max((arr[i] for i in range(arr.shape[0])), key=_plane_score)
     data = np.ma.masked_invalid(arr)
+    if product == "REF":
+        # Suppress clear-air/light clutter: only >= 15 dBZ draws
+        data = np.ma.masked_less(data, 15.0)
     meta = {
         "site_lat": float(f.lat),
         "site_lon": float(f.lon),
