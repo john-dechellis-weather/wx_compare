@@ -888,6 +888,28 @@ if active_icao:
     now = datetime.now(timezone.utc)
     st.info(f"Station: **{icao}** · as of **{now:%Y-%m-%d %H:%M UTC}**")
 
+    # --- METAR ---
+    st.subheader("Current METAR" if n_metars == 1 else
+                 f"METARs (last {n_metars})")
+    # Hourly obs + specials: n+4 hours of lookback comfortably covers n obs.
+    with st.spinner("Fetching METARs..."):
+        obs_list = cached_metar_history(icao, hours_back=n_metars + 4)
+    if obs_list:
+        recent = obs_list[-n_metars:][::-1]  # newest first
+        st.markdown(
+            wx_colored_box([o.raw_text for o in recent]),
+            unsafe_allow_html=True,
+        )
+        latest = recent[0]
+        age_min = int((now - latest.obs_time).total_seconds() // 60)
+        st.caption(
+            f"Latest observed {latest.obs_time:%H:%MZ} ({age_min} min ago)"
+            + ("" if len(recent) == 1 else
+               f" · showing {len(recent)} obs, newest first")
+        )
+    else:
+        st.warning("No recent METAR found.")
+
     # --- Radar ---
     st.subheader("Live Radar")
     radar_site = radar_override or RADAR_FOR_AIRPORT.get(icao, "")
@@ -1068,28 +1090,6 @@ if active_icao:
                     st.caption("No echo tops frames returned.")
 
         _radar_deck(**_deck_kwargs)
-
-    # --- METAR ---
-    st.subheader("Current METAR" if n_metars == 1 else
-                 f"METARs (last {n_metars})")
-    # Hourly obs + specials: n+4 hours of lookback comfortably covers n obs.
-    with st.spinner("Fetching METARs..."):
-        obs_list = cached_metar_history(icao, hours_back=n_metars + 4)
-    if obs_list:
-        recent = obs_list[-n_metars:][::-1]  # newest first
-        st.markdown(
-            wx_colored_box([o.raw_text for o in recent]),
-            unsafe_allow_html=True,
-        )
-        latest = recent[0]
-        age_min = int((now - latest.obs_time).total_seconds() // 60)
-        st.caption(
-            f"Latest observed {latest.obs_time:%H:%MZ} ({age_min} min ago)"
-            + ("" if len(recent) == 1 else
-               f" · showing {len(recent)} obs, newest first")
-        )
-    else:
-        st.warning("No recent METAR found.")
 
     # --- TAF ---
     st.subheader("Current TAF")
