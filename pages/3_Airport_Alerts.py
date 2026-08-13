@@ -407,20 +407,40 @@ def build_map_markers(board_rows, metar_rows, coords):
 
 
 def render_status_board(rows) -> str:
-    # Yellow is unreadable as text on white; display-darken it.
+    """TAF board at ~2x scale: 16px cells, generous padding, and
+    bold text whenever the severity is red or magenta."""
     _TEXT_COLOR = {_YELLOW: "#B8860B", _ORANGE: "#CC6600",
                    _LT_RED: "#E05555"}
-    header = [_th("ICAO"), _th("ALERTS")]
+
+    def cell(text, fg="#000000", bold=False, header=False):
+        w = "bold" if (bold or header) else "normal"
+        deco = "text-decoration:underline;" if header else ""
+        return (
+            f'<td style="background-color:#FFFFFF; color:{fg}; '
+            f"-webkit-text-fill-color:{fg}; font-family:{_FONT}; "
+            f"font-size:16px; padding:6px 16px; "
+            f"border:1px solid #000000; font-weight:{w}; {deco}"
+            f'white-space:nowrap;">{text}</td>'
+        )
+
+    header_row = ("<tr>" + cell("ICAO", header=True)
+                  + cell("ALERTS", header=True) + "</tr>")
     body = []
     for rank, icao, chip, color, period, e, all_txt in rows:
         fg = _TEXT_COLOR.get(color, color)
+        hot = color in (_RED, _MAGENTA)
         body.append(
             "<tr>"
-            + _td(icao, bold=True)
-            + _td(all_txt, fg=fg, bold=True)
+            + cell(icao, bold=True)
+            + cell(all_txt, fg=fg, bold=hot)
             + "</tr>"
         )
-    return _table(header, body, full_width=False)
+    return (
+        f'<table style="border-collapse:collapse; '
+        f'background-color:#FFFFFF; border:2px solid {_WHITE}; '
+        f'width:auto;">'
+        f"{header_row}{''.join(body)}</table>"
+    )
 
 
 # ---------------------------------------------------------------------------
