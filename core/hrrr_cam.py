@@ -58,13 +58,19 @@ PRODUCT_LABELS = {
 }
 
 # For idx-based fetching: (grib var name, level substring to match)
+# Each product maps to one or more (var, level_substring)
+# alternatives, tried in order - different products spell the same
+# field differently (e.g. hourly-max 1 km reflectivity is MAXREF in
+# NCEP indexes; NBM may use either spelling).
 IDX_MATCHERS = {
-    "REFD": ("REFD", "1000 m above ground"),
-    "REFC": ("REFC", "entire atmosphere"),
-    "RETOP": ("RETOP", ""),
-    "VIS": ("VIS", "surface"),
-    "CEIL": ("HGT", "cloud ceiling"),
-    "GUST": ("GUST", "surface"),
+    "REFD": [("REFD", "1000 m above ground"),
+             ("MAXREF", "1000 m above ground"),
+             ("MAXREF", "")],
+    "REFC": [("REFC", "entire atmosphere")],
+    "RETOP": [("RETOP", "")],
+    "VIS": [("VIS", "surface")],
+    "CEIL": [("HGT", "cloud ceiling")],
+    "GUST": [("GUST", "surface")],
 }
 
 MODELS = {
@@ -106,6 +112,30 @@ MODELS = {
         "max_fhr": 48,
         "products": {"REFD", "REFC", "VIS", "CEIL", "GUST"},
         "note": "retires Oct 2026 (replaced by RRFS)",
+    },
+    "nbm": {
+        "label": "NBM Blend",
+        "mechanism": "idx",
+        # NBM v5 core files carry hourly-max 1 km AGL simulated
+        # reflectivity (new in v5, operational May 2026). AWS mirror
+        # first - its .idx sidecars are reliable; NOMADS prod
+        # trails.
+        "idx_candidates": [
+            ("https://noaa-nbm-grib2-pds.s3.amazonaws.com/"
+             "blend.{ymd}/{cc:02d}/core/blend.t{cc:02d}z.core"
+             ".f{ff:03d}.co.grib2.idx"),
+            (f"{NOMADS}/pub/data/nccf/com/blend/prod/"
+             "blend.{ymd}/{cc:02d}/core/blend.t{cc:02d}z.core"
+             ".f{ff:03d}.co.grib2.idx"),
+        ],
+        "idx": (f"{NOMADS}/pub/data/nccf/com/blend/prod/"
+                "blend.{ymd}/{cc:02d}/core/blend.t{cc:02d}z.core"
+                ".f{ff:03d}.co.grib2.idx"),
+        "cycles": list(range(24)),
+        "max_fhr": 36,
+        "products": {"REFD", "RETOP", "VIS", "CEIL", "GUST"},
+        "note": ("NBM v5 blend, 2.5 km; reflectivity is the "
+                 "HOURLY MAX at 1 km AGL (no composite)"),
     },
     "rrfs": {
         "label": "RRFS",
@@ -339,28 +369,33 @@ def _fetch_field_idx(cfg: dict, product: str, cycle, fhr: int) -> bytes:
     r = requests.get(idx_url, headers=_HEADERS, timeout=30)
     r.raise_for_status()
 
-    var_name, lev_sub = IDX_MATCHERS[product]
+    matchers = IDX_MATCHERS[product]
     lines = r.text.splitlines()
     start = end = None
-    for i, line in enumerate(lines):
-        # "n:offset:d=YYYYMMDDHH:VAR:LEVEL:fcst:..."
-        parts = line.split(":")
-        if len(parts) < 5:
-            continue
-        if parts[3] == var_name and lev_sub in parts[4].lower():
-            start = int(parts[1])
-            for nxt in lines[i + 1:]:
-                p2 = nxt.split(":")
-                if len(p2) >= 2:
-                    end = int(p2[1]) - 1
-                    break
+    for var_name, lev_sub in matchers:
+        for i, line in enumerate(lines):
+            # "n:offset:d=YYYYMMDDHH:VAR:LEVEL:fcst:..."
+            parts = line.split(":")
+            if len(parts) < 5:
+                continue
+            if (parts[3] == var_name
+                    and lev_sub in parts[4].lower()):
+                start = int(parts[1])
+                for nxt in lines[i + 1:]:
+                    p2 = nxt.split(":")
+                    if len(p2) >= 2:
+                        end = int(p2[1]) - 1
+                        break
+                break
+        if start is not None:
             break
     if start is None:
         available = sorted({
             p[3] for p in (l.split(":") for l in lines) if len(p) > 3
         })
+        wanted = "/".join(v for v, _l in matchers)
         raise RuntimeError(
-            f"{cfg['label']}: {var_name} ({lev_sub or 'any level'}) "
+            f"{cfg['label']}: {wanted} "
             f"not in index. Vars present: {', '.join(available[:25])}"
         )
     headers = {**_HEADERS,
