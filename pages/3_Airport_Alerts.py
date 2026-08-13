@@ -511,41 +511,47 @@ def cached_fleet(bucket: str):
         return (f"https://api.airplanes.live/v2/point/"
                 f"{la:.2f}/{lo:.2f}/246")
 
+    HOSTS = ("adsb.lol", "adsb.fi", "airplanes.live")
+
     def one(args):
         idx, (la, lo) = args
-        # Round-robin hosts so no single aggregator sees more than
-        # ~5 calls (15 on one host rate-limited and silently
-        # amputated the western half of the fleet: 7/15 coverage)
-        url = _url(idx % 3, la, lo)
-        for attempt in (0, 1):
+        # Assigned host round-robin, FAILING OVER to the other two:
+        # a tile only goes dark if all three aggregators refuse it.
+        # Verdicts are recorded so gaps name their culprit.
+        verdicts = []
+        for k in range(3):
+            hi = (idx + k) % 3
+            url = _url(hi, la, lo)
             try:
                 r = _rq.get(url, headers=HDRS, timeout=4)
-                if r.status_code == 200:
-                    out = []
-                    for p in r.json().get("ac", []):
-                        cs = (p.get("flight") or "").strip()
-                        if not cs.upper().startswith("JBU"):
-                            continue
-                        if p.get("lat") is None:
-                            continue
-                        alt = p.get("alt_baro")
-                        out.append((cs, float(p["lat"]),
-                                    float(p["lon"]),
-                                    alt if isinstance(
-                                        alt, (int, float))
-                                    else None))
-                    return out
-            except Exception:
-                pass
-            if attempt == 0:
-                _time.sleep(0.35)
-        return None
+            except Exception as e:
+                verdicts.append(f"{HOSTS[hi]}:{type(e).__name__}")
+                continue
+            if r.status_code != 200:
+                verdicts.append(f"{HOSTS[hi]}:HTTP{r.status_code}")
+                _time.sleep(0.25)
+                continue
+            out = []
+            for p in r.json().get("ac", []):
+                cs = (p.get("flight") or "").strip()
+                if not cs.upper().startswith("JBU"):
+                    continue
+                if p.get("lat") is None:
+                    continue
+                alt = p.get("alt_baro")
+                out.append((cs, float(p["lat"]), float(p["lon"]),
+                            alt if isinstance(alt, (int, float))
+                            else None))
+            return out, None
+        return None, f"({la:.0f},{lo:.0f}) " + " -> ".join(verdicts)
 
     seen = {}
     ok = 0
+    fails = []
     with ThreadPoolExecutor(max_workers=3) as pool:
-        for res in pool.map(one, enumerate(_FLEET_TILES)):
+        for res, fail in pool.map(one, enumerate(_FLEET_TILES)):
             if res is None:
+                fails.append(fail)
                 continue
             ok += 1
             for cs, la, lo, alt in res:
@@ -561,7 +567,7 @@ def cached_fleet(bucket: str):
             "callsign": cs, "lat": la, "lon": lo,
             "tip": f"{cs} | {alt_s}",
         })
-    return out, ok, len(_FLEET_TILES)
+    return out, ok, len(_FLEET_TILES), fails
 
 # ---------------------------------------------------------------------------
 # Cached analysis — TAFs update every 6 hours; 15-min cache is fresh enough
@@ -704,9 +710,10 @@ if run_button:
 
         bucket1 = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
         try:
-            fleet, ok_tiles, n_tiles = cached_fleet(bucket1)
+            fleet, ok_tiles, n_tiles, tile_fails = \
+                cached_fleet(bucket1)
         except Exception:
-            fleet, ok_tiles, n_tiles = [], 0, 0
+            fleet, ok_tiles, n_tiles, tile_fails = [], 0, 0, []
 
         # No custom city layer: the light basemap already labels
         # major cities at these zooms (ours doubled them)
@@ -797,6 +804,39 @@ if run_button:
             )
         else:
             st.caption(f"Map unavailable: {_map_err}")
+
+    if tile_fails:
+        with st.expander(
+            f"Fleet coverage report - {len(tile_fails)} tile(s) "
+            f"failed all three hosts"
+        ):
+            for f in tile_fails:
+                st.text(f)
+    with st.expander("Route lookup probe (debug)"):
+        st.caption(
+            "Raw routeset response for up to 3 live callsigns - "
+            "paste this to Claude to finish the destination-"
+            "warning feature."
+        )
+        if st.button("Probe routes", key="route_probe"):
+            try:
+                import json as _json
+
+                import requests as _rq2
+                sample = fleet[:3]
+                payload = {"planes": [
+                    {"callsign": d["callsign"], "lat": d["lat"],
+                     "lng": d["lon"]} for d in sample
+                ]}
+                rr = _rq2.post(
+                    "https://api.adsb.lol/api/0/routeset",
+                    json=payload, timeout=8,
+                    headers={"User-Agent": "bluemet.org"},
+                )
+                st.text(f"HTTP {rr.status_code}")
+                st.code(_json.dumps(rr.json(), indent=1)[:3000])
+            except Exception as e:
+                st.text(f"probe failed: {type(e).__name__}: {e}")
 
     _ml, mid_col, _mr = st.columns([1, 2, 1])
     with mid_col:
