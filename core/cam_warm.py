@@ -35,11 +35,10 @@ HUBS = {
 WARM_ZOOM = 2.5
 WARM_PRODUCT = "REFD"
 WARM_HOURS = list(range(0, 13))
-# HRRR only: its hub fetches are small filter subregions. The idx
-# models decode full-CONUS grids, and warming several concurrently
-# inside the web process can OOM a small instance (-> 502 crash
-# loop). Re-expand only with instance headroom.
-WARM_MODELS = ["hrrr"]
+# HRRR + NBM. Crop-at-decode (added after the second OOM incident)
+# shrinks every decoded field to the hub window before it lingers,
+# so the blend's big grid is safe to warm on the small instance.
+WARM_MODELS = ["hrrr", "nbm"]
 CHECK_INTERVAL_S = 600
 
 _started = False
