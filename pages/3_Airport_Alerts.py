@@ -87,7 +87,7 @@ def _td(text, bg="#FFFFFF", fg="#000000", bold=False,
     return (
         f'<td style="background-color:{bg}; color:{fg}; -webkit-text-fill-color:{fg}; '
         f"font-family:{_FONT}; font-size:11px; padding:3px 10px; "
-        f"border:1px solid {_WHITE}; font-weight:{weight}; "
+        f"border:1px solid #000000; font-weight:{weight}; "
         f'text-align:{align}; white-space:nowrap;">{text}</td>'
     )
 
@@ -97,7 +97,7 @@ def _th(text, align="left") -> str:
         f'<td style="background-color:#FFFFFF; color:#000000; '
         f"-webkit-text-fill-color:#000000; "
         f"font-family:{_FONT}; font-size:11px; padding:4px 10px; "
-        f"border:1px solid {_WHITE}; font-weight:bold; "
+        f"border:1px solid #000000; font-weight:bold; "
         f'text-align:{align}; text-decoration:underline; '
         f'white-space:nowrap;">{text}</td>'
     )
@@ -278,6 +278,7 @@ def cached_current_metars(
 _MAGENTA = "#FF00FF"
 _YELLOW = "#FFFF00"
 _ORANGE = "#FF9900"
+_LT_YELLOW = "#FFF8B0"   # TSRA highlight
 
 
 def _wind_max_kt(wind_str: str):
@@ -340,7 +341,7 @@ def build_status_board(results, metar_rows):
             col = (_MAGENTA, _RED, _YELLOW)[tier]
             cands.append((tier, f"CIG {c}", col, e["ceil_p"]))
         if e["ts"]:
-            cands.append((1, e["ts"], _RED, e["ts_p"]))
+            cands.append((1, e["ts"], _LT_YELLOW, e["ts_p"]))
         if e["wind"]:
             w = _wind_max_kt(e["wind"])
             if w is not None and w >= 40:
@@ -368,14 +369,17 @@ def render_status_board(rows) -> str:
     for rank, icao, chip, color, period, e in rows:
         def dim(v):
             return str(v) if v not in (None, "") else "-"
-        fg = "#000000" if color in (_YELLOW, _ORANGE) else _WHITE
+        fg = ("#000000" if color in (_YELLOW, _ORANGE, _LT_YELLOW)
+              else _WHITE)
         body.append(
             "<tr>"
             + _td(icao, bold=True)
             + _td(chip, bg=color, fg=fg, bold=True)
             + _td(dim(e["vis"]), align="right")
             + _td(dim(e["ceil"]), align="right")
-            + _td(dim(e["ts"]))
+            + (_td(e["ts"], bg=_LT_YELLOW, fg="#000000",
+                   bold=True)
+               if e["ts"] else _td("-"))
             + _td(dim(e["wind"]), align="right")
             + _td(period)
             + "</tr>"
