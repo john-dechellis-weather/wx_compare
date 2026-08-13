@@ -33,7 +33,7 @@ RADAR_WARM_HUBS = {
 # Bump when radar RENDERING changes (thresholds, colormaps): a
 # mismatch forces immediate re-warm instead of stale frames aging
 # out over half an hour.
-STYLE_V = 4
+STYLE_V = 5
 
 WARM_ZOOM = 1.5
 WARM_PRODUCTS = ["REF", "ET"]
@@ -97,6 +97,7 @@ def _warm_hub_product(cache_root: Path, icao: str, product: str,
             png, geom = render_l3(
                 parsed, product, lat, lon, WARM_ZOOM, site,
                 title_note=name, return_geometry=True,
+                mark_center=True,
             )
         except Exception:
             continue

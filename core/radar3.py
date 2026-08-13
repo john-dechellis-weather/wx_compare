@@ -291,6 +291,9 @@ def render_l3(
     others_trails=None,         # {callsign: [(lat, lon), ...]}
     routes=None,                # {callsign: {"orig", "dest", "label"}}
     return_geometry: bool = False,   # also return px<->deg mapping
+    mark_center: bool = False,  # blue ring at the center point
+                                # (airport on Quick View; OFF on the
+                                # Tracker where center is an aircraft)
 ):
     import matplotlib
     matplotlib.use("Agg")
@@ -381,6 +384,39 @@ def render_l3(
         ax.add_feature(states, linewidth=0.5, zorder=3)
     except Exception:
         pass
+    if mark_center:
+        try:
+            # Blue ring at the field + geographically true 20 nm
+            # range ring (1 nm = 1/60 deg latitude; longitude
+            # stretched by cos(lat) so the ring stays circular on
+            # the earth, not the screen).
+            ax.plot(
+                center_lon, center_lat, marker="o", markersize=9,
+                markerfacecolor="none", markeredgecolor="#0055FF",
+                markeredgewidth=2.2, zorder=5,
+                transform=ccrs.PlateCarree(),
+            )
+            ring_nm = 20.0
+            r_lat = ring_nm / 60.0
+            th = np.linspace(0, 2 * np.pi, 121)
+            ring_lats = center_lat + r_lat * np.cos(th)
+            ring_lons = center_lon + (
+                r_lat * np.sin(th)
+                / np.cos(np.radians(center_lat))
+            )
+            ax.plot(
+                ring_lons, ring_lats, color="#0055FF",
+                linewidth=1.2, linestyle="--", alpha=0.85,
+                zorder=5, transform=ccrs.PlateCarree(),
+            )
+            ax.text(
+                center_lon, center_lat + r_lat, " 20 nm",
+                fontsize=6.5, color="#0055FF", va="bottom",
+                ha="center", zorder=5,
+                transform=ccrs.PlateCarree(),
+            )
+        except Exception:
+            pass
     try:
         _plot_cities(
             ax,
