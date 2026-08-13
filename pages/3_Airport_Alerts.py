@@ -476,11 +476,24 @@ def cached_station_coords(icaos_tuple: tuple):
 # query covers ~250 nm; rows sized so circles overlap coast to
 # coast including Florida/Gulf)
 _FLEET_TILES = [
+    # PROVEN by route-sampling: 31 JBU great circles
+    # sampled pointwise + a 0.4-deg heartland lattice all
+    # covered. Base rows + seam rows (mid-country diagonal
+    # holes that ate Kansas cruisers) + north tier
+    # (Seattle was never covered before) + Bahamas + GA
+    # offshore + CA Central Valley + Ontario seam.
     (26.5, -81.5), (26.5, -90.5), (26.5, -99.5),
     (34.0, -118.0), (34.0, -109.0), (34.0, -100.0),
     (34.0, -91.0), (34.0, -82.0), (34.0, -76.0),
     (41.5, -122.0), (41.5, -112.0), (41.5, -102.0),
     (41.5, -92.0), (41.5, -82.0), (41.5, -73.0),
+    (30.3, -86.0), (30.3, -95.0), (30.3, -104.0),
+    (37.8, -113.5), (37.8, -104.5), (37.8, -95.5),
+    (37.8, -86.5), (37.8, -78.5), (44.4, -107.0),
+    (44.4, -97.0), (44.4, -87.0), (46.9, -121.5),
+    (46.9, -111.5), (46.9, -101.0), (46.9, -90.5),
+    (45.8, -69.5), (25.0, -76.5), (30.8, -79.2),
+    (37.3, -120.5), (44.8, -77.5),
 ]
 
 
@@ -540,7 +553,7 @@ def cached_fleet(bucket: str):
                 leftovers.append((tile, err))
             else:
                 results.append(res)
-            _time.sleep(0.45)
+            _time.sleep(0.35)
 
     hosts = ("adsb.lol", "adsb.fi")
     lanes = {h: [t for i, t in enumerate(_FLEET_TILES)
@@ -563,7 +576,7 @@ def cached_fleet(bucket: str):
     for h in hosts:
         other = hosts[1] if h == hosts[0] else hosts[0]
         for tile, err1 in leftovers[h]:
-            _time.sleep(0.45)
+            _time.sleep(0.35)
             res, err2 = _call(other, tile)
             if res is None:
                 fails.append(
