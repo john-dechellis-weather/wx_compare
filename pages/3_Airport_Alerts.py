@@ -79,10 +79,12 @@ def _th(text, align="left") -> str:
     )
 
 
-def _table(header_cells: list[str], body_rows: list[str]) -> str:
+def _table(header_cells: list[str], body_rows: list[str],
+           full_width: bool = True) -> str:
+    w = "width:100%;" if full_width else "width:auto;"
     return (
         f'<table style="border-collapse:collapse; background-color:#FFFFFF; '
-        f'border:2px solid {_WHITE}; width:100%;">'
+        f'border:2px solid {_WHITE}; {w}">'
         f"<tr>{''.join(header_cells)}</tr>"
         f"{''.join(body_rows)}"
         f"</table>"
@@ -344,30 +346,33 @@ def build_status_board(results, metar_rows):
             elif w is not None and w >= 35:
                 cands.append((1, f"G{w}", _RED, e["wind_p"]))
             else:
-                cands.append((2, e["wind"], _ORANGE, e["wind_p"]))
+                wtxt = f"{w}KT" if w is not None else e["wind"]
+                cands.append((2, wtxt, _ORANGE, e["wind_p"]))
         if not cands:
             continue
         cands.sort(key=lambda c: c[0])
         rank, chip, color, period = cands[0]
-        all_txt = " / ".join(c[1] for c in cands)
+        all_txt = "/".join(c[1] for c in cands)
         rows.append((rank, icao, chip, color, period, e, all_txt))
     rows.sort(key=lambda r: (r[0], r[1]))
     return rows
 
 
 def render_status_board(rows) -> str:
-    header = [_th("ICAO"), _th("ALERTS (worst-condition color)")]
+    # Yellow is unreadable as text on white; display-darken it.
+    _TEXT_COLOR = {_YELLOW: "#B8860B", _ORANGE: "#CC6600",
+                   _LT_RED: "#E05555"}
+    header = [_th("ICAO"), _th("ALERTS")]
     body = []
     for rank, icao, chip, color, period, e, all_txt in rows:
-        fg = ("#000000" if color in (_YELLOW, _ORANGE, _LT_RED)
-              else _WHITE)
+        fg = _TEXT_COLOR.get(color, color)
         body.append(
             "<tr>"
             + _td(icao, bold=True)
-            + _td(all_txt, bg=color, fg=fg, bold=True)
+            + _td(all_txt, fg=fg, bold=True)
             + "</tr>"
         )
-    return _table(header, body)
+    return _table(header, body, full_width=False)
 
 
 # ---------------------------------------------------------------------------
