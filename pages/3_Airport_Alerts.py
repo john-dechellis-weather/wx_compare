@@ -748,15 +748,11 @@ if run_button:
     except Exception as e:
         _map_err = str(e)
 
-    col_taf, col_map = st.columns([1, 2], gap="medium")
+    col_taf, col_map, _col_r = st.columns([1, 2, 1],
+                                          gap="medium")
 
     with col_taf:
         st.subheader("TAF alerts")
-        st.caption(
-            "Forecast to breach thresholds - worst first. Chip = "
-            "driving condition (magenta severe / red / "
-            "yellow-orange advisory)."
-        )
         if not tsra_enabled:
             st.caption("TSRA alerts disabled in sidebar.")
         if board_rows:
