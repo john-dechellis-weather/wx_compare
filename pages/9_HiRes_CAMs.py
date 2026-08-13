@@ -338,7 +338,7 @@ if active:
             "lat": round(clat, 2), "lon": round(clon, 2),
             "zoom_deg": zoom,
         } for m, cyc, h in plan]
-        data = parallel_fetch_decode(tasks, max_workers=3)
+        data = parallel_fetch_decode(tasks, max_workers=2)
         prog.progress(0.5, text="Rendering frames...")
 
         # Phase 2: serial renders (matplotlib), with progress
