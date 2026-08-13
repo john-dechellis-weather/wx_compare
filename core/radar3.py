@@ -405,13 +405,13 @@ def render_l3(
                 / np.cos(np.radians(center_lat))
             )
             ax.plot(
-                ring_lons, ring_lats, color="#0055FF",
-                linewidth=1.2, linestyle="--", alpha=0.85,
+                ring_lons, ring_lats, color="#FFFFFF",
+                linewidth=4.8, linestyle="--", alpha=0.9,
                 zorder=5, transform=ccrs.PlateCarree(),
             )
             ax.text(
                 center_lon, center_lat + r_lat, " 20 nm",
-                fontsize=6.5, color="#0055FF", va="bottom",
+                fontsize=6.5, color="#FFFFFF", va="bottom",
                 ha="center", zorder=5,
                 transform=ccrs.PlateCarree(),
             )
