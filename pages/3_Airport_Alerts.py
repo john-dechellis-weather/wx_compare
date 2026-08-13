@@ -484,79 +484,100 @@ _FLEET_TILES = [
 ]
 
 
-@st.cache_data(ttl=60, show_spinner=False, max_entries=2)
+@st.cache_data(ttl=90, show_spinner=False, max_entries=2)
 def cached_fleet(bucket: str):
-    """All airborne JBU over CONUS via tiled point queries.
+    """All airborne JBU over CONUS.
 
-    Direct aggregator calls only - the shared fetch's OpenSky
-    fallback is a blocked host on Render, and 15 workers hammering
-    simultaneously rate-limited the API (which is why only the
-    first-answering region's flights appeared). Three workers,
-    short timeouts, one polite retry, no route lookups. Returns
-    (planes, ok_tiles, total_tiles) so coverage is honest."""
+    Field-measured reality (8/13 verdicts): airplanes.live 403s
+    every request from Render - dropped entirely. adsb.lol and
+    adsb.fi both 429 under burst load - so each gets ONE paced
+    sequential lane (~0.45s between calls, backoff-retry on 429),
+    with cross-host retry for stragglers. Slower (~5s cold, 90s
+    cached) but built to finish 15/15."""
+    import threading
     import time as _time
-    from concurrent.futures import ThreadPoolExecutor
 
     import requests as _rq
 
     HDRS = {"User-Agent": "bluemet.org ops dashboard"}
 
-    def _url(host_i, la, lo):
-        if host_i == 0:
+    def _url(host, la, lo):
+        if host == "adsb.lol":
             return (f"https://api.adsb.lol/v2/point/"
                     f"{la:.2f}/{lo:.2f}/246")
-        if host_i == 1:
-            return (f"https://opendata.adsb.fi/api/v2/lat/"
-                    f"{la:.2f}/lon/{lo:.2f}/dist/246")
-        return (f"https://api.airplanes.live/v2/point/"
-                f"{la:.2f}/{lo:.2f}/246")
+        return (f"https://opendata.adsb.fi/api/v2/lat/"
+                f"{la:.2f}/lon/{lo:.2f}/dist/246")
 
-    HOSTS = ("adsb.lol", "adsb.fi", "airplanes.live")
+    def _call(host, tile):
+        la, lo = tile
+        try:
+            r = _rq.get(_url(host, la, lo), headers=HDRS,
+                        timeout=5)
+        except Exception as e:
+            return None, f"{host}:{type(e).__name__}"
+        if r.status_code != 200:
+            return None, f"{host}:HTTP{r.status_code}"
+        out = []
+        for p in r.json().get("ac", []):
+            cs = (p.get("flight") or "").strip()
+            if not cs.upper().startswith("JBU"):
+                continue
+            if p.get("lat") is None:
+                continue
+            alt = p.get("alt_baro")
+            out.append((cs, float(p["lat"]), float(p["lon"]),
+                        alt if isinstance(alt, (int, float))
+                        else None))
+        return out, None
 
-    def one(args):
-        idx, (la, lo) = args
-        # Assigned host round-robin, FAILING OVER to the other two:
-        # a tile only goes dark if all three aggregators refuse it.
-        # Verdicts are recorded so gaps name their culprit.
-        verdicts = []
-        for k in range(3):
-            hi = (idx + k) % 3
-            url = _url(hi, la, lo)
-            try:
-                r = _rq.get(url, headers=HDRS, timeout=4)
-            except Exception as e:
-                verdicts.append(f"{HOSTS[hi]}:{type(e).__name__}")
-                continue
-            if r.status_code != 200:
-                verdicts.append(f"{HOSTS[hi]}:HTTP{r.status_code}")
-                _time.sleep(0.25)
-                continue
-            out = []
-            for p in r.json().get("ac", []):
-                cs = (p.get("flight") or "").strip()
-                if not cs.upper().startswith("JBU"):
-                    continue
-                if p.get("lat") is None:
-                    continue
-                alt = p.get("alt_baro")
-                out.append((cs, float(p["lat"]), float(p["lon"]),
-                            alt if isinstance(alt, (int, float))
-                            else None))
-            return out, None
-        return None, f"({la:.0f},{lo:.0f}) " + " -> ".join(verdicts)
+    def _lane(host, tiles, results, leftovers):
+        for tile in tiles:
+            res, err = _call(host, tile)
+            if res is None and "429" in (err or ""):
+                _time.sleep(1.3)
+                res, err = _call(host, tile)
+            if res is None:
+                leftovers.append((tile, err))
+            else:
+                results.append(res)
+            _time.sleep(0.45)
+
+    hosts = ("adsb.lol", "adsb.fi")
+    lanes = {h: [t for i, t in enumerate(_FLEET_TILES)
+                 if i % 2 == k] for k, h in enumerate(hosts)}
+    results: list = []
+    leftovers: dict = {h: [] for h in hosts}
+    threads = [
+        threading.Thread(target=_lane,
+                         args=(h, lanes[h], results,
+                               leftovers[h]))
+        for h in hosts
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Stragglers: one paced retry on the OTHER host
+    fails = []
+    for h in hosts:
+        other = hosts[1] if h == hosts[0] else hosts[0]
+        for tile, err1 in leftovers[h]:
+            _time.sleep(0.45)
+            res, err2 = _call(other, tile)
+            if res is None:
+                fails.append(
+                    f"({tile[0]:.0f},{tile[1]:.0f}) "
+                    f"{err1} -> {err2}"
+                )
+            else:
+                results.append(res)
 
     seen = {}
-    ok = 0
-    fails = []
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        for res, fail in pool.map(one, enumerate(_FLEET_TILES)):
-            if res is None:
-                fails.append(fail)
-                continue
-            ok += 1
-            for cs, la, lo, alt in res:
-                if cs not in seen:
-                    seen[cs] = (la, lo, alt)
+    for res in results:
+        for cs, la, lo, alt in res:
+            if cs not in seen:
+                seen[cs] = (la, lo, alt)
 
     out = []
     for cs, (la, lo, alt) in seen.items():
@@ -567,6 +588,7 @@ def cached_fleet(bucket: str):
             "callsign": cs, "lat": la, "lon": lo,
             "tip": f"{cs} | {alt_s}",
         })
+    ok = len(_FLEET_TILES) - len(fails)
     return out, ok, len(_FLEET_TILES), fails
 
 # ---------------------------------------------------------------------------
