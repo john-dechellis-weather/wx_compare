@@ -521,6 +521,8 @@ def cached_fleet(bucket: str):
         return (f"https://opendata.adsb.fi/api/v2/lat/"
                 f"{la:.2f}/lon/{lo:.2f}/dist/246")
 
+    tile_stats: list = []
+
     def _call(host, tile):
         la, lo = tile
         try:
@@ -530,8 +532,9 @@ def cached_fleet(bucket: str):
             return None, f"{host}:{type(e).__name__}"
         if r.status_code != 200:
             return None, f"{host}:HTTP{r.status_code}"
+        ac = r.json().get("ac", [])
         out = []
-        for p in r.json().get("ac", []):
+        for p in ac:
             cs = (p.get("flight") or "").strip()
             if not cs.upper().startswith("JBU"):
                 continue
@@ -541,6 +544,10 @@ def cached_fleet(bucket: str):
             out.append((cs, float(p["lat"]), float(p["lon"]),
                         alt if isinstance(alt, (int, float))
                         else None))
+        tile_stats.append(
+            f"({la:.0f},{lo:.0f}) {host}: {len(ac)} ac, "
+            f"{len(out)} JBU"
+        )
         return out, None
 
     def _lane(host, tiles, results, leftovers):
@@ -602,7 +609,7 @@ def cached_fleet(bucket: str):
             "tip": f"{cs} | {alt_s}",
         })
     ok = len(_FLEET_TILES) - len(fails)
-    return out, ok, len(_FLEET_TILES), fails
+    return out, ok, len(_FLEET_TILES), fails, tile_stats
 
 # ---------------------------------------------------------------------------
 # Cached analysis — TAFs update every 6 hours; 15-min cache is fresh enough
@@ -745,10 +752,11 @@ if run_button:
 
         bucket1 = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
         try:
-            fleet, ok_tiles, n_tiles, tile_fails = \
-                cached_fleet(bucket1)
+            (fleet, ok_tiles, n_tiles, tile_fails,
+             tile_stats) = cached_fleet(bucket1)
         except Exception:
-            fleet, ok_tiles, n_tiles, tile_fails = [], 0, 0, []
+            fleet, ok_tiles, n_tiles = [], 0, 0
+            tile_fails, tile_stats = [], []
 
         # No custom city layer: the light basemap already labels
         # major cities at these zooms (ours doubled them)
@@ -847,6 +855,75 @@ if run_button:
         ):
             for f in tile_fails:
                 st.text(f)
+    with st.expander("Fleet tile stats (debug)"):
+        st.caption(
+            "Per-tile aircraft totals - a tile pinned at a round "
+            "number (250/1000) with JBU flights missing suggests a "
+            "response cap truncating dense airspace."
+        )
+        for line in tile_stats:
+            st.text(line)
+
+    with st.expander("Missing flight finder (debug)"):
+        st.caption(
+            "Enter flight numbers (e.g. 374, 1174). Each is "
+            "queried directly by callsign, then tested against the "
+            "tile grid - the verdict says whether it was missed by "
+            "a bug, outside coverage, or not transmitting."
+        )
+        _mff = st.text_input("Flight numbers", key="mff_in")
+        if st.button("Find flights", key="mff_go") and _mff:
+            import math as _math
+
+            import requests as _rq3
+
+            def _tile_covered(la, lo):
+                for ta, to in _FLEET_TILES:
+                    dlat = la - ta
+                    dlon = ((lo - to)
+                            * _math.cos(_math.radians(
+                                (la + ta) / 2)))
+                    if dlat*dlat + dlon*dlon <= 4.1*4.1:
+                        return True
+                return False
+
+            fleet_cs = {d["callsign"].upper() for d in fleet}
+            for num in [x.strip() for x in _mff.split(",")
+                        if x.strip()]:
+                cs = f"JBU{num}"
+                try:
+                    rr = _rq3.get(
+                        f"https://api.adsb.lol/v2/callsign/{cs}",
+                        headers={"User-Agent": "bluemet.org"},
+                        timeout=6,
+                    )
+                    ac = (rr.json().get("ac") or []) \
+                        if rr.status_code == 200 else []
+                except Exception as e:
+                    st.text(f"{cs}: query failed "
+                            f"({type(e).__name__})")
+                    continue
+                if not ac:
+                    st.text(f"{cs}: no data - not currently "
+                            f"transmitting (or not airborne)")
+                    continue
+                p = ac[0]
+                la, lo = p.get("lat"), p.get("lon")
+                alt = p.get("alt_baro")
+                if la is None:
+                    st.text(f"{cs}: known but no position")
+                    continue
+                inside = _tile_covered(la, lo)
+                on_map = cs in fleet_cs
+                verdict = (
+                    "ON MAP" if on_map else
+                    ("INSIDE TILES BUT MISSED - likely response "
+                     "cap or timing" if inside else
+                     f"OUTSIDE tile coverage")
+                )
+                st.text(f"{cs}: ({la:.1f},{lo:.1f}) alt={alt} "
+                        f"-> {verdict}")
+
     with st.expander("Route lookup probe (debug)"):
         st.caption(
             "Raw routeset response for up to 3 live callsigns - "
