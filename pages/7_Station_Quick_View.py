@@ -679,6 +679,7 @@ def cached_l3_station_loop(
             png, geom = render_l3(
                 parsed, product, clat, clon, zoom, site,
                 title_note=name, return_geometry=True,
+                mark_center=True,
             )
             frames.append((png, name, geom))
         except Exception:
