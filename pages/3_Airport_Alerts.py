@@ -664,10 +664,16 @@ if run_button:
             metar_rows = []
             st.warning(f"METAR fetch failed: {e}")
 
-    # Interactive CONUS map: alert dots (chip colors) + live JBU
-    # fleet (blue, callsign-labeled, hover for route/altitude).
+    # Layout: TAF alerts beside the map; METARs centered below
     board_rows = build_status_board(results, metar_rows)
+
+    _deck = None
+    _fleet_n = 0
+    _cov = ""
+    _map_err = None
     try:
+        import pydeck as pdk
+
         import pydeck as pdk
 
         coords = cached_station_coords(tuple(JETBLUE_ICAOS))
@@ -727,29 +733,22 @@ if run_button:
                 line_width_min_pixels=3.5, pickable=True,
             ))
 
-        _l, map_col, _r = st.columns([1, 2, 1])
-        with map_col:
-            st.pydeck_chart(pdk.Deck(
-                layers=layers,
-                initial_view_state=pdk.ViewState(
-                    latitude=38.3, longitude=-96.0,
-                    zoom=3.5, min_zoom=3.4, max_zoom=11,
-                ),
-                map_style="light",
-                tooltip={"html": "<b>{tip}</b>"},
-            ), height=660)
-            cov = (f" (coverage {ok_tiles}/{n_tiles} tiles)"
-                   if ok_tiles < n_tiles else "")
-            st.caption(
-                "Solid dot = METAR breaching NOW; ring = TAF "
-                "forecast; concentric = both (each in its own "
-                f"severity color). {len(fleet)} JBU airborne "
-                f"(blue{cov}). Hover for details."
-            )
+        _deck = pdk.Deck(
+            layers=layers,
+            initial_view_state=pdk.ViewState(
+                latitude=38.3, longitude=-96.0,
+                zoom=3.5, min_zoom=3.4, max_zoom=11,
+            ),
+            map_style="light",
+            tooltip={"html": "<b>{tip}</b>"},
+        )
+        _fleet_n = len(fleet)
+        _cov = (f" (coverage {ok_tiles}/{n_tiles} tiles)"
+                if ok_tiles < n_tiles else "")
     except Exception as e:
-        st.caption(f"Map unavailable: {e}")
+        _map_err = str(e)
 
-    col_taf, col_metar = st.columns([1, 2], gap="medium")
+    col_taf, col_map = st.columns([1, 2], gap="medium")
 
     with col_taf:
         st.subheader("TAF alerts")
@@ -771,7 +770,20 @@ if run_button:
         else:
             st.markdown(_no_alerts(), unsafe_allow_html=True)
 
-    with col_metar:
+    with col_map:
+        if _deck is not None:
+            st.pydeck_chart(_deck, height=660)
+            st.caption(
+                "Solid dot = METAR breaching NOW; ring = TAF "
+                "forecast; concentric = both (each in its own "
+                f"severity color). {_fleet_n} JBU airborne "
+                f"(blue{_cov}). Hover for details."
+            )
+        else:
+            st.caption(f"Map unavailable: {_map_err}")
+
+    _ml, mid_col, _mr = st.columns([1, 2, 1])
+    with mid_col:
         st.subheader("Current METARs at/beyond thresholds")
         st.caption(
             f"Latest ob per station - vis < {vis_threshold:g} sm, "
