@@ -30,40 +30,16 @@ check_password()
 # JetBlue destinations — static list
 # ---------------------------------------------------------------------------
 JETBLUE_ICAOS = [
-    # Northeast US
+    # CONUS only (page scope per 8/13): international, Caribbean,
+    # PR/USVI, and Canada removed from boards and map alike.
     "KJFK", "KEWR", "KLGA", "KHPN", "KISP", "KPHL", "KBOS", "KORH", "KBDL",
     "KPVD", "KPWM", "KPQI", "KACK", "KHYA", "KMVY", "KALB", "KSYR", "KROC",
-    "KBUF", "KPIT",
-    # Mid-Atlantic
-    "KDCA", "KBWI", "KRIC", "KORF", "KILM", "KRDU", "KCLT", "KCHS", "KSAV",
-    # Southeast + Florida
-    "KJAX", "KVPS", "KVRB", "KMCO", "KDAB", "KTPA", "KSRQ", "KRSW", "KDJT",
-    "KDJT", "KFLL", "KEYW",
-    # Midwest
-    "KORD", "KMKE", "KTVC", "KDTW", "KCLE", "KBNA", "KATL", "KMSY",
-    # Central / Texas
-    "KDFW", "KAUS", "KIAH", "KABQ", "KPHX",
-    # SoCal
-    "KBUR", "KLAX", "KSAN", "KONT", "KLAS",
-    # Northwest / Mountain
-    "KSFO", "KRNO", "KSMF", "KSLC", "KBZN", "KDEN", "KHDN", "KSEA", "KPDX",
-    "CYVR",
-    # Caribbean / Bermuda / Bahamas
-    "TXKF", "MYNN", "MBPV", "TJSJ", "TJPS", "TJBQ", "TIST", "TISX", "TNCM",
-    "TKPK", "TAPA", "TLPL", "TVSA", "TBPB", "TGPY", "TTPP",
-    # Guyana + Dominican Republic
-    "SYCJ", "MDST", "MDSD", "MDPP", "MDPC",
-    # Curacao / Aruba / Bonaire / Jamaica / Costa Rica
-    "TNCA", "TNCC", "TNCB", "MKJP", "MKJS", "MWCR",
-    # Colombia, Ecuador, Costa Rica, Guatemala, Belize, Honduras, Mexico
-    "SKCG", "SKRG", "SEGU", "MROC", "MRLB", "MGGT", "MZBZ", "MHLM",
-    "MMUN", "MMSD",
-    # Europe
-    "EGLL", "EGKK", "EIDW", "EGPF", "LFPG", "EHAM", "LEMD", "LEBL", "LIMC",
-    # Additional Colombia + Brazil
-    "SKCL", "SBAQ",
-    # Mid-Atlantic + Ohio / Indiana
-    "KCMH", "KIND",
+    "KBUF", "KPIT", "KDCA", "KBWI", "KRIC", "KORF", "KILM", "KRDU", "KCLT",
+    "KCHS", "KSAV", "KJAX", "KVPS", "KVRB", "KMCO", "KDAB", "KTPA", "KSRQ",
+    "KRSW", "KDJT", "KFLL", "KEYW", "KORD", "KMKE", "KTVC", "KDTW", "KCLE",
+    "KBNA", "KATL", "KMSY", "KDFW", "KAUS", "KIAH", "KABQ", "KPHX", "KBUR",
+    "KLAX", "KSAN", "KONT", "KLAS", "KSFO", "KRNO", "KSMF", "KSLC", "KBZN",
+    "KDEN", "KHDN", "KSEA", "KPDX", "KCMH", "KIND",
 ]
 
 # Critical-severity thresholds (fixed): red highlight in tables
@@ -388,6 +364,35 @@ def render_status_board(rows) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Alert map: whole network in gray, alerting airports in their chip
+# color
+# ---------------------------------------------------------------------------
+from pathlib import Path as _Path
+
+_persist = _Path("/opt/render/project/src/cache")
+_MAP_CACHE_ROOT = _persist if _persist.exists() \
+    else _Path("/tmp/wx_compare_cache")
+_MAP_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_station_coords(icaos_tuple: tuple):
+    from core.stations import StationResolver
+    resolver = StationResolver(
+        cache_dir=_MAP_CACHE_ROOT / "stations"
+    )
+    out = {}
+    for icao in icaos_tuple:
+        try:
+            stn = resolver.resolve(icao)
+            if stn is not None:
+                out[icao] = (float(stn.lat), float(stn.lon))
+        except Exception:
+            continue
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Cached analysis — TAFs update every 6 hours; 15-min cache is fresh enough
 # ---------------------------------------------------------------------------
 @st.cache_data(ttl=900, show_spinner=False)
@@ -508,6 +513,55 @@ if run_button:
             metar_rows = []
             st.warning(f"METAR fetch failed: {e}")
 
+    # Interactive alert map: zoomable CONUS, one colored dot per
+    # alerting airport, hover for the driving condition.
+    board_rows = build_status_board(results, metar_rows)
+    if board_rows:
+        try:
+            import pydeck as pdk
+
+            coords = cached_station_coords(tuple(JETBLUE_ICAOS))
+
+            def _rgb(hexc):
+                h = hexc.lstrip("#")
+                return [int(h[k:k+2], 16) for k in (0, 2, 4)]
+
+            data = []
+            for rank, icao, chip, color, period, _e in board_rows:
+                if icao not in coords:
+                    continue
+                la, lo = coords[icao]
+                data.append({
+                    "icao": icao, "lat": la, "lon": lo,
+                    "color": _rgb(color) + [230],
+                    "alert": chip, "period": period,
+                })
+            if data:
+                layer = pdk.Layer(
+                    "ScatterplotLayer", data=data,
+                    get_position="[lon, lat]",
+                    get_fill_color="color",
+                    get_radius=28000,
+                    radius_min_pixels=6, radius_max_pixels=22,
+                    stroked=True, get_line_color=[0, 0, 0],
+                    line_width_min_pixels=1.5, pickable=True,
+                )
+                st.pydeck_chart(pdk.Deck(
+                    layers=[layer],
+                    initial_view_state=pdk.ViewState(
+                        latitude=38.5, longitude=-96.5, zoom=3.2,
+                    ),
+                    map_style="light",
+                    tooltip={"html": "<b>{icao}</b> - {alert} - "
+                                     "{period}"},
+                ), height=420)
+                st.caption(
+                    "Zoom/pan freely; hover a dot for the driving "
+                    "condition. Dot color = ALERT-chip severity."
+                )
+        except Exception as e:
+            st.caption(f"Alert map unavailable: {e}")
+
     col_taf, col_metar = st.columns(2, gap="medium")
 
     with col_taf:
@@ -519,7 +573,6 @@ if run_button:
         )
         if not tsra_enabled:
             st.caption("TSRA alerts disabled in sidebar.")
-        board_rows = build_status_board(results, metar_rows)
         if board_rows:
             st.markdown(render_status_board(board_rows),
                         unsafe_allow_html=True)
