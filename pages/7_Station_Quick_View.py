@@ -620,9 +620,32 @@ def _colorize_line(line: str) -> str:
     return s
 
 
+def _reindent_taf(lines: list) -> list:
+    """Normalize TAF hierarchy: header flush left, FM/BECMG groups
+    at two spaces, TEMPO/PROB/INTER overlays one space deeper (they
+    modify the group above), other continuations deepest."""
+    out = []
+    for i, raw in enumerate(lines):
+        t = raw.strip()
+        if not t:
+            out.append("")
+        elif i == 0 or t.startswith("TAF"):
+            out.append(t)
+        elif t.startswith(("FM", "BECMG")):
+            out.append("  " + t)
+        elif t.startswith(("TEMPO", "PROB", "INTER")):
+            out.append("   " + t)
+        else:
+            out.append("      " + t)
+    return out
+
+
 def wx_colored_box(lines: list, taf_mode: bool = False) -> str:
     """Retro box (green border, black background, white text) with
-    token-level hazard coloring."""
+    token-level hazard coloring. TAF mode normalizes group
+    indentation (overlays nest one space under their group)."""
+    if taf_mode:
+        lines = _reindent_taf(lines)
     body = "\n".join(_colorize_line(ln) for ln in lines)
     return (
         '<div style="background:#000000;border:2px solid #00FF00;'
