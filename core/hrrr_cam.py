@@ -115,7 +115,24 @@ MODELS = {
         # HEAD-probes the grib file itself (zero-byte check). The
         # 2dfld file carries all six of our 2-D products.
         "file": "rrfs.t{cc:02d}z.2dfld.3km.f{ff:03d}.conus.grib2",
+        # AWS open-data mirror first: those buckets publish .idx
+        # sidecars even when NOMADS omits them, and an idx hit
+        # promotes RRFS to the byte-range mechanism (no filter
+        # needed). NOMADS grib HEADs trail for cycle detection when
+        # AWS lags.
         "probe_candidates": [
+            ("https://noaa-rrfs-pds.s3.amazonaws.com/"
+             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.2dfld.3km"
+             ".f{ff:03d}.conus.grib2.idx"),
+            ("https://noaa-rrfs-pds.s3.amazonaws.com/v1.0/"
+             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.2dfld.3km"
+             ".f{ff:03d}.conus.grib2.idx"),
+            ("https://noaa-rrfs-pds.s3.amazonaws.com/rrfs/"
+             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.2dfld.3km"
+             ".f{ff:03d}.conus.grib2.idx"),
+            (f"{NOMADS}/pub/data/nccf/com/rrfs/v1.0/"
+             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.2dfld.3km"
+             ".f{ff:03d}.conus.grib2.idx"),
             (f"{NOMADS}/pub/data/nccf/com/rrfs/v1.0/"
              "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.2dfld.3km"
              ".f{ff:03d}.conus.grib2"),
@@ -202,7 +219,7 @@ def latest_cycle(
                     continue
             diag[tmpl] = f"HTTP {r.status_code} @{cyc:%d/%H}z"
             if r.status_code in (200, 206):
-                if cfg.get("idx_candidates"):
+                if tmpl.endswith(".idx"):
                     cfg["_idx_resolved"] = tmpl
                 return cyc
     return None
@@ -221,7 +238,7 @@ def fetch_field(
     cfg = MODELS[model]
     if product not in cfg["products"]:
         raise RuntimeError(f"{cfg['label']} does not provide {product}")
-    if cfg.get("mechanism") == "idx":
+    if cfg.get("mechanism") == "idx" or cfg.get("_idx_resolved"):
         return _fetch_field_idx(cfg, product, cycle, fhr)
     var_p, lev_candidates = PRODUCT_PARAMS[product]
     pad = zoom_deg + 0.4
@@ -313,7 +330,9 @@ def _fetch_field_idx(cfg: dict, product: str, cycle, fhr: int) -> bytes:
     GRIB that publishes an index, so it survives interface migrations.
     Returns the full-domain field (~1-5 MB); the renderer crops to the
     requested extent."""
-    tmpl = cfg.get("_idx_resolved") or cfg["idx"]
+    tmpl = cfg.get("_idx_resolved") or cfg.get("idx")
+    if not tmpl:
+        raise RuntimeError(f"{cfg['label']}: no idx source resolved")
     idx_url = tmpl.format(ymd=cycle.strftime("%Y%m%d"),
                           cc=cycle.hour, ff=fhr)
     grib_url = idx_url[:-4]  # strip ".idx"
