@@ -134,7 +134,7 @@ def cached_fleet_trails(planes, bucket: str):
 def cached_l3_frame(
     product: str, site: str, clat: float, clon: float,
     zoom: float, bucket: str, target, others, trail=tuple(),
-    others_trails=tuple(), routes_t=tuple(),
+    others_trails=tuple(), routes_t=tuple(), flashes=tuple(),
 ) -> bytes:
     from core.radar3 import fetch_latest, parse_l3, render_l3
     raw = fetch_latest(product, site)
@@ -145,6 +145,7 @@ def cached_l3_frame(
         title_note="latest", trail=trail,
         others_trails=dict(others_trails),
         routes=_routes_dict(routes_t),
+        lightning=list(flashes),
     )
 
 
@@ -153,6 +154,7 @@ def cached_l3_loop(
     product: str, site: str, clat: float, clon: float,
     zoom: float, bucket: str, target, others, n: int = 6,
     trail=tuple(), others_trails=tuple(), routes_t=tuple(),
+    flashes=tuple(),
 ):
     from core.radar3 import fetch_recent, parse_l3, render_l3
     files = fetch_recent(product, site, n=n)
@@ -166,6 +168,7 @@ def cached_l3_loop(
                 title_note=name, trail=trail,
                 others_trails=dict(others_trails),
                 routes=_routes_dict(routes_t),
+                lightning=list(flashes),
             )
             frames.append((png, name))
         except Exception:
@@ -646,6 +649,9 @@ if track_cs:
                     )
         else:
             product = "ET" if "Echo Tops" in radar_product else "REF"
+            radar_flashes = cached_glm(
+                ckey_lat, ckey_lon, zoom, bucket5
+            )
             if loop_mode:
                 with st.spinner("Rendering Level III loop..."):
                     frames, gif = cached_l3_loop(
@@ -653,6 +659,7 @@ if track_cs:
                         target, others, trail=trail,
                         others_trails=others_trails_t,
                         routes_t=routes_t,
+                        flashes=radar_flashes,
                     )
             else:
                 with st.spinner("Rendering Level III..."):
@@ -661,6 +668,7 @@ if track_cs:
                         target, others, trail=trail,
                         others_trails=others_trails_t,
                         routes_t=routes_t,
+                        flashes=radar_flashes,
                     )
                     frames, gif = [(png, "sn.last")], b""
     except Exception as e:
