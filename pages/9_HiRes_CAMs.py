@@ -145,7 +145,7 @@ def cached_panel(
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
-st.title("Hi-Res CAMs (HRRR)")
+st.title("Hi-Res CAMs (HRRR + NBM)")
 st.caption(
     "Convection-allowing model viewer - aviation products, "
     "hourly-updating, with prewarmed hub views."
@@ -162,11 +162,10 @@ with st.sidebar:
             st.session_state["cam_icao"] = hub
     zoom = st.slider("Zoom (degrees)", 1.0, 6.0, 2.5, 0.5)
 
-    # HRRR-only. RRFS is PAUSED (8/12: v1.0 files are on NOMADS
-    # but neither .idx sidecars nor a gribfilter ds exist yet, so no
-    # viable fetch path). All RRFS machinery stays in core.hrrr_cam;
-    # to unpause, set rrfs True here and add it to GRID_ORDER below.
-    show_models = {"hrrr": True}
+    # HRRR + NBM Blend. (RRFS stays PAUSED - 8/12: its v1.0 files
+    # lack idx sidecars and no gribfilter ds exists yet; machinery
+    # waits in core.hrrr_cam.)
+    show_models = {"hrrr": True, "nbm": True}
 
     st.header("Product")
     product_label = st.selectbox(
@@ -206,8 +205,8 @@ with st.sidebar:
     else:
         fhr_all = st.slider(
             "Forecast hour (all models)", 0, 60, 1,
-            help="HRRR reaches f18 hourly (f48 on 00/06/12/18Z "
-                 "cycles); the panel clamps to its available max.",
+            help="HRRR f18 hourly (f48 synoptic); NBM hourly "
+                 "to f36. Panels clamp to their own max.",
         )
 
     st.divider()
@@ -275,7 +274,7 @@ if active:
             specs.append((m, cyc, fh))
         return specs, notes
 
-    GRID_ORDER = ["hrrr"]
+    GRID_ORDER = ["hrrr", "nbm"]
 
     if smooth:
         span = min(fhr_hi - fhr_lo, 24)
@@ -497,9 +496,10 @@ else:
         """
         ### What this page is
 
-        HRRR centered on your airport, aviation products only: 1km
-        reflectivity, echo tops, visibility, ceiling, and gusts,
-        with smooth scrubbing across forecast hours. Hub buttons
-        (JFK/MCO/FLL/DCA) serve prewarmed reflectivity instantly.
+        HRRR beside the NBM v5 blend, centered on your airport,
+        aviation products only: 1km reflectivity (NBM's is the
+        hourly max), echo tops, visibility, ceiling, and gusts,
+        with smooth scrubbing. Hub buttons serve prewarmed HRRR
+        reflectivity instantly; NBM renders live.
         """
     )
