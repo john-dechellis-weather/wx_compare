@@ -416,8 +416,8 @@ def _extract_moment(f, moment: bytes, newest_low: bool = False):
     )
     data = np.ma.masked_invalid(data)
     if b"REF" in moment.upper():
-        # Suppress clear-air/light clutter: only >= 15 dBZ draws
-        data = np.ma.masked_less(data, 15.0)
+        # Suppress clear-air/light clutter: 10 dBZ and under hidden
+        data = np.ma.masked_less_equal(data, 10.0)
     return az, rng_km, data
 
 
