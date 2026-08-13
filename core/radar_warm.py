@@ -30,6 +30,11 @@ RADAR_WARM_HUBS = {
     "KDCA": (38.8512, -77.0402),
     "KDJT": (26.6832, -80.0956),
 }
+# Bump when radar RENDERING changes (thresholds, colormaps): a
+# mismatch forces immediate re-warm instead of stale frames aging
+# out over half an hour.
+STYLE_V = 2
+
 WARM_ZOOM = 1.5
 WARM_PRODUCTS = ["REF", "ET"]
 WARM_N_FRAMES = 6
@@ -76,6 +81,8 @@ def _warm_hub_product(cache_root: Path, icao: str, product: str,
         return
     man = _manifest(cache_root, icao, product)
     known = man.get("frames", {})
+    if man.get("style") != STYLE_V:
+        known = {}   # rendering changed: rebuild everything
     d = _hub_dir(cache_root, icao, product)
 
     new_frames = {}
@@ -109,6 +116,7 @@ def _warm_hub_product(cache_root: Path, icao: str, product: str,
 
     _write_manifest(cache_root, icao, product, {
         "site": site,
+        "style": STYLE_V,
         "order": [_safe(n) for _r, n in files],
         "frames": new_frames,
         "updated": time.time(),
@@ -186,6 +194,8 @@ def warm_get_loop(cache_root: Path, icao: str, product: str,
     man = _manifest(cache_root, icao, product)
     if not man or time.time() - man.get("updated", 0) > FRESH_S:
         return None
+    if man.get("style") != STYLE_V:
+        return None   # stale styling: live path until re-warmed
     d = _hub_dir(cache_root, icao, product)
     out = []
     for key in man.get("order", []):
