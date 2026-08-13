@@ -149,6 +149,34 @@ def cached_l3_frame(
     )
 
 
+@st.cache_data(ttl=300, show_spinner=False, max_entries=8)
+def cached_l3_loop_base(
+    product: str, site: str, zoom: float, bucket: str, n: int = 6,
+):
+    """Site-centered aircraft-free loop frames with stamp geometry.
+    The site is FIXED, so these cache cleanly for minutes while the
+    aircraft moves - live overlays stamp on in milliseconds (the
+    Quick View recipe, adopted)."""
+    from core.nexrad_sites import NEXRAD_SITES
+    from core.radar3 import fetch_recent, parse_l3, render_l3
+    coords = NEXRAD_SITES.get(site.upper())
+    if coords is None:
+        return []
+    s_lat, s_lon = coords
+    frames = []
+    for raw, name in fetch_recent(product, site, n=n):
+        try:
+            parsed = parse_l3(raw)
+            png, geom = render_l3(
+                parsed, product, s_lat, s_lon, zoom, site,
+                title_note=name, return_geometry=True,
+            )
+            frames.append((png, name, geom))
+        except Exception:
+            continue
+    return frames
+
+
 @st.cache_data(ttl=300, show_spinner=False, max_entries=6)
 def cached_l3_loop(
     product: str, site: str, clat: float, clon: float,
@@ -653,14 +681,36 @@ if track_cs:
                 ckey_lat, ckey_lon, zoom, bucket5
             )
             if loop_mode:
-                with st.spinner("Rendering Level III loop..."):
-                    frames, gif = cached_l3_loop(
-                        product, site, ckey_lat, ckey_lon, zoom, bucket5,
-                        target, others, trail=trail,
-                        others_trails=others_trails_t,
-                        routes_t=routes_t,
-                        flashes=radar_flashes,
+                # FAST loop: cached site-centered frames + live
+                # stamping. First build renders; afterwards refresh
+                # is instant with current positions.
+                with st.spinner("Building loop (fast after first)..."):
+                    base = cached_l3_loop_base(
+                        product, site, zoom, bucket5
                     )
+                if base:
+                    from core.radar_warm import stamp_scene
+                    frames = [
+                        (stamp_scene(png, geom, target=target,
+                                     others=others, trail=trail),
+                         name)
+                        for png, name, geom in base
+                    ]
+                    gif = b""
+                    st.caption(
+                        "Fast loop: frames centered on the radar "
+                        "site, aircraft stamped live. Routes/rings "
+                        "appear in single-frame mode."
+                    )
+                else:
+                    with st.spinner("Rendering Level III loop..."):
+                        frames, gif = cached_l3_loop(
+                            product, site, ckey_lat, ckey_lon, zoom,
+                            bucket5, target, others, trail=trail,
+                            others_trails=others_trails_t,
+                            routes_t=routes_t,
+                            flashes=radar_flashes,
+                        )
             else:
                 with st.spinner("Rendering Level III..."):
                     png = cached_l3_frame(
