@@ -302,6 +302,10 @@ def render_l3(
     from metpy.units import units as mpunits
 
     fig = plt.figure(figsize=(12, 10))
+    # Tight explicit margins (bbox_inches="tight" is banned with
+    # cartopy): less dead white around the map.
+    fig.subplots_adjust(left=0.06, right=0.90, top=0.95,
+                        bottom=0.06)
     ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
     ax.set_extent(
         [center_lon - zoom_deg, center_lon + zoom_deg,
