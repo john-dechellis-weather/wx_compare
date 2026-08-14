@@ -245,7 +245,8 @@ def cached_current_metars(
                 or (not o.ceiling_unlimited
                     and o.ceiling_ft is not None
                     and o.ceiling_ft < 500))
-        wind35 = wind_max is not None and wind_max >= 35
+        wind35 = (o.wind_gust_kt is not None
+                  and o.wind_gust_kt > 35)
         rows.append({
             "icao": icao,
             "obs_time": o.obs_time,
@@ -382,6 +383,9 @@ def _a320_icon_uri(fill="#005ADC"):
 
 _AC_ICON = {"url": _a320_icon_uri(), "width": 64, "height": 64,
             "anchorX": 32, "anchorY": 32, "mask": False}
+_AC_ICON_RED = {"url": _a320_icon_uri("#E01A1A"), "width": 64,
+                "height": 64, "anchorX": 32, "anchorY": 32,
+                "mask": False}
 
 
 def _metar_severity(r):
@@ -783,6 +787,12 @@ with st.sidebar:
     )
 
     st.divider()
+    st.header("Map")
+    map_height = st.slider(
+        "Map size (px)", 500, 1100, 800, 50,
+        help="Height of the CONUS alert/fleet map",
+    )
+
     st.header("Time window")
 
     hours_ahead = st.slider(
@@ -862,8 +872,8 @@ if run_button:
             if (r.get("cig") is not None and not r.get("cig_unl")
                     and r["cig"] < 500):
                 toks.append(f"CIG {int(r['cig'])}")
-        if r.get("wind35") and r.get("wind_max"):
-            toks.append(f"{int(r['wind_max'])}KT")
+        if r.get("wind35") and r.get("gst"):
+            toks.append(f"G{int(r['gst'])}")
         if toks:
             dest_warn[r["icao"]] = "/".join(toks)
 
@@ -902,14 +912,18 @@ if run_button:
             n_warn = 0
             for d in fleet:
                 dd = dict(d)
-                dd["icon"] = _AC_ICON
                 hazard = dest_warn.get(d.get("dest", ""))
                 if hazard:
                     n_warn += 1
+                    dd["icon"] = _AC_ICON_RED
+                    dd["lcolor"] = [214, 26, 26, 220]
                     dd["tip"] = (f"{d['tip']} | -> {d['dest']} "
                                  f"WARNING {hazard}")
-                elif d.get("dest"):
-                    dd["tip"] = f"{d['tip']} | -> {d['dest']}"
+                else:
+                    dd["icon"] = _AC_ICON
+                    dd["lcolor"] = [0, 70, 190, 185]
+                    if d.get("dest"):
+                        dd["tip"] = f"{d['tip']} | -> {d['dest']}"
                 fleet_disp.append(dd)
             layers.append(pdk.Layer(
                 "IconLayer", data=fleet_disp,
@@ -924,7 +938,7 @@ if run_button:
                 "TextLayer", data=fleet_disp,
                 get_position="[lon, lat]",
                 get_text="callsign", get_size=8,
-                get_color=[0, 70, 190, 185],
+                get_color="lcolor",
                 get_text_anchor='"start"',
                 get_pixel_offset=[10, -10],
             ))
@@ -979,7 +993,8 @@ if run_button:
     m3.metric("Airports alerting",
               f"{len(board_rows)} ({n_sev_all} severe)")
 
-    col_taf, col_map = st.columns([1, 3], gap="medium")
+    col_taf, col_map, _sp = st.columns([1, 2.6, 0.4],
+                                       gap="medium")
 
     with col_taf:
         st.subheader("TAF alerts")
@@ -994,13 +1009,13 @@ if run_button:
 
     with col_map:
         if _deck is not None:
-            st.pydeck_chart(_deck, height=800)
+            st.pydeck_chart(_deck, height=map_height)
             st.caption(
                 "Solid dot = METAR breaching NOW; ring = TAF "
-                "forecast; concentric = both. Aircraft point "
-                "along their heading; hover for destination and "
-                f"any hazard warning. {_fleet_n} JBU airborne"
-                f"{_cov}."
+                "forecast; concentric = both. RED aircraft = "
+                "destination METAR has TS / LIFR / gusts over "
+                f"35kt (hover for detail). {_fleet_n} JBU "
+                f"airborne{_cov}."
             )
         else:
             st.caption(f"Map unavailable: {_map_err}")
