@@ -886,7 +886,10 @@ if run_button:
         for line in tile_stats:
             st.text(line)
 
-    with st.expander("Missing flight finder (debug)"):
+    with st.expander(
+        "Missing flight finder (debug)",
+        expanded=bool(st.session_state.get("mff_out")),
+    ):
         st.caption(
             "Enter flight numbers (e.g. 374, 1174). Each is "
             "queried directly by callsign, then tested against the "
@@ -895,6 +898,7 @@ if run_button:
         )
         _mff = st.text_input("Flight numbers", key="mff_in")
         if st.button("Find flights", key="mff_go") and _mff:
+            st.session_state["mff_out"] = []
             import math as _math
 
             import requests as _rq3
@@ -922,18 +926,21 @@ if run_button:
                     ac = (rr.json().get("ac") or []) \
                         if rr.status_code == 200 else []
                 except Exception as e:
-                    st.text(f"{cs}: query failed "
-                            f"({type(e).__name__})")
+                    st.session_state["mff_out"].append(
+                        f"{cs}: query failed "
+                        f"({type(e).__name__})")
                     continue
                 if not ac:
-                    st.text(f"{cs}: no data - not currently "
-                            f"transmitting (or not airborne)")
+                    st.session_state["mff_out"].append(
+                        f"{cs}: no data - not currently "
+                        f"transmitting (or not airborne)")
                     continue
                 p = ac[0]
                 la, lo = p.get("lat"), p.get("lon")
                 alt = p.get("alt_baro")
                 if la is None:
-                    st.text(f"{cs}: known but no position")
+                    st.session_state["mff_out"].append(
+                        f"{cs}: known but no position")
                     continue
                 inside = _tile_covered(la, lo)
                 on_map = cs in fleet_cs
@@ -943,10 +950,17 @@ if run_button:
                      "cap or timing" if inside else
                      f"OUTSIDE tile coverage")
                 )
-                st.text(f"{cs}: ({la:.1f},{lo:.1f}) alt={alt} "
-                        f"-> {verdict}")
+                st.session_state["mff_out"].append(
+                    f"{cs}: ({la:.1f},{lo:.1f}) alt={alt} "
+                    f"-> {verdict}")
 
-    with st.expander("Route lookup probe (debug)"):
+        for line in st.session_state.get("mff_out", []):
+            st.text(line)
+
+    with st.expander(
+        "Route lookup probe (debug)",
+        expanded=bool(st.session_state.get("probe_out")),
+    ):
         st.caption(
             "Raw routeset response for up to 3 live callsigns - "
             "paste this to Claude to finish the destination-"
@@ -967,10 +981,22 @@ if run_button:
                     json=payload, timeout=8,
                     headers={"User-Agent": "bluemet.org"},
                 )
-                st.text(f"HTTP {rr.status_code}")
-                st.code(_json.dumps(rr.json(), indent=1)[:3000])
+                try:
+                    body = _json.dumps(rr.json(), indent=1)[:3000]
+                except Exception:
+                    body = rr.text[:3000]
+                st.session_state["probe_out"] = (
+                    f"HTTP {rr.status_code}", body
+                )
             except Exception as e:
-                st.text(f"probe failed: {type(e).__name__}: {e}")
+                st.session_state["probe_out"] = (
+                    f"probe failed: {type(e).__name__}: {e}", ""
+                )
+        _po = st.session_state.get("probe_out")
+        if _po:
+            st.text(_po[0])
+            if _po[1]:
+                st.code(_po[1])
 
     _ml, mid_col, _mr = st.columns([1, 2, 1])
     with mid_col:
