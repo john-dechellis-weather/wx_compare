@@ -206,7 +206,7 @@ def build_scrub_html(frames: dict, hour_axis: list,
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
-st.title("Hi-Res CAMs (HRRR)")
+st.title("Hi-Res CAMs (HRRR + NAM 3km)")
 st.caption(
     "Convection-allowing model viewer - aviation products, "
     "hourly-updating, with prewarmed hub views."
@@ -223,11 +223,10 @@ with st.sidebar:
             st.session_state["cam_icao"] = hub
     zoom = st.slider("Zoom (degrees)", 1.0, 6.0, 2.5, 0.5)
 
-    # HRRR only (8/14): NBM removed - its frames broke the
-    # scrubber; RRFS parked with it. Both configs stay dormant in
-    # core.hrrr_cam - to restore either, add it here and to
-    # GRID_ORDER below.
-    show_models = {"hrrr": True}
+    # HRRR + NAM 3km nest (proven idx path, instantaneous fields
+    # like HRRR - clean scrubber pairing). NBM/RRFS stay dormant
+    # in core.hrrr_cam. NAM retires Oct 2026; revisit then.
+    show_models = {"hrrr": True, "nam_nest": True}
 
     st.header("Product")
     product_label = st.selectbox(
@@ -267,8 +266,9 @@ with st.sidebar:
     else:
         fhr_all = st.slider(
             "Forecast hour (all models)", 0, 60, 1,
-            help="HRRR reaches f18 hourly (f48 on 00/06/12/18Z "
-                 "cycles); the panel clamps to its available max.",
+            help="HRRR f18 hourly (f48 synoptic); NAM nest to "
+                 "f60 on 00/06/12/18Z cycles. Panels clamp to "
+                 "their own max.",
         )
 
     st.divider()
@@ -336,7 +336,7 @@ if active:
             specs.append((m, cyc, fh))
         return specs, notes
 
-    GRID_ORDER = ["hrrr"]
+    GRID_ORDER = ["hrrr", "nam_nest"]
 
     if smooth:
         span = min(fhr_hi - fhr_lo, 24)
@@ -548,9 +548,9 @@ else:
         """
         ### What this page is
 
-        HRRR centered on your airport,
+        HRRR beside the NAM 3km nest, centered on your airport,
         aviation products only: 1km reflectivity, echo tops, visibility, ceiling, and gusts,
-        with smooth scrubbing. Hub buttons serve prewarmed
-        reflectivity instantly.
+        with smooth scrubbing. Hub buttons serve prewarmed HRRR
+        reflectivity instantly; NAM renders live.
         """
     )
