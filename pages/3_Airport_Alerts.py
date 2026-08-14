@@ -686,7 +686,7 @@ def cached_fleet(bucket: str):
               if cs not in _route_cache
               or _route_cache[cs][1] < now_ts]
     fetched = hits = 0
-    for cs in new_cs[:40]:      # cap per cycle; converges fast
+    for cs in new_cs[:70]:      # cap per cycle; converges fast
         try:
             r = _rq.get(
                 f"https://api.adsbdb.com/v0/callsign/{cs}",
@@ -718,7 +718,8 @@ def cached_fleet(bucket: str):
             dests[cs] = cached[0]
     rs_diag.append(
         f"adsbdb: {fetched} fetched this cycle ({hits} routed), "
-        f"{len(new_cs)} pending, cache holds "
+        f"{max(0, len(new_cs) - fetched)} still pending, "
+        f"cache holds "
         f"{sum(1 for v in _route_cache.values() if v[0])} routes"
     )
 
