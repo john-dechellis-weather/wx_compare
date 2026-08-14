@@ -837,6 +837,13 @@ if run_button:
     except Exception as e:
         _map_err = str(e)
 
+    # Status strip: the three numbers that summarize the network
+    n_sev_all = sum(1 for r in board_rows if r[0] == 0)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("JBU flights airborne", _fleet_n if _deck else "-")
+    m2.metric("Airports alerting", len(board_rows))
+    m3.metric("Severe (magenta-tier)", n_sev_all)
+
     col_taf, col_map, _col_r = st.columns([1, 2, 1],
                                           gap="medium")
 
@@ -847,11 +854,7 @@ if run_button:
         if board_rows:
             st.markdown(render_status_board(board_rows),
                         unsafe_allow_html=True)
-            n_sev = sum(1 for r in board_rows if r[0] == 0)
-            st.caption(
-                f"{len(board_rows)} airports alerting"
-                + (f" | {n_sev} severe" if n_sev else "")
-            )
+
         else:
             st.markdown(_no_alerts(), unsafe_allow_html=True)
 
