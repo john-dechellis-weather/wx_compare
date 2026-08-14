@@ -512,7 +512,8 @@ else:
     # scrub straight from disk (sub-second). Custom anything = the
     # normal Render flow.
     _open_hub = "KJFK"
-    _OPEN_ORDER = ["hrrr"]
+    _OPEN_ORDER = ["hrrr", "nam_nest", "hiresw_arw",
+                   "hiresw_fv3"]
     _warm_frames: dict = {}
     try:
         for _m in _OPEN_ORDER:
