@@ -532,7 +532,10 @@ def cached_fleet(bucket: str):
             return None, f"{host}:{type(e).__name__}"
         if r.status_code != 200:
             return None, f"{host}:HTTP{r.status_code}"
-        ac = r.json().get("ac", [])
+        j = r.json()
+        # adsb.fi proved capable of HTTP 200 with a different (or
+        # empty) payload shape - accept both common keys
+        ac = j.get("ac") or j.get("aircraft") or []
         out = []
         for p in ac:
             cs = (p.get("flight") or "").strip()
@@ -548,9 +551,9 @@ def cached_fleet(bucket: str):
             f"({la:.0f},{lo:.0f}) {host}: {len(ac)} ac, "
             f"{len(out)} JBU"
         )
-        return out, None
+        return out, ("EMPTY200" if not ac else None)
 
-    def _lane(host, tiles, results, leftovers):
+    def _lane(host, tiles, results, leftovers, empties):
         for tile in tiles:
             res, err = _call(host, tile)
             if res is None and "429" in (err or ""):
@@ -560,6 +563,8 @@ def cached_fleet(bucket: str):
                 leftovers.append((tile, err))
             else:
                 results.append(res)
+                if err == "EMPTY200":
+                    empties.append(tile)
             _time.sleep(0.35)
 
     hosts = ("adsb.lol", "adsb.fi")
@@ -567,16 +572,30 @@ def cached_fleet(bucket: str):
                  if i % 2 == k] for k, h in enumerate(hosts)}
     results: list = []
     leftovers: dict = {h: [] for h in hosts}
+    empties: dict = {h: [] for h in hosts}
     threads = [
         threading.Thread(target=_lane,
                          args=(h, lanes[h], results,
-                               leftovers[h]))
+                               leftovers[h], empties[h]))
         for h in hosts
     ]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
+
+    # Self-healing: a host answering 200-but-zero-aircraft on 3+
+    # tiles is defective (measured 8/13: adsb.fi did this on ALL
+    # 17 of its tiles - half the country silently blank). Its
+    # empty tiles re-run on the other host, paced.
+    for h in hosts:
+        if len(empties[h]) >= 3:
+            other = hosts[1] if h == hosts[0] else hosts[0]
+            for tile in empties[h]:
+                _time.sleep(0.35)
+                res, err = _call(other, tile)
+                if res is not None and err != "EMPTY200":
+                    results.append(res)
 
     # Stragglers: one paced retry on the OTHER host
     fails = []
