@@ -35,8 +35,11 @@ HUBS = {
 WARM_ZOOM = 2.5
 WARM_PRODUCT = "REFD"
 WARM_HOURS = list(range(0, 13))
-# HRRR only (8/14: NBM removed from the CAMs page).
-WARM_MODELS = ["hrrr"]
+# All four panel models. Incremental by design: each model's
+# manifest skips work until IT publishes a new cycle - HRRR churns
+# hourly, NAM 6-hourly, the HRW pair only 00/12Z - so after the
+# one-time fill (~10-15 min) steady-state cost is modest.
+WARM_MODELS = ["hrrr", "nam_nest", "hiresw_arw", "hiresw_fv3"]
 CHECK_INTERVAL_S = 600
 
 _started = False
