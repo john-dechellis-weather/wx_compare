@@ -128,25 +128,43 @@ def _warm_model(cache_root: Path, model: str, log) -> None:
         return
     cycle_iso = cyc.isoformat()
     man = _read_manifest(cache_root, model)
-    if (man.get("cycle") == cycle_iso and man.get("complete")
-            and man.get("product") == WARM_PRODUCT):
+    # Completeness is recomputed against the CURRENT hub set and
+    # warm depth from the files themselves - a manifest's old
+    # "complete" flag must not skip a newly added hub (KBOS once
+    # sat cold for hours waiting on the HRW pair's next 12-hourly
+    # cycle because of exactly that).
+    missing = [
+        (icao, h)
+        for icao in HUBS
+        for h in hours
+        if not _frame_path(cache_root, model, cycle_iso,
+                           icao, h).exists()
+    ]
+    if (man.get("cycle") == cycle_iso
+            and man.get("product") == WARM_PRODUCT
+            and not missing):
         return
 
-    log(f"warming {model} cycle {cycle_iso}")
+    same_cycle = man.get("cycle") == cycle_iso
+    build = missing if same_cycle else [
+        (icao, h) for icao in HUBS for h in hours
+    ]
+    log(f"warming {model} cycle {cycle_iso} "
+        f"({len(build)} frames{' - fill-in' if same_cycle else ''})")
+    coords = dict(HUBS)
     tasks = []
-    for icao, (lat, lon) in HUBS.items():
-        for h in hours:
-            tasks.append({
-                "key": (icao, h),
-                "model": model, "product": WARM_PRODUCT,
-                "cycle": cyc, "fhr": h,
-                "lat": lat, "lon": lon, "zoom_deg": WARM_ZOOM,
-            })
+    for icao, h in build:
+        lat, lon = coords[icao]
+        tasks.append({
+            "key": (icao, h),
+            "model": model, "product": WARM_PRODUCT,
+            "cycle": cyc, "fhr": h,
+            "lat": lat, "lon": lon, "zoom_deg": WARM_ZOOM,
+        })
     data = parallel_fetch_decode(tasks, max_workers=2)
 
     n_ok = 0
-    for icao, (lat, lon) in HUBS.items():
-        for h in hours:
+    for icao, h in build:
             res = data.get((icao, h))
             if isinstance(res, Exception) or res is None:
                 continue
