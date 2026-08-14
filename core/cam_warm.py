@@ -35,10 +35,8 @@ HUBS = {
 WARM_ZOOM = 2.5
 WARM_PRODUCT = "REFD"
 WARM_HOURS = list(range(0, 13))
-# HRRR + NBM. Crop-at-decode (added after the second OOM incident)
-# shrinks every decoded field to the hub window before it lingers,
-# so the blend's big grid is safe to warm on the small instance.
-WARM_MODELS = ["hrrr", "nbm"]
+# HRRR only (8/14: NBM removed from the CAMs page).
+WARM_MODELS = ["hrrr"]
 CHECK_INTERVAL_S = 600
 
 _started = False
