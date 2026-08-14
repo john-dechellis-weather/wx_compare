@@ -619,6 +619,37 @@ def render_field(
     gl.xlabel_style = {"size": 8}
     gl.ylabel_style = {"size": 8}
 
+    # 10 nm range ring around the center site (white dashed with a
+    # black understroke so it reads over any reflectivity), plus a
+    # small center marker
+    try:
+        _r_nm = 10.0
+        _rlat = _r_nm / 60.0
+        _rlon = _rlat / np.cos(np.radians(center_lat))
+        _t = np.linspace(0, 2 * np.pi, 181)
+        _ring_lon = center_lon + _rlon * np.cos(_t)
+        _ring_lat = center_lat + _rlat * np.sin(_t)
+        for _lw, _col, _z in ((3.0, "#000000", 4.5),
+                              (1.5, "#FFFFFF", 4.6)):
+            ax.plot(_ring_lon, _ring_lat, color=_col,
+                    linewidth=_lw, linestyle=(0, (4, 2)),
+                    zorder=_z, transform=ccrs.PlateCarree())
+        ax.scatter([center_lon], [center_lat], s=26,
+                   color="#005ADC", edgecolors="white",
+                   linewidths=1.0, zorder=4.7,
+                   transform=ccrs.PlateCarree())
+        ax.annotate(
+            "10 nm", xy=(center_lon + _rlon * 0.72,
+                         center_lat + _rlat * 0.72),
+            fontsize=7, color="white", fontweight="bold",
+            ha="left", zorder=4.7,
+            path_effects=[__import__("matplotlib.patheffects",
+                                     fromlist=["w"]).withStroke(
+                linewidth=2.2, foreground="black")],
+        )
+    except Exception:
+        pass
+
     routes = routes or {}
     for ac in aircraft or []:
         rt = routes.get(ac.callsign)

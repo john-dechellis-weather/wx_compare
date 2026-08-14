@@ -34,6 +34,9 @@ HUBS = {
     "KBOS": (42.3629, -71.0064),
 }
 WARM_ZOOM = 2.5
+# Bump when render styling changes so prewarmed frames rebuild
+# (v2: 10 nm range ring + center marker)
+WARM_STYLE = 2
 WARM_PRODUCT = "REFD"
 # Per-model warm depth: HRRR's hourly cycles top out at f18;
 # NAM/HRW warm a full day. Raise these toward 48/60 for total
@@ -142,10 +145,12 @@ def _warm_model(cache_root: Path, model: str, log) -> None:
     ]
     if (man.get("cycle") == cycle_iso
             and man.get("product") == WARM_PRODUCT
+            and man.get("style") == WARM_STYLE
             and not missing):
         return
 
-    same_cycle = man.get("cycle") == cycle_iso
+    same_cycle = (man.get("cycle") == cycle_iso
+                  and man.get("style") == WARM_STYLE)
     build = missing if same_cycle else [
         (icao, h) for icao in HUBS for h in hours
     ]
@@ -189,7 +194,7 @@ def _warm_model(cache_root: Path, model: str, log) -> None:
             gc.collect()
             time.sleep(0.25)   # stay polite to user requests
 
-    _manifest_path(cache_root, model).write_text(json.dumps({
+    _manifest_path(cache_root, model).write_text(json.dumps({ "style": WARM_STYLE,
         "cycle": cycle_iso,
         "product": WARM_PRODUCT,
         "complete": True,
