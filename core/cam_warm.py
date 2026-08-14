@@ -34,7 +34,19 @@ HUBS = {
 }
 WARM_ZOOM = 2.5
 WARM_PRODUCT = "REFD"
-WARM_HOURS = list(range(0, 13))
+# Per-model warm depth: HRRR's hourly cycles top out at f18;
+# NAM/HRW warm a full day. Raise these toward 48/60 for total
+# coverage at ~2.5x the disk and fill time.
+WARM_MAX = {"hrrr": 18, "nam_nest": 24,
+            "hiresw_arw": 24, "hiresw_fv3": 24}
+
+
+def warm_hours(model: str) -> list:
+    return list(range(0, WARM_MAX.get(model, 12) + 1))
+
+
+# Back-compat union (page-side gating uses per-model warm_hours)
+WARM_HOURS = list(range(0, max(WARM_MAX.values()) + 1))
 # All four panel models. Incremental by design: each model's
 # manifest skips work until IT publishes a new cycle - HRRR churns
 # hourly, NAM 6-hourly, the HRW pair only 00/12Z - so after the
@@ -82,7 +94,7 @@ def warm_get(cache_root: Path, model: str, icao: str,
     cycle_iso = man.get("cycle")
     if not cycle_iso or icao.upper() not in HUBS:
         return None
-    if fhr not in WARM_HOURS:
+    if fhr not in warm_hours(model):
         return None
     p = _frame_path(cache_root, model, cycle_iso, icao.upper(), fhr)
     if not p.exists():
@@ -107,8 +119,9 @@ def _warm_model(cache_root: Path, model: str, log) -> None:
         MODELS, latest_cycle, parallel_fetch_decode, render_field,
     )
 
-    max_h = min(max(WARM_HOURS), MODELS[model]["max_fhr"])
-    hours = [h for h in WARM_HOURS if h <= max_h]
+    mh = warm_hours(model)
+    max_h = min(max(mh), MODELS[model]["max_fhr"])
+    hours = [h for h in mh if h <= max_h]
     cyc = latest_cycle(model, max_h)
     if cyc is None:
         return
