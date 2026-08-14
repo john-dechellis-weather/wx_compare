@@ -809,8 +809,12 @@ with st.sidebar:
     st.divider()
     st.header("Map")
     map_height = st.slider(
-        "Map size (px)", 500, 1100, 800, 50,
-        help="Height of the CONUS alert/fleet map",
+        "Map height (px)", 500, 1100, 800, 50,
+    )
+    map_width = st.slider(
+        "Map width (%)", 50, 100, 70, 5,
+        help="Share of the space right of the TAF board; "
+             "remainder pads the right edge",
     )
 
     st.header("Time window")
@@ -1013,7 +1017,9 @@ if run_button:
     m3.metric("Airports alerting",
               f"{len(board_rows)} ({n_sev_all} severe)")
 
-    col_taf, col_map, _sp = st.columns([1, 2.4, 1],
+    _map_w = 3.4 * map_width / 100.0
+    _map_r = max(0.05, 3.4 - _map_w)
+    col_taf, col_map, _sp = st.columns([1, _map_w, _map_r],
                                        gap="medium")
 
     with col_taf:
@@ -1040,7 +1046,7 @@ if run_button:
         else:
             st.caption(f"Map unavailable: {_map_err}")
 
-    _ml, mid_col, _mr = st.columns([1, 2, 1])
+    _ml, mid_col, _mr = st.columns([1, 2.4, 1])
     with mid_col:
         st.subheader("Current METARs at/beyond thresholds")
         st.caption(
