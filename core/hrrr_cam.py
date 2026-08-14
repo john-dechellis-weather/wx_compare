@@ -100,6 +100,27 @@ MODELS = {
         "products": {"REFD", "REFC", "VIS", "CEIL", "GUST"},
         "note": "retires Oct 2026 (replaced by RRFS)",
     },
+    "hiresw_fv3": {
+        "label": "HRW FV3",
+        "mechanism": "idx",
+        "file": "hiresw.t{cc:02d}z.fv3_2p5km.f{ff:02d}.conus.grib2",
+        "dir": "/hiresw.{ymd}",
+        "idx_candidates": [
+            (f"{NOMADS}/pub/data/nccf/com/hiresw/prod/"
+             "hiresw.{ymd}/hiresw.t{cc:02d}z.fv3_2p5km.f{ff:02d}"
+             ".conus.grib2.idx"),
+            (f"{NOMADS}/pub/data/nccf/com/hiresw/prod/"
+             "hiresw.{ymd}/hiresw.t{cc:02d}z.fv3_5km.f{ff:02d}"
+             ".conus.grib2.idx"),
+        ],
+        "idx": (f"{NOMADS}/pub/data/nccf/com/hiresw/prod/"
+                "hiresw.{ymd}/hiresw.t{cc:02d}z.fv3_2p5km.f{ff:02d}"
+                ".conus.grib2.idx"),
+        "cycles": [0, 12],
+        "max_fhr": 48,
+        "products": {"REFD", "REFC", "VIS", "CEIL", "GUST"},
+        "note": "retires Oct 2026 (replaced by RRFS)",
+    },
     "hiresw_arw": {
         "label": "HRW ARW",
         "mechanism": "idx",
@@ -150,17 +171,19 @@ MODELS = {
         # promotes RRFS to the byte-range mechanism (no filter
         # needed). NOMADS grib HEADs trail for cycle detection when
         # AWS lags.
+        # Registry-verified (registry.opendata.aws/noaa-rrfs):
+        # rrfs_public/ = operational-equivalent set most users
+        # should use; rrfs_a/ = fuller dev set. NODD buckets ship
+        # .idx sidecars -> byte-range mechanism. NOMADS 2dfld HEADs
+        # trail as cycle-detection fallback (no idx there).
         "probe_candidates": [
-            ("https://noaa-rrfs-pds.s3.amazonaws.com/"
-             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.2dfld.3km"
+            ("https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_public/"
+             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev.3km"
              ".f{ff:03d}.conus.grib2.idx"),
-            ("https://noaa-rrfs-pds.s3.amazonaws.com/v1.0/"
-             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.2dfld.3km"
+            ("https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_a/"
+             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev.3km"
              ".f{ff:03d}.conus.grib2.idx"),
-            ("https://noaa-rrfs-pds.s3.amazonaws.com/rrfs/"
-             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.2dfld.3km"
-             ".f{ff:03d}.conus.grib2.idx"),
-            (f"{NOMADS}/pub/data/nccf/com/rrfs/v1.0/"
+            ("https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_public/"
              "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.2dfld.3km"
              ".f{ff:03d}.conus.grib2.idx"),
             (f"{NOMADS}/pub/data/nccf/com/rrfs/v1.0/"
@@ -187,12 +210,12 @@ MODELS = {
             "/v1.0/rrfs.{ymd}/{cc:02d}",
             "/para/rrfs.{ymd}/{cc:02d}",
         ],
-        "cycles": list(range(24)),
+        "cycles": [0, 3, 6, 9, 12, 15, 18, 21],
         "max_fhr": 60,
         "products": {"REFD", "REFC", "RETOP", "VIS", "CEIL",
                      "GUST"},
-        "note": ("RRFS v1.0 feed via grib filter; pre-operational "
-                 "until Oct 2026"),
+        "note": ("RRFS parallel feed via AWS open-data bucket "
+                 "(3-hourly cycles to f60); operational Oct 2026"),
     },
 }
 
