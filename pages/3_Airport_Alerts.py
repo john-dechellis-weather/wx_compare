@@ -475,7 +475,7 @@ def render_status_board(rows) -> str:
         return (
             f'<td style="background-color:#FFFFFF; color:{fg}; '
             f"-webkit-text-fill-color:{fg}; font-family:{_FONT}; "
-            f"font-size:16px; padding:6px 16px; "
+            f"font-size:19px; padding:8px 20px; "
             f"border:1px solid #000000; font-weight:{w}; {deco}"
             f'white-space:nowrap;">{text}</td>'
         )
@@ -1040,6 +1040,20 @@ if run_button:
         else:
             st.caption(f"Map unavailable: {_map_err}")
 
+    _ml, mid_col, _mr = st.columns([1, 2, 1])
+    with mid_col:
+        st.subheader("Current METARs at/beyond thresholds")
+        st.caption(
+            f"Latest ob per station - vis < {vis_threshold:g} sm, "
+            f"cig < {ceiling_threshold} ft, wind >= "
+            f"{wind_threshold} kt. Red cell = breaching value."
+        )
+        if metar_rows:
+            st.markdown(render_metar_table(metar_rows),
+                        unsafe_allow_html=True)
+        else:
+            st.markdown(_no_alerts(), unsafe_allow_html=True)
+
     with st.expander("Warning system status (debug)"):
         _n_dest = sum(1 for d in fleet if d.get("dest"))
         st.text(
@@ -1196,19 +1210,6 @@ if run_button:
             if _po[1]:
                 st.code(_po[1])
 
-    _ml, mid_col, _mr = st.columns([1, 2, 1])
-    with mid_col:
-        st.subheader("Current METARs at/beyond thresholds")
-        st.caption(
-            f"Latest ob per station - vis < {vis_threshold:g} sm, "
-            f"cig < {ceiling_threshold} ft, wind >= "
-            f"{wind_threshold} kt. Red cell = breaching value."
-        )
-        if metar_rows:
-            st.markdown(render_metar_table(metar_rows),
-                        unsafe_allow_html=True)
-        else:
-            st.markdown(_no_alerts(), unsafe_allow_html=True)
 
     # TAF unavailable + parse errors — smaller notes at bottom
     st.divider()
