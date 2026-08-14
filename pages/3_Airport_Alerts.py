@@ -1020,6 +1020,33 @@ if run_button:
         else:
             st.caption(f"Map unavailable: {_map_err}")
 
+    with st.expander("Warning system status (debug)"):
+        _n_dest = sum(1 for d in fleet if d.get("dest"))
+        st.text(
+            f"Link 1 - hazard stations right now: "
+            f"{len(dest_warn)}"
+        )
+        for k, v in sorted(dest_warn.items()):
+            st.text(f"   {k}: {v}")
+        if not dest_warn:
+            st.text("   (none - no station currently has TS, "
+                    "LIFR, or gusts >35kt; red requires this)")
+        st.text(
+            f"Link 2 - flights with resolved destination: "
+            f"{_n_dest}/{len(fleet)}"
+        )
+        _samples = [f"{d['callsign']}->{d['dest']}"
+                    for d in fleet if d.get("dest")][:8]
+        if _samples:
+            st.text("   e.g. " + ", ".join(_samples))
+        else:
+            st.text("   (zero - the routeset lookup is the "
+                    "broken link; tell Claude)")
+        _hits = [d["callsign"] for d in fleet
+                 if dest_warn.get(d.get("dest", ""))]
+        st.text(f"Red aircraft (link1 x link2): {len(_hits)}"
+                + (f" - {', '.join(_hits[:10])}" if _hits else ""))
+
     if tile_fails:
         with st.expander(
             f"Fleet coverage report - {len(tile_fails)} tile(s) "
