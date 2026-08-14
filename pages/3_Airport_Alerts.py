@@ -673,20 +673,40 @@ def cached_fleet(bucket: str):
     # mapped K+code for CONUS). A flight that can't resolve simply
     # has no dest - never an error.
     dests = {}
+    rs_diag = []
     try:
-        payload = {"planes": [
-            {"callsign": cs, "lat": v[0], "lng": v[1]}
-            for cs, v in seen.items()
-        ]}
-        rr = _rq.post(
-            "https://api.adsb.lol/api/0/routeset",
-            json=payload, timeout=10, headers=HDRS,
-        )
-        if rr.status_code == 200:
-            data = rr.json()
+        all_cs = list(seen.items())
+        for ci in range(0, len(all_cs), 50):
+            chunk = all_cs[ci:ci + 50]
+            payload = {"planes": [
+                {"callsign": cs, "lat": v[0], "lng": v[1]}
+                for cs, v in chunk
+            ]}
+            try:
+                rr = _rq.post(
+                    "https://api.adsb.lol/api/0/routeset",
+                    json=payload, timeout=10, headers=HDRS,
+                )
+            except Exception as e:
+                rs_diag.append(f"chunk{ci//50}: "
+                               f"{type(e).__name__}: {e}"[:160])
+                continue
+            if rr.status_code != 200:
+                rs_diag.append(
+                    f"chunk{ci//50}: HTTP {rr.status_code} "
+                    f"body={rr.text[:160]!r}"
+                )
+                continue
+            try:
+                data = rr.json()
+            except Exception:
+                rs_diag.append(f"chunk{ci//50}: 200 but "
+                               f"non-JSON: {rr.text[:160]!r}")
+                continue
             entries = data if isinstance(data, list) else \
                 data.get("routes", []) if isinstance(data, dict) \
                 else []
+            parsed = 0
             for ent in entries:
                 if not isinstance(ent, dict):
                     continue
@@ -711,8 +731,16 @@ def cached_fleet(bucket: str):
                             d_icao = "K" + cand
                 if d_icao:
                     dests[cs] = d_icao
-    except Exception:
-        pass
+                    parsed += 1
+            rs_diag.append(
+                f"chunk{ci//50}: 200, {len(entries)} entries, "
+                f"{parsed} dests"
+                + ("" if entries else
+                   f", raw={str(data)[:160]!r}")
+            )
+            _time.sleep(0.3)
+    except Exception as e:
+        rs_diag.append(f"outer: {type(e).__name__}: {e}"[:160])
 
     out = []
     for cs, (la, lo, alt, trk) in seen.items():
@@ -727,7 +755,7 @@ def cached_fleet(bucket: str):
             "tip": f"{cs} | {alt_s}",
         })
     ok = len(_FLEET_TILES) - len(fails)
-    return out, ok, len(_FLEET_TILES), fails, tile_stats
+    return out, ok, len(_FLEET_TILES), fails, tile_stats, rs_diag
 
 # ---------------------------------------------------------------------------
 # Cached analysis — TAFs update every 6 hours; 15-min cache is fresh enough
@@ -899,10 +927,10 @@ if run_button:
         bucket1 = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
         try:
             (fleet, ok_tiles, n_tiles, tile_fails,
-             tile_stats) = cached_fleet(bucket1)
+             tile_stats, rs_diag) = cached_fleet(bucket1)
         except Exception:
             fleet, ok_tiles, n_tiles = [], 0, 0
-            tile_fails, tile_stats = [], []
+            tile_fails, tile_stats, rs_diag = [], [], []
 
         # No custom city layer: the light basemap already labels
         # major cities at these zooms (ours doubled them)
@@ -1040,8 +1068,9 @@ if run_button:
         if _samples:
             st.text("   e.g. " + ", ".join(_samples))
         else:
-            st.text("   (zero - the routeset lookup is the "
-                    "broken link; tell Claude)")
+            st.text("   (zero - routeset diagnostics below)")
+        for line in rs_diag:
+            st.text(f"   {line}")
         _hits = [d["callsign"] for d in fleet
                  if dest_warn.get(d.get("dest", ""))]
         st.text(f"Red aircraft (link1 x link2): {len(_hits)}"
