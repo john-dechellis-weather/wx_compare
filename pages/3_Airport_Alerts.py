@@ -235,17 +235,29 @@ def cached_current_metars(
             default=None,
         )
         wind_bad = wind_max is not None and wind_max >= wind_threshold_kt
-        if vis_bad or cig_bad or wind_bad:
-            rows.append({
-                "icao": icao,
-                "obs_time": o.obs_time,
-                "vis": o.vsby_sm, "vis_bad": vis_bad,
-                "cig": o.ceiling_ft, "cig_unl": o.ceiling_unlimited,
-                "cig_bad": cig_bad,
-                "spd": o.wind_speed_kt, "gst": o.wind_gust_kt,
-                "wind_bad": wind_bad,
-                "raw": o.raw_text,
-            })
+        # Destination-hazard fields (fixed criteria, independent of
+        # the sidebar sliders): thunderstorm in the ob, LIFR, or
+        # 35+ kt
+        import re as _re
+        ts_now = bool(_re.search(
+            r"(?:^| )(?:\+|-|VC)?TS[A-Z]*", o.raw_text or ""))
+        lifr = ((o.vsby_sm is not None and o.vsby_sm < 1)
+                or (not o.ceiling_unlimited
+                    and o.ceiling_ft is not None
+                    and o.ceiling_ft < 500))
+        wind35 = wind_max is not None and wind_max >= 35
+        rows.append({
+            "icao": icao,
+            "obs_time": o.obs_time,
+            "vis": o.vsby_sm, "vis_bad": vis_bad,
+            "cig": o.ceiling_ft, "cig_unl": o.ceiling_unlimited,
+            "cig_bad": cig_bad,
+            "spd": o.wind_speed_kt, "gst": o.wind_gust_kt,
+            "wind_bad": wind_bad,
+            "raw": o.raw_text,
+            "ts_now": ts_now, "lifr": lifr, "wind35": wind35,
+            "wind_max": wind_max,
+        })
     rows.sort(key=lambda r: r["icao"])
     return rows
 
@@ -618,6 +630,53 @@ def cached_fleet(bucket: str):
             if cs not in seen:
                 seen[cs] = (la, lo, alt)
 
+    # Destinations: one routeset POST for the whole fleet. The
+    # parser is shape-defensive (public schema: _airports list of
+    # {icao,...}; fallback: "airport_codes" like "JFK-MCO", IATA
+    # mapped K+code for CONUS). A flight that can't resolve simply
+    # has no dest - never an error.
+    dests = {}
+    try:
+        payload = {"planes": [
+            {"callsign": cs, "lat": v[0], "lng": v[1]}
+            for cs, v in seen.items()
+        ]}
+        rr = _rq.post(
+            "https://api.adsb.lol/api/0/routeset",
+            json=payload, timeout=10, headers=HDRS,
+        )
+        if rr.status_code == 200:
+            data = rr.json()
+            entries = data if isinstance(data, list) else \
+                data.get("routes", []) if isinstance(data, dict) \
+                else []
+            for ent in entries:
+                if not isinstance(ent, dict):
+                    continue
+                cs = (ent.get("callsign") or "").strip()
+                if not cs:
+                    continue
+                d_icao = ""
+                aps = ent.get("_airports")
+                if isinstance(aps, list) and len(aps) >= 2:
+                    last = aps[-1]
+                    if isinstance(last, dict):
+                        d_icao = (last.get("icao") or "").upper()
+                if not d_icao:
+                    codes = (ent.get("airport_codes")
+                             or ent.get("_airport_codes_iata")
+                             or "")
+                    if "-" in codes and "unknown" not in codes:
+                        cand = codes.split("-")[-1].strip().upper()
+                        if len(cand) == 4:
+                            d_icao = cand
+                        elif len(cand) == 3:
+                            d_icao = "K" + cand
+                if d_icao:
+                    dests[cs] = d_icao
+    except Exception:
+        pass
+
     out = []
     for cs, (la, lo, alt) in seen.items():
         alt_s = (f"FL{int(alt // 100):03d}"
@@ -625,6 +684,7 @@ def cached_fleet(bucket: str):
                  else (f"{int(alt):,} ft" if alt else "alt n/a"))
         out.append({
             "callsign": cs, "lat": la, "lon": lo,
+            "dest": dests.get(cs, ""),
             "tip": f"{cs} | {alt_s}",
         })
     ok = len(_FLEET_TILES) - len(fails)
@@ -750,12 +810,34 @@ if run_button:
         except Exception as e:
             metar_rows = []
             st.warning(f"METAR fetch failed: {e}")
+    metar_all = metar_rows
+    metar_rows = [r for r in metar_all
+                  if r["vis_bad"] or r["cig_bad"] or r["wind_bad"]]
+
+    # Destination hazards: {icao: "TSRA/0.5SM/G38"} for the
+    # aircraft-warning layer
+    dest_warn = {}
+    for r in metar_all:
+        toks = []
+        if r.get("ts_now"):
+            toks.append("TS")
+        if r.get("lifr"):
+            if r.get("vis") is not None and r["vis"] < 1:
+                toks.append(f"{r['vis']:g}SM")
+            if (r.get("cig") is not None and not r.get("cig_unl")
+                    and r["cig"] < 500):
+                toks.append(f"CIG {int(r['cig'])}")
+        if r.get("wind35") and r.get("wind_max"):
+            toks.append(f"{int(r['wind_max'])}KT")
+        if toks:
+            dest_warn[r["icao"]] = "/".join(toks)
 
     # Layout: TAF alerts beside the map; METARs centered below
     board_rows = build_status_board(results, metar_rows)
 
     _deck = None
     _fleet_n = 0
+    _n_warn = 0
     _cov = ""
     _map_err = None
     try:
@@ -781,20 +863,35 @@ if run_button:
         # major cities at these zooms (ours doubled them)
         layers = []
         if fleet:
+            fleet_disp = []
+            n_warn = 0
+            for d in fleet:
+                dd = dict(d)
+                hazard = dest_warn.get(d.get("dest", ""))
+                if hazard:
+                    n_warn += 1
+                    dd["color"] = [230, 30, 30, 240]
+                    dd["tip"] = (f"{d['tip']} | -> {d['dest']} "
+                                 f"WARNING {hazard}")
+                else:
+                    dd["color"] = [0, 90, 220, 230]
+                    if d.get("dest"):
+                        dd["tip"] = f"{d['tip']} | -> {d['dest']}"
+                fleet_disp.append(dd)
             layers.append(pdk.Layer(
-                "ScatterplotLayer", data=fleet,
+                "ScatterplotLayer", data=fleet_disp,
                 get_position="[lon, lat]",
-                get_fill_color=[0, 90, 220, 230],
+                get_fill_color="color",
                 get_radius=12000, radius_min_pixels=4,
                 radius_max_pixels=9, stroked=True,
                 get_line_color=[255, 255, 255],
                 line_width_min_pixels=1, pickable=True,
             ))
             layers.append(pdk.Layer(
-                "TextLayer", data=fleet,
+                "TextLayer", data=fleet_disp,
                 get_position="[lon, lat]",
                 get_text="callsign", get_size=8,
-                get_color=[0, 70, 190, 175],
+                get_color="color",
                 get_text_anchor='"start"',
                 get_pixel_offset=[6, -6],
             ))
@@ -822,6 +919,7 @@ if run_button:
                 line_width_min_pixels=3.5, pickable=True,
             ))
 
+        _n_warn = n_warn if fleet else 0
         _deck = pdk.Deck(
             layers=layers,
             initial_view_state=pdk.ViewState(
@@ -841,8 +939,12 @@ if run_button:
     n_sev_all = sum(1 for r in board_rows if r[0] == 0)
     m1, m2, m3 = st.columns(3)
     m1.metric("JBU flights airborne", _fleet_n if _deck else "-")
-    m2.metric("Airports alerting", len(board_rows))
-    m3.metric("Severe (magenta-tier)", n_sev_all)
+    m2.metric("Inbound to hazards",
+              _n_warn if _deck else "-",
+              help="Destination METAR currently TS, LIFR, or "
+                   "35kt+ - these aircraft show RED on the map")
+    m3.metric("Airports alerting",
+              f"{len(board_rows)} ({n_sev_all} severe)")
 
     col_taf, col_map, _col_r = st.columns([1, 2, 1],
                                           gap="medium")
@@ -863,9 +965,10 @@ if run_button:
             st.pydeck_chart(_deck, height=660)
             st.caption(
                 "Solid dot = METAR breaching NOW; ring = TAF "
-                "forecast; concentric = both (each in its own "
-                f"severity color). {_fleet_n} JBU airborne "
-                f"(blue{_cov}). Hover for details."
+                "forecast; concentric = both. RED aircraft = "
+                "destination currently TS / LIFR / 35kt+ (hover "
+                f"for the hazard). {_fleet_n} JBU airborne"
+                f"{_cov}."
             )
         else:
             st.caption(f"Map unavailable: {_map_err}")
