@@ -239,8 +239,16 @@ def cached_current_metars(
         # the sidebar sliders): thunderstorm in the ob, LIFR, or
         # 35+ kt
         import re as _re
+        # Present-weather TS only: parse the METAR BODY (remarks
+        # carry TSE##/TSB## end/begin times and LTG chatter that
+        # must not trigger - a remarks 'TSE15' once painted a
+        # false red for a storm that had ENDED). Strict token
+        # grammar: optional +/-/VC, TS, optional precip pairs,
+        # then a hard token boundary.
+        _body = (o.raw_text or "").split(" RMK")[0]
         ts_now = bool(_re.search(
-            r"(?:^| )(?:\+|-|VC)?TS[A-Z]*", o.raw_text or ""))
+            r"(?:^|\s)(?:\+|-|VC)?TS(?:[A-Z]{2}){0,3}(?=\s|$)",
+            _body))
         lifr = ((o.vsby_sm is not None and o.vsby_sm < 1)
                 or (not o.ceiling_unlimited
                     and o.ceiling_ft is not None
