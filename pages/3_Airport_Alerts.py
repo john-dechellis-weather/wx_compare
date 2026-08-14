@@ -354,6 +354,36 @@ def build_status_board(results, metar_rows):
     return rows
 
 
+# A320-detailed aircraft icon (style 1: nacelles + sharklets),
+# baked as an inline SVG data-URI - no external image dependency.
+def _a320_icon_uri(fill="#005ADC"):
+    import urllib.parse
+    body = ("M0,-10 L0.35,-9.6 L0.55,-8.8 L0.6,-6 L0.6,-1.6 "
+            "L9.2,3.2 L9.6,3.4 L9.6,4 L9.1,4.1 L2.6,3.3 "
+            "L0.6,3.1 L0.6,6.4 L3.3,8.2 L3.3,9 L0.5,8.5 "
+            "L0.45,9.4 L0,9.7 L-0.45,9.4 L-0.5,8.5 L-3.3,9 "
+            "L-3.3,8.2 L-0.6,6.4 L-0.6,3.1 L-2.6,3.3 "
+            "L-9.1,4.1 L-9.6,4 L-9.6,3.4 L-9.2,3.2 L-0.6,-1.6 "
+            "L-0.6,-6 L-0.55,-8.8 L-0.35,-9.6 Z")
+    eng_r = ("M2.6,-0.9 L3.35,-0.9 L3.45,-0.4 L3.45,1.6 "
+             "L3.3,1.9 L2.75,1.9 L2.6,1.5 Z")
+    eng_l = ("M-2.6,-0.9 L-3.35,-0.9 L-3.45,-0.4 L-3.45,1.6 "
+             "L-3.3,1.9 L-2.75,1.9 L-2.6,1.5 Z")
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="64" '
+        'height="64" viewBox="-11 -11 22 22">'
+        f'<g fill="{fill}" stroke="#FFFFFF" stroke-width="0.5">'
+        f'<path d="{body}"/><path d="{eng_r}"/>'
+        f'<path d="{eng_l}"/></g></svg>'
+    )
+    return ("data:image/svg+xml;charset=utf-8,"
+            + urllib.parse.quote(svg))
+
+
+_AC_ICON = {"url": _a320_icon_uri(), "width": 64, "height": 64,
+            "anchorX": 32, "anchorY": 32, "mask": False}
+
+
 def _metar_severity(r):
     """(color, token_str) for a breaching METAR row, on the same
     severity ladder as the TAF tiers."""
@@ -556,9 +586,12 @@ def cached_fleet(bucket: str):
             if p.get("lat") is None:
                 continue
             alt = p.get("alt_baro")
+            trk = p.get("track")
             out.append((cs, float(p["lat"]), float(p["lon"]),
                         alt if isinstance(alt, (int, float))
-                        else None))
+                        else None,
+                        float(trk) if isinstance(
+                            trk, (int, float)) else 0.0))
         tile_stats.append(
             f"({la:.0f},{lo:.0f}) {host}: {len(ac)} ac, "
             f"{len(out)} JBU"
@@ -626,9 +659,9 @@ def cached_fleet(bucket: str):
 
     seen = {}
     for res in results:
-        for cs, la, lo, alt in res:
+        for cs, la, lo, alt, trk in res:
             if cs not in seen:
-                seen[cs] = (la, lo, alt)
+                seen[cs] = (la, lo, alt, trk)
 
     # Destinations: one routeset POST for the whole fleet. The
     # parser is shape-defensive (public schema: _airports list of
@@ -678,13 +711,15 @@ def cached_fleet(bucket: str):
         pass
 
     out = []
-    for cs, (la, lo, alt) in seen.items():
+    for cs, (la, lo, alt, trk) in seen.items():
         alt_s = (f"FL{int(alt // 100):03d}"
                  if alt and alt >= 18000
                  else (f"{int(alt):,} ft" if alt else "alt n/a"))
         out.append({
             "callsign": cs, "lat": la, "lon": lo,
             "dest": dests.get(cs, ""),
+            # deck.gl IconLayer angle is CCW; heading is CW from N
+            "angle": (360.0 - trk) % 360.0,
             "tip": f"{cs} | {alt_s}",
         })
     ok = len(_FLEET_TILES) - len(fails)
@@ -867,33 +902,31 @@ if run_button:
             n_warn = 0
             for d in fleet:
                 dd = dict(d)
+                dd["icon"] = _AC_ICON
                 hazard = dest_warn.get(d.get("dest", ""))
                 if hazard:
                     n_warn += 1
-                    dd["color"] = [230, 30, 30, 240]
                     dd["tip"] = (f"{d['tip']} | -> {d['dest']} "
                                  f"WARNING {hazard}")
-                else:
-                    dd["color"] = [0, 90, 220, 230]
-                    if d.get("dest"):
-                        dd["tip"] = f"{d['tip']} | -> {d['dest']}"
+                elif d.get("dest"):
+                    dd["tip"] = f"{d['tip']} | -> {d['dest']}"
                 fleet_disp.append(dd)
             layers.append(pdk.Layer(
-                "ScatterplotLayer", data=fleet_disp,
+                "IconLayer", data=fleet_disp,
                 get_position="[lon, lat]",
-                get_fill_color="color",
-                get_radius=12000, radius_min_pixels=4,
-                radius_max_pixels=9, stroked=True,
-                get_line_color=[255, 255, 255],
-                line_width_min_pixels=1, pickable=True,
+                get_icon="icon",
+                get_size=24, size_min_pixels=14,
+                size_max_pixels=34,
+                get_angle="angle",
+                pickable=True,
             ))
             layers.append(pdk.Layer(
                 "TextLayer", data=fleet_disp,
                 get_position="[lon, lat]",
                 get_text="callsign", get_size=8,
-                get_color="color",
+                get_color=[0, 70, 190, 185],
                 get_text_anchor='"start"',
-                get_pixel_offset=[6, -6],
+                get_pixel_offset=[10, -10],
             ))
         if fills:
             # Solid core: current METAR breach (trouble NOW)
@@ -923,8 +956,8 @@ if run_button:
         _deck = pdk.Deck(
             layers=layers,
             initial_view_state=pdk.ViewState(
-                latitude=38.3, longitude=-96.0,
-                zoom=3.5, min_zoom=3.4, max_zoom=11,
+                latitude=38.5, longitude=-96.0,
+                zoom=4.3, min_zoom=4.1, max_zoom=11,
             ),
             map_style="light",
             tooltip={"html": "<b>{tip}</b>"},
@@ -946,8 +979,7 @@ if run_button:
     m3.metric("Airports alerting",
               f"{len(board_rows)} ({n_sev_all} severe)")
 
-    col_taf, col_map, _col_r = st.columns([1, 2, 1],
-                                          gap="medium")
+    col_taf, col_map = st.columns([1, 3], gap="medium")
 
     with col_taf:
         st.subheader("TAF alerts")
@@ -962,12 +994,12 @@ if run_button:
 
     with col_map:
         if _deck is not None:
-            st.pydeck_chart(_deck, height=660)
+            st.pydeck_chart(_deck, height=800)
             st.caption(
                 "Solid dot = METAR breaching NOW; ring = TAF "
-                "forecast; concentric = both. RED aircraft = "
-                "destination currently TS / LIFR / 35kt+ (hover "
-                f"for the hazard). {_fleet_n} JBU airborne"
+                "forecast; concentric = both. Aircraft point "
+                "along their heading; hover for destination and "
+                f"any hazard warning. {_fleet_n} JBU airborne"
                 f"{_cov}."
             )
         else:
