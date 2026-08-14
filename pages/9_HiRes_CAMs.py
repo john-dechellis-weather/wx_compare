@@ -440,7 +440,7 @@ if active:
             import base64
             import json as _json
             html, hgt = build_scrub_html(
-                frames, hour_axis, GRID_ORDER
+                frames, hours, GRID_ORDER
             )
             _embed_html(html, height=hgt)
             st.caption(
