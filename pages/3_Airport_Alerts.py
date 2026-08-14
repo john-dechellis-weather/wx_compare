@@ -521,6 +521,13 @@ def cached_station_coords(icaos_tuple: tuple):
 # CONUS tile centers for fleet-wide position queries (each point
 # query covers ~250 nm; rows sized so circles overlap coast to
 # coast including Florida/Gulf)
+# Callsign -> destination ICAO cache (adsbdb.com lookups). Routes
+# are stable per-callsign within a day, so each fleet cycle only
+# fetches callsigns it hasn't seen; misses negative-cache for an
+# hour so unknowns aren't hammered.
+_route_cache: dict = {}     # cs -> (dest_icao_or_"", expiry_ts)
+
+
 _FLEET_TILES = [
     # PROVEN by route-sampling: 31 JBU great circles
     # sampled pointwise + a 0.4-deg heartland lattice all
@@ -674,73 +681,46 @@ def cached_fleet(bucket: str):
     # has no dest - never an error.
     dests = {}
     rs_diag = []
-    try:
-        all_cs = list(seen.items())
-        for ci in range(0, len(all_cs), 50):
-            chunk = all_cs[ci:ci + 50]
-            payload = {"planes": [
-                {"callsign": cs, "lat": v[0], "lng": v[1]}
-                for cs, v in chunk
-            ]}
-            try:
-                rr = _rq.post(
-                    "https://api.adsb.lol/api/0/routeset",
-                    json=payload, timeout=10, headers=HDRS,
-                )
-            except Exception as e:
-                rs_diag.append(f"chunk{ci//50}: "
-                               f"{type(e).__name__}: {e}"[:160])
-                continue
-            if rr.status_code != 200:
-                rs_diag.append(
-                    f"chunk{ci//50}: HTTP {rr.status_code} "
-                    f"body={rr.text[:160]!r}"
-                )
-                continue
-            try:
-                data = rr.json()
-            except Exception:
-                rs_diag.append(f"chunk{ci//50}: 200 but "
-                               f"non-JSON: {rr.text[:160]!r}")
-                continue
-            entries = data if isinstance(data, list) else \
-                data.get("routes", []) if isinstance(data, dict) \
-                else []
-            parsed = 0
-            for ent in entries:
-                if not isinstance(ent, dict):
-                    continue
-                cs = (ent.get("callsign") or "").strip()
-                if not cs:
-                    continue
-                d_icao = ""
-                aps = ent.get("_airports")
-                if isinstance(aps, list) and len(aps) >= 2:
-                    last = aps[-1]
-                    if isinstance(last, dict):
-                        d_icao = (last.get("icao") or "").upper()
-                if not d_icao:
-                    codes = (ent.get("airport_codes")
-                             or ent.get("_airport_codes_iata")
-                             or "")
-                    if "-" in codes and "unknown" not in codes:
-                        cand = codes.split("-")[-1].strip().upper()
-                        if len(cand) == 4:
-                            d_icao = cand
-                        elif len(cand) == 3:
-                            d_icao = "K" + cand
-                if d_icao:
-                    dests[cs] = d_icao
-                    parsed += 1
-            rs_diag.append(
-                f"chunk{ci//50}: 200, {len(entries)} entries, "
-                f"{parsed} dests"
-                + ("" if entries else
-                   f", raw={str(data)[:160]!r}")
+    now_ts = _time.time()
+    new_cs = [cs for cs in seen
+              if cs not in _route_cache
+              or _route_cache[cs][1] < now_ts]
+    fetched = hits = 0
+    for cs in new_cs[:40]:      # cap per cycle; converges fast
+        try:
+            r = _rq.get(
+                f"https://api.adsbdb.com/v0/callsign/{cs}",
+                headers=HDRS, timeout=5,
             )
-            _time.sleep(0.3)
-    except Exception as e:
-        rs_diag.append(f"outer: {type(e).__name__}: {e}"[:160])
+        except Exception as e:
+            rs_diag.append(f"{cs}: {type(e).__name__}"[:80])
+            break               # host trouble: stop this cycle
+        fetched += 1
+        d_icao = ""
+        if r.status_code == 200:
+            try:
+                fr = (r.json().get("response") or {})
+                if isinstance(fr, dict):
+                    fr = fr.get("flightroute") or {}
+                    dest = fr.get("destination") or {}
+                    d_icao = (dest.get("icao_code") or "").upper()
+            except Exception:
+                pass
+        if d_icao:
+            _route_cache[cs] = (d_icao, now_ts + 6 * 3600)
+            hits += 1
+        else:
+            _route_cache[cs] = ("", now_ts + 3600)
+        _time.sleep(0.15)
+    for cs in seen:
+        cached = _route_cache.get(cs)
+        if cached and cached[0]:
+            dests[cs] = cached[0]
+    rs_diag.append(
+        f"adsbdb: {fetched} fetched this cycle ({hits} routed), "
+        f"{len(new_cs)} pending, cache holds "
+        f"{sum(1 for v in _route_cache.values() if v[0])} routes"
+    )
 
     out = []
     for cs, (la, lo, alt, trk) in seen.items():
