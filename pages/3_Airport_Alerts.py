@@ -393,6 +393,9 @@ def _metar_severity(r):
     severity ladder as the TAF tiers."""
     toks = []
     tier = 3
+    if r.get("ts_now"):
+        tier = min(tier, 1)
+        toks.append("TS")
     if r.get("vis_bad") and r.get("vis") is not None:
         v = r["vis"]
         t = 0 if v < 1 else (1 if v < 3 else 2)
@@ -969,10 +972,10 @@ if run_button:
                 "ScatterplotLayer", data=rings,
                 get_position="[lon, lat]",
                 get_line_color="color",
-                get_radius=30000,
-                radius_min_pixels=10, radius_max_pixels=24,
+                get_radius=22500,
+                radius_min_pixels=7, radius_max_pixels=18,
                 filled=False, stroked=True,
-                line_width_min_pixels=3.5, pickable=True,
+                line_width_min_pixels=3, pickable=True,
             ))
 
         _n_warn = n_warn if fleet else 0
