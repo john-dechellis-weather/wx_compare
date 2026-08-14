@@ -206,7 +206,7 @@ def build_scrub_html(frames: dict, hour_axis: list,
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
-st.title("Hi-Res CAMs (HRRR + NAM 3km)")
+st.title("Hi-Res CAMs - 4 Panel ""(HRRR | NAM | ARW | FV3)")
 st.caption(
     "Convection-allowing model viewer - aviation products, "
     "hourly-updating, with prewarmed hub views."
@@ -226,7 +226,8 @@ with st.sidebar:
     # HRRR + NAM 3km nest (proven idx path, instantaneous fields
     # like HRRR - clean scrubber pairing). NBM/RRFS stay dormant
     # in core.hrrr_cam. NAM retires Oct 2026; revisit then.
-    show_models = {"hrrr": True, "nam_nest": True}
+    show_models = {"hrrr": True, "nam_nest": True,
+                   "hiresw_arw": True, "hiresw_fv3": True}
 
     st.header("Product")
     product_label = st.selectbox(
@@ -266,9 +267,9 @@ with st.sidebar:
     else:
         fhr_all = st.slider(
             "Forecast hour (all models)", 0, 60, 1,
-            help="HRRR f18 hourly (f48 synoptic); NAM nest to "
-                 "f60 on 00/06/12/18Z cycles. Panels clamp to "
-                 "their own max.",
+            help="HRRR f18 hourly (f48 synoptic); NAM to f60 "
+                 "on synoptics; HRW ARW/FV3 to f48 on 00/12Z. "
+                 "Panels clamp to their own max.",
         )
 
     st.divider()
@@ -336,7 +337,7 @@ if active:
             specs.append((m, cyc, fh))
         return specs, notes
 
-    GRID_ORDER = ["hrrr", "nam_nest"]
+    GRID_ORDER = ["hrrr", "nam_nest", "hiresw_arw", "hiresw_fv3"]
 
     if smooth:
         span = min(fhr_hi - fhr_lo, 24)
@@ -548,7 +549,9 @@ else:
         """
         ### What this page is
 
-        HRRR beside the NAM 3km nest, centered on your airport,
+        The classic 4-panel CAM comparison - HRRR, NAM 3km,
+        and both HiRes Window members (ARW, FV3) - centered on
+        your airport,
         aviation products only: 1km reflectivity, echo tops, visibility, ceiling, and gusts,
         with smooth scrubbing. Hub buttons serve prewarmed HRRR
         reflectivity instantly; NAM renders live.
