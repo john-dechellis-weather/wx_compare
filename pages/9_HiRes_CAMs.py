@@ -234,7 +234,17 @@ with st.sidebar:
         if hub_cols[i].button(hub[1:], key=f"hub_{hub}",
                               use_container_width=True):
             st.session_state["cam_icao"] = hub
-    zoom = st.slider("Zoom (degrees)", 1.0, 6.0, 2.5, 0.5)
+    zoom = st.slider(
+        "Zoom (degrees)", 1.0, 6.0, 2.5, 0.5,
+        help="Geographic window - zoom in/out. 2.5 serves "
+             "instantly from the warm store; other values "
+             "render live.",
+    )
+    panel_scale = st.slider(
+        "Panel size (%)", 50, 100, 85, 5,
+        help="Display size of the CAM panels",
+    )
+    st.session_state["panel_scale_v"] = panel_scale
 
     # HRRR + NAM 3km nest (proven idx path, instantaneous fields
     # like HRRR - clean scrubber pairing). NBM/RRFS stay dormant
@@ -454,7 +464,15 @@ if active:
             html, hgt = build_scrub_html(
                 frames, hours, GRID_ORDER
             )
-            _embed_html(html, height=hgt)
+            _sc = st.session_state.get("panel_scale_v", 85)
+            if _sc >= 100:
+                _embed_html(html, height=hgt)
+            else:
+                _wl, _wm, _wr = st.columns(
+                    [(100 - _sc) / 2, float(_sc),
+                     (100 - _sc) / 2])
+                with _wm:
+                    _embed_html(html, height=hgt)
             st.caption(
                 f"{sum(len(v) for v in frames.values())} frames "
                 f"preloaded across {len(frames)} model(s). Scrub away."
@@ -514,7 +532,14 @@ if active:
                             f"range; showing f{spec_fhr[m]:02d} "
                             f"(its max)."
                         )
-                    st.image(res, use_container_width=True)
+                    if panel_scale >= 100:
+                        st.image(res,
+                                 use_container_width=True)
+                    else:
+                        st.image(
+                            res,
+                            width=int(430 * panel_scale / 100),
+                        )
                 else:
                     st.error(f"{cfg['label']}: {res}")
                 if cfg.get("note"):
@@ -554,7 +579,14 @@ else:
         _html, _hgt = build_scrub_html(
             _warm_frames, _axis, _OPEN_ORDER
         )
-        _embed_html(_html, height=_hgt)
+        _sc2 = st.session_state.get("panel_scale_v", 85)
+        if _sc2 >= 100:
+            _embed_html(_html, height=_hgt)
+        else:
+            _owl, _owm, _owr = st.columns(
+                [(100 - _sc2) / 2, float(_sc2), (100 - _sc2) / 2])
+            with _owm:
+                _embed_html(_html, height=_hgt)
         st.caption(
             f"{_n_warm} prewarmed frames served from disk at page "
             f"open."
