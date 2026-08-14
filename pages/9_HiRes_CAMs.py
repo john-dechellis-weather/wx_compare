@@ -437,15 +437,13 @@ if active:
         if not frames:
             st.error("No frames preloaded - check model/product/range.")
         else:
-            import base64
-            import json as _json
             html, hgt = build_scrub_html(
                 frames, hours, GRID_ORDER
             )
             _embed_html(html, height=hgt)
             st.caption(
                 f"{sum(len(v) for v in frames.values())} frames "
-                f"preloaded across {len(order)} model(s). Scrub away."
+                f"preloaded across {len(frames)} model(s). Scrub away."
             )
     else:
         # 2x2 model grid - HRRR keeps the top-right quadrant. All
