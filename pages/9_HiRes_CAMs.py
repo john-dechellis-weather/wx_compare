@@ -229,7 +229,7 @@ with st.sidebar:
     st.header("Region")
     icao_input = st.text_input("Airport ICAO", value="KJFK",
                                max_chars=4).strip().upper()
-    hub_cols = st.columns(4)
+    hub_cols = st.columns(len(WARM_HUBS))
     for i, hub in enumerate(WARM_HUBS):
         if hub_cols[i].button(hub[1:], key=f"hub_{hub}",
                               use_container_width=True):
