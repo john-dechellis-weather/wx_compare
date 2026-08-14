@@ -358,9 +358,43 @@ def build_status_board(results, metar_rows):
         cands.sort(key=lambda c: c[0])
         rank, chip, color, period = cands[0]
         all_txt = "/".join(c[1] for c in cands)
-        rows.append((rank, icao, chip, color, period, e, all_txt))
+        rows.append((rank, icao, chip, color, period, e, all_txt,
+                     cands))
     rows.sort(key=lambda r: (r[0], r[1]))
     return rows
+
+
+# Classic WMO thunderstorm symbol (the station-plot lightning
+# zigzag with arrowhead), as SVG icons. The "beside" variant bakes
+# a rightward pixel offset into its anchor so it sits clear of a
+# station's dot/ring at any zoom.
+def _ts_icon_uri():
+    import urllib.parse
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="64" '
+        'height="64" viewBox="0 0 64 64">'
+        '<g fill="none" stroke-linecap="round" '
+        'stroke-linejoin="round">'
+        '<path d="M24 8 L44 26 L22 38 L40 52" stroke="#FFFFFF" '
+        'stroke-width="11"/>'
+        '<path d="M40 52 L42 40 M40 52 L28 50" stroke="#FFFFFF" '
+        'stroke-width="11"/>'
+        '<path d="M24 8 L44 26 L22 38 L40 52" stroke="#D61A1A" '
+        'stroke-width="5.5"/>'
+        '<path d="M40 52 L42 40 M40 52 L28 50" stroke="#D61A1A" '
+        'stroke-width="5.5"/>'
+        "</g></svg>"
+    )
+    return ("data:image/svg+xml;charset=utf-8,"
+            + urllib.parse.quote(svg))
+
+
+_TS_URI = _ts_icon_uri()
+_TS_ICON = {"url": _TS_URI, "width": 64, "height": 64,
+            "anchorX": 32, "anchorY": 32, "mask": False}
+# anchorX left of the canvas shifts the glyph right of the point
+_TS_ICON_BESIDE = {"url": _TS_URI, "width": 64, "height": 64,
+                   "anchorX": -14, "anchorY": 32, "mask": False}
 
 
 # A320-detailed aircraft icon (style 1: nacelles + sharklets),
@@ -396,12 +430,14 @@ _AC_ICON_RED = {"url": _a320_icon_uri("#E01A1A"), "width": 64,
                 "mask": False}
 
 
-def _metar_severity(r):
+def _metar_severity(r, include_ts=True):
     """(color, token_str) for a breaching METAR row, on the same
-    severity ladder as the TAF tiers."""
+    severity ladder as the TAF tiers. include_ts=False computes
+    the non-thunderstorm severity (the map's dot; TS gets its own
+    glyph)."""
     toks = []
     tier = 3
-    if r.get("ts_now"):
+    if include_ts and r.get("ts_now"):
         tier = min(tier, 1)
         toks.append("TS")
     if r.get("vis_bad") and r.get("vis") is not None:
@@ -428,39 +464,62 @@ def _metar_severity(r):
 
 
 def build_map_markers(board_rows, metar_rows, coords):
-    """Merge TAF board + breaching METARs into ring/fill datasets.
-    Solid fill = current METAR breach; ring = TAF forecast;
-    concentric when both. Each carries its own severity color."""
-    taf = {r[1]: (r[3], r[6]) for r in board_rows}
+    """Merge TAF board + breaching METARs into map datasets.
+
+    Solid fill = current NON-TS METAR breach; ring = NON-TS TAF
+    forecast; thunderstorms (either source) render as the classic
+    WMO lightning glyph instead - standalone at TS-only stations,
+    offset right of the dot/ring when other conditions coexist.
+    Each element keeps its own severity color."""
+    taf = {}
+    for r in board_rows:
+        icao, e, cands = r[1], r[5], r[7]
+        non_ts = [c for c in cands if c[1] != e.get("ts")]
+        taf[icao] = {
+            "ts": bool(e.get("ts")),
+            "ring": non_ts[0][2] if non_ts else None,
+            "txt": r[6],
+        }
     met = {}
     for r in (metar_rows or []):
-        color, toks = _metar_severity(r)
-        if color:
-            met[r["icao"]] = (color, toks)
+        color, toks = _metar_severity(r, include_ts=False)
+        met[r["icao"]] = {
+            "ts": bool(r.get("ts_now")),
+            "fill": color, "toks": toks,
+        }
 
     def _rgb(hexc):
         h = hexc.lstrip("#")
         return [int(h[k:k+2], 16) for k in (0, 2, 4)]
 
-    fills, rings = [], []
+    fills, rings, ts_marks = [], [], []
     for icao in sorted(set(taf) | set(met)):
         if icao not in coords:
             continue
         la, lo = coords[icao]
+        t, m = taf.get(icao), met.get(icao)
         parts = []
-        if icao in met:
-            parts.append(f"NOW: {met[icao][1]}")
-        if icao in taf:
-            parts.append(f"TAF: {taf[icao][1]}")
+        if m and (m["toks"] or m["ts"]):
+            now = m["toks"] or ""
+            if m["ts"]:
+                now = ("TS/" + now) if now else "TS"
+            parts.append(f"NOW: {now}")
+        if t:
+            parts.append(f"TAF: {t['txt']}")
         tip = f"{icao} | " + " | ".join(parts)
         base = {"lat": la, "lon": lo, "tip": tip}
-        if icao in met:
+        has_circle = False
+        if m and m["fill"]:
             fills.append({**base,
-                          "color": _rgb(met[icao][0]) + [235]})
-        if icao in taf:
+                          "color": _rgb(m["fill"]) + [235]})
+            has_circle = True
+        if t and t["ring"]:
             rings.append({**base,
-                          "color": _rgb(taf[icao][0]) + [235]})
-    return fills, rings
+                          "color": _rgb(t["ring"]) + [235]})
+            has_circle = True
+        if (m and m["ts"]) or (t and t["ts"]):
+            ts_marks.append({**base, "beside": has_circle})
+    return fills, rings, ts_marks
 
 
 def render_status_board(rows) -> str:
@@ -483,7 +542,7 @@ def render_status_board(rows) -> str:
     header_row = ("<tr>" + cell("ICAO", header=True)
                   + cell("ALERTS", header=True) + "</tr>")
     body = []
-    for rank, icao, chip, color, period, e, all_txt in rows:
+    for rank, icao, chip, color, period, e, all_txt, _c in rows:
         fg = _TEXT_COLOR.get(color, color)
         hot = color in (_RED, _MAGENTA)
         body.append(
@@ -809,8 +868,12 @@ with st.sidebar:
     st.divider()
     st.header("Map")
     map_height = st.slider(
-        "Map size (px)", 500, 1100, 800, 50,
-        help="Height of the CONUS alert/fleet map",
+        "Map height (px)", 500, 1100, 800, 50,
+    )
+    map_width = st.slider(
+        "Map width (%)", 50, 100, 70, 5,
+        help="Share of the space right of the TAF board; "
+             "remainder pads the right edge",
     )
 
     st.header("Time window")
@@ -912,7 +975,7 @@ if run_button:
 
         coords = cached_station_coords(tuple(JETBLUE_ICAOS))
 
-        fills, rings = build_map_markers(
+        fills, rings, ts_marks = build_map_markers(
             board_rows, metar_rows, coords
         )
 
@@ -985,6 +1048,18 @@ if run_button:
                 filled=False, stroked=True,
                 line_width_min_pixels=3, pickable=True,
             ))
+        if ts_marks:
+            for d in ts_marks:
+                d["icon"] = (_TS_ICON_BESIDE if d["beside"]
+                             else _TS_ICON)
+            layers.append(pdk.Layer(
+                "IconLayer", data=ts_marks,
+                get_position="[lon, lat]",
+                get_icon="icon",
+                get_size=24, size_min_pixels=18,
+                size_max_pixels=30,
+                pickable=True,
+            ))
 
         _n_warn = n_warn if fleet else 0
         _deck = pdk.Deck(
@@ -1013,7 +1088,9 @@ if run_button:
     m3.metric("Airports alerting",
               f"{len(board_rows)} ({n_sev_all} severe)")
 
-    col_taf, col_map, _sp = st.columns([1, 2.4, 1],
+    _map_w = 3.4 * map_width / 100.0
+    _map_r = max(0.05, 3.4 - _map_w)
+    col_taf, col_map, _sp = st.columns([1, _map_w, _map_r],
                                        gap="medium")
 
     with col_taf:
@@ -1031,8 +1108,10 @@ if run_button:
         if _deck is not None:
             st.pydeck_chart(_deck, height=map_height)
             st.caption(
-                "Solid dot = METAR breaching NOW; ring = TAF "
-                "forecast; concentric = both. RED aircraft = "
+                "Solid dot = non-TS METAR breach NOW; ring = "
+                "non-TS TAF forecast; lightning glyph = "
+                "thunderstorm (beside the dot when both). "
+                "RED aircraft = "
                 "destination METAR has TS / LIFR / gusts over "
                 f"35kt (hover for detail). {_fleet_n} JBU "
                 f"airborne{_cov}."
