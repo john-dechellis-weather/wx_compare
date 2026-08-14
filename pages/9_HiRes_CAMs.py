@@ -45,7 +45,7 @@ CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 # frames for each new model cycle so hub views serve instantly.
 from core.cam_warm import (
     HUBS as WARM_HUBS, WARM_HOURS, WARM_PRODUCT, WARM_ZOOM,
-    ensure_warmer_started, warm_get, warm_status,
+    ensure_warmer_started, warm_get, warm_hours, warm_status,
 )
 ensure_warmer_started(CACHE_ROOT)
 
@@ -66,6 +66,19 @@ def cached_station_coords(icao: str):
 
 @st.cache_data(ttl=300, show_spinner=False, max_entries=20)
 def cached_model_cycle(model: str, fhr: int, bucket: str):
+    # The warmer's manifest already knows each model's latest
+    # complete cycle - reading it costs a disk stat instead of
+    # NOMADS round-trips, and the warmer refreshes it continuously.
+    # Only fall back to live probing for models the warmer doesn't
+    # track (or before its first fill), or hours beyond the warm
+    # window where a newer partial cycle may exist.
+    try:
+        if fhr <= max(warm_hours(model)):
+            wc = warm_status(CACHE_ROOT).get(model)
+            if wc:
+                return wc
+    except Exception:
+        pass
     from core.hrrr_cam import latest_cycle
     cyc = latest_cycle(model, fhr)
     return cyc.isoformat() if cyc else None
@@ -379,7 +392,7 @@ if active:
         if warm_ok_s:
             still_plan = []
             for m, cyc, h in plan:
-                got = warm_get(CACHE_ROOT, m, icao, h)                     if h in WARM_HOURS else None
+                got = warm_get(CACHE_ROOT, m, icao, h)                     if h in warm_hours(m) else None
                 if got:
                     frames.setdefault(m, {})[h] = got[0]
                 else:
@@ -511,13 +524,19 @@ else:
     # INSTANT-OPEN: before any click, serve the prewarmed default-hub
     # scrub straight from disk (sub-second). Custom anything = the
     # normal Render flow.
-    _open_hub = "KJFK"
+    _hub_keys = list(WARM_HUBS)
+    _hub_cols = st.columns(len(_hub_keys))
+    for _i, _hk in enumerate(_hub_keys):
+        if _hub_cols[_i].button(_hk[1:], key=f"open_{_hk}",
+                                use_container_width=True):
+            st.session_state["open_hub"] = _hk
+    _open_hub = st.session_state.get("open_hub", "KJFK")
     _OPEN_ORDER = ["hrrr", "nam_nest", "hiresw_arw",
                    "hiresw_fv3"]
     _warm_frames: dict = {}
     try:
         for _m in _OPEN_ORDER:
-            for _h in WARM_HOURS:
+            for _h in warm_hours(_m):
                 got = warm_get(CACHE_ROOT, _m, _open_hub, _h)
                 if got:
                     _warm_frames.setdefault(_m, {})[_h] = got[0]
