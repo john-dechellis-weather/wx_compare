@@ -865,6 +865,11 @@ with st.sidebar:
 
     st.divider()
     st.header("Map")
+    radar_on = st.checkbox(
+        "Radar overlay", value=True,
+        help="Latest national NEXRAD composite (via Iowa "
+             "Environmental Mesonet), ~5-min updates",
+    )
     map_height = st.slider(
         "Map height (px)", 500, 1100, 800, 50,
     )
@@ -965,6 +970,7 @@ if run_button:
     _fleet_n = 0
     _n_warn = 0
     _cov = ""
+    _rad = ""
     _map_err = None
     try:
         import pydeck as pdk
@@ -988,6 +994,15 @@ if run_button:
         # No custom city layer: the light basemap already labels
         # major cities at these zooms (ours doubled them)
         layers = []
+        if radar_on:
+            layers.append(pdk.Layer(
+                "TileLayer",
+                data=("https://mesonet.agron.iastate.edu/cache/"
+                      "tile.py/1.0.0/nexrad-n0q-900913/"
+                      "{z}/{x}/{y}.png"),
+                min_zoom=0, max_zoom=12, tile_size=256,
+                opacity=0.55,
+            ))
         if fleet:
             fleet_disp = []
             n_warn = 0
@@ -1072,6 +1087,8 @@ if run_button:
         _fleet_n = len(fleet)
         _cov = (f" (coverage {ok_tiles}/{n_tiles} tiles)"
                 if ok_tiles < n_tiles else "")
+        _rad = (" Radar: NEXRAD composite via IEM."
+                if radar_on else "")
     except Exception as e:
         _map_err = str(e)
 
@@ -1119,7 +1136,7 @@ if run_button:
                 "RED aircraft = "
                 "destination METAR has TS / LIFR / gusts over "
                 f"35kt (hover for detail). {_fleet_n} JBU "
-                f"airborne{_cov}."
+                f"airborne{_cov}.{_rad}"
             )
         else:
             st.caption(f"Map unavailable: {_map_err}")
