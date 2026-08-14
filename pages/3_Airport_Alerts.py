@@ -369,21 +369,19 @@ def build_status_board(results, metar_rows):
 # a rightward pixel offset into its anchor so it sits clear of a
 # station's dot/ring at any zoom.
 def _ts_icon_uri():
+    """Warning triangle with a lightning bolt cut out - the
+    hazard-badge read, solid so it sits as a sibling to the
+    dots rather than floating linework."""
     import urllib.parse
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" width="64" '
         'height="64" viewBox="0 0 64 64">'
-        '<g fill="none" stroke-linecap="round" '
-        'stroke-linejoin="round">'
-        '<path d="M24 8 L44 26 L22 38 L40 52" stroke="#FFFFFF" '
-        'stroke-width="11"/>'
-        '<path d="M40 52 L42 40 M40 52 L28 50" stroke="#FFFFFF" '
-        'stroke-width="11"/>'
-        '<path d="M24 8 L44 26 L22 38 L40 52" stroke="#D61A1A" '
-        'stroke-width="5.5"/>'
-        '<path d="M40 52 L42 40 M40 52 L28 50" stroke="#D61A1A" '
-        'stroke-width="5.5"/>'
-        "</g></svg>"
+        '<path d="M32 6 L60 56 L4 56 Z" fill="#D61A1A" '
+        'stroke="#FFFFFF" stroke-width="4" '
+        'stroke-linejoin="round"/>'
+        '<path d="M31 20 L39 20 L34 32 L40 32 L27 50 '
+        'L31 36 L25 36 Z" fill="#FFFFFF"/>'
+        "</svg>"
     )
     return ("data:image/svg+xml;charset=utf-8,"
             + urllib.parse.quote(svg))
