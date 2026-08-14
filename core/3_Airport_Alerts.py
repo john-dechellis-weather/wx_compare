@@ -1094,15 +1094,15 @@ if run_button:
                                        gap="medium")
 
     with col_taf:
-        st.subheader("TAF alerts")
         if not tsra_enabled:
             st.caption("TSRA alerts disabled in sidebar.")
         if board_rows:
             # Pane height tracks the map-height slider exactly;
             # long alert lists scroll inside it
             st.markdown(
-                f'<div style="height:{map_height}px; '
-                f'overflow-y:auto; padding-right:6px;">'
+                f'<div style="display:block; '
+                f'height:{map_height}px; overflow-y:auto; '
+                f'overflow-x:hidden; padding-right:6px;">'
                 + render_status_board(board_rows)
                 + "</div>",
                 unsafe_allow_html=True,
