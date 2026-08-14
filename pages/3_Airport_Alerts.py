@@ -1013,7 +1013,7 @@ if run_button:
     m3.metric("Airports alerting",
               f"{len(board_rows)} ({n_sev_all} severe)")
 
-    col_taf, col_map, _sp = st.columns([1, 2.6, 0.4],
+    col_taf, col_map, _sp = st.columns([1, 2.4, 1],
                                        gap="medium")
 
     with col_taf:
