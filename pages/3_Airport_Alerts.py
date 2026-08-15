@@ -384,8 +384,11 @@ def _ts_text_icon_uri():
             + urllib.parse.quote(svg))
 
 
+# anchorY 106 puts the glyph's BOTTOM edge (anchorY-56 units)
+# above the station scaled with icon size - paired with meter
+# units below, clearance tracks the ring across all zooms
 _TS_TEXT_ICON = {"url": _ts_text_icon_uri(), "width": 96,
-                 "height": 56, "anchorX": 48, "anchorY": 112,
+                 "height": 56, "anchorX": 48, "anchorY": 106,
                  "mask": False}
 
 
@@ -1160,12 +1163,16 @@ if run_button:
         if ts_marks:
             for d in ts_marks:
                 d["icon"] = _TS_TEXT_ICON
+            # Meter-based sizing: the glyph scales with zoom on
+            # the SAME curve as the ring's meter radius, so their
+            # separation stays proportional - snug zoomed out,
+            # roomy zoomed in
             layers.append(pdk.Layer(
                 "IconLayer", data=ts_marks,
                 get_position="[lon, lat]",
                 get_icon="icon",
-                get_size=17, size_min_pixels=14,
-                size_max_pixels=22,
+                get_size=34000, size_units="meters",
+                size_min_pixels=12, size_max_pixels=20,
                 pickable=True,
             ))
 
