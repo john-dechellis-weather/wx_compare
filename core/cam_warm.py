@@ -35,8 +35,10 @@ HUBS = {
 }
 WARM_ZOOM = 2.5
 # Bump when render styling changes so prewarmed frames rebuild
-# (v2: 10 nm range ring + center marker)
-WARM_STYLE = 2
+# (v2: 10 nm range ring; v3: fix hub-center leak - every frame
+# had rendered centered on the LAST hub in the dict, Boston,
+# regardless of which hub's path it was saved under)
+WARM_STYLE = 3
 WARM_PRODUCT = "REFD"
 # Per-model warm depth: HRRR's hourly cycles top out at f18;
 # NAM/HRW warm a full day. Raise these toward 48/60 for total
@@ -198,6 +200,7 @@ def _warm_model(cache_root: Path, model: str, log) -> None:
 
     n_ok = 0
     for icao, h in build:
+            _hla, _hlo = HUBS[icao]
             res = data.get((icao, h))
             if isinstance(res, Exception) or res is None:
                 continue
@@ -209,8 +212,8 @@ def _warm_model(cache_root: Path, model: str, log) -> None:
             )
             try:
                 png = render_field(
-                    WARM_PRODUCT, vals, lats, lons, lat, lon,
-                    WARM_ZOOM, title,
+                    WARM_PRODUCT, vals, lats, lons,
+                    _hla, _hlo, WARM_ZOOM, title,
                 )
             except Exception:
                 continue
