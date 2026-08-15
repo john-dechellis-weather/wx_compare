@@ -600,10 +600,46 @@ def render_field(
          center_lat - zoom_deg, center_lat + zoom_deg],
         crs=ccrs.PlateCarree(),
     )
-    mesh = ax.pcolormesh(
-        lons, lats, data, cmap=cmap, norm=norm, shading="auto",
-        transform=ccrs.PlateCarree(), zorder=2,
-    )
+    # Contour-smoothed rendering (Pivotal/TT-style): upsample the
+    # native grid 3x bilinearly, then filled contours at the
+    # palette boundaries subdivided 2x - smooth organic edges
+    # instead of 3km blocks. Falls back to the honest mesh if
+    # scipy or contouring balks (e.g. degenerate crops).
+    mesh = None
+    try:
+        from scipy import ndimage as _ndi
+
+        _bg = float(norm.boundaries[0]) - 1.0
+        _fill = np.asarray(
+            np.ma.filled(data, _bg), dtype=np.float32)
+        _vz = _ndi.zoom(_fill, 3, order=1)
+        _la2 = (lats if getattr(lats, "ndim", 1) == 2
+                else np.broadcast_to(
+                    np.asarray(lats)[:, None],
+                    (len(lats), len(lons))))
+        _lo2 = (lons if getattr(lons, "ndim", 1) == 2
+                else np.broadcast_to(
+                    np.asarray(lons)[None, :],
+                    (len(lats), len(lons))))
+        _laz = _ndi.zoom(np.asarray(_la2, np.float64), 3, order=1)
+        _loz = _ndi.zoom(np.asarray(_lo2, np.float64), 3, order=1)
+        _b = np.asarray(norm.boundaries, dtype=float)
+        _lv = np.sort(np.unique(np.concatenate(
+            [_b, (_b[:-1] + _b[1:]) / 2.0])))
+        mesh = ax.contourf(
+            _loz, _laz, _vz, levels=_lv, cmap=cmap, norm=norm,
+            extend="max", antialiased=True,
+            transform=ccrs.PlateCarree(), zorder=2,
+        )
+        del _fill, _vz, _laz, _loz
+    except Exception:
+        mesh = None
+    if mesh is None:
+        mesh = ax.pcolormesh(
+            lons, lats, data, cmap=cmap, norm=norm,
+            shading="auto",
+            transform=ccrs.PlateCarree(), zorder=2,
+        )
     try:
         coast = cfeature.COASTLINE.with_scale("10m")
         states = cfeature.STATES.with_scale("10m")
