@@ -1108,7 +1108,9 @@ if run_button:
                 pickable=True,
             ))
 
-        _n_warn = n_warn if fleet else 0
+        _n_warn = (sum(1 for d in fleet
+                       if dest_warn.get(d.get("dest", "")))
+                   if fleet else 0)
         _base_layers = layers
         _deck = True   # data phase ok; the fragment builds the deck
         _fleet_n = len(fleet)
