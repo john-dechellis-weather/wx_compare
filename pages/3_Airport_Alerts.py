@@ -373,9 +373,9 @@ def _ts_text_icon_uri():
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" width="96" '
         'height="40" viewBox="0 0 96 40">'
-        '<text x="48" y="33" text-anchor="middle" '
+        '<text x="48" y="31" text-anchor="middle" '
         'font-family="Arial, Helvetica, sans-serif" '
-        'font-size="34" font-weight="900" fill="#E01A1A" '
+        'font-size="30" font-weight="900" fill="#E01A1A" '
         'stroke="#FFFFFF" stroke-width="2" '
         'paint-order="stroke">TS</text>'
         "</svg>"
@@ -1085,13 +1085,6 @@ with st.sidebar:
 
     st.divider()
     st.header("Map")
-    with st.expander("TS position tuner (temporary)"):
-        st.slider("TS horizontal px (+right)", -60, 60, 0, 2,
-                  key="ts_dx")
-        st.slider("TS vertical px (-up)", -80, 0, -24, 2,
-                  key="ts_dy")
-        st.caption("Screen pixels from the ring center. When it "
-                   "looks right, tell Claude the two values.")
     map_height = st.slider(
         "Map height (px)", 500, 1200, 800, 50,
         help="Width is fluid (fills the space beside the TAF "
@@ -1249,8 +1242,9 @@ if run_button:
         if ts_marks:
             for d in ts_marks:
                 d["icon"] = _TS_TEXT_ICON
-            _dx = st.session_state.get("ts_dx", 0)
-            _dy = st.session_state.get("ts_dy", -24)
+            # Calibrated by eye 8/15: (0, -20) screen px from
+            # ring center
+            _dx, _dy = 0, -20
             layers.append(pdk.Layer(
                 "IconLayer", data=ts_marks,
                 get_position="[lon, lat]",
