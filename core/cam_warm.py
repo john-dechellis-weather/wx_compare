@@ -38,7 +38,7 @@ WARM_ZOOM = 2.5
 # (v2: 10 nm range ring; v3: fix hub-center leak - every frame
 # had rendered centered on the LAST hub in the dict, Boston,
 # regardless of which hub's path it was saved under)
-WARM_STYLE = 3
+WARM_STYLE = 4   # v4: contour-smoothed rendering
 WARM_PRODUCT = "REFD"
 # Per-model warm depth: HRRR's hourly cycles top out at f18;
 # NAM/HRW warm a full day. Raise these toward 48/60 for total
