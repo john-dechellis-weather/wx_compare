@@ -425,6 +425,82 @@ _AC_ICON_RED = {"url": _a320_icon_uri("#E01A1A"), "width": 64,
                 "mask": False}
 
 
+def _legend_html() -> str:
+    """Map key rendered with the actual marker artwork - SVG
+    swatches for circles, the real A320 data-URIs, bold TS."""
+    plane_b = _a320_icon_uri()
+    plane_r = _a320_icon_uri("#E01A1A")
+
+    def circ(kind, color):
+        if kind == "dot":
+            body = (f'<circle cx="11" cy="11" r="6" '
+                    f'fill="{color}" stroke="#000"/>')
+        elif kind == "ring":
+            body = (f'<circle cx="11" cy="11" r="8" fill="none" '
+                    f'stroke="{color}" stroke-width="2.6"/>')
+        else:   # both
+            body = (
+                f'<circle cx="11" cy="11" r="9" fill="none" '
+                f'stroke="{color}" stroke-width="2.4"/>'
+                '<circle cx="11" cy="11" r="4.5" fill="#FF00FF" '
+                'stroke="#000"/>'
+            )
+        return ('<svg width="22" height="22" '
+                'xmlns="http://www.w3.org/2000/svg">'
+                + body + "</svg>")
+
+    row_style = ("display:flex; align-items:center; gap:8px; "
+                 "padding:2px 0;")
+    txt = ("color:#000; -webkit-text-fill-color:#000; "
+           f"font-family:{_FONT}; font-size:12px;")
+    rows = [
+        (circ("dot", "#FF00FF"),
+         "Solid dot - METAR breaching NOW "
+         "(color = severity)"),
+        (circ("ring", "#FF4040"),
+         "Ring - TAF forecast alert (worst condition)"),
+        (circ("both", "#FF4040"),
+         "Concentric - breaching now AND forecast"),
+        ('<span style="color:#E01A1A; '
+         "-webkit-text-fill-color:#E01A1A; font-weight:900; "
+         f'font-family:Arial; font-size:14px;">TS</span>',
+         "Thunderstorm reported in the current METAR"),
+        (f'<img src="{plane_b}" width="20" height="20"/>',
+         "JBU aircraft (points along heading)"),
+        (f'<img src="{plane_r}" width="20" height="20"/>',
+         "Destination has TS / LIFR / gusts &gt;35kt"),
+    ]
+    body = "".join(
+        f'<div style="{row_style}">'
+        f'<span style="width:24px; text-align:center;">{sw}</span>'
+        f'<span style="{txt}">{label}</span></div>'
+        for sw, label in rows
+    )
+    sev = (
+        f'<div style="{row_style}"><span style="width:24px;">'
+        "</span>"
+        f'<span style="{txt}">Severity: '
+        '<b style="color:#FF00FF; -webkit-text-fill-color:'
+        '#FF00FF;">magenta</b> &gt; '
+        '<b style="color:#E01A1A; -webkit-text-fill-color:'
+        '#E01A1A;">red</b> &gt; '
+        '<b style="color:#CC6600; -webkit-text-fill-color:'
+        '#CC6600;">orange</b>/<b style="color:#B8860B; '
+        '-webkit-text-fill-color:#B8860B;">yellow</b>'
+        "</span></div>"
+    )
+    return (
+        '<div style="background:#FFFFFF; border:1px solid #000; '
+        'padding:8px 12px; margin-top:14px; width:auto; '
+        'display:inline-block;">'
+        f'<div style="{txt} font-weight:bold; '
+        'text-decoration:underline; margin-bottom:4px;">'
+        "MAP KEY</div>"
+        + body + sev + "</div>"
+    )
+
+
+
 def _metar_severity(r, include_ts=True):
     """(color, token_str) for a breaching METAR row, on the same
     severity ladder as the TAF tiers. include_ts=False computes
@@ -1217,6 +1293,7 @@ if run_button:
 
         else:
             st.markdown(_no_alerts(), unsafe_allow_html=True)
+        st.markdown(_legend_html(), unsafe_allow_html=True)
 
     @st.fragment
     def _map_fragment():
