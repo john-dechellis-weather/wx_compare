@@ -917,6 +917,26 @@ def cached_analyze(
 # UI
 # ---------------------------------------------------------------------------
 st.title("Airport Alerts")
+st.markdown(
+    """
+    <style>
+    [data-testid="stDeckGlJsonChart"],
+    [data-testid="stDeckGlJsonChart"] iframe,
+    [data-testid="stDeckGlJsonChart"] > div {
+        height: calc(100vh - 330px) !important;
+        min-height: 480px !important;
+    }
+    .tafpane {
+        height: calc(100vh - 330px);
+        min-height: 480px;
+        overflow-y: auto;
+        overflow-x: hidden;
+        padding-right: 6px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 st.caption(
     f"Scans TAFs from {len(JETBLUE_ICAOS)} JetBlue destinations and flags "
     "airports forecast to see low visibility, low ceilings, or thunderstorms."
@@ -948,9 +968,11 @@ with st.sidebar:
 
     st.divider()
     st.header("Map")
-    map_height = st.slider(
-        "Map height (px)", 500, 1100, 800, 50,
-    )
+    # Height now tracks the browser window via CSS (100vh minus
+    # the header/strip above the map). Resizing the window
+    # resizes map + TAF pane instantly in the browser - deck.gl's
+    # resize observer redraws the canvas with no Streamlit rerun.
+    st.caption("Map height follows the window automatically.")
     map_width = st.slider(
         "Map width (%)", 50, 100, 70, 5,
         help="Share of the space right of the TAF board; "
@@ -1142,9 +1164,7 @@ if run_button:
             # Pane height tracks the map-height slider exactly;
             # long alert lists scroll inside it
             st.markdown(
-                f'<div style="display:block; '
-                f'height:{map_height}px; overflow-y:auto; '
-                f'overflow-x:hidden; padding-right:6px;">'
+                '<div class="tafpane">'
                 + render_status_board(board_rows)
                 + "</div>",
                 unsafe_allow_html=True,
@@ -1258,7 +1278,7 @@ if run_button:
             else:
                 _rad = (" Radar: NEXRAD reflectivity via IEM "
                         "(MRMS fallback).")
-        st.pydeck_chart(deck, height=map_height)
+        st.pydeck_chart(deck, height=700)
         st.caption(
             "Solid dot = non-TS METAR breach NOW; ring = "
             "non-TS TAF forecast; lightning glyph = "
@@ -1466,7 +1486,7 @@ if run_button:
                 st.write(f"**{icao}**: {err}")
 
 else:
-    st.info("Adjust thresholds and click **Refresh alerts** in the sidebar. ***This page takes about 30 seconds to load***")
+    st.info("Adjust thresholds and click **Refresh alerts** in the sidebar.")
 
     st.markdown(
         """
