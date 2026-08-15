@@ -619,14 +619,13 @@ _FLEET_TILES = [
 
 
 @st.cache_data(ttl=300, show_spinner=False, max_entries=2)
-def cached_mrms_overlay(bucket5: str):
+def cached_mrms_cells(bucket5: str):
     """Latest MRMS MergedReflectivityQCComposite from the open
-    NOAA bucket, rendered to a transparent PNG data-URI for the
-    map's BitmapLayer. Returns (data_uri, timestamp_str, bounds)
-    or raises - callers fall back to the IEM WMS."""
-    import base64
+    NOAA bucket as colored grid cells for a GridCellLayer.
+    (An image data-URI was the natural shape, but Streamlit's
+    deck.gl JSON expression parser rejects 'data:' URIs - cells
+    ride the normal data path instead.) Returns (cells, ts, n)."""
     import gzip
-    import io
     import re as _re
     import tempfile
     from datetime import datetime as _dt
@@ -641,10 +640,8 @@ def cached_mrms_overlay(bucket5: str):
     key = None
     for day_off in (0, 1):
         d = (_dt.utcnow() - _td(days=day_off)).strftime("%Y%m%d")
-        r = _rq.get(
-            f"{S3}/?list-type=2&prefix={PFX}/{d}/",
-            timeout=10,
-        )
+        r = _rq.get(f"{S3}/?list-type=2&prefix={PFX}/{d}/",
+                    timeout=10)
         if r.status_code != 200:
             continue
         keys = _re.findall(r"<Key>([^<]+\.grib2\.gz)</Key>",
@@ -654,7 +651,6 @@ def cached_mrms_overlay(bucket5: str):
             break
     if not key:
         raise RuntimeError("no MRMS files listed")
-
     ts = _re.search(r"_(\d{8}-\d{6})", key)
     ts_str = ts.group(1) if ts else "?"
 
@@ -678,37 +674,31 @@ def cached_mrms_overlay(bucket5: str):
     import os as _os
     _os.unlink(path)
 
-    # Downsample ~5x: 3500x7000 -> 700x1400 (plenty for a CONUS
-    # overlay), orient north-up, mask below 5 dBZ
-    step = 5
+    step = 5   # 0.05 deg cells
     vals = vals[::step, ::step]
-    la = lats[::step]
-    lo = lons[::step]
-    if la[0] < la[-1]:
-        vals = vals[::-1]
-        la = la[::-1]
-    vals = _np.ma.masked_invalid(vals)
-    vals = _np.ma.masked_less(vals, 5)
+    la = lats[::step].astype(_np.float64)
+    lo = lons[::step].astype(_np.float64)
+    lo = _np.where(lo > 180, lo - 360, lo)
 
     from metpy.plots import colortables
     norm, cmap = colortables.get_with_steps(
         "NWSReflectivity", 5, 5)
-    rgba = cmap(norm(vals.filled(_np.nan)))
-    rgba[..., 3] = _np.where(vals.mask, 0.0, 0.85)
-    img8 = (rgba * 255).astype(_np.uint8)
 
-    from PIL import Image
-    buf = io.BytesIO()
-    Image.fromarray(img8, "RGBA").save(buf, format="PNG",
-                                       optimize=True)
-    uri = ("data:image/png;base64,"
-           + base64.b64encode(buf.getvalue()).decode())
-
-    lo = _np.where(lo > 180, lo - 360, lo)
-    bounds = [float(lo.min()), float(la.min()),
-              float(lo.max()), float(la.max())]
-    del vals, rgba, img8
-    return uri, ts_str, bounds
+    # Threshold adapts upward if a violent day would overload the
+    # browser payload
+    for thresh in (10.0, 15.0, 20.0):
+        ii, jj = _np.where(
+            _np.isfinite(vals) & (vals >= thresh))
+        if ii.size <= 60000:
+            break
+    v = vals[ii, jj]
+    rgba = (cmap(norm(v)) * 255).astype(_np.uint8)
+    cells = [
+        {"lon": float(lo[j]), "lat": float(la[i]),
+         "color": [int(c[0]), int(c[1]), int(c[2]), 200]}
+        for i, j, c in zip(ii.tolist(), jj.tolist(), rgba)
+    ]
+    return cells, ts_str, len(cells)
 
 
 @st.cache_data(ttl=90, show_spinner=False, max_entries=2)
@@ -1097,12 +1087,14 @@ if run_button:
             _mrms_ts = None
             if radar_mode == "MRMS reflectivity":
                 try:
-                    _uri, _mrms_ts, _mb = \
-                        cached_mrms_overlay(_rb)
+                    _cells, _mrms_ts, _ncells = \
+                        cached_mrms_cells(_rb)
                     layers.append(pdk.Layer(
-                        "BitmapLayer", data=None,
-                        image=_uri, bounds=_mb,
-                        opacity=0.65,
+                        "GridCellLayer", data=_cells,
+                        get_position="[lon, lat]",
+                        get_fill_color="color",
+                        cell_size=5500, extruded=False,
+                        pickable=False, opacity=0.5,
                     ))
                 except Exception:
                     _mrms_ts = None
