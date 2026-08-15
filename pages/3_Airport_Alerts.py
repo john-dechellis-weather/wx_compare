@@ -594,6 +594,26 @@ def cached_station_coords(icaos_tuple: tuple):
 # fetches callsigns it hasn't seen; misses negative-cache for an
 # hour so unknowns aren't hammered.
 _route_cache: dict = {}     # cs -> (dest_icao_or_"", expiry_ts)
+_ROUTE_CACHE_PATH = _MAP_CACHE_ROOT / "route_cache.json"
+try:
+    import json as _json_rc
+    for _k, _v in _json_rc.loads(
+            _ROUTE_CACHE_PATH.read_text()).items():
+        _route_cache[_k] = (_v[0], float(_v[1]))
+except Exception:
+    pass
+
+
+def _save_route_cache():
+    try:
+        import json as _json_rc
+        import time as _t_rc
+        now = _t_rc.time()
+        keep = {k: v for k, v in _route_cache.items()
+                if v[1] > now}
+        _ROUTE_CACHE_PATH.write_text(_json_rc.dumps(keep))
+    except Exception:
+        pass
 
 
 _FLEET_TILES = [
@@ -772,7 +792,7 @@ def cached_fleet(bucket: str):
                 results.append(res)
                 if err == "EMPTY200":
                     empties.append(tile)
-            _time.sleep(0.35)
+            _time.sleep(0.25)
 
     hosts = ("adsb.lol", "adsb.fi")
     lanes = {h: [t for i, t in enumerate(_FLEET_TILES)
@@ -799,7 +819,7 @@ def cached_fleet(bucket: str):
         if len(empties[h]) >= 3:
             other = hosts[1] if h == hosts[0] else hosts[0]
             for tile in empties[h]:
-                _time.sleep(0.35)
+                _time.sleep(0.25)
                 res, err = _call(other, tile)
                 if res is not None and err != "EMPTY200":
                     results.append(res)
@@ -809,7 +829,7 @@ def cached_fleet(bucket: str):
     for h in hosts:
         other = hosts[1] if h == hosts[0] else hosts[0]
         for tile, err1 in leftovers[h]:
-            _time.sleep(0.35)
+            _time.sleep(0.25)
             res, err2 = _call(other, tile)
             if res is None:
                 fails.append(
@@ -862,7 +882,9 @@ def cached_fleet(bucket: str):
             hits += 1
         else:
             _route_cache[cs] = ("", now_ts + 3600)
-        _time.sleep(0.15)
+        _time.sleep(0.05)
+    if fetched:
+        _save_route_cache()
     for cs in seen:
         cached = _route_cache.get(cs)
         if cached and cached[0]:
@@ -917,6 +939,46 @@ def cached_analyze(
 # UI
 # ---------------------------------------------------------------------------
 st.title("Airport Alerts")
+# Prefetch overlap: start the paced fetchers (fleet sweep, MRMS
+# decode) in background threads immediately - their politeness
+# sleeps then run concurrently with TAF/METAR fetching and
+# analysis instead of serially after it (this was most of the
+# minute-long cold load).
+def _kick_prefetch():
+    from concurrent.futures import ThreadPoolExecutor
+
+    from streamlit.runtime.scriptrunner import (
+        add_script_run_ctx, get_script_run_ctx,
+    )
+    if "_prefetch_pool" not in st.session_state:
+        st.session_state["_prefetch_pool"] = \
+            ThreadPoolExecutor(max_workers=2)
+    pool = st.session_state["_prefetch_pool"]
+    ctx = get_script_run_ctx()
+    b1 = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+
+    def _fleet_job():
+        return cached_fleet(b1)
+
+    def _mrms_job():
+        try:
+            return cached_mrms_cells(b1[:-1])
+        except Exception:
+            return None
+
+    for name, job in (("_fleet_future", _fleet_job),
+                      ("_mrms_future", _mrms_job)):
+        fut = pool.submit(job)
+        try:
+            for t in pool._threads:
+                add_script_run_ctx(t, ctx)
+        except Exception:
+            pass
+        st.session_state[name] = fut
+
+
+_kick_prefetch()
+
 st.markdown(
     """
     <style>
@@ -1085,8 +1147,13 @@ if run_button:
 
         bucket1 = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
         try:
-            (fleet, ok_tiles, n_tiles, tile_fails,
-             tile_stats, rs_diag) = cached_fleet(bucket1)
+            _fut = st.session_state.pop("_fleet_future", None)
+            if _fut is not None:
+                (fleet, ok_tiles, n_tiles, tile_fails,
+                 tile_stats, rs_diag) = _fut.result(timeout=60)
+            else:
+                (fleet, ok_tiles, n_tiles, tile_fails,
+                 tile_stats, rs_diag) = cached_fleet(bucket1)
         except Exception:
             fleet, ok_tiles, n_tiles = [], 0, 0
             tile_fails, tile_stats, rs_diag = [], [], []
