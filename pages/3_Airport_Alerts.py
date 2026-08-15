@@ -948,15 +948,6 @@ with st.sidebar:
 
     st.divider()
     st.header("Map")
-    radar_mode = st.radio(
-        "Radar overlay",
-        ["MRMS reflectivity", "Echo tops", "Off"],
-        index=0, horizontal=True,
-        help="Latest national NEXRAD composite or 8-bit net echo "
-             "tops (via Iowa Environmental Mesonet), ~5-min "
-             "updates",
-    )
-    radar_on = radar_mode != "Off"
     map_height = st.slider(
         "Map height (px)", 500, 1100, 800, 50,
     )
@@ -1081,6 +1072,96 @@ if run_button:
         # No custom city layer: the light basemap already labels
         # major cities at these zooms (ours doubled them)
         layers = []
+        if fills:
+            # Solid core: current METAR breach (trouble NOW)
+            layers.append(pdk.Layer(
+                "ScatterplotLayer", data=fills,
+                get_position="[lon, lat]",
+                get_fill_color="color",
+                get_radius=15000,
+                radius_min_pixels=5, radius_max_pixels=13,
+                stroked=True, get_line_color=[0, 0, 0],
+                line_width_min_pixels=1, pickable=True,
+            ))
+        if rings:
+            # Hollow ring: TAF forecast breach (trouble COMING);
+            # concentric around a core when both apply
+            layers.append(pdk.Layer(
+                "ScatterplotLayer", data=rings,
+                get_position="[lon, lat]",
+                get_line_color="color",
+                get_radius=22500,
+                radius_min_pixels=7, radius_max_pixels=18,
+                filled=False, stroked=True,
+                line_width_min_pixels=3, pickable=True,
+            ))
+        if ts_marks:
+            for d in ts_marks:
+                d["icon"] = (_TS_ICON_BESIDE if d["beside"]
+                             else _TS_ICON)
+            layers.append(pdk.Layer(
+                "IconLayer", data=ts_marks,
+                get_position="[lon, lat]",
+                get_icon="icon",
+                get_size=24, size_min_pixels=18,
+                size_max_pixels=30,
+                pickable=True,
+            ))
+
+        _n_warn = n_warn if fleet else 0
+        _base_layers = layers
+        _deck = True   # data phase ok; the fragment builds the deck
+        _fleet_n = len(fleet)
+        _cov = (f" (coverage {ok_tiles}/{n_tiles} tiles)"
+                if ok_tiles < n_tiles else "")
+    except Exception as e:
+        _map_err = str(e)
+
+    # Status strip: the three numbers that summarize the network
+    n_sev_all = sum(1 for r in board_rows if r[0] == 0)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("JBU flights airborne", _fleet_n if _deck else "-")
+    m2.metric("Inbound to hazards",
+              _n_warn if _deck else "-",
+              help="Destination METAR currently TS, LIFR, or "
+                   "35kt+ - these aircraft show RED on the map")
+    m3.metric("Airports alerting",
+              f"{len(board_rows)} ({n_sev_all} severe)")
+
+    _map_w = 3.4 * map_width / 100.0
+    _map_r = max(0.05, 3.4 - _map_w)
+    col_taf, col_map, _sp = st.columns([1, _map_w, _map_r],
+                                       gap="medium")
+
+    with col_taf:
+        if not tsra_enabled:
+            st.caption("TSRA alerts disabled in sidebar.")
+        if board_rows:
+            # Pane height tracks the map-height slider exactly;
+            # long alert lists scroll inside it
+            st.markdown(
+                f'<div style="display:block; '
+                f'height:{map_height}px; overflow-y:auto; '
+                f'overflow-x:hidden; padding-right:6px;">'
+                + render_status_board(board_rows)
+                + "</div>",
+                unsafe_allow_html=True,
+            )
+
+        else:
+            st.markdown(_no_alerts(), unsafe_allow_html=True)
+
+    @st.fragment
+    def _map_fragment():
+        import pydeck as pdk
+        radar_mode = st.radio(
+            "Radar overlay",
+            ["MRMS reflectivity", "Echo tops", "Off"],
+            index=0, horizontal=True, key="radar_mode_f",
+        )
+        radar_on = radar_mode != "Off"
+        layers = []
+        _mrms_ts = None
         if radar_on:
             _rb = datetime.now(timezone.utc).strftime(
                 "%Y%m%d%H%M")[:-1]
@@ -1155,44 +1236,8 @@ if run_button:
                 get_text_anchor='"start"',
                 get_pixel_offset=[10, -10],
             ))
-        if fills:
-            # Solid core: current METAR breach (trouble NOW)
-            layers.append(pdk.Layer(
-                "ScatterplotLayer", data=fills,
-                get_position="[lon, lat]",
-                get_fill_color="color",
-                get_radius=15000,
-                radius_min_pixels=5, radius_max_pixels=13,
-                stroked=True, get_line_color=[0, 0, 0],
-                line_width_min_pixels=1, pickable=True,
-            ))
-        if rings:
-            # Hollow ring: TAF forecast breach (trouble COMING);
-            # concentric around a core when both apply
-            layers.append(pdk.Layer(
-                "ScatterplotLayer", data=rings,
-                get_position="[lon, lat]",
-                get_line_color="color",
-                get_radius=22500,
-                radius_min_pixels=7, radius_max_pixels=18,
-                filled=False, stroked=True,
-                line_width_min_pixels=3, pickable=True,
-            ))
-        if ts_marks:
-            for d in ts_marks:
-                d["icon"] = (_TS_ICON_BESIDE if d["beside"]
-                             else _TS_ICON)
-            layers.append(pdk.Layer(
-                "IconLayer", data=ts_marks,
-                get_position="[lon, lat]",
-                get_icon="icon",
-                get_size=24, size_min_pixels=18,
-                size_max_pixels=30,
-                pickable=True,
-            ))
-
-        _n_warn = n_warn if fleet else 0
-        _deck = pdk.Deck(
+        layers.extend(_base_layers)
+        deck = pdk.Deck(
             layers=layers,
             initial_view_state=pdk.ViewState(
                 latitude=38.5, longitude=-96.0,
@@ -1201,9 +1246,6 @@ if run_button:
             map_style="light",
             tooltip={"html": "<b>{tip}</b>"},
         )
-        _fleet_n = len(fleet)
-        _cov = (f" (coverage {ok_tiles}/{n_tiles} tiles)"
-                if ok_tiles < n_tiles else "")
         _rad = ""
         if radar_on:
             if radar_mode == "MRMS reflectivity" and _mrms_ts:
@@ -1212,56 +1254,22 @@ if run_button:
             elif radar_mode == "Echo tops":
                 _rad = " Radar: NEXRAD echo tops via IEM."
             else:
-                _rad = " Radar: NEXRAD reflectivity via IEM (MRMS fallback)."
-    except Exception as e:
-        _map_err = str(e)
-
-    # Status strip: the three numbers that summarize the network
-    n_sev_all = sum(1 for r in board_rows if r[0] == 0)
-    m1, m2, m3 = st.columns(3)
-    m1.metric("JBU flights airborne", _fleet_n if _deck else "-")
-    m2.metric("Inbound to hazards",
-              _n_warn if _deck else "-",
-              help="Destination METAR currently TS, LIFR, or "
-                   "35kt+ - these aircraft show RED on the map")
-    m3.metric("Airports alerting",
-              f"{len(board_rows)} ({n_sev_all} severe)")
-
-    _map_w = 3.4 * map_width / 100.0
-    _map_r = max(0.05, 3.4 - _map_w)
-    col_taf, col_map, _sp = st.columns([1, _map_w, _map_r],
-                                       gap="medium")
-
-    with col_taf:
-        if not tsra_enabled:
-            st.caption("TSRA alerts disabled in sidebar.")
-        if board_rows:
-            # Pane height tracks the map-height slider exactly;
-            # long alert lists scroll inside it
-            st.markdown(
-                f'<div style="display:block; '
-                f'height:{map_height}px; overflow-y:auto; '
-                f'overflow-x:hidden; padding-right:6px;">'
-                + render_status_board(board_rows)
-                + "</div>",
-                unsafe_allow_html=True,
-            )
-
-        else:
-            st.markdown(_no_alerts(), unsafe_allow_html=True)
+                _rad = (" Radar: NEXRAD reflectivity via IEM "
+                        "(MRMS fallback).")
+        st.pydeck_chart(deck, height=map_height)
+        st.caption(
+            "Solid dot = non-TS METAR breach NOW; ring = "
+            "non-TS TAF forecast; lightning glyph = "
+            "thunderstorm (beside the dot when both). "
+            "RED aircraft = "
+            "destination METAR has TS / LIFR / gusts over "
+            f"35kt (hover for detail). {_fleet_n} JBU "
+            f"airborne{_cov}.{_rad}"
+        )
 
     with col_map:
         if _deck is not None:
-            st.pydeck_chart(_deck, height=map_height)
-            st.caption(
-                "Solid dot = non-TS METAR breach NOW; ring = "
-                "non-TS TAF forecast; lightning glyph = "
-                "thunderstorm (beside the dot when both). "
-                "RED aircraft = "
-                "destination METAR has TS / LIFR / gusts over "
-                f"35kt (hover for detail). {_fleet_n} JBU "
-                f"airborne{_cov}.{_rad}"
-            )
+            _map_fragment()
         else:
             st.caption(f"Map unavailable: {_map_err}")
 
