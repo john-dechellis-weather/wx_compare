@@ -1245,8 +1245,24 @@ if run_button:
                 line_width_min_pixels=2.5, pickable=True,
             ))
         if ts_marks:
+            # Live calibration: my anchor model and deck's
+            # rendering disagree (observed ~2-diameter gaps where
+            # math said 1px, plus a leftward shift the model
+            # can't even produce). Drag TS onto the rim by eye,
+            # then read Claude the two numbers to hardcode.
+            with st.expander("TS position tuner (temporary)"):
+                _ts_ay = st.slider("TS vertical (anchorY)",
+                                   -20, 140, 70, 2,
+                                   key="ts_ay")
+                _ts_ax = st.slider("TS horizontal (anchorX)",
+                                   0, 96, 48, 2, key="ts_ax")
+                st.caption(f"anchorY={_ts_ay} anchorX={_ts_ax} "
+                           "- tell Claude these when it looks "
+                           "right")
+            _tuned = dict(_TS_TEXT_ICON,
+                          anchorY=_ts_ay, anchorX=_ts_ax)
             for d in ts_marks:
-                d["icon"] = _TS_TEXT_ICON
+                d["icon"] = _tuned
             # Meter-based sizing: the glyph scales with zoom on
             # the SAME curve as the ring's meter radius, so their
             # separation stays proportional - snug zoomed out,
