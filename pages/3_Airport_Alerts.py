@@ -998,25 +998,32 @@ if run_button:
         # major cities at these zooms (ours doubled them)
         layers = []
         if radar_on:
-            # BitmapLayer, not TileLayer: pydeck's TileLayer
-            # can't render raster tiles without a JS
-            # renderSubLayers callback (it silently drew
-            # nothing). IEM's USCOMP composites are single
-            # georeferenced CONUS images - exactly
-            # BitmapLayer's job. Cache-buster keeps the
-            # browser from serving stale radar.
-            _prod = ("n0q" if radar_mode == "Reflectivity"
-                     else "eet")
+            # IEM WMS GetMap with TRANSPARENT=TRUE: the
+            # USCOMP composite PNGs carry an opaque no-echo
+            # background that tinted the whole light basemap;
+            # the WMS serves the same mosaics with true
+            # transparency (and is the documented home of the
+            # echo-tops layer). Cache-buster keeps it fresh.
+            _svc = ("n0q" if radar_mode == "Reflectivity"
+                    else "eet")
             _rb = datetime.now(timezone.utc).strftime(
                 "%Y%m%d%H%M")[:-1]
+            _wms = (
+                "https://mesonet.agron.iastate.edu/cgi-bin/"
+                f"wms/nexrad/{_svc}.cgi?SERVICE=WMS"
+                "&VERSION=1.1.1&REQUEST=GetMap"
+                f"&LAYERS=nexrad-{_svc}&STYLES="
+                "&SRS=EPSG:4326&BBOX=-126,23,-65,50"
+                "&WIDTH=2440&HEIGHT=1080"
+                "&FORMAT=image/png&TRANSPARENT=TRUE"
+                f"&_={_rb}"
+            )
             layers.append(pdk.Layer(
                 "BitmapLayer",
                 data=None,
-                image=("https://mesonet.agron.iastate.edu/"
-                       "data/gis/images/4326/USCOMP/"
-                       f"{_prod}_0.png?_={_rb}"),
+                image=_wms,
                 bounds=[-126.0, 23.0, -65.0, 50.0],
-                opacity=0.55,
+                opacity=0.6,
             ))
         if fleet:
             fleet_disp = []
