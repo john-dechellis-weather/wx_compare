@@ -109,6 +109,32 @@ def warm_get(cache_root: Path, model: str, icao: str,
         return None
 
 
+def warm_report(cache_root: Path) -> list:
+    """One line per model for the debug expander: cycle, style
+    era, and frame count on disk vs expected - the ground truth
+    for 'why don't my rings show'."""
+    out = []
+    for m in WARM_MODELS:
+        man = _read_manifest(cache_root, m)
+        cyc = man.get("cycle") or "-"
+        style = man.get("style", "pre-ring")
+        mh = warm_hours(m)
+        max_h = min(max(mh), MODELS[m]["max_fhr"])
+        hours = [h for h in mh if h <= max_h]
+        have = 0
+        if man.get("cycle"):
+            have = sum(
+                1 for icao in HUBS for h in hours
+                if _frame_path(cache_root, m, man["cycle"],
+                               icao, h).exists()
+            )
+        out.append(
+            f"{m}: cycle={cyc} style={style} "
+            f"frames={have}/{len(HUBS) * len(hours)}"
+        )
+    return out
+
+
 def warm_status(cache_root: Path) -> dict:
     """{model: cycle_iso or None} for the page caption."""
     return {
