@@ -113,6 +113,8 @@ def warm_report(cache_root: Path) -> list:
     """One line per model for the debug expander: cycle, style
     era, and frame count on disk vs expected - the ground truth
     for 'why don't my rings show'."""
+    from core.hrrr_cam import MODELS
+
     out = []
     for m in WARM_MODELS:
         man = _read_manifest(cache_root, m)
