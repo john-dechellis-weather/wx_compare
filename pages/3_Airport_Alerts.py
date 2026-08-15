@@ -982,6 +982,8 @@ _kick_prefetch()
 st.markdown(
     """
     <style>
+    div[data-testid="stElementContainer"]:has(
+        [data-testid="stDeckGlJsonChart"]),
     [data-testid="stDeckGlJsonChart"],
     [data-testid="stDeckGlJsonChart"] iframe,
     [data-testid="stDeckGlJsonChart"] > div {
@@ -1035,11 +1037,8 @@ with st.sidebar:
     # resizes map + TAF pane instantly in the browser - deck.gl's
     # resize observer redraws the canvas with no Streamlit rerun.
     st.caption("Map height follows the window automatically.")
-    map_width = st.slider(
-        "Map width (%)", 50, 100, 70, 5,
-        help="Share of the space right of the TAF board; "
-             "remainder pads the right edge",
-    )
+    st.caption("Width fills the space beside the TAF "
+               "table and follows the window too.")
 
     st.header("Time window")
 
@@ -1219,10 +1218,7 @@ if run_button:
     m3.metric("Airports alerting",
               f"{len(board_rows)} ({n_sev_all} severe)")
 
-    _map_w = 3.4 * map_width / 100.0
-    _map_r = max(0.05, 3.4 - _map_w)
-    col_taf, col_map, _sp = st.columns([1, _map_w, _map_r],
-                                       gap="medium")
+    col_taf, col_map = st.columns([1, 3.4], gap="medium")
 
     with col_taf:
         if not tsra_enabled:
