@@ -372,11 +372,11 @@ def _ts_text_icon_uri():
     import urllib.parse
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" width="96" '
-        'height="56" viewBox="0 0 96 56">'
-        '<text x="48" y="42" text-anchor="middle" '
+        'height="40" viewBox="0 0 96 40">'
+        '<text x="48" y="33" text-anchor="middle" '
         'font-family="Arial, Helvetica, sans-serif" '
-        'font-size="44" font-weight="900" fill="#E01A1A" '
-        'stroke="#FFFFFF" stroke-width="2.5" '
+        'font-size="34" font-weight="900" fill="#E01A1A" '
+        'stroke="#FFFFFF" stroke-width="2" '
         'paint-order="stroke">TS</text>'
         "</svg>"
     )
@@ -387,8 +387,12 @@ def _ts_text_icon_uri():
 # anchorY 106 puts the glyph's BOTTOM edge (anchorY-56 units)
 # above the station scaled with icon size - paired with meter
 # units below, clearance tracks the ring across all zooms
+# Geometry locked to the ring: icon meters = ring meters x 1.4375
+# and clamps [11.5, 23] = ring clamps [8, 16] x 1.4375, so the
+# proportion holds even when zoom pins both at their bounds.
+# anchorY 73 puts the ink's bottom edge at ~1.2x the ring radius.
 _TS_TEXT_ICON = {"url": _ts_text_icon_uri(), "width": 96,
-                 "height": 56, "anchorX": 48, "anchorY": 106,
+                 "height": 40, "anchorX": 48, "anchorY": 73,
                  "mask": False}
 
 
@@ -1247,8 +1251,8 @@ if run_button:
                 "IconLayer", data=ts_marks,
                 get_position="[lon, lat]",
                 get_icon="icon",
-                get_size=34000, size_units="meters",
-                size_min_pixels=12, size_max_pixels=20,
+                get_size=32344, size_units="meters",
+                size_min_pixels=11.5, size_max_pixels=23,
                 pickable=True,
             ))
 
