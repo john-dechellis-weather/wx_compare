@@ -618,6 +618,99 @@ _FLEET_TILES = [
 ]
 
 
+@st.cache_data(ttl=300, show_spinner=False, max_entries=2)
+def cached_mrms_overlay(bucket5: str):
+    """Latest MRMS MergedReflectivityQCComposite from the open
+    NOAA bucket, rendered to a transparent PNG data-URI for the
+    map's BitmapLayer. Returns (data_uri, timestamp_str, bounds)
+    or raises - callers fall back to the IEM WMS."""
+    import base64
+    import gzip
+    import io
+    import re as _re
+    import tempfile
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+
+    import numpy as _np
+    import requests as _rq
+
+    S3 = "https://noaa-mrms-pds.s3.amazonaws.com"
+    PFX = "CONUS/MergedReflectivityQCComposite_00.50"
+
+    key = None
+    for day_off in (0, 1):
+        d = (_dt.utcnow() - _td(days=day_off)).strftime("%Y%m%d")
+        r = _rq.get(
+            f"{S3}/?list-type=2&prefix={PFX}/{d}/",
+            timeout=10,
+        )
+        if r.status_code != 200:
+            continue
+        keys = _re.findall(r"<Key>([^<]+\.grib2\.gz)</Key>",
+                           r.text)
+        if keys:
+            key = max(keys)
+            break
+    if not key:
+        raise RuntimeError("no MRMS files listed")
+
+    ts = _re.search(r"_(\d{8}-\d{6})", key)
+    ts_str = ts.group(1) if ts else "?"
+
+    r = _rq.get(f"{S3}/{key}", timeout=25)
+    r.raise_for_status()
+    raw = gzip.decompress(r.content)
+    with tempfile.NamedTemporaryFile(suffix=".grib2",
+                                     delete=False) as f:
+        f.write(raw)
+        path = f.name
+    del raw
+
+    import xarray as xr
+    ds = xr.open_dataset(path, engine="cfgrib",
+                         backend_kwargs={"indexpath": ""})
+    var = list(ds.data_vars)[0]
+    vals = ds[var].values.astype(_np.float32)
+    lats = ds.latitude.values
+    lons = ds.longitude.values
+    ds.close()
+    import os as _os
+    _os.unlink(path)
+
+    # Downsample ~5x: 3500x7000 -> 700x1400 (plenty for a CONUS
+    # overlay), orient north-up, mask below 5 dBZ
+    step = 5
+    vals = vals[::step, ::step]
+    la = lats[::step]
+    lo = lons[::step]
+    if la[0] < la[-1]:
+        vals = vals[::-1]
+        la = la[::-1]
+    vals = _np.ma.masked_invalid(vals)
+    vals = _np.ma.masked_less(vals, 5)
+
+    from metpy.plots import colortables
+    norm, cmap = colortables.get_with_steps(
+        "NWSReflectivity", 5, 5)
+    rgba = cmap(norm(vals.filled(_np.nan)))
+    rgba[..., 3] = _np.where(vals.mask, 0.0, 0.85)
+    img8 = (rgba * 255).astype(_np.uint8)
+
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.fromarray(img8, "RGBA").save(buf, format="PNG",
+                                       optimize=True)
+    uri = ("data:image/png;base64,"
+           + base64.b64encode(buf.getvalue()).decode())
+
+    lo = _np.where(lo > 180, lo - 360, lo)
+    bounds = [float(lo.min()), float(la.min()),
+              float(lo.max()), float(la.max())]
+    del vals, rgba, img8
+    return uri, ts_str, bounds
+
+
 @st.cache_data(ttl=90, show_spinner=False, max_entries=2)
 def cached_fleet(bucket: str):
     """All airborne JBU over CONUS.
@@ -866,7 +959,8 @@ with st.sidebar:
     st.divider()
     st.header("Map")
     radar_mode = st.radio(
-        "Radar overlay", ["Reflectivity", "Echo tops", "Off"],
+        "Radar overlay",
+        ["MRMS reflectivity", "Echo tops", "Off"],
         index=0, horizontal=True,
         help="Latest national NEXRAD composite or 8-bit net echo "
              "tops (via Iowa Environmental Mesonet), ~5-min "
@@ -998,33 +1092,42 @@ if run_button:
         # major cities at these zooms (ours doubled them)
         layers = []
         if radar_on:
-            # IEM WMS GetMap with TRANSPARENT=TRUE: the
-            # USCOMP composite PNGs carry an opaque no-echo
-            # background that tinted the whole light basemap;
-            # the WMS serves the same mosaics with true
-            # transparency (and is the documented home of the
-            # echo-tops layer). Cache-buster keeps it fresh.
-            _svc = ("n0q" if radar_mode == "Reflectivity"
-                    else "eet")
             _rb = datetime.now(timezone.utc).strftime(
                 "%Y%m%d%H%M")[:-1]
-            _wms = (
-                "https://mesonet.agron.iastate.edu/cgi-bin/"
-                f"wms/nexrad/{_svc}.cgi?SERVICE=WMS"
-                "&VERSION=1.1.1&REQUEST=GetMap"
-                f"&LAYERS=nexrad-{_svc}&STYLES="
-                "&SRS=EPSG:4326&BBOX=-126,23,-65,50"
-                "&WIDTH=2440&HEIGHT=1080"
-                "&FORMAT=image/png&TRANSPARENT=TRUE"
-                f"&_={_rb}"
-            )
-            layers.append(pdk.Layer(
-                "BitmapLayer",
-                data=None,
-                image=_wms,
-                bounds=[-126.0, 23.0, -65.0, 50.0],
-                opacity=0.6,
-            ))
+            _mrms_ts = None
+            if radar_mode == "MRMS reflectivity":
+                try:
+                    _uri, _mrms_ts, _mb = \
+                        cached_mrms_overlay(_rb)
+                    layers.append(pdk.Layer(
+                        "BitmapLayer", data=None,
+                        image=_uri, bounds=_mb,
+                        opacity=0.65,
+                    ))
+                except Exception:
+                    _mrms_ts = None
+            if radar_mode != "MRMS reflectivity" or \
+                    _mrms_ts is None:
+                # Echo tops - or MRMS fallback - via IEM WMS
+                # with true transparency
+                _svc = ("eet" if radar_mode == "Echo tops"
+                        else "n0q")
+                _wms = (
+                    "https://mesonet.agron.iastate.edu/"
+                    f"cgi-bin/wms/nexrad/{_svc}.cgi"
+                    "?SERVICE=WMS&VERSION=1.1.1"
+                    "&REQUEST=GetMap"
+                    f"&LAYERS=nexrad-{_svc}&STYLES="
+                    "&SRS=EPSG:4326&BBOX=-126,23,-65,50"
+                    "&WIDTH=2440&HEIGHT=1080"
+                    "&FORMAT=image/png&TRANSPARENT=TRUE"
+                    f"&_={_rb}"
+                )
+                layers.append(pdk.Layer(
+                    "BitmapLayer", data=None, image=_wms,
+                    bounds=[-126.0, 23.0, -65.0, 50.0],
+                    opacity=0.6,
+                ))
         if fleet:
             fleet_disp = []
             n_warn = 0
@@ -1109,9 +1212,15 @@ if run_button:
         _fleet_n = len(fleet)
         _cov = (f" (coverage {ok_tiles}/{n_tiles} tiles)"
                 if ok_tiles < n_tiles else "")
-        _rad = (f" Radar overlay: NEXRAD "
-                f"{'echo tops' if radar_mode == 'Echo tops' else 'reflectivity'}"
-                " via IEM." if radar_on else "")
+        _rad = ""
+        if radar_on:
+            if radar_mode == "MRMS reflectivity" and _mrms_ts:
+                _rad = (f" Radar: MRMS composite (NOAA) "
+                        f"obs {_mrms_ts}Z.")
+            elif radar_mode == "Echo tops":
+                _rad = " Radar: NEXRAD echo tops via IEM."
+            else:
+                _rad = " Radar: NEXRAD reflectivity via IEM (MRMS fallback)."
     except Exception as e:
         _map_err = str(e)
 
