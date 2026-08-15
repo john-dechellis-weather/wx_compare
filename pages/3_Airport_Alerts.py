@@ -731,7 +731,9 @@ def cached_mrms_cells(bucket5: str):
 
     key = None
     for day_off in (0, 1):
-        d = (_dt.utcnow() - _td(days=day_off)).strftime("%Y%m%d")
+        from datetime import timezone as _tzz
+        d = (_dt.now(_tzz.utc)
+             - _td(days=day_off)).strftime("%Y%m%d")
         r = _rq.get(f"{S3}/?list-type=2&prefix={PFX}/{d}/",
                     timeout=10)
         if r.status_code != 200:
@@ -1030,7 +1032,10 @@ def _kick_prefetch():
     b1 = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
 
     def _fleet_job():
-        return cached_fleet(b1)
+        try:
+            return cached_fleet(b1)
+        except Exception:
+            return None
 
     def _mrms_job():
         try:
@@ -1198,15 +1203,24 @@ if run_button:
         )
 
         bucket1 = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+        _fres = None
         try:
             _fut = st.session_state.pop("_fleet_future", None)
             if _fut is not None:
-                (fleet, ok_tiles, n_tiles, tile_fails,
-                 tile_stats, rs_diag) = _fut.result(timeout=60)
-            else:
-                (fleet, ok_tiles, n_tiles, tile_fails,
-                 tile_stats, rs_diag) = cached_fleet(bucket1)
+                _fres = _fut.result(timeout=60)
         except Exception:
+            _fres = None
+        if _fres is None:
+            # Prefetch missed or failed in its thread - fall back
+            # to fetching directly (slower, never empty-by-bug)
+            try:
+                _fres = cached_fleet(bucket1)
+            except Exception:
+                _fres = None
+        if _fres is not None:
+            (fleet, ok_tiles, n_tiles, tile_fails,
+             tile_stats, rs_diag) = _fres
+        else:
             fleet, ok_tiles, n_tiles = [], 0, 0
             tile_fails, tile_stats, rs_diag = [], [], []
 
