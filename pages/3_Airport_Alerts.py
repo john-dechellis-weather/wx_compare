@@ -1142,7 +1142,8 @@ if run_button:
                 get_text_anchor='"middle"',
                 get_alignment_baseline='"bottom"',
                 get_pixel_offset=[0, -12],
-                font_family='"Arial Black", Arial, sans-serif',
+                font_family="Arial",
+                font_weight="bold",
                 pickable=True,
             ))
 
@@ -1347,8 +1348,31 @@ if run_button:
             st.text("   (zero - routeset diagnostics below)")
         for line in rs_diag:
             st.text(f"   {line}")
+        try:
+            _ts_st = sorted(d["tip"].split(" | ")[0]
+                            for d in ts_marks)
+            st.text(f"TS labels on map: {len(_ts_st)} - "
+                    + ", ".join(_ts_st))
+        except Exception as e:
+            st.text(f"ts_marks unavailable: {e}")
+        _dn = next((r for r in metar_all
+                    if r["icao"] == "KDEN"), None)
+        if _dn is None:
+            st.text("KDEN: no METAR row at all")
+        else:
+            _body = (_dn.get("raw") or "").split(" RMK")[0]
+            st.text(f"KDEN metar: ts_now={_dn.get('ts_now')} "
+                    f"body={_body[:90]!r}")
         _hits = [d["callsign"] for d in fleet
                  if dest_warn.get(d.get("dest", ""))]
+        _ts_icaos = [d["tip"].split(" | ")[0]
+                     for d in ts_marks]
+        st.text(f"TS labels on map: {len(_ts_icaos)} - "
+                + (", ".join(_ts_icaos) or "(none)"))
+        _met_ts = [r["icao"] for r in metar_all
+                   if r.get("ts_now")]
+        st.text(f"METARs reporting TS now: "
+                + (", ".join(_met_ts) or "(none)"))
         st.text(f"Red aircraft (link1 x link2): {len(_hits)}"
                 + (f" - {', '.join(_hits[:10])}" if _hits else ""))
 
