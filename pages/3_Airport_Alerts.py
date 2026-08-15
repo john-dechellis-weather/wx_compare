@@ -390,9 +390,40 @@ def _ts_icon_uri():
 _TS_URI = _ts_icon_uri()
 _TS_ICON = {"url": _TS_URI, "width": 64, "height": 64,
             "anchorX": 32, "anchorY": 32, "mask": False}
-# anchorX left of the canvas shifts the glyph right of the point
-_TS_ICON_BESIDE = {"url": _TS_URI, "width": 64, "height": 64,
-                   "anchorX": -14, "anchorY": 32, "mask": False}
+# anchorX left of the canvas shifts the glyph right of the
+# point. OFF1 sits beside a lone dot/ring; OFF2 beyond a
+# dot-plus-ring pair.
+_TS_ICON_OFF1 = {"url": _TS_URI, "width": 64, "height": 64,
+                 "anchorX": -26, "anchorY": 32,
+                 "mask": False}
+_TS_ICON_OFF2 = {"url": _TS_URI, "width": 64, "height": 64,
+                 "anchorX": -62, "anchorY": 32,
+                 "mask": False}
+
+
+_RING_URI_CACHE: dict = {}
+
+
+def _ring_icon(hexcolor: str, beside: bool):
+    """TAF ring as an SVG icon so it can sit OFFSET beside
+    the METAR dot (plain circles cannot take pixel
+    offsets)."""
+    import urllib.parse
+    uri = _RING_URI_CACHE.get(hexcolor)
+    if uri is None:
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" '
+            'width="64" height="64" viewBox="0 0 64 64">'
+            '<circle cx="32" cy="32" r="24" fill="none" '
+            f'stroke="{hexcolor}" stroke-width="9"/>'
+            '</svg>'
+        )
+        uri = ('data:image/svg+xml;charset=utf-8,'
+               + urllib.parse.quote(svg))
+        _RING_URI_CACHE[hexcolor] = uri
+    return {"url": uri, "width": 64, "height": 64,
+            "anchorX": (-26 if beside else 32),
+            "anchorY": 32, "mask": False}
 
 
 # A320-detailed aircraft icon (style 1: nacelles + sharklets),
@@ -506,17 +537,19 @@ def build_map_markers(board_rows, metar_rows, coords):
             parts.append(f"TAF: {t['txt']}")
         tip = f"{icao} | " + " | ".join(parts)
         base = {"lat": la, "lon": lo, "tip": tip}
-        has_circle = False
-        if m and m["fill"]:
+        has_dot = bool(m and m["fill"])
+        has_ring = bool(t and t["ring"])
+        if has_dot:
             fills.append({**base,
                           "color": _rgb(m["fill"]) + [235]})
-            has_circle = True
-        if t and t["ring"]:
-            rings.append({**base,
-                          "color": _rgb(t["ring"]) + [235]})
-            has_circle = True
+        if has_ring:
+            rings.append({**base, "hex": t["ring"],
+                          "beside": has_dot})
         if (m and m["ts"]) or (t and t["ts"]):
-            ts_marks.append({**base, "beside": has_circle})
+            # 0=centered, 1=one step right, 2=beyond dot+ring
+            pos = (2 if (has_dot and has_ring)
+                   else 1 if (has_dot or has_ring) else 0)
+            ts_marks.append({**base, "pos": pos})
     return fills, rings, ts_marks
 
 
@@ -1145,32 +1178,35 @@ if run_button:
                 get_position="[lon, lat]",
                 get_fill_color="color",
                 get_radius=15000,
-                radius_min_pixels=5, radius_max_pixels=13,
+                radius_min_pixels=4, radius_max_pixels=11,
                 stroked=True, get_line_color=[0, 0, 0],
                 line_width_min_pixels=1, pickable=True,
             ))
         if rings:
-            # Hollow ring: TAF forecast breach (trouble COMING);
-            # concentric around a core when both apply
+            # Hollow ring: TAF forecast breach - offset beside
+            # the METAR dot when one exists, centered otherwise
+            for d in rings:
+                d["icon"] = _ring_icon(d["hex"], d["beside"])
             layers.append(pdk.Layer(
-                "ScatterplotLayer", data=rings,
+                "IconLayer", data=rings,
                 get_position="[lon, lat]",
-                get_line_color="color",
-                get_radius=22500,
-                radius_min_pixels=7, radius_max_pixels=18,
-                filled=False, stroked=True,
-                line_width_min_pixels=3, pickable=True,
+                get_icon="icon",
+                get_size=18, size_min_pixels=12,
+                size_max_pixels=22,
+                pickable=True,
             ))
         if ts_marks:
             for d in ts_marks:
-                d["icon"] = (_TS_ICON_BESIDE if d["beside"]
-                             else _TS_ICON)
+                d["icon"] = (_TS_ICON if d["pos"] == 0
+                             else _TS_ICON_OFF1
+                             if d["pos"] == 1
+                             else _TS_ICON_OFF2)
             layers.append(pdk.Layer(
                 "IconLayer", data=ts_marks,
                 get_position="[lon, lat]",
                 get_icon="icon",
-                get_size=24, size_min_pixels=18,
-                size_max_pixels=30,
+                get_size=20, size_min_pixels=13,
+                size_max_pixels=26,
                 pickable=True,
             ))
 
