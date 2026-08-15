@@ -279,6 +279,19 @@ with st.sidebar:
 
     with st.expander("Warm store status (debug)"):
         try:
+            st.text(
+                "view state: cam_icao="
+                f"{st.session_state.get('cam_icao')!r} open_hub="
+                f"{st.session_state.get('open_hub')!r}"
+            )
+            for _ph in WARM_HUBS:
+                _hits = 0
+                for _pm in ["hrrr", "nam_nest",
+                            "hiresw_arw", "hiresw_fv3"]:
+                    if warm_get(CACHE_ROOT, _pm, _ph, 1):
+                        _hits += 1
+                st.text(f"live warm_get {_ph}: "
+                        f"{_hits}/4 models answer at f01")
             for line in warm_report(CACHE_ROOT):
                 st.text(line)
             st.caption(
