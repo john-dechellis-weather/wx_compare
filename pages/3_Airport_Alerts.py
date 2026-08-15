@@ -1466,7 +1466,7 @@ if run_button:
                 st.write(f"**{icao}**: {err}")
 
 else:
-    st.info("Adjust thresholds and click **Refresh alerts** in the sidebar.")
+    st.info("Adjust thresholds and click **Refresh alerts** in the sidebar. ***This page takes about 30 seconds to load***")
 
     st.markdown(
         """
