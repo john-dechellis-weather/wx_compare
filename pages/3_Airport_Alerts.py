@@ -62,7 +62,7 @@ def _td(text, bg="#FFFFFF", fg="#000000", bold=False,
     weight = "bold" if bold else "normal"
     return (
         f'<td style="background-color:{bg}; color:{fg}; -webkit-text-fill-color:{fg}; '
-        f"font-family:{_FONT}; font-size:11px; padding:3px 10px; "
+        f"font-family:{_FONT}; font-size:clamp(9px, 0.8vw, 13px); padding:0.3em 0.9em; "
         f"border:1px solid #000000; font-weight:{weight}; "
         f'text-align:{align}; white-space:nowrap;">{text}</td>'
     )
@@ -72,7 +72,7 @@ def _th(text, align="left") -> str:
     return (
         f'<td style="background-color:#FFFFFF; color:#000000; '
         f"-webkit-text-fill-color:#000000; "
-        f"font-family:{_FONT}; font-size:11px; padding:4px 10px; "
+        f"font-family:{_FONT}; font-size:clamp(9px, 0.8vw, 13px); padding:0.35em 0.9em; "
         f"border:1px solid #000000; font-weight:bold; "
         f'text-align:{align}; text-decoration:underline; '
         f'white-space:nowrap;">{text}</td>'
@@ -94,7 +94,7 @@ def _table(header_cells: list[str], body_rows: list[str],
 def _no_alerts() -> str:
     return (
         f'<div style="background-color:#FFFFFF; border:2px solid {_WHITE}; '
-        f"color:#000000; -webkit-text-fill-color:#000000; font-family:{_FONT}; font-size:11px; "
+        f"color:#000000; -webkit-text-fill-color:#000000; font-family:{_FONT}; font-size:clamp(9px, 0.8vw, 13px); "
         f'padding:6px 10px;">NO AIRPORTS FLAGGED</div>'
     )
 
@@ -443,7 +443,8 @@ def _legend_html() -> str:
             'stroke-linejoin="round"')
     LX = 118          # label column x; leaders end at LX-6
     diagram = (
-        '<svg width="320" height="168" '
+        '<svg viewBox="0 0 320 168" width="100%" '
+        'style="max-width:340px; display:block;" '
         'xmlns="http://www.w3.org/2000/svg">'
         '<circle cx="74" cy="96" r="26" fill="none" '
         'stroke="#FF00FF" stroke-width="5"/>'
@@ -474,11 +475,11 @@ def _legend_html() -> str:
            "padding:4px 0;")
     txt = ("color:#000; -webkit-text-fill-color:#000; "
            "font-family:Georgia, 'Times New Roman', serif; "
-           "font-size:15px;")
+           "font-size:clamp(11px, 1vw, 16px);")
     planes = "".join(
         f'<div style="{row}">'
-        f'<img src="{u}" width="28" height="28" '
-        'style="flex:none;"/>'
+        f'<img src="{u}" '
+        'style="flex:none; width:2em; height:2em;"/>'
         f'<span style="{txt}">{label}</span></div>'
         for u, label in (
             (plane_b, "JBU aircraft (points along heading)"),
@@ -491,7 +492,8 @@ def _legend_html() -> str:
         'padding:8px 12px; margin-top:8px; width:auto; '
         'display:inline-block;">'
         '<div style="color:#000; -webkit-text-fill-color:#000; '
-        f"font-family:{_FONT}; font-size:12px; "
+        f"font-family:{_FONT}; "
+        "font-size:clamp(10px, 0.85vw, 13px); "
         'font-weight:bold; text-decoration:underline; '
         'margin-bottom:2px;">MAP KEY</div>'
         + diagram + planes + "</div>"
@@ -601,7 +603,8 @@ def render_status_board(rows) -> str:
         return (
             f'<td style="background-color:#FFFFFF; color:{fg}; '
             f"-webkit-text-fill-color:{fg}; font-family:{_FONT}; "
-            f"font-size:16px; padding:6px 16px; "
+            f"font-size:clamp(11px, 1.05vw, 17px); "
+            f"padding:0.4em 1em; "
             f"border:1px solid #000000; font-weight:{w}; {deco}"
             f'white-space:nowrap;">{text}</td>'
         )
