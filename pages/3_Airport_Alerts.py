@@ -1084,8 +1084,11 @@ if run_button:
 
         coords = cached_station_coords(tuple(JETBLUE_ICAOS))
 
+        # metar_all, not metar_rows: the breach-only subset hid
+        # TS at stations that weren't also breaching vis/cig/wind
+        # (KDEN's METAR said TS but earned no label)
         fills, rings, ts_marks = build_map_markers(
-            board_rows, metar_rows, coords
+            board_rows, metar_all, coords
         )
 
         bucket1 = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
