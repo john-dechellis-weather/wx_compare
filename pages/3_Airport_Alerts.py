@@ -390,13 +390,8 @@ def _ts_text_icon_uri():
 # Geometry locked to the ring: icon meters = ring meters x 1.4375
 # and clamps [11.5, 23] = ring clamps [8, 16] x 1.4375, so the
 # proportion holds even when zoom pins both at their bounds.
-# anchorY 70: the ink's bottom edge rides ~1px above the ring's
-# rim at EVERY zoom (glyph and ring share one meter curve, so the
-# gap in pixels stays near-constant - the tightest stable fit).
-# This one number is the separation dial: 70 = kissing, 85 = the
-# earlier 1.6x-radius look.
 _TS_TEXT_ICON = {"url": _ts_text_icon_uri(), "width": 96,
-                 "height": 40, "anchorX": 48, "anchorY": 70,
+                 "height": 40, "anchorX": 48, "anchorY": 20,
                  "mask": False}
 
 
@@ -1090,6 +1085,13 @@ with st.sidebar:
 
     st.divider()
     st.header("Map")
+    with st.expander("TS position tuner (temporary)"):
+        st.slider("TS horizontal px (+right)", -60, 60, 0, 2,
+                  key="ts_dx")
+        st.slider("TS vertical px (-up)", -80, 0, -24, 2,
+                  key="ts_dy")
+        st.caption("Screen pixels from the ring center. When it "
+                   "looks right, tell Claude the two values.")
     map_height = st.slider(
         "Map height (px)", 500, 1200, 800, 50,
         help="Width is fluid (fills the space beside the TAF "
@@ -1245,34 +1247,17 @@ if run_button:
                 line_width_min_pixels=2.5, pickable=True,
             ))
         if ts_marks:
-            # Live calibration: my anchor model and deck's
-            # rendering disagree (observed ~2-diameter gaps where
-            # math said 1px, plus a leftward shift the model
-            # can't even produce). Drag TS onto the rim by eye,
-            # then read Claude the two numbers to hardcode.
-            with st.expander("TS position tuner (temporary)"):
-                _ts_ay = st.slider("TS vertical (anchorY)",
-                                   -20, 140, 70, 2,
-                                   key="ts_ay")
-                _ts_ax = st.slider("TS horizontal (anchorX)",
-                                   0, 96, 48, 2, key="ts_ax")
-                st.caption(f"anchorY={_ts_ay} anchorX={_ts_ax} "
-                           "- tell Claude these when it looks "
-                           "right")
-            _tuned = dict(_TS_TEXT_ICON,
-                          anchorY=_ts_ay, anchorX=_ts_ax)
             for d in ts_marks:
-                d["icon"] = _tuned
-            # Meter-based sizing: the glyph scales with zoom on
-            # the SAME curve as the ring's meter radius, so their
-            # separation stays proportional - snug zoomed out,
-            # roomy zoomed in
+                d["icon"] = _TS_TEXT_ICON
+            _dx = st.session_state.get("ts_dx", 0)
+            _dy = st.session_state.get("ts_dy", -24)
             layers.append(pdk.Layer(
                 "IconLayer", data=ts_marks,
                 get_position="[lon, lat]",
                 get_icon="icon",
                 get_size=32344, size_units="meters",
                 size_min_pixels=11.5, size_max_pixels=23,
+                get_pixel_offset=[_dx, _dy],
                 pickable=True,
             ))
 
