@@ -45,7 +45,8 @@ CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 # frames for each new model cycle so hub views serve instantly.
 from core.cam_warm import (
     HUBS as WARM_HUBS, WARM_HOURS, WARM_PRODUCT, WARM_ZOOM,
-    ensure_warmer_started, warm_get, warm_hours, warm_status,
+    ensure_warmer_started, warm_get, warm_hours, warm_report,
+    warm_status,
 )
 ensure_warmer_started(CACHE_ROOT)
 
@@ -89,6 +90,7 @@ def cached_grid_frame(
     model_cycle_fhr: tuple,   # ((model, cycle_iso, fhr), ...)
     product: str,
     clat: float, clon: float, zoom: float,
+    style_v: int = 2,
 ):
     """One forecast frame for MANY models: all fetch+decode run
     concurrently (the slow, parallelizable part), then panels render
@@ -136,6 +138,7 @@ def cached_grid_frame(
 def cached_panel(
     model: str, product: str, cycle_iso: str, fhr: int,
     clat: float, clon: float, zoom: float,
+    style_v: int = 2,
 ) -> bytes:
     """One rendered panel for one model. Keyed on model+cycle+fhr+
     product+region, so new model cycles refresh naturally."""
@@ -274,8 +277,21 @@ with st.sidebar:
         "10 m Wind Gust": "GUST",
     }
 
+    with st.expander("Warm store status (debug)"):
+        try:
+            for line in warm_report(CACHE_ROOT):
+                st.text(line)
+            st.caption(
+                "style=2 + full frames = rings everywhere from "
+                "the warm store. style=pre-ring or partial "
+                "frames = rebuild pending/stuck; paste this to "
+                "Claude."
+            )
+        except Exception as e:
+            st.text(f"report failed: {e}")
+
     smooth = st.checkbox(
-        "Smooth scrub mode", value=False,
+        "Smooth scrub mode", value=True,
         help="Preloads every hour in the range below, then scrubbing "
              "is instant (frames swap in the browser, no reloading). "
              "Preload takes a while on first run; hours cache on the "
@@ -283,7 +299,7 @@ with st.sidebar:
     )
     if smooth:
         fhr_lo, fhr_hi = st.slider(
-            "Preload hours", 0, 60, (0, 12),
+            "Preload hours", 0, 60, (0, 24),
             help="All hours in this range are fetched upfront. "
              "Span capped at 24 hours to keep the page light.",
         )
