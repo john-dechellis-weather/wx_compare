@@ -375,7 +375,7 @@ def _ts_text_icon_uri():
         'height="56" viewBox="0 0 96 56">'
         '<text x="48" y="42" text-anchor="middle" '
         'font-family="Arial, Helvetica, sans-serif" '
-        'font-size="44" font-weight="900" fill="#FF7800" '
+        'font-size="44" font-weight="900" fill="#E01A1A" '
         'stroke="#FFFFFF" stroke-width="2.5" '
         'paint-order="stroke">TS</text>'
         "</svg>"
@@ -385,7 +385,7 @@ def _ts_text_icon_uri():
 
 
 _TS_TEXT_ICON = {"url": _ts_text_icon_uri(), "width": 96,
-                 "height": 56, "anchorX": 48, "anchorY": 66,
+                 "height": 56, "anchorX": 48, "anchorY": 112,
                  "mask": False}
 
 
