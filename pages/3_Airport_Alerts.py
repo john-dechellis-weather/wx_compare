@@ -488,7 +488,7 @@ def _legend_html() -> str:
     )
     return (
         '<div style="background:#FFFFFF; border:1px solid #000; '
-        'padding:8px 12px; margin-top:14px; width:auto; '
+        'padding:8px 12px; margin-top:8px; width:auto; '
         'display:inline-block;">'
         '<div style="color:#000; -webkit-text-fill-color:#000; '
         f"font-family:{_FONT}; font-size:12px; "
@@ -601,7 +601,7 @@ def render_status_board(rows) -> str:
         return (
             f'<td style="background-color:#FFFFFF; color:{fg}; '
             f"-webkit-text-fill-color:{fg}; font-family:{_FONT}; "
-            f"font-size:19px; padding:8px 20px; "
+            f"font-size:16px; padding:6px 16px; "
             f"border:1px solid #000000; font-weight:{w}; {deco}"
             f'white-space:nowrap;">{text}</td>'
         )
@@ -1281,7 +1281,7 @@ if run_button:
             # long alert lists scroll inside it
             st.markdown(
                 f'<div style="display:block; '
-                f'height:{map_height}px; overflow-y:auto; '
+                f'max-height:{map_height}px; overflow-y:auto; '
                 f'overflow-x:hidden; padding-right:6px;">'
                 + render_status_board(board_rows)
                 + "</div>",
@@ -1297,8 +1297,8 @@ if run_button:
         import pydeck as pdk
         radar_mode = st.radio(
             "Radar overlay",
-            ["MRMS reflectivity", "Echo tops", "Off"],
-            index=2, horizontal=True, key="radar_mode_f",
+            ["MRMS hi-res", "MRMS cells", "Echo tops", "Off"],
+            index=3, horizontal=True, key="radar_mode_f",
         )
         radar_on = radar_mode != "Off"
         layers = []
@@ -1307,7 +1307,27 @@ if run_button:
             _rb = datetime.now(timezone.utc).strftime(
                 "%Y%m%d%H%M")[:-1]
             _mrms_ts = None
-            if radar_mode == "MRMS reflectivity":
+            if radar_mode == "MRMS hi-res":
+                # NOAA ArcGIS export: 1km QC'd MRMS merged
+                # reflectivity (Level-2 network mosaic) as one
+                # transparent PNG - the highest-quality national
+                # radar image publicly served
+                _img = (
+                    "https://mapservices.weather.noaa.gov/"
+                    "eventdriven/rest/services/radar/"
+                    "radar_base_reflectivity/MapServer/export"
+                    "?bbox=-126,23,-65,50&bboxSR=4326"
+                    "&imageSR=4326&size=4880,2160"
+                    "&format=png32&transparent=true&f=image"
+                    f"&_={_rb}"
+                )
+                layers.append(pdk.Layer(
+                    "BitmapLayer", data=None, image=_img,
+                    bounds=[-126.0, 23.0, -65.0, 50.0],
+                    opacity=0.6,
+                ))
+                _mrms_ts = "hires"
+            elif radar_mode == "MRMS cells":
                 try:
                     _cells, _mrms_ts, _ncells = \
                         cached_mrms_cells(_rb)
@@ -1320,10 +1340,12 @@ if run_button:
                     ))
                 except Exception:
                     _mrms_ts = None
-            if radar_mode != "MRMS reflectivity" or \
-                    _mrms_ts is None:
-                # Echo tops - or MRMS fallback - via IEM WMS
-                # with true transparency
+            if radar_mode in ("Echo tops",) or (
+                    radar_mode == "MRMS cells"
+                    and _mrms_ts is None):
+                # Echo tops - or cells fallback - via IEM WMS,
+                # now requested near the composite's native
+                # resolution (was 5x undersampled at 2440px)
                 _svc = ("eet" if radar_mode == "Echo tops"
                         else "n0q")
                 _wms = (
@@ -1333,7 +1355,7 @@ if run_button:
                     "&REQUEST=GetMap"
                     f"&LAYERS=nexrad-{_svc}&STYLES="
                     "&SRS=EPSG:4326&BBOX=-126,23,-65,50"
-                    "&WIDTH=2440&HEIGHT=1080"
+                    "&WIDTH=4880&HEIGHT=2160"
                     "&FORMAT=image/png&TRANSPARENT=TRUE"
                     f"&_={_rb}"
                 )
@@ -1342,41 +1364,6 @@ if run_button:
                     bounds=[-126.0, 23.0, -65.0, 50.0],
                     opacity=0.6,
                 ))
-        if fleet:
-            fleet_disp = []
-            n_warn = 0
-            for d in fleet:
-                dd = dict(d)
-                hazard = dest_warn.get(d.get("dest", ""))
-                if hazard:
-                    n_warn += 1
-                    dd["icon"] = _AC_ICON_RED
-                    dd["lcolor"] = [214, 26, 26, 220]
-                    dd["tip"] = (f"{d['tip']} | -> {d['dest']} "
-                                 f"WARNING {hazard}")
-                else:
-                    dd["icon"] = _AC_ICON
-                    dd["lcolor"] = [0, 70, 190, 185]
-                    if d.get("dest"):
-                        dd["tip"] = f"{d['tip']} | -> {d['dest']}"
-                fleet_disp.append(dd)
-            layers.append(pdk.Layer(
-                "IconLayer", data=fleet_disp,
-                get_position="[lon, lat]",
-                get_icon="icon",
-                get_size=24, size_min_pixels=14,
-                size_max_pixels=34,
-                get_angle="angle",
-                pickable=True,
-            ))
-            layers.append(pdk.Layer(
-                "TextLayer", data=fleet_disp,
-                get_position="[lon, lat]",
-                get_text="callsign", get_size=8,
-                get_color="lcolor",
-                get_text_anchor='"start"',
-                get_pixel_offset=[10, -10],
-            ))
         layers.extend(_base_layers)
         deck = pdk.Deck(
             layers=layers,
@@ -1389,14 +1376,17 @@ if run_button:
         )
         _rad = ""
         if radar_on:
-            if radar_mode == "MRMS reflectivity" and _mrms_ts:
+            if radar_mode == "MRMS hi-res":
+                _rad = (" Radar: MRMS 1km merged reflectivity "
+                        "(NOAA), ~2-min updates.")
+            elif radar_mode == "MRMS cells" and _mrms_ts:
                 _rad = (f" Radar: MRMS composite (NOAA) "
                         f"obs {_mrms_ts}Z.")
             elif radar_mode == "Echo tops":
                 _rad = " Radar: NEXRAD echo tops via IEM."
             else:
                 _rad = (" Radar: NEXRAD reflectivity via IEM "
-                        "(MRMS fallback).")
+                        "(cells fallback).")
         st.pydeck_chart(deck, height=map_height)
         st.caption(
             "Solid dot = METAR breach NOW; ring = TAF "
