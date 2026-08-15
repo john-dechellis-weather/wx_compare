@@ -429,79 +429,73 @@ _AC_ICON_RED = {"url": _a320_icon_uri("#E01A1A"), "width": 64,
 
 
 def _legend_html() -> str:
-    """Map key rendered with the actual marker artwork - SVG
-    swatches for circles, the real A320 data-URIs, bold TS."""
+    """Design B: composite marker left, right-stacked labels with
+    elbow leaders computed to touch each element's edge; JBU
+    aircraft rows beneath in the same visual scheme."""
     plane_b = _a320_icon_uri()
     plane_r = _a320_icon_uri("#E01A1A")
-
-    def circ(kind, color):
-        if kind == "dot":
-            body = (f'<circle cx="11" cy="11" r="6" '
-                    f'fill="{color}" stroke="#000"/>')
-        elif kind == "ring":
-            body = (f'<circle cx="11" cy="11" r="8" fill="none" '
-                    f'stroke="{color}" stroke-width="2.6"/>')
-        else:   # both
-            body = (
-                f'<circle cx="11" cy="11" r="9" fill="none" '
-                f'stroke="{color}" stroke-width="2.4"/>'
-                '<circle cx="11" cy="11" r="4.5" fill="#FF00FF" '
-                'stroke="#000"/>'
-            )
-        return ('<svg width="22" height="22" '
-                'xmlns="http://www.w3.org/2000/svg">'
-                + body + "</svg>")
-
-    row_style = ("display:flex; align-items:center; gap:8px; "
-                 "padding:2px 0;")
-    txt = ("color:#000; -webkit-text-fill-color:#000; "
-           f"font-family:{_FONT}; font-size:12px;")
-    rows = [
-        (circ("dot", "#FF00FF"),
-         "Solid dot - METAR breaching NOW "
-         "(color = severity)"),
-        (circ("ring", "#FF4040"),
-         "Ring - TAF forecast alert (worst condition)"),
-        (circ("both", "#FF4040"),
-         "Concentric - breaching now AND forecast"),
-        ('<span style="color:#E01A1A; '
-         "-webkit-text-fill-color:#E01A1A; font-weight:900; "
-         f'font-family:Arial; font-size:14px;">TS</span>',
-         "Thunderstorm reported in the current METAR"),
-        (f'<img src="{plane_b}" width="20" height="20"/>',
-         "JBU aircraft (points along heading)"),
-        (f'<img src="{plane_r}" width="20" height="20"/>',
-         "Destination has TS / LIFR / gusts &gt;35kt"),
-    ]
-    body = "".join(
-        f'<div style="{row_style}">'
-        f'<span style="width:24px; text-align:center;">{sw}</span>'
-        f'<span style="{txt}">{label}</span></div>'
-        for sw, label in rows
+    # Geometry (px, computed so leaders touch edges exactly):
+    # marker center (74, 96); ring R=26 (stroke 5); dot r=11;
+    # TS centered at (74, 40), ~15px half-width at font 22
+    LBL = ('font-family="Arial, Helvetica, sans-serif" '
+           'font-size="12.5" font-weight="bold" fill="#4477DD"')
+    LINE = ('stroke="#88AAEE" stroke-width="1.6" fill="none" '
+            'stroke-linejoin="round"')
+    LX = 118          # label column x; leaders end at LX-6
+    diagram = (
+        '<svg width="320" height="168" '
+        'xmlns="http://www.w3.org/2000/svg">'
+        '<circle cx="74" cy="96" r="26" fill="none" '
+        'stroke="#FF00FF" stroke-width="5"/>'
+        '<circle cx="74" cy="96" r="11" fill="#FF00FF" '
+        'stroke="#000000"/>'
+        '<text x="74" y="47" text-anchor="middle" '
+        'font-family="Arial, Helvetica, sans-serif" '
+        'font-size="22" font-weight="900" fill="#E01A1A" '
+        'stroke="#FFFFFF" stroke-width="1.5" '
+        'paint-order="stroke">TS</text>'
+        # TS leader: from right edge of letters (74+17, 40)
+        f'<line x1="93" y1="40" x2="112" y2="40" {LINE}/>'
+        f'<text x="{LX}" y="44" {LBL}>Thunderstorm in current '
+        "METAR</text>"
+        # ring leader: rim right point at its own height (100,88)
+        # rim point toward label: (74+25.9, 96-7) ~ (100, 89)
+        f'<line x1="101" y1="89" x2="112" y2="89" {LINE}/>'
+        f'<text x="{LX}" y="93" {LBL}>TAF forecast alert '
+        "(ring)</text>"
+        # dot leader: down from dot bottom (74,107)+edge, elbow
+        # right at y=140
+        f'<polyline points="74,110 74,140 112,140" {LINE}/>'
+        f'<text x="{LX}" y="144" {LBL}>METAR breaching NOW '
+        "(dot)</text>"
+        "</svg>"
     )
-    sev = (
-        f'<div style="{row_style}"><span style="width:24px;">'
-        "</span>"
-        f'<span style="{txt}">Severity: '
-        '<b style="color:#FF00FF; -webkit-text-fill-color:'
-        '#FF00FF;">magenta</b> &gt; '
-        '<b style="color:#E01A1A; -webkit-text-fill-color:'
-        '#E01A1A;">red</b> &gt; '
-        '<b style="color:#CC6600; -webkit-text-fill-color:'
-        '#CC6600;">orange</b>/<b style="color:#B8860B; '
-        '-webkit-text-fill-color:#B8860B;">yellow</b>'
-        "</span></div>"
+    row = ("display:flex; align-items:center; gap:10px; "
+           "padding:4px 0;")
+    txt = ("color:#000; -webkit-text-fill-color:#000; "
+           "font-family:Georgia, 'Times New Roman', serif; "
+           "font-size:15px;")
+    planes = "".join(
+        f'<div style="{row}">'
+        f'<img src="{u}" width="28" height="28" '
+        'style="flex:none;"/>'
+        f'<span style="{txt}">{label}</span></div>'
+        for u, label in (
+            (plane_b, "JBU aircraft (points along heading)"),
+            (plane_r, "Destination has TS / LIFR / gusts "
+                      "&gt;35kt"),
+        )
     )
     return (
         '<div style="background:#FFFFFF; border:1px solid #000; '
         'padding:8px 12px; margin-top:14px; width:auto; '
         'display:inline-block;">'
-        f'<div style="{txt} font-weight:bold; '
-        'text-decoration:underline; margin-bottom:4px;">'
-        "MAP KEY</div>"
-        + body + sev + "</div>"
+        '<div style="color:#000; -webkit-text-fill-color:#000; '
+        f"font-family:{_FONT}; font-size:12px; "
+        'font-weight:bold; text-decoration:underline; '
+        'margin-bottom:2px;">MAP KEY</div>'
+        + diagram + planes + "</div>"
     )
-
 
 
 def _metar_severity(r, include_ts=True):
