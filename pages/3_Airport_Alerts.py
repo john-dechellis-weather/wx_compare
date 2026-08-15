@@ -364,6 +364,31 @@ def build_status_board(results, metar_rows):
     return rows
 
 
+# Bold orange "TS" as an image icon: TextLayer proved unreliable
+# for this one layer, and IconLayer has never failed on this map
+# (aircraft, rings, triangles all shipped through it). Bold comes
+# free - it's just pixels.
+def _ts_text_icon_uri():
+    import urllib.parse
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="96" '
+        'height="56" viewBox="0 0 96 56">'
+        '<text x="48" y="42" text-anchor="middle" '
+        'font-family="Arial, Helvetica, sans-serif" '
+        'font-size="44" font-weight="900" fill="#FF7800" '
+        'stroke="#FFFFFF" stroke-width="2.5" '
+        'paint-order="stroke">TS</text>'
+        "</svg>"
+    )
+    return ("data:image/svg+xml;charset=utf-8,"
+            + urllib.parse.quote(svg))
+
+
+_TS_TEXT_ICON = {"url": _ts_text_icon_uri(), "width": 96,
+                 "height": 56, "anchorX": 48, "anchorY": 66,
+                 "mask": False}
+
+
 # A320-detailed aircraft icon (style 1: nacelles + sharklets),
 # baked as an inline SVG data-URI - no external image dependency.
 def _a320_icon_uri(fill="#005ADC"):
@@ -441,15 +466,17 @@ def build_map_markers(board_rows, metar_rows, coords):
     taf = {}
     for r in board_rows:
         icao, e, cands = r[1], r[5], r[7]
-        non_ts = [c for c in cands if c[1] != e.get("ts")]
+        # Ring represents ANY TAF alert (worst-condition color,
+        # TSRA included) - the TS text above is an additional
+        # flag, not a replacement for the circle
         taf[icao] = {
             "ts": bool(e.get("ts")),
-            "ring": non_ts[0][2] if non_ts else None,
+            "ring": r[3],
             "txt": r[6],
         }
     met = {}
     for r in (metar_rows or []):
-        color, toks = _metar_severity(r, include_ts=False)
+        color, toks = _metar_severity(r, include_ts=True)
         met[r["icao"]] = {
             "ts": bool(r.get("ts_now")),
             "fill": color, "toks": toks,
@@ -1132,18 +1159,13 @@ if run_button:
             ))
         if ts_marks:
             for d in ts_marks:
-                d["label"] = "TS"
+                d["icon"] = _TS_TEXT_ICON
             layers.append(pdk.Layer(
-                "TextLayer", data=ts_marks,
+                "IconLayer", data=ts_marks,
                 get_position="[lon, lat]",
-                get_text="label",
-                get_color=[255, 130, 0, 255],
-                get_size=15,
-                get_text_anchor='"middle"',
-                get_alignment_baseline='"bottom"',
-                get_pixel_offset=[0, -12],
-                font_family="Arial",
-                font_weight="bold",
+                get_icon="icon",
+                get_size=17, size_min_pixels=14,
+                size_max_pixels=22,
                 pickable=True,
             ))
 
@@ -1296,9 +1318,9 @@ if run_button:
                         "(MRMS fallback).")
         st.pydeck_chart(deck, height=map_height)
         st.caption(
-            "Solid dot = non-TS METAR breach NOW; ring = "
-            "non-TS TAF forecast (concentric = both); orange "
-            "TS above = thunderstorm. "
+            "Solid dot = METAR breach NOW; ring = TAF "
+            "forecast (concentric = both); orange TS above = "
+            "thunderstorm. "
             "RED aircraft = "
             "destination METAR has TS / LIFR / gusts over "
             f"35kt (hover for detail). {_fleet_n} JBU "
@@ -1365,6 +1387,11 @@ if run_button:
                     f"body={_body[:90]!r}")
         _hits = [d["callsign"] for d in fleet
                  if dest_warn.get(d.get("dest", ""))]
+        _ring_icaos = [d["tip"].split(" | ")[0]
+                       for d in rings]
+        st.text(f"TAF rings on map: {len(_ring_icaos)} "
+                f"(board rows: {len(board_rows)}) - "
+                + (", ".join(_ring_icaos[:14]) or "(none)"))
         _ts_icaos = [d["tip"].split(" | ")[0]
                      for d in ts_marks]
         st.text(f"TS labels on map: {len(_ts_icaos)} - "
