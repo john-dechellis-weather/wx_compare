@@ -390,10 +390,13 @@ def _ts_text_icon_uri():
 # Geometry locked to the ring: icon meters = ring meters x 1.4375
 # and clamps [11.5, 23] = ring clamps [8, 16] x 1.4375, so the
 # proportion holds even when zoom pins both at their bounds.
-# anchorY 85 puts the ink's bottom edge at ~1.6x the ring radius
-# - calibrated to the user's reference screenshot (BZN, 8/15)
+# anchorY 70: the ink's bottom edge rides ~1px above the ring's
+# rim at EVERY zoom (glyph and ring share one meter curve, so the
+# gap in pixels stays near-constant - the tightest stable fit).
+# This one number is the separation dial: 70 = kissing, 85 = the
+# earlier 1.6x-radius look.
 _TS_TEXT_ICON = {"url": _ts_text_icon_uri(), "width": 96,
-                 "height": 40, "anchorX": 48, "anchorY": 85,
+                 "height": 40, "anchorX": 48, "anchorY": 70,
                  "mask": False}
 
 
