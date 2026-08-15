@@ -321,6 +321,19 @@ if run_button and icao_input:
 active = st.session_state.get("cam_icao")
 
 if active:
+    # Always-visible hub switcher: session state pins cam_icao
+    # across opens, which once trapped the page on a single hub
+    # (the welcome branch's switcher became unreachable). One tap
+    # now swaps stations from anywhere.
+    _sw_cols = st.columns(len(WARM_HUBS))
+    for _i, _hk in enumerate(WARM_HUBS):
+        _lbl = ("* " + _hk[1:]
+                if _hk == active else _hk[1:])
+        if _sw_cols[_i].button(_lbl, key=f"sw_{_hk}",
+                               use_container_width=True):
+            st.session_state["cam_icao"] = _hk
+            st.rerun()
+
     icao = active
     now = datetime.now(timezone.utc)
     bucket10 = now.strftime("%Y%m%d%H") + str(now.minute // 10)
