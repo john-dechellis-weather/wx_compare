@@ -998,15 +998,24 @@ if run_button:
         # major cities at these zooms (ours doubled them)
         layers = []
         if radar_on:
-            _tileset = ("nexrad-n0q-900913"
-                        if radar_mode == "Reflectivity"
-                        else "nexrad-eet-900913")
+            # BitmapLayer, not TileLayer: pydeck's TileLayer
+            # can't render raster tiles without a JS
+            # renderSubLayers callback (it silently drew
+            # nothing). IEM's USCOMP composites are single
+            # georeferenced CONUS images - exactly
+            # BitmapLayer's job. Cache-buster keeps the
+            # browser from serving stale radar.
+            _prod = ("n0q" if radar_mode == "Reflectivity"
+                     else "eet")
+            _rb = datetime.now(timezone.utc).strftime(
+                "%Y%m%d%H%M")[:-1]
             layers.append(pdk.Layer(
-                "TileLayer",
-                data=("https://mesonet.agron.iastate.edu/cache/"
-                      f"tile.py/1.0.0/{_tileset}/"
-                      "{z}/{x}/{y}.png"),
-                min_zoom=0, max_zoom=12, tile_size=256,
+                "BitmapLayer",
+                data=None,
+                image=("https://mesonet.agron.iastate.edu/"
+                       "data/gis/images/4326/USCOMP/"
+                       f"{_prod}_0.png?_={_rb}"),
+                bounds=[-126.0, 23.0, -65.0, 50.0],
                 opacity=0.55,
             ))
         if fleet:
