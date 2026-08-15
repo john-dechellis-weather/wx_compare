@@ -979,28 +979,6 @@ def _kick_prefetch():
 
 _kick_prefetch()
 
-st.markdown(
-    """
-    <style>
-    div[data-testid="stElementContainer"]:has(
-        [data-testid="stDeckGlJsonChart"]),
-    [data-testid="stDeckGlJsonChart"],
-    [data-testid="stDeckGlJsonChart"] iframe,
-    [data-testid="stDeckGlJsonChart"] > div {
-        height: calc(100vh - 330px) !important;
-        min-height: 480px !important;
-    }
-    .tafpane {
-        height: calc(100vh - 330px);
-        min-height: 480px;
-        overflow-y: auto;
-        overflow-x: hidden;
-        padding-right: 6px;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
 st.caption(
     f"Scans TAFs from {len(JETBLUE_ICAOS)} JetBlue destinations and flags "
     "airports forecast to see low visibility, low ceilings, or thunderstorms."
@@ -1032,13 +1010,13 @@ with st.sidebar:
 
     st.divider()
     st.header("Map")
-    # Height now tracks the browser window via CSS (100vh minus
-    # the header/strip above the map). Resizing the window
-    # resizes map + TAF pane instantly in the browser - deck.gl's
-    # resize observer redraws the canvas with no Streamlit rerun.
-    st.caption("Map height follows the window automatically.")
-    st.caption("Width fills the space beside the TAF "
-               "table and follows the window too.")
+    map_height = st.slider(
+        "Map height (px)", 500, 1200, 800, 50,
+        help="Width is fluid (fills the space beside the TAF "
+             "table and follows the window); height is set "
+             "here - Streamlit's component sizing defeats "
+             "pure-CSS viewport tracking.",
+    )
 
     st.header("Time window")
 
@@ -1227,7 +1205,9 @@ if run_button:
             # Pane height tracks the map-height slider exactly;
             # long alert lists scroll inside it
             st.markdown(
-                '<div class="tafpane">'
+                f'<div style="display:block; '
+                f'height:{map_height}px; overflow-y:auto; '
+                f'overflow-x:hidden; padding-right:6px;">'
                 + render_status_board(board_rows)
                 + "</div>",
                 unsafe_allow_html=True,
@@ -1242,7 +1222,7 @@ if run_button:
         radar_mode = st.radio(
             "Radar overlay",
             ["MRMS reflectivity", "Echo tops", "Off"],
-            index=0, horizontal=True, key="radar_mode_f",
+            index=2, horizontal=True, key="radar_mode_f",
         )
         radar_on = radar_mode != "Off"
         layers = []
@@ -1341,7 +1321,7 @@ if run_button:
             else:
                 _rad = (" Radar: NEXRAD reflectivity via IEM "
                         "(MRMS fallback).")
-        st.pydeck_chart(deck, height=700)
+        st.pydeck_chart(deck, height=map_height)
         st.caption(
             "Solid dot = non-TS METAR breach NOW; ring = "
             "non-TS TAF forecast; lightning glyph = "
