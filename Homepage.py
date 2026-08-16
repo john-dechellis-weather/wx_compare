@@ -1,19 +1,24 @@
-"""Landing page for the wx_compare suite.
+"""BlueMet entry point and navigation router.
 
-The actual tools live in pages/ and Streamlit auto-discovers them.
+Declares the sidebar's grouped navigation via st.navigation; the
+tool pages live in pages/ and are referenced here by path, with
+sidebar titles set explicitly (filename prefixes no longer control
+order or labels).
 """
-
-import streamlit as st
 
 import time
 from pathlib import Path
 
+import streamlit as st
+
+
 def _cleanup_old_cache():
-    """Delete cache files older than 3 days to prevent disk fill."""
+    """Delete cache files older than the cutoff to prevent disk
+    fill on the persistent volume."""
     cache_root = Path("/opt/render/project/src/cache")
     if not cache_root.exists():
         return
-    cutoff = time.time() - (24 * 3600)  # 1 days
+    cutoff = time.time() - (24 * 3600)
     for p in cache_root.rglob("*"):
         try:
             if p.is_file() and p.stat().st_mtime < cutoff:
@@ -21,7 +26,7 @@ def _cleanup_old_cache():
         except Exception:
             continue
 
-# Run cleanup once per session
+
 if "_cache_cleanup_done" not in st.session_state:
     _cleanup_old_cache()
     st.session_state["_cache_cleanup_done"] = True
@@ -32,48 +37,70 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-st.set_page_config(
-    page_title="Homepage",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
 from retro_theme import apply_retro_theme
+
 apply_retro_theme()
 
 from auth import check_password
+
 check_password()
 
-st.title("BlueMet")
-st.markdown(
-    "<p style='color: #B30000; font-size: 32px; font-weight: bold;'>"
-    "IMPORTANT: Use Prohbited outside of the JetBlue SOC or for Tomorrow.io employees"
-    "</p>",
-    unsafe_allow_html=True,
-)
-st.caption("Multi-model comparison for CONUS airports.")
 
-st.markdown(
-    """
-    ### Available tools
+def _home():
+    st.title("BlueMet")
+    st.markdown(
+        "<p style='color: #B30000; font-size: 32px; "
+        "font-weight: bold;'>"
+        "IMPORTANT: Use Prohbited outside of the JetBlue SOC or "
+        "for Tomorrow.io employees"
+        "</p>",
+        unsafe_allow_html=True,
+    )
+    st.caption("Multi-model comparison for CONUS airports.")
+    st.markdown(
+        """
+        ### Sections
 
-    - **VIS/CIG Comparison Tool** — visibility and ceiling model data 
-    - **Wind Comparison Tool** — wind speed, direction, and wind gust model data
-    - **Situational Awarness Tool** — flags low ceilings, visibility, and TSRA based on NWS TAFs
+        - **Forecast Tools** — Hi-res CAMs, wind plots, flight
+          conditions, and MOS guidance
+        - **Situational Awareness Products** — the JBU Weather
+          Map, station quick view, and fleet tracker
+        - **Archive Flight Conditions** — historical satellite
+          and radar with flight overlay
+        """
+    )
 
-    Select a tool from the sidebar to start. Do not share this site URL outside of the SOC team. 
 
-    ### Models Included
+PAGES = {
+    "": [
+        st.Page(_home, title="Home", icon=":material/home:",
+                default=True),
+    ],
+    "Forecast Tools": [
+        st.Page("pages/9_HiRes_CAMs.py",
+                title="Hi-Res CAMs"),
+        st.Page("pages/8_Forecast_Wind_Plots.py",
+                title="Forecast Wind Plots"),
+        st.Page("pages/1_Forecast_Flight_Conditions.py",
+                title="Forecast Flight Conditions"),
+        st.Page("pages/4_MOS_Tables.py",
+                title="MOS Tables"),
+    ],
+    "Situational Awareness Products": [
+        st.Page("pages/3_JBU_Weather_Map.py",
+                title="JBU Weather Map"),
+        st.Page("pages/7_Station_Quick_View.py",
+                title="Station Quick View"),
+        st.Page("pages/8_JBU_Flight_Tracker.py",
+                title="JBU Flight Tracker"),
+    ],
+    "Archive Flight Conditions": [
+        st.Page("pages/5_Archive_Satellite_Position.py",
+                title="Archive Satellite"),
+        st.Page("pages/6_Archive_Radar_Position.py",
+                title="Archive Radar"),
+    ],
+}
 
-    | Source | Forecast Range | Resolution |
-    | --- | --- | --- |
-    | HRRR | 0-18 | hourly |
-    | GFS MOS (MAV) | 6-72 | 3-hourly |
-    | GFS LAMP (LAV) | 1-25 | hourly |
-    | NBM (NBH + NBS) | 1-72 | hourly + 3-hourly |
-    | Tomorrow.io | 1-120 | hourly (optional) |
-
-    All NOAA models are pulled live from NOMADS. Tomorrow.io is included when an
-    API key is configured by the site operator.
-    """
-)
+nav = st.navigation(PAGES)
+nav.run()
