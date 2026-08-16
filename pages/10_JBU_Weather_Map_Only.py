@@ -1344,6 +1344,14 @@ if run_button:
             index=2, horizontal=True, key="radar_mode_f",
         )
         radar_on = radar_mode != "Off"
+        show_cs = st.checkbox(
+            "Show flight numbers", value=False, key="show_cs_f",
+            help="Callsign tags beside each aircraft. Zoom-"
+                 "triggered visibility isn't possible in this "
+                 "stack (the map never reports zoom back), so "
+                 "this switch is the reliable control - flip it "
+                 "on when zoomed into an area of interest.",
+        )
         sat_on = st.checkbox(
             "IR satellite + lightning (GOES-East)", value=False,
             key="sat_glm_f",
@@ -1467,18 +1475,18 @@ if run_button:
                 get_angle="angle",
                 pickable=True,
             ))
-            # Callsign labels as meter-sized icons: the proven
-            # zoom-scaling mechanism (TS glyph). Sub-pixel and
-            # invisible at network zoom; readable from ~zoom 10
-            # (roughly a 500-square-mile view)
-            layers.append(pdk.Layer(
-                "IconLayer", data=fleet_disp,
-                get_position="[lon, lat]",
-                get_icon="cicon",
-                get_size=1300, size_units="meters",
-                size_max_pixels=14,
-                pickable=False,
-            ))
+            if show_cs:
+                # Meter-scaled so even when enabled, labels stay
+                # proportionate: readable at terminal-area zoom,
+                # receding rather than shouting when pulled back
+                layers.append(pdk.Layer(
+                    "IconLayer", data=fleet_disp,
+                    get_position="[lon, lat]",
+                    get_icon="cicon",
+                    get_size=1300, size_units="meters",
+                    size_min_pixels=8, size_max_pixels=14,
+                    pickable=False,
+                ))
 
         layers.extend(_base_layers)
         deck = pdk.Deck(
@@ -1487,7 +1495,7 @@ if run_button:
                 latitude=30.0, longitude=-65.0,
                 zoom=3.0, min_zoom=2.2, max_zoom=11,
             ),
-            map_style="light",
+            map_style="dark",
             tooltip={"html": "<b>{tip}</b>"},
         )
         _rad = ""
