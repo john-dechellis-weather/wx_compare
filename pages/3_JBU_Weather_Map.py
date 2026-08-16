@@ -446,7 +446,7 @@ def _legend_html() -> str:
     LX = 118          # label column x; leaders end at LX-6
     diagram = (
         '<svg viewBox="0 0 320 168" width="100%" '
-        'style="max-width:340px; display:block;" '
+        'style="max-width:240px; display:block;" '
         'xmlns="http://www.w3.org/2000/svg">'
         '<circle cx="74" cy="96" r="26" fill="none" '
         'stroke="#FF00FF" stroke-width="5"/>'
@@ -477,11 +477,11 @@ def _legend_html() -> str:
            "padding:4px 0;")
     txt = ("color:#000; -webkit-text-fill-color:#000; "
            "font-family:Georgia, 'Times New Roman', serif; "
-           "font-size:clamp(11px, 1vw, 16px);")
+           "font-size:clamp(10px, 0.8vw, 13px);")
     planes = "".join(
         f'<div style="{row}">'
         f'<img src="{u}" '
-        'style="flex:none; width:2em; height:2em;"/>'
+        'style="flex:none; width:1.6em; height:1.6em;"/>'
         f'<span style="{txt}">{label}</span></div>'
         for u, label in (
             (plane_b, "JBU aircraft (points along heading)"),
@@ -1117,7 +1117,7 @@ with st.sidebar:
     st.divider()
     st.header("Map")
     map_height = st.slider(
-        "Map height (px)", 500, 1200, 800, 50,
+        "Map height (px)", 450, 1200, 650, 50,
         help="Width is fluid (fills the space beside the TAF "
              "table and follows the window); height is set "
              "here - Streamlit's component sizing defeats "
@@ -1305,7 +1305,7 @@ if run_button:
     with col_b:
         if board_rows:
             st.markdown(
-                '<div style="display:block; max-height:520px; '
+                '<div style="display:block; max-height:300px; '
                 'overflow-y:auto; overflow-x:hidden; '
                 'padding-right:6px;">'
                 + render_status_board(board_rows)
