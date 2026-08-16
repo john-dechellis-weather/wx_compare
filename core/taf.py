@@ -81,6 +81,10 @@ class TsraAlert:
     icao: str
     weather_code: str          # e.g. "TSRA", "+TSRA"
     period_label: str          # e.g. "PROB30 20-24Z"
+    # All TS-bearing period windows as (start_iso, end_iso) pairs,
+    # for ETA-vs-TAF overlap tests. Default keeps old cached
+    # objects compatible.
+    windows: tuple = ()
 
 
 @dataclass
@@ -183,6 +187,7 @@ def _analyze_one(
     min_ceiling_label = ""
     first_tsra_code: Optional[str] = None
     first_tsra_label = ""
+    tsra_windows: list = []
     max_wind: Optional[int] = None
     max_wind_str = ""
     max_wind_label = ""
@@ -221,11 +226,14 @@ def _analyze_one(
                 max_wind_label = period_label
 
         # --- TSRA ---
-        if tsra_enabled and first_tsra_code is None:
+        if tsra_enabled:
             tsra_code = _period_tsra_code(period)
             if tsra_code is not None:
-                first_tsra_code = tsra_code
-                first_tsra_label = period_label
+                tsra_windows.append(
+                    (p_start.isoformat(), p_end.isoformat()))
+                if first_tsra_code is None:
+                    first_tsra_code = tsra_code
+                    first_tsra_label = period_label
 
     if min_vis is not None:
         results.vis_alerts.append(VisAlert(
@@ -251,6 +259,7 @@ def _analyze_one(
             icao=icao,
             weather_code=first_tsra_code,
             period_label=first_tsra_label,
+            windows=tuple(tsra_windows),
         ))
 
 
