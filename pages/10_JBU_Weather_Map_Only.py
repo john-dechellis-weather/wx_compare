@@ -767,6 +767,51 @@ _FLEET_TILES = [
 ]
 
 
+@st.cache_data(ttl=180, show_spinner=False, max_entries=2)
+def cached_glm_flashes(bucket3: str):
+    """GOES-East GLM flash locations from the last ~10 minutes,
+    network-wide. Returns list of {lon, lat} dicts (capped)."""
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+    from datetime import timezone as _tz
+
+    import xarray as xr
+    from goes2go.data import goes_timerange
+
+    end = _dt.now(_tz.utc) - _td(minutes=6)
+    start = end - _td(minutes=10)
+    try:
+        files = goes_timerange(
+            start=start.replace(tzinfo=None),
+            end=end.replace(tzinfo=None),
+            satellite="goes19",
+            product="GLM-L2-LCFA",
+            return_as="filelist",
+            download=True,
+            overwrite=False,
+            verbose=False,
+            save_dir=str(_MAP_CACHE_ROOT / "glm"),
+        )
+    except Exception:
+        return []
+    pts = []
+    base = _MAP_CACHE_ROOT / "glm"
+    for _, row in files.iterrows():
+        try:
+            ds = xr.open_dataset(base / row["file"])
+            la = ds["flash_lat"].values
+            lo = ds["flash_lon"].values
+            ds.close()
+        except Exception:
+            continue
+        for a, b in zip(la.tolist(), lo.tolist()):
+            if -12 <= a <= 64 and -132 <= b <= 12:
+                pts.append({"lat": float(a), "lon": float(b)})
+        if len(pts) > 20000:
+            break
+    return pts[:20000]
+
+
 @st.cache_data(ttl=90, show_spinner=False, max_entries=2)
 def cached_fleet(bucket: str):
     """All airborne JBU over CONUS.
@@ -1248,8 +1293,47 @@ if run_button:
             index=2, horizontal=True, key="radar_mode_f",
         )
         radar_on = radar_mode != "Off"
+        sat_on = st.checkbox(
+            "IR satellite + lightning (GOES-East)", value=False,
+            key="sat_glm_f",
+            help="Band-13 clean IR via NASA GIBS (~10-min "
+                 "imagery) with GLM flash points from the last "
+                 "10 minutes - covers the network where radar "
+                 "does not, east past the Azores",
+        )
         layers = []
         _mrms_ts = None
+        if sat_on:
+            _sb = datetime.now(timezone.utc).strftime(
+                "%Y%m%d%H%M")[:-1]
+            _gibs = (
+                "https://gibs.earthdata.nasa.gov/wms/epsg4326/"
+                "best/wms.cgi?SERVICE=WMS&VERSION=1.1.1"
+                "&REQUEST=GetMap"
+                "&LAYERS=GOES-East_ABI_Band13_Clean_Infrared"
+                "&STYLES=&SRS=EPSG:4326&BBOX=-130,-5,10,62"
+                "&WIDTH=2800&HEIGHT=1340&FORMAT=image/png"
+                f"&TRANSPARENT=TRUE&TIME=default&_={_sb}"
+            )
+            layers.append(pdk.Layer(
+                "BitmapLayer", data=None, image=_gibs,
+                bounds=[-130.0, -5.0, 10.0, 62.0],
+                opacity=0.45,
+            ))
+            try:
+                _flashes = cached_glm_flashes(_sb)
+            except Exception:
+                _flashes = []
+            if _flashes:
+                layers.append(pdk.Layer(
+                    "ScatterplotLayer", data=_flashes,
+                    get_position="[lon, lat]",
+                    get_fill_color=[255, 230, 50, 220],
+                    get_radius=6000,
+                    radius_min_pixels=1.5,
+                    radius_max_pixels=4,
+                    pickable=False,
+                ))
         if radar_on:
             _rb = datetime.now(timezone.utc).strftime(
                 "%Y%m%d%H%M")[:-1]
@@ -1345,6 +1429,9 @@ if run_button:
             tooltip={"html": "<b>{tip}</b>"},
         )
         _rad = ""
+        if sat_on:
+            _rad += (" Satellite: GOES-East Band-13 IR (NASA "
+                     "GIBS) + GLM lightning (last 10 min).")
         if radar_on:
             if radar_mode == "MRMS hi-res":
                 _rad = (" Radar: MRMS 1km merged reflectivity "
