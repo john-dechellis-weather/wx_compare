@@ -1304,6 +1304,10 @@ if run_button:
         layers = []
         _mrms_ts = None
         if sat_on:
+            _sat_op = st.slider(
+                "IR opacity", 10, 90, 45, 5, key="sat_op_f",
+                help="Transparency of the satellite layer",
+            ) / 100.0
             _sb = datetime.now(timezone.utc).strftime(
                 "%Y%m%d%H%M")[:-1]
             _gibs = (
@@ -1318,7 +1322,7 @@ if run_button:
             layers.append(pdk.Layer(
                 "BitmapLayer", data=None, image=_gibs,
                 bounds=[-130.0, -5.0, 10.0, 62.0],
-                opacity=0.45,
+                opacity=_sat_op,
             ))
             try:
                 _flashes = cached_glm_flashes(_sb)
@@ -1408,11 +1412,16 @@ if run_button:
                 get_angle="angle",
                 pickable=True,
             ))
+            # Meter-based label size with no pixel floor:
+            # invisible specks when zoomed out across the
+            # network, readable callsigns once zoomed to
+            # metro scale (~zoom 9+)
             layers.append(pdk.Layer(
                 "TextLayer", data=fleet_disp,
                 get_position="[lon, lat]",
                 get_text="cs",
-                get_size=11,
+                get_size=1100, size_units="meters",
+                size_min_pixels=0, size_max_pixels=13,
                 get_color="lcolor",
                 get_text_anchor='"start"',
                 get_pixel_offset=[12, -10],
