@@ -469,6 +469,27 @@ def _a320_icon_uri(fill="#005ADC"):
             + urllib.parse.quote(svg))
 
 
+def _glm_bolt_icon():
+    """Small filled lightning bolt: blue with a thin white
+    outline, for GLM flash points."""
+    import urllib.parse
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="32" '
+        'height="48" viewBox="0 0 32 48">'
+        '<path d="M18 2 L8 26 L14 26 L10 46 L26 18 L18 18 Z" '
+        'fill="#1E6FE8" stroke="#FFFFFF" stroke-width="2" '
+        'stroke-linejoin="round"/>'
+        "</svg>"
+    )
+    return {"url": ("data:image/svg+xml;charset=utf-8,"
+                    + urllib.parse.quote(svg)),
+            "width": 32, "height": 48, "anchorX": 16,
+            "anchorY": 24, "mask": False}
+
+
+_GLM_ICON = _glm_bolt_icon()
+
+
 _CS_ICON_CACHE: dict = {}
 
 
@@ -797,62 +818,6 @@ _FLEET_TILES = [
 ]
 
 
-@st.cache_data(ttl=600, show_spinner=False, max_entries=4)
-def cached_ir_cells(bucket10: str, thresh_c: int):
-    """GOES-East Band-13 IR from GIBS, thresholded server-side to
-    cold cloud tops only. GIBS Clean IR grayscale maps roughly
-    linearly from ~330K (black) to ~163K (white); estimated
-    Celsius = 57 - gray/255*167. Returns (cells, n)."""
-    import io
-
-    import numpy as _np
-    import requests as _rq
-    from PIL import Image
-
-    url = (
-        "https://gibs.earthdata.nasa.gov/wms/epsg4326/best/"
-        "wms.cgi?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap"
-        "&LAYERS=GOES-East_ABI_Band13_Clean_Infrared"
-        "&STYLES=&SRS=EPSG:4326&BBOX=-130,-5,10,62"
-        "&WIDTH=1400&HEIGHT=670&FORMAT=image/png"
-        "&TRANSPARENT=TRUE&TIME=default"
-    )
-    r = _rq.get(url, timeout=25)
-    r.raise_for_status()
-    img = Image.open(io.BytesIO(r.content)).convert("LA")
-    arr = _np.asarray(img, dtype=_np.float32)
-    gray, alpha = arr[..., 0], arr[..., 1]
-    temp_c = 57.0 - gray / 255.0 * 167.0
-    mask = (temp_c <= thresh_c) & (alpha > 0)
-
-    ii, jj = _np.where(mask)
-    # Decimate if a broad threshold floods the browser payload
-    step = 1
-    while ii.size // (step * step) > 60000:
-        step += 1
-    if step > 1:
-        keep = (ii % step == 0) & (jj % step == 0)
-        ii, jj = ii[keep], jj[keep]
-
-    t = temp_c[ii, jj]
-    # Enhancement ramp: white near threshold -> cyan -> purple
-    # for the coldest overshooting tops
-    frac = _np.clip((thresh_c - t) / 45.0, 0, 1)
-    rr = (255 - frac * 130).astype(int)
-    gg = (255 - frac * 60).astype(int)
-    bb = _np.full_like(rr, 255)
-    lon = -130.0 + (jj + 0.5) * (140.0 / 1400.0)
-    lat = 62.0 - (ii + 0.5) * (67.0 / 670.0)
-    cells = [
-        {"lon": float(x), "lat": float(y),
-         "color": [int(cr), int(cg), int(cb), 190]}
-        for x, y, cr, cg, cb in zip(
-            lon.tolist(), lat.tolist(),
-            rr.tolist(), gg.tolist(), bb.tolist())
-    ]
-    return cells, len(cells)
-
-
 @st.cache_data(ttl=180, show_spinner=False, max_entries=2)
 def cached_glm_flashes(bucket3: str):
     """GOES-East GLM flash locations from the last ~10 minutes,
@@ -893,9 +858,9 @@ def cached_glm_flashes(bucket3: str):
         for a, b in zip(la.tolist(), lo.tolist()):
             if -12 <= a <= 64 and -132 <= b <= 12:
                 pts.append({"lat": float(a), "lon": float(b)})
-        if len(pts) > 20000:
+        if len(pts) > 12000:
             break
-    return pts[:20000]
+    return pts[:12000]
 
 
 @st.cache_data(ttl=90, show_spinner=False, max_entries=2)
@@ -1390,25 +1355,10 @@ if run_button:
         layers = []
         _mrms_ts = None
         if sat_on:
-            _sc1, _sc2, _sc3 = st.columns([1.2, 1, 1.3])
-            with _sc1:
-                _sat_mode = st.radio(
-                    "IR display", ["Full image", "Cold tops only"],
-                    index=0, horizontal=True, key="sat_mode_f",
-                    label_visibility="collapsed",
-                )
-            with _sc2:
-                _sat_op = st.slider(
-                    "IR opacity", 10, 90, 45, 5,
-                    key="sat_op_f",
-                ) / 100.0
-            with _sc3:
-                _sat_th = st.slider(
-                    "Cold-top threshold (C)", -75, -15, -35, 5,
-                    key="sat_th_f",
-                    help="Only cloud tops colder than this show "
-                         "(approximate brightness temperature)",
-                )
+            _sat_op = st.slider(
+                "IR opacity", 10, 90, 45, 5, key="sat_op_f",
+                help="Transparency of the satellite layer",
+            ) / 100.0
             _sb = datetime.now(timezone.utc).strftime(
                 "%Y%m%d%H%M")[:-1]
             _gibs = (
@@ -1420,37 +1370,24 @@ if run_button:
                 "&WIDTH=2800&HEIGHT=1340&FORMAT=image/png"
                 f"&TRANSPARENT=TRUE&TIME=default&_={_sb}"
             )
-            if _sat_mode == "Full image":
-                layers.append(pdk.Layer(
-                    "BitmapLayer", data=None, image=_gibs,
-                    bounds=[-130.0, -5.0, 10.0, 62.0],
-                    opacity=_sat_op,
-                ))
-            else:
-                try:
-                    _ircells, _nir = cached_ir_cells(
-                        _sb, int(_sat_th))
-                    layers.append(pdk.Layer(
-                        "GridCellLayer", data=_ircells,
-                        get_position="[lon, lat]",
-                        get_fill_color="color",
-                        cell_size=11500, extruded=False,
-                        pickable=False, opacity=_sat_op,
-                    ))
-                except Exception:
-                    pass
+            layers.append(pdk.Layer(
+                "BitmapLayer", data=None, image=_gibs,
+                bounds=[-130.0, -5.0, 10.0, 62.0],
+                opacity=_sat_op,
+            ))
             try:
                 _flashes = cached_glm_flashes(_sb)
             except Exception:
                 _flashes = []
             if _flashes:
+                for _f in _flashes:
+                    _f["icon"] = _GLM_ICON
                 layers.append(pdk.Layer(
-                    "ScatterplotLayer", data=_flashes,
+                    "IconLayer", data=_flashes,
                     get_position="[lon, lat]",
-                    get_fill_color=[255, 230, 50, 220],
-                    get_radius=6000,
-                    radius_min_pixels=1.5,
-                    radius_max_pixels=4,
+                    get_icon="icon",
+                    get_size=13, size_min_pixels=7,
+                    size_max_pixels=18,
                     pickable=False,
                 ))
         if radar_on:
