@@ -73,8 +73,7 @@ def _home():
 
 PAGES = {
     "": [
-        st.Page(_home, title="Home", icon=":material/home:",
-                default=True),
+        st.Page(_home, title="Home", default=True),
     ],
     "Forecast Tools": [
         st.Page("pages/9_HiRes_CAMs.py",
@@ -101,6 +100,18 @@ PAGES = {
                 title="Archive Radar"),
     ],
 }
+
+st.markdown(
+    """
+    <style>
+    [data-testid="stNavSectionHeader"] {
+        font-weight: bold !important;
+        color: #000000 !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 nav = st.navigation(PAGES)
 nav.run()
