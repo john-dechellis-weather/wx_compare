@@ -1300,32 +1300,27 @@ if run_button:
 
     # Status strip: the three numbers that summarize the network
     n_sev_all = sum(1 for r in board_rows if r[0] == 0)
-    if metar_rows:
-        _tl, _tmid, _tr = st.columns([1, 2.4, 1])
-        with _tmid:
-            st.markdown(render_metar_table(metar_rows),
-                        unsafe_allow_html=True)
 
-    col_taf, col_map = st.columns([1, 3.4], gap="medium")
-
-    with col_taf:
-        if not tsra_enabled:
-            st.caption("TSRA alerts disabled in sidebar.")
+    col_b, col_m = st.columns([1, 2.1], gap="medium")
+    with col_b:
         if board_rows:
-            # Pane height tracks the map-height slider exactly;
-            # long alert lists scroll inside it
             st.markdown(
-                f'<div style="display:block; '
-                f'max-height:{map_height}px; overflow-y:auto; '
-                f'overflow-x:hidden; padding-right:6px;">'
+                '<div style="display:block; max-height:520px; '
+                'overflow-y:auto; overflow-x:hidden; '
+                'padding-right:6px;">'
                 + render_status_board(board_rows)
                 + "</div>",
                 unsafe_allow_html=True,
             )
-
         else:
             st.markdown(_no_alerts(), unsafe_allow_html=True)
         st.markdown(_legend_html(), unsafe_allow_html=True)
+    with col_m:
+        if metar_rows:
+            st.markdown(render_metar_table(metar_rows),
+                        unsafe_allow_html=True)
+        else:
+            st.markdown(_no_alerts(), unsafe_allow_html=True)
 
     @st.fragment
     def _map_fragment():
@@ -1486,11 +1481,10 @@ if run_button:
             f"airborne{_cov}.{_rad}"
         )
 
-    with col_map:
-        if _deck is not None:
-            _map_fragment()
-        else:
-            st.caption(f"Map unavailable: {_map_err}")
+    if _deck is not None:
+        _map_fragment()
+    else:
+        st.caption(f"Map unavailable: {_map_err}")
 
     if tile_fails:
         with st.expander(
