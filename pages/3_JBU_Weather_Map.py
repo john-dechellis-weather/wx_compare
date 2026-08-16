@@ -446,7 +446,7 @@ def _legend_html() -> str:
     LX = 118          # label column x; leaders end at LX-6
     diagram = (
         '<svg viewBox="0 0 320 168" width="100%" '
-        'style="max-width:240px; display:block;" '
+        'style="max-width:200px; display:block;" '
         'xmlns="http://www.w3.org/2000/svg">'
         '<circle cx="74" cy="96" r="26" fill="none" '
         'stroke="#FF00FF" stroke-width="5"/>'
@@ -477,11 +477,11 @@ def _legend_html() -> str:
            "padding:4px 0;")
     txt = ("color:#000; -webkit-text-fill-color:#000; "
            "font-family:Georgia, 'Times New Roman', serif; "
-           "font-size:clamp(10px, 0.8vw, 13px);")
+           "font-size:clamp(9px, 0.7vw, 12px);")
     planes = "".join(
         f'<div style="{row}">'
         f'<img src="{u}" '
-        'style="flex:none; width:1.6em; height:1.6em;"/>'
+        'style="flex:none; width:1.4em; height:1.4em;"/>'
         f'<span style="{txt}">{label}</span></div>'
         for u, label in (
             (plane_b, "JBU aircraft (points along heading)"),
@@ -491,7 +491,7 @@ def _legend_html() -> str:
     )
     return (
         '<div style="background:#FFFFFF; border:1px solid #000; '
-        'padding:8px 12px; margin-top:8px; width:auto; '
+        'padding:6px 10px; margin-top:26px; width:auto; '
         'display:inline-block;">'
         '<div style="color:#000; -webkit-text-fill-color:#000; '
         f"font-family:{_FONT}; "
@@ -1301,26 +1301,23 @@ if run_button:
     # Status strip: the three numbers that summarize the network
     n_sev_all = sum(1 for r in board_rows if r[0] == 0)
 
-    col_b, col_m = st.columns([1, 2.1], gap="medium")
-    with col_b:
-        if board_rows:
-            st.markdown(
-                '<div style="display:block; max-height:300px; '
-                'overflow-y:auto; overflow-x:hidden; '
-                'padding-right:6px;">'
-                + render_status_board(board_rows)
-                + "</div>",
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown(_no_alerts(), unsafe_allow_html=True)
-        st.markdown(_legend_html(), unsafe_allow_html=True)
-    with col_m:
-        if metar_rows:
+    # METAR breach table: centered across the top of the page
+    if metar_rows:
+        _t0, _tmid, _t1 = st.columns([1, 2.4, 1])
+        with _tmid:
             st.markdown(render_metar_table(metar_rows),
+                        unsafe_allow_html=True)
+
+    # ICAO alerts + key: narrow left column, table at natural
+    # height (no scroll pane, no phantom-width scrollbar)
+    col_left, _rest = st.columns([1, 2.6], gap="medium")
+    with col_left:
+        if board_rows:
+            st.markdown(render_status_board(board_rows),
                         unsafe_allow_html=True)
         else:
             st.markdown(_no_alerts(), unsafe_allow_html=True)
+        st.markdown(_legend_html(), unsafe_allow_html=True)
 
     @st.fragment
     def _map_fragment():
