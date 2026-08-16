@@ -1485,6 +1485,16 @@ if run_button:
         if metar_rows:
             st.markdown(render_metar_table(metar_rows),
                         unsafe_allow_html=True)
+        else:
+            st.markdown(
+                '<div style="background:#FFFFFF; border:1px '
+                'solid #000; display:inline-block; '
+                'padding:4px 14px; margin-bottom:6px; '
+                'color:#000; -webkit-text-fill-color:#000; '
+                f'font-family:{_FONT}; font-size:11px;">'
+                "NO METARs AT/BEYOND THRESHOLDS</div>",
+                unsafe_allow_html=True,
+            )
         if _deck is not None:
             _map_fragment()
         else:
