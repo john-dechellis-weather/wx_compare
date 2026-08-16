@@ -159,7 +159,7 @@ def cached_panel(
 
 
 def build_scrub_html(frames: dict, hour_axis: list,
-                     order: list) -> tuple:
+                     order: list, single: bool = False) -> tuple:
     """Client-side shared-slider grid from {model: {fhr: png}}.
     Returns (html, height). Used by smooth-scrub mode AND the
     instant-open warm path."""
@@ -183,11 +183,15 @@ def build_scrub_html(frames: dict, hour_axis: list,
     labels = [f"f{h:02d}" for h in hour_axis]
     order = [m for m in order if m in model_arrays]
     names = {m: MODELS[m]["label"] for m in order}
+    _cols = "1fr" if single else "1fr 1fr"
     html = (
         "<style>"
-        ".camgrid{display:grid;grid-template-columns:1fr 1fr;"
-        "gap:6px}"
+        ".camgrid{display:grid;grid-template-columns:"
+        + _cols + ";gap:6px}"
         ".camgrid img{width:100%;border:1px solid #888}"
+        ".zoomwrap{overflow:hidden;cursor:grab}"
+        ".zoomwrap img{transform-origin:0 0;user-select:none;"
+        "-webkit-user-drag:none}"
         ".camlbl{font:bold 13px monospace;margin:2px 0}"
         ".ctl{font:13px monospace;margin:8px 0}"
         "input[type=range]{width:70%}"
@@ -199,8 +203,10 @@ def build_scrub_html(frames: dict, hour_axis: list,
         "</div><div class='camgrid'>"
     )
     for m in order:
+        _wrap = " class='zoomwrap'" if single else ""
         html += ("<div><div class='camlbl'>" + names[m]
-                 + "</div><img id='img_" + m + "'></div>")
+                 + "</div><div" + _wrap + "><img id='img_"
+                 + m + "'></div></div>")
     html += "</div><script>"
     html += "const D=" + _json.dumps(model_arrays) + ";"
     html += "const L=" + _json.dumps(labels) + ";"
@@ -213,8 +219,37 @@ def build_scrub_html(frames: dict, hour_axis: list,
         "if(D[m][i]){el.src=D[m][i];el.style.display='';}"
         "else{el.style.display='none';}}}"
         "sl.addEventListener('input',upd);upd();"
-        "</script>"
     )
+    if single:
+        # Wheel zoom (cursor-anchored) + drag pan on the single
+        # panel; transform persists across frame swaps because
+        # the <img> element is reused
+        html += (
+            "document.querySelectorAll('.zoomwrap').forEach("
+            "w=>{const im=w.querySelector('img');"
+            "let s=1,tx=0,ty=0,dragging=false,lx=0,ly=0;"
+            "function ap(){im.style.transform="
+            "'translate('+tx+'px,'+ty+'px) scale('+s+')';}"
+            "w.addEventListener('wheel',e=>{e.preventDefault();"
+            "const r=w.getBoundingClientRect();"
+            "const mx=e.clientX-r.left,my=e.clientY-r.top;"
+            "const os=s;"
+            "s=Math.min(6,Math.max(1,s*(e.deltaY<0?1.15:0.87)));"
+            "tx=mx-(mx-tx)*s/os;ty=my-(my-ty)*s/os;"
+            "if(s===1){tx=0;ty=0;}ap();},{passive:false});"
+            "w.addEventListener('mousedown',e=>{dragging=true;"
+            "lx=e.clientX;ly=e.clientY;"
+            "w.style.cursor='grabbing';});"
+            "window.addEventListener('mouseup',()=>{"
+            "dragging=false;w.style.cursor='grab';});"
+            "window.addEventListener('mousemove',e=>{"
+            "if(!dragging)return;tx+=e.clientX-lx;"
+            "ty+=e.clientY-ly;lx=e.clientX;ly=e.clientY;ap();});"
+            "});"
+        )
+    html += "</script>"
+    if single:
+        return html, 140 + 720
     rows = (len(order) + 1) // 2
     return html, 140 + rows * 560
 
@@ -232,11 +267,6 @@ with st.sidebar:
     st.header("Region")
     icao_input = st.text_input("Airport ICAO", value="KJFK",
                                max_chars=4).strip().upper()
-    hub_cols = st.columns(len(WARM_HUBS))
-    for i, hub in enumerate(WARM_HUBS):
-        if hub_cols[i].button(hub[1:], key=f"hub_{hub}",
-                              use_container_width=True):
-            st.session_state["cam_icao"] = hub
     zoom = st.slider(
         "Zoom (degrees)", 1.0, 6.0, 2.5, 0.5,
         help="Geographic window - zoom in/out. 2.5 serves "
@@ -403,7 +433,23 @@ if active:
             specs.append((m, cyc, fh))
         return specs, notes
 
-    GRID_ORDER = ["hrrr", "nam_nest", "hiresw_arw", "hiresw_fv3"]
+    _VIEW_LABELS = {
+        "All models (2x2)": None,
+        "HRRR": "hrrr", "NAM 3km": "nam_nest",
+        "HRW-ARW": "hiresw_arw", "HRW-FV3": "hiresw_fv3",
+    }
+    view_choice = st.radio(
+        "View", list(_VIEW_LABELS.keys()),
+        index=0, horizontal=True, key="cam_view",
+        help="Single-model view renders one large panel with "
+             "mouse-wheel zoom and drag-pan (digital zoom of "
+             "the rendered image; the sidebar Zoom slider still "
+             "controls true render detail).",
+    )
+    _single_model = _VIEW_LABELS[view_choice]
+    GRID_ORDER = ([_single_model] if _single_model
+                  else ["hrrr", "nam_nest", "hiresw_arw",
+                        "hiresw_fv3"])
 
     if smooth:
         span = min(fhr_hi - fhr_lo, 24)
@@ -505,7 +551,8 @@ if active:
             st.error("No frames preloaded - check model/product/range.")
         else:
             html, hgt = build_scrub_html(
-                frames, hours, GRID_ORDER
+                frames, hours, GRID_ORDER,
+                single=bool(_single_model),
             )
             _sc = st.session_state.get("panel_scale_v", 85)
             if _sc >= 100:
