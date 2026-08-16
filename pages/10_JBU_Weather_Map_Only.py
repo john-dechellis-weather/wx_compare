@@ -469,6 +469,36 @@ def _a320_icon_uri(fill="#005ADC"):
             + urllib.parse.quote(svg))
 
 
+_CS_ICON_CACHE: dict = {}
+
+
+def _callsign_icon(cs: str, hexcolor: str):
+    """Callsign rendered as a small SVG text icon so it can ride
+    IconLayer's meter-based sizing - the mechanism the TS glyph
+    proved scales correctly with zoom (TextLayer's meter units
+    did not reliably shrink)."""
+    import urllib.parse
+    key = (cs, hexcolor)
+    icon = _CS_ICON_CACHE.get(key)
+    if icon is None:
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="150" '
+            'height="30" viewBox="0 0 150 30">'
+            f'<text x="2" y="23" font-family="Arial, sans-serif" '
+            f'font-size="22" font-weight="bold" '
+            f'fill="{hexcolor}" stroke="#FFFFFF" '
+            'stroke-width="1.2" paint-order="stroke">'
+            f"{cs}</text></svg>"
+        )
+        uri = ("data:image/svg+xml;charset=utf-8,"
+               + urllib.parse.quote(svg))
+        # anchorX -8: label floats right of the aircraft point
+        icon = {"url": uri, "width": 150, "height": 30,
+                "anchorX": -8, "anchorY": 24, "mask": False}
+        _CS_ICON_CACHE[key] = icon
+    return icon
+
+
 _AC_ICON = {"url": _a320_icon_uri(), "width": 64, "height": 64,
             "anchorX": 32, "anchorY": 32, "mask": False}
 _AC_ICON_RED = {"url": _a320_icon_uri("#E01A1A"), "width": 64,
@@ -1485,6 +1515,9 @@ if run_button:
                     "tip": tip,
                     "angle": d.get("angle", 0),
                     "icon": (_AC_ICON_RED if warn else _AC_ICON),
+                    "cicon": _callsign_icon(
+                        d.get("callsign", ""),
+                        "#E01A1A" if warn else "#005ADC"),
                     "lcolor": ([224, 26, 26, 255] if warn
                                else [0, 90, 220, 255]),
                 })
@@ -1497,19 +1530,17 @@ if run_button:
                 get_angle="angle",
                 pickable=True,
             ))
-            # Meter-based label size with no pixel floor:
-            # invisible specks when zoomed out across the
-            # network, readable callsigns once zoomed to
-            # metro scale (~zoom 9+)
+            # Callsign labels as meter-sized icons: the proven
+            # zoom-scaling mechanism (TS glyph). Sub-pixel and
+            # invisible at network zoom; readable from ~zoom 10
+            # (roughly a 500-square-mile view)
             layers.append(pdk.Layer(
-                "TextLayer", data=fleet_disp,
+                "IconLayer", data=fleet_disp,
                 get_position="[lon, lat]",
-                get_text="cs",
-                get_size=1100, size_units="meters",
-                size_min_pixels=0, size_max_pixels=13,
-                get_color="lcolor",
-                get_text_anchor='"start"',
-                get_pixel_offset=[12, -10],
+                get_icon="cicon",
+                get_size=1300, size_units="meters",
+                size_max_pixels=14,
+                pickable=False,
             ))
 
         layers.extend(_base_layers)
