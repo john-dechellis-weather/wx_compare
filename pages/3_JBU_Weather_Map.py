@@ -487,6 +487,28 @@ def _legend_html() -> str:
             (plane_b, "JBU flight (with heading)"),
             (plane_r, "Destination METAR has TS / LIFR / "
                       "&gt;G35kt"),
+
+        )
+    )
+    def ring_sw(color):
+        return ('<svg width="18" height="18" '
+                'xmlns="http://www.w3.org/2000/svg">'
+                f'<circle cx="9" cy="9" r="6.5" fill="none" '
+                f'stroke="{color}" stroke-width="2.6"/></svg>')
+
+    rings_sec = "".join(
+        f'<div style="{row}">'
+        f'<span style="width:22px; text-align:center;">'
+        f"{ring_sw(c)}</span>"
+        f'<span style="{txt}">{label}</span></div>'
+        for c, label in (
+            ("#FF00FF", "LIFR in TAF (cig &lt;400ft or "
+                        "vis &lt;1sm)"),
+            ("#E01A1A", "IFR in TAF (cig &lt;1000ft or "
+                        "vis &lt;2sm)"),
+            ("#0B6B0B", "&ge;40kt wind in TAF"),
+            ("#4CBB17", "&ge;30kt wind in TAF"),
+            ("#F2C200", "Thunderstorm in TAF"),
         )
     )
     return (
@@ -498,7 +520,7 @@ def _legend_html() -> str:
         "font-size:clamp(10px, 0.85vw, 13px); "
         'font-weight:bold; text-decoration:underline; '
         'margin-bottom:2px;">MAP KEY</div>'
-        + diagram + planes + "</div>"
+        + diagram + planes + rings_sec + "</div>"
     )
 
 
@@ -535,7 +557,9 @@ def _metar_severity(r, include_ts=True):
     return color, "/".join(toks)
 
 
-def build_map_markers(board_rows, metar_rows, coords):
+def build_map_markers(board_rows, metar_rows, coords,
+                      taf_ring_map=None):
+    taf_ring_map = taf_ring_map or {}
     """Merge TAF board + breaching METARs into map datasets.
 
     Solid fill = current NON-TS METAR breach; ring = NON-TS TAF
@@ -546,12 +570,11 @@ def build_map_markers(board_rows, metar_rows, coords):
     taf = {}
     for r in board_rows:
         icao, e, cands = r[1], r[5], r[7]
-        # Ring: worst NON-TS condition color when one exists;
-        # a TS-only TAF rings YELLOW (all intensities, VCTS incl)
-        non_ts = [c for c in cands if "TS" not in c[1]]
+        # Ring color comes from the fixed-criteria map built in
+        # the data phase (LIFR/IFR/wind tiers/TS)
         taf[icao] = {
             "ts": bool(e.get("ts")),
-            "ring": (non_ts[0][2] if non_ts else "#F2C200"),
+            "ring": taf_ring_map.get(icao),
             "txt": r[6],
         }
     met = {}
@@ -760,11 +783,14 @@ def cached_fleet(bucket: str):
                 continue
             alt = p.get("alt_baro")
             trk = p.get("track")
+            gs = p.get("gs")
             out.append((cs, float(p["lat"]), float(p["lon"]),
                         alt if isinstance(alt, (int, float))
                         else None,
                         float(trk) if isinstance(
-                            trk, (int, float)) else 0.0))
+                            trk, (int, float)) else 0.0,
+                        float(gs) if isinstance(
+                            gs, (int, float)) else None))
         tile_stats.append(
             f"({la:.0f},{lo:.0f}) {host}: {len(ac)} ac, "
             f"{len(out)} JBU"
@@ -835,7 +861,7 @@ def cached_fleet(bucket: str):
 
     seen = {}
     for res in results:
-        for cs, la, lo, alt, trk in res:
+        for cs, la, lo, alt, trk, gs in res:
             if cs not in seen:
                 seen[cs] = (la, lo, alt, trk)
 
@@ -900,6 +926,7 @@ def cached_fleet(bucket: str):
             "dest": dests.get(cs, ""),
             # deck.gl IconLayer angle is CCW; heading is CW from N
             "angle": (360.0 - trk) % 360.0,
+            "gs": gs,
             "tip": f"{cs} | {alt_s}",
         })
     ok = len(_FLEET_TILES) - len(fails)
@@ -1118,6 +1145,37 @@ if run_button:
 
     # Destination hazards: {icao: "TSRA/0.5SM/G38"} for the
     # aircraft-warning layer
+    # Ring colors from FIXED criteria on TAF minima (independent
+    # of the sidebar sliders, which govern the board):
+    #   magenta  LIFR: cig < 400 ft or vis < 1 sm
+    #   red      IFR:  cig < 1000 ft or vis < 2 sm
+    #   dk green wind >= 40 kt   |   lt green wind >= 30 kt
+    #   yellow   thunderstorm in TAF
+    _min_vis = {a.icao: a.min_vis_sm for a in results.vis_alerts}
+    _min_cig = {a.icao: a.min_ceiling_ft
+                for a in results.ceiling_alerts}
+    _max_wind = {a.icao: a.max_wind_kt
+                 for a in results.wind_alerts}
+    _has_ts = {a.icao for a in results.tsra_alerts}
+    taf_ring = {}
+    for _ic in (set(_min_vis) | set(_min_cig) | set(_max_wind)
+                | _has_ts):
+        v = _min_vis.get(_ic)
+        c = _min_cig.get(_ic)
+        w = _max_wind.get(_ic) or 0
+        if (c is not None and c < 400) or \
+                (v is not None and v < 1):
+            taf_ring[_ic] = "#FF00FF"
+        elif (c is not None and c < 1000) or \
+                (v is not None and v < 2):
+            taf_ring[_ic] = "#E01A1A"
+        elif w >= 40:
+            taf_ring[_ic] = "#0B6B0B"
+        elif w >= 30:
+            taf_ring[_ic] = "#4CBB17"
+        elif _ic in _has_ts:
+            taf_ring[_ic] = "#F2C200"
+
     dest_warn = {}
     for r in metar_all:
         toks = []
@@ -1154,7 +1212,7 @@ if run_button:
         # TS at stations that weren't also breaching vis/cig/wind
         # (KDEN's METAR said TS but earned no label)
         fills, rings, ts_marks = build_map_markers(
-            board_rows, metar_all, coords
+            board_rows, metar_all, coords, taf_ring
         )
 
         bucket1 = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
