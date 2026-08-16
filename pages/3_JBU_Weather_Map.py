@@ -15,7 +15,7 @@ from datetime import datetime, timezone, timedelta
 import streamlit as st
 
 st.set_page_config(
-    page_title="BlueMet — JBU Weather Map",
+    page_title="BlueMet — JBU Weather Map CONUS",
     layout="wide",
 )
 
@@ -929,7 +929,7 @@ def cached_analyze(
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
-st.title("JBU Weather Map")
+st.title("JBU Weather Map CONUS")
 # Prefetch overlap: start the paced fetchers (fleet sweep, MRMS
 # decode) in background threads immediately - their politeness
 # sleeps then run concurrently with TAF/METAR fetching and
