@@ -488,7 +488,7 @@ def _legend_html() -> str:
         f'<span style="{txt}">{label}</span></div>'
         for u, label in (
             (plane_b, "JBU flight (with heading)"),
-            (plane_r, "Impactful Weather in TAF"),
+            (plane_r, "Hazardous Weather in current METAR"),
             (_a320_icon_uri("#EE7700"),
              "Arriving (&lt;20 min) into TS TAF window"),
 
