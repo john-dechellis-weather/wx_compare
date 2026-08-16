@@ -62,7 +62,7 @@ def _td(text, bg="#FFFFFF", fg="#000000", bold=False,
     weight = "bold" if bold else "normal"
     return (
         f'<td style="background-color:{bg}; color:{fg}; -webkit-text-fill-color:{fg}; '
-        f"font-family:{_FONT}; font-size:clamp(9px, 0.8vw, 13px); padding:0.3em 0.9em; "
+        f"font-family:{_FONT}; font-size:clamp(6px, 0.45vw, 8px); padding:0.2em 0.5em; "
         f"border:1px solid #000000; font-weight:{weight}; "
         f'text-align:{align}; white-space:nowrap;">{text}</td>'
     )
@@ -72,7 +72,7 @@ def _th(text, align="left") -> str:
     return (
         f'<td style="background-color:#FFFFFF; color:#000000; '
         f"-webkit-text-fill-color:#000000; "
-        f"font-family:{_FONT}; font-size:clamp(9px, 0.8vw, 13px); padding:0.35em 0.9em; "
+        f"font-family:{_FONT}; font-size:clamp(6px, 0.45vw, 8px); padding:0.22em 0.5em; "
         f"border:1px solid #000000; font-weight:bold; "
         f'text-align:{align}; text-decoration:underline; '
         f'white-space:nowrap;">{text}</td>'
@@ -94,7 +94,7 @@ def _table(header_cells: list[str], body_rows: list[str],
 def _no_alerts() -> str:
     return (
         f'<div style="background-color:#FFFFFF; border:2px solid {_WHITE}; '
-        f"color:#000000; -webkit-text-fill-color:#000000; font-family:{_FONT}; font-size:clamp(9px, 0.8vw, 13px); "
+        f"color:#000000; -webkit-text-fill-color:#000000; font-family:{_FONT}; font-size:clamp(6px, 0.45vw, 8px); "
         f'padding:6px 10px;">NO AIRPORTS FLAGGED</div>'
     )
 
@@ -446,7 +446,7 @@ def _legend_html() -> str:
     LX = 118          # label column x; leaders end at LX-6
     diagram = (
         '<svg viewBox="0 0 320 168" width="100%" '
-        'style="max-width:200px; display:block;" '
+        'style="max-width:160px; display:block;" '
         'xmlns="http://www.w3.org/2000/svg">'
         '<circle cx="74" cy="96" r="26" fill="none" '
         'stroke="#FF00FF" stroke-width="5"/>'
@@ -1049,6 +1049,15 @@ def cached_analyze(
 # UI
 # ---------------------------------------------------------------------------
 st.title("JBU Weather Map CONUS")
+st.markdown(
+    """
+    <style>
+    div[data-testid="stVerticalBlock"] { gap: 0.25rem; }
+    div[data-testid="stElementContainer"] { margin: 0; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 # Prefetch overlap: start the paced fetchers (fleet sweep, MRMS
 # decode) in background threads immediately - their politeness
 # sleeps then run concurrently with TAF/METAR fetching and
@@ -1301,23 +1310,22 @@ if run_button:
     # Status strip: the three numbers that summarize the network
     n_sev_all = sum(1 for r in board_rows if r[0] == 0)
 
-    # METAR breach table: centered across the top of the page
-    if metar_rows:
-        _t0, _tmid, _t1 = st.columns([1, 2.4, 1])
-        with _tmid:
-            st.markdown(render_metar_table(metar_rows),
-                        unsafe_allow_html=True)
-
-    # ICAO alerts + key: narrow left column, table at natural
-    # height (no scroll pane, no phantom-width scrollbar)
-    col_left, _rest = st.columns([1, 2.6], gap="medium")
-    with col_left:
+    # Alerts table and METAR table side by side, tops level at
+    # the top of the page, minimal gutter between them
+    col_b, col_m = st.columns([1, 2.3], gap="small")
+    with col_b:
         if board_rows:
             st.markdown(render_status_board(board_rows),
                         unsafe_allow_html=True)
         else:
             st.markdown(_no_alerts(), unsafe_allow_html=True)
         st.markdown(_legend_html(), unsafe_allow_html=True)
+    with col_m:
+        if metar_rows:
+            st.markdown(render_metar_table(metar_rows),
+                        unsafe_allow_html=True)
+        else:
+            st.markdown(_no_alerts(), unsafe_allow_html=True)
 
     @st.fragment
     def _map_fragment():
