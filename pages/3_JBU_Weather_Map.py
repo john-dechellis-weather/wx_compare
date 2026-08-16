@@ -1300,14 +1300,11 @@ if run_button:
 
     # Status strip: the three numbers that summarize the network
     n_sev_all = sum(1 for r in board_rows if r[0] == 0)
-    m1, m2, m3 = st.columns(3)
-    m1.metric("JBU flights airborne", _fleet_n if _deck else "-")
-    m2.metric("Inbound to hazards",
-              _n_warn if _deck else "-",
-              help="Destination METAR currently TS, LIFR, or "
-                   "35kt+ - these aircraft show RED on the map")
-    m3.metric("Airports alerting",
-              f"{len(board_rows)} ({n_sev_all} severe)")
+    if metar_rows:
+        _tl, _tmid, _tr = st.columns([1, 2.4, 1])
+        with _tmid:
+            st.markdown(render_metar_table(metar_rows),
+                        unsafe_allow_html=True)
 
     col_taf, col_map = st.columns([1, 3.4], gap="medium")
 
@@ -1494,20 +1491,6 @@ if run_button:
             _map_fragment()
         else:
             st.caption(f"Map unavailable: {_map_err}")
-
-    _ml, mid_col, _mr = st.columns([1, 2.4, 1])
-    with mid_col:
-        st.subheader("Current METARs at/beyond thresholds")
-        st.caption(
-            f"Latest ob per station - vis < {vis_threshold:g} sm, "
-            f"cig < {ceiling_threshold} ft, wind >= "
-            f"{wind_threshold} kt. Red cell = breaching value."
-        )
-        if metar_rows:
-            st.markdown(render_metar_table(metar_rows),
-                        unsafe_allow_html=True)
-        else:
-            st.markdown(_no_alerts(), unsafe_allow_html=True)
 
     if tile_fails:
         with st.expander(
