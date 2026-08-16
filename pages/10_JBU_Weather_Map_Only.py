@@ -42,6 +42,46 @@ JETBLUE_ICAOS = [
     "KDEN", "KHDN", "KSEA", "KPDX", "KCMH", "KIND",
 ]
 
+# JetBlue international network: Caribbean, Mexico, Central and
+# South America (Europe deliberately excluded - transatlantic is
+# outside this map's coverage design)
+JETBLUE_INTL_ICAOS = [
+    "TJSJ", "TIST", "TISX",                    # PR / USVI
+    "MDSD", "MDST", "MDPC", "MDPP", "MDLR",    # Dominican Rep.
+    "MTCH",                                    # Haiti (Cap-Haitien)
+    "MKJP", "MKJS",                            # Jamaica
+    "MYNN", "MBPV", "MWCR",                    # Bahamas/Turks/Cayman
+    "TXKF",                                    # Bermuda
+    "MMUN",                                    # Cancun
+    "MRLB", "MROC",                            # Costa Rica
+    "TNCA", "TNCC", "TNCM",                    # Aruba/Curacao/SXM
+    "TAPA", "TBPB", "TLPL", "TGPY", "TTPP",    # Lesser Antilles
+    "SKBO", "SKCG", "SKMD",                    # Colombia
+    "SPJC",                                    # Lima
+]
+JETBLUE_ICAOS = JETBLUE_ICAOS + JETBLUE_INTL_ICAOS
+
+# Coordinate safety net: resolver may not know international
+# fields; these authoritative coords merge over any resolver gaps
+_INTL_COORDS = {
+    "TJSJ": (18.439, -66.002), "TIST": (18.337, -64.973),
+    "TISX": (17.702, -64.799), "MDSD": (18.430, -69.669),
+    "MDST": (19.406, -70.605), "MDPC": (18.567, -68.363),
+    "MDPP": (19.758, -70.570), "MDLR": (18.451, -68.912),
+    "MTCH": (19.733, -72.195), "MKJP": (17.936, -76.788),
+    "MKJS": (18.504, -77.913), "MYNN": (25.039, -77.466),
+    "MBPV": (21.774, -72.266), "MWCR": (19.293, -81.358),
+    "TXKF": (32.364, -64.679), "MMUN": (21.037, -86.877),
+    "MRLB": (10.593, -85.544), "MROC": (9.994, -84.209),
+    "TNCA": (12.501, -70.015), "TNCC": (12.189, -68.960),
+    "TNCM": (18.041, -63.109), "TAPA": (17.137, -61.793),
+    "TBPB": (13.075, -59.492), "TLPL": (13.733, -60.953),
+    "TGPY": (12.004, -61.786), "TTPP": (10.595, -61.337),
+    "SKBO": (4.702, -74.147), "SKCG": (10.442, -75.513),
+    "SKMD": (6.164, -75.423), "SPJC": (-12.022, -77.114),
+}
+
+
 # Critical-severity thresholds (fixed): red highlight in tables
 CRITICAL_VIS_SM = 1.0
 CRITICAL_CIG_FT = 400
@@ -709,6 +749,12 @@ _FLEET_TILES = [
     (46.9, -111.5), (46.9, -101.0), (46.9, -90.5),
     (45.8, -69.5), (25.0, -76.5), (30.8, -79.2),
     (37.3, -120.5), (44.8, -77.5),
+    # International expansion: Caribbean, Mexico, Central and
+    # South America destinations plus over-water route corridors
+    (18, -66), (19, -72), (18, -78), (21, -86),
+    (22, -80), (16, -62), (13, -60), (12, -69),
+    (10, -84), (16, -82), (15, -70), (11, -75),
+    (6, -74), (-4, -79), (-12, -77), (32, -64),
 ]
 
 
@@ -1096,6 +1142,8 @@ if run_button:
         import pydeck as pdk
 
         coords = cached_station_coords(tuple(JETBLUE_ICAOS))
+        for _k, _v in _INTL_COORDS.items():
+            coords.setdefault(_k, _v)
 
         # metar_all, not metar_rows: the breach-only subset hid
         # TS at stations that weren't also breaching vis/cig/wind
@@ -1281,8 +1329,8 @@ if run_button:
         deck = pdk.Deck(
             layers=layers,
             initial_view_state=pdk.ViewState(
-                latitude=38.5, longitude=-96.0,
-                zoom=4.3, min_zoom=4.1, max_zoom=11,
+                latitude=24.0, longitude=-83.0,
+                zoom=3.4, min_zoom=2.8, max_zoom=11,
             ),
             map_style="light",
             tooltip={"html": "<b>{tip}</b>"},
