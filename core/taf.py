@@ -7,7 +7,7 @@ Design decisions:
 - One row per station in each alert table (not one per alert period)
 - Show the WORST value across all periods within the user's time window
 - Skip stations with no TAF (log them separately)
-- Include TS/TSRA/+TSRA but NOT VCTS
+- Include TS/TSRA/+TSRA and VCTS
 - Fetch latest TAF regardless of whether it's an amendment
 """
 from __future__ import annotations
@@ -104,8 +104,9 @@ class AlertResults:
 # ---------------------------------------------------------------------------
 # Core analysis
 # ---------------------------------------------------------------------------
-# TSRA-family codes we care about. VCTS is deliberately excluded (vicinity).
-_TSRA_CODES = {"TS", "TSRA", "+TSRA", "-TSRA", "TSSN", "+TSSN"}
+# TSRA-family codes we care about, including VCTS (vicinity).
+_TSRA_CODES = {"TS", "TSRA", "+TSRA", "-TSRA", "TSSN", "+TSSN",
+               "VCTS"}
 
 # Cloud "layer" types that count as a ceiling
 _CEILING_LAYER_TYPES = {"BKN", "OVC", "VV"}
