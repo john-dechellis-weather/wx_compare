@@ -1515,8 +1515,11 @@ if run_button:
         )
         _rad = ""
         if sat_on:
-            _rad += (" Satellite: GOES-East Band-13 IR (NASA "
-                     "GIBS) + GLM lightning (last 10 min).")
+            _rad += (" Satellite: GOES-East Band-13 IR via GIBS "
+                     "(NOTE: imagery runs 20-60 min behind; "
+                     "lightning is near-real-time, so bolts lead "
+                     "moving cells downstream of their imaged "
+                     "cores).")
         if radar_on:
             if radar_mode == "MRMS hi-res":
                 _rad = (" Radar: MRMS 1km merged reflectivity "
