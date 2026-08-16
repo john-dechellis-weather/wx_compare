@@ -88,6 +88,8 @@ PAGES = {
     "Situational Awareness Products": [
         st.Page("pages/3_JBU_Weather_Map.py",
                 title="JBU Weather Map"),
+        st.Page("pages/10_JBU_Weather_Map_Only.py",
+                title="JBU Weather Map Only"),
         st.Page("pages/7_Station_Quick_View.py",
                 title="Station Quick View"),
         st.Page("pages/8_JBU_Flight_Tracker.py",
