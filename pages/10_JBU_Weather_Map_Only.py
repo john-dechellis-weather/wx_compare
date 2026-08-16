@@ -43,8 +43,7 @@ JETBLUE_ICAOS = [
 ]
 
 # JetBlue international network: Caribbean, Mexico, Central and
-# South America (Europe deliberately excluded - transatlantic is
-# outside this map's coverage design)
+# South America, and Europe - the full network
 JETBLUE_INTL_ICAOS = [
     "TJSJ", "TIST", "TISX",                    # PR / USVI
     "MDSD", "MDST", "MDPC", "MDPP", "MDLR",    # Dominican Rep.
@@ -58,6 +57,9 @@ JETBLUE_INTL_ICAOS = [
     "TAPA", "TBPB", "TLPL", "TGPY", "TTPP",    # Lesser Antilles
     "SKBO", "SKCG", "SKMD",                    # Colombia
     "SPJC",                                    # Lima
+    "EGLL", "EGKK",                            # London LHR/LGW
+    "EIDW", "EGPH",                            # Dublin/Edinburgh
+    "EHAM", "LFPG", "LEMD",                    # AMS/CDG/Madrid
 ]
 JETBLUE_ICAOS = JETBLUE_ICAOS + JETBLUE_INTL_ICAOS
 
@@ -79,6 +81,10 @@ _INTL_COORDS = {
     "TGPY": (12.004, -61.786), "TTPP": (10.595, -61.337),
     "SKBO": (4.702, -74.147), "SKCG": (10.442, -75.513),
     "SKMD": (6.164, -75.423), "SPJC": (-12.022, -77.114),
+    "EGLL": (51.470, -0.454), "EGKK": (51.148, -0.190),
+    "EIDW": (53.421, -6.270), "EGPH": (55.950, -3.373),
+    "EHAM": (52.310, 4.768), "LFPG": (49.010, 2.548),
+    "LEMD": (40.472, -3.561),
 }
 
 
@@ -755,6 +761,9 @@ _FLEET_TILES = [
     (22, -80), (16, -62), (13, -60), (12, -69),
     (10, -84), (16, -82), (15, -70), (11, -75),
     (6, -74), (-4, -79), (-12, -77), (32, -64),
+    # Transatlantic: coast-out, Azores, approaches, Europe
+    (45, -60), (47, -52), (38, -27), (50, -14),
+    (52, -8), (51, 0), (56, -3), (49, 2), (40, -4),
 ]
 
 
@@ -1329,8 +1338,8 @@ if run_button:
         deck = pdk.Deck(
             layers=layers,
             initial_view_state=pdk.ViewState(
-                latitude=24.0, longitude=-83.0,
-                zoom=3.4, min_zoom=2.8, max_zoom=11,
+                latitude=30.0, longitude=-65.0,
+                zoom=3.0, min_zoom=2.2, max_zoom=11,
             ),
             map_style="light",
             tooltip={"html": "<b>{tip}</b>"},
