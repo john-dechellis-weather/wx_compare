@@ -605,8 +605,8 @@ def render_status_board(rows) -> str:
         return (
             f'<td style="background-color:#FFFFFF; color:{fg}; '
             f"-webkit-text-fill-color:{fg}; font-family:{_FONT}; "
-            f"font-size:clamp(7px, 0.55vw, 9px); "
-            f"padding:0.25em 0.6em; "
+            f"font-size:clamp(9px, 0.7vw, 11px); "
+            f"padding:0.3em 0.75em; "
             f"border:1px solid #000000; font-weight:{w}; {deco}"
             f'white-space:nowrap;">{text}</td>'
         )
