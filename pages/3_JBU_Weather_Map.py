@@ -425,6 +425,9 @@ def _a320_icon_uri(fill="#005ADC"):
 
 _AC_ICON = {"url": _a320_icon_uri(), "width": 64, "height": 64,
             "anchorX": 32, "anchorY": 32, "mask": False}
+_AC_ICON_ORG = {"url": _a320_icon_uri("#EE7700"), "width": 64,
+                "height": 64, "anchorX": 32, "anchorY": 32,
+                "mask": False}
 _AC_ICON_RED = {"url": _a320_icon_uri("#E01A1A"), "width": 64,
                 "height": 64, "anchorX": 32, "anchorY": 32,
                 "mask": False}
@@ -485,8 +488,9 @@ def _legend_html() -> str:
         f'<span style="{txt}">{label}</span></div>'
         for u, label in (
             (plane_b, "JBU flight (with heading)"),
-            (plane_r, "Destination METAR has TS / LIFR / "
-                      "&gt;G35kt"),
+            (plane_r, "Impactful Weather in TAF"),
+            (_a320_icon_uri("#EE7700"),
+             "Arriving (&lt;20 min) into TS TAF window"),
 
         )
     )
@@ -502,10 +506,8 @@ def _legend_html() -> str:
         f"{ring_sw(c)}</span>"
         f'<span style="{txt}">{label}</span></div>'
         for c, label in (
-            ("#FF00FF", "LIFR in TAF (cig &lt;400ft or "
-                        "vis &lt;1sm)"),
-            ("#E01A1A", "IFR in TAF (cig &lt;1000ft or "
-                        "vis &lt;2sm)"),
+            ("#FF00FF", "LIFR in TAF"),
+            ("#E01A1A", "IFR in TAF"),
             ("#0B6B0B", "&ge;40kt wind in TAF"),
             ("#4CBB17", "&ge;30kt wind in TAF"),
             ("#F2C200", "Thunderstorm in TAF"),
@@ -559,14 +561,13 @@ def _metar_severity(r, include_ts=True):
 
 def build_map_markers(board_rows, metar_rows, coords,
                       taf_ring_map=None):
-    taf_ring_map = taf_ring_map or {}
-    """Merge TAF board + breaching METARs into map datasets.
+    """Merge TAF board + all METARs into map datasets.
 
-    Solid fill = current NON-TS METAR breach; ring = NON-TS TAF
-    forecast; thunderstorms (either source) render as the classic
-    red TS text above the station instead,
-    offset right of the dot/ring when other conditions coexist.
-    Each element keeps its own severity color."""
+    Solid dot = METAR breach now (severity color); ring = TAF at
+    fixed criteria (magenta LIFR / red IFR / greens for 40 and
+    30 kt wind / yellow TS); red TS text above the station when a
+    thunderstorm is in the current METAR or TAF."""
+    taf_ring_map = taf_ring_map or {}
     taf = {}
     for r in board_rows:
         icao, e, cands = r[1], r[5], r[7]
@@ -1176,6 +1177,20 @@ if run_button:
         elif _ic in _has_ts:
             taf_ring[_ic] = "#F2C200"
 
+    # {icao: [(start_dt, end_dt), ...]} TS windows from TAFs,
+    # for the near-arrival orange check
+    dest_ts_windows = {}
+    for a in results.tsra_alerts:
+        wins = []
+        for s, e in getattr(a, "windows", ()):
+            try:
+                wins.append((datetime.fromisoformat(s),
+                             datetime.fromisoformat(e)))
+            except Exception:
+                continue
+        if wins:
+            dest_ts_windows[a.icao] = wins
+
     dest_warn = {}
     for r in metar_all:
         toks = []
@@ -1363,13 +1378,47 @@ if run_button:
                     tip += f" | -> {dest}"
                 if warn:
                     tip += f" WARNING {warn}"
+                # ORANGE: aircraft within ~20 min of destination
+                # AND the TAF line valid at that arrival carries
+                # thunderstorms. Red (current METAR) outranks.
+                ts_arrival = False
+                _wins = dest_ts_windows.get(dest)
+                if _wins and not warn and dest in coords:
+                    import math as _m
+                    _gs = d.get("gs") or 0
+                    if _gs and _gs > 60:
+                        la1, lo1 = d["lat"], d["lon"]
+                        la2, lo2 = coords[dest]
+                        _dnm = 3440.1 * _m.acos(min(1.0, max(
+                            -1.0,
+                            _m.sin(_m.radians(la1))
+                            * _m.sin(_m.radians(la2))
+                            + _m.cos(_m.radians(la1))
+                            * _m.cos(_m.radians(la2))
+                            * _m.cos(_m.radians(lo2 - lo1)))))
+                        _eta_min = _dnm / _gs * 60 + 6
+                        if _eta_min <= 20:
+                            eta = (datetime.now(timezone.utc)
+                                   + timedelta(minutes=_eta_min))
+                            pad = timedelta(minutes=15)
+                            for _ws, _we in _wins:
+                                if _ws - pad <= eta <= _we + pad:
+                                    ts_arrival = True
+                                    tip += (" | ARRIVING INTO "
+                                            "TS TAF ~"
+                                            f"{eta:%H:%M}Z")
+                                    break
                 fleet_disp.append({
                     "lon": d["lon"], "lat": d["lat"],
                     "cs": d.get("callsign", ""),
                     "tip": tip,
                     "angle": d.get("angle", 0),
-                    "icon": (_AC_ICON_RED if warn else _AC_ICON),
+                    "icon": (_AC_ICON_RED if warn
+                             else _AC_ICON_ORG if ts_arrival
+                             else _AC_ICON),
                     "lcolor": ([224, 26, 26, 255] if warn
+                               else [238, 119, 0, 255]
+                               if ts_arrival
                                else [0, 90, 220, 255]),
                 })
             layers.append(pdk.Layer(
