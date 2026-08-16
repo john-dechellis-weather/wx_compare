@@ -421,10 +421,10 @@ def _ts_text_icon_uri():
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" width="96" '
         'height="40" viewBox="0 0 96 40">'
-        '<text x="48" y="31" text-anchor="middle" '
+        '<text x="48" y="30" text-anchor="middle" '
         'font-family="Arial, Helvetica, sans-serif" '
-        'font-size="30" font-weight="900" fill="#E01A1A" '
-        'stroke="#FFFFFF" stroke-width="2" '
+        'font-size="25" font-weight="900" fill="#E01A1A" '
+        'stroke="#FFFFFF" stroke-width="1.3" '
         'paint-order="stroke">TS</text>'
         "</svg>"
     )
@@ -818,7 +818,7 @@ _FLEET_TILES = [
 ]
 
 
-@st.cache_data(ttl=180, show_spinner=False, max_entries=2)
+@st.cache_data(ttl=120, show_spinner=False, max_entries=2)
 def cached_glm_flashes(bucket3: str):
     """GOES-East GLM flash locations from the last ~10 minutes,
     network-wide. Returns list of {lon, lat} dicts (capped)."""
@@ -829,8 +829,8 @@ def cached_glm_flashes(bucket3: str):
     import xarray as xr
     from goes2go.data import goes_timerange
 
-    end = _dt.now(_tz.utc) - _td(minutes=6)
-    start = end - _td(minutes=10)
+    end = _dt.now(_tz.utc) - _td(minutes=2)
+    start = end - _td(minutes=8)
     try:
         files = goes_timerange(
             start=start.replace(tzinfo=None),
@@ -1367,8 +1367,9 @@ if run_button:
                 "IR opacity", 10, 90, 45, 5, key="sat_op_f",
                 help="Transparency of the satellite layer",
             ) / 100.0
-            _sb = datetime.now(timezone.utc).strftime(
-                "%Y%m%d%H%M")[:-1]
+            _b2 = datetime.now(timezone.utc)
+            _sb = (_b2.strftime("%Y%m%d%H")
+                   + f"{(_b2.minute // 5) * 5:02d}")
             _gibs = (
                 "https://gibs.earthdata.nasa.gov/wms/epsg4326/"
                 "best/wms.cgi?SERVICE=WMS&VERSION=1.1.1"
@@ -1399,8 +1400,9 @@ if run_button:
                     pickable=False,
                 ))
         if radar_on:
-            _rb = datetime.now(timezone.utc).strftime(
-                "%Y%m%d%H%M")[:-1]
+            _b = datetime.now(timezone.utc)
+            _rb = (_b.strftime("%Y%m%d%H")
+                   + f"{(_b.minute // 5) * 5:02d}")
             _mrms_ts = None
             if radar_mode == "MRMS hi-res":
                 # NOAA ArcGIS export: 1km QC'd MRMS merged
@@ -1515,11 +1517,12 @@ if run_button:
         )
         _rad = ""
         if sat_on:
-            _rad += (" Satellite: GOES-East Band-13 IR via GIBS "
-                     "(NOTE: imagery runs 20-60 min behind; "
-                     "lightning is near-real-time, so bolts lead "
-                     "moving cells downstream of their imaged "
-                     "cores).")
+            _rad += (" Satellite: GOES-East IR via GIBS "
+                     "(20-60 min behind); GLM lightning ~2-10 "
+                     "min old. Bolts naturally sit downstream "
+                     "of radar cores - GLM is an optical "
+                     "cloud-top sensor that lights up the "
+                     "anvil, plus ~20km parallax.")
         if radar_on:
             if radar_mode == "MRMS hi-res":
                 _rad = (" Radar: MRMS 1km merged reflectivity "

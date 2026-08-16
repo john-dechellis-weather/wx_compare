@@ -375,10 +375,10 @@ def _ts_text_icon_uri():
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" width="96" '
         'height="40" viewBox="0 0 96 40">'
-        '<text x="48" y="31" text-anchor="middle" '
+        '<text x="48" y="30" text-anchor="middle" '
         'font-family="Arial, Helvetica, sans-serif" '
-        'font-size="30" font-weight="900" fill="#E01A1A" '
-        'stroke="#FFFFFF" stroke-width="2" '
+        'font-size="25" font-weight="900" fill="#E01A1A" '
+        'stroke="#FFFFFF" stroke-width="1.3" '
         'paint-order="stroke">TS</text>'
         "</svg>"
     )
