@@ -910,11 +910,14 @@ def cached_fleet(bucket: str):
     results: list = []
     leftovers: dict = {h: [] for h in hosts}
     empties: dict = {h: [] for h in hosts}
+    # Two paced sub-lanes per host (4 workers total): each worker
+    # keeps the 0.25s inter-call pacing, so per-host request rate
+    # stays modest while wall time halves
     threads = [
         threading.Thread(target=_lane,
-                         args=(h, lanes[h], results,
+                         args=(h, lanes[h][k::2], results,
                                leftovers[h], empties[h]))
-        for h in hosts
+        for h in hosts for k in (0, 1)
     ]
     for t in threads:
         t.start()
@@ -1160,6 +1163,41 @@ if run_button:
         f"(next {hours_ahead}h)"
     )
 
+    # METAR fetch overlaps the TAF analysis (independent AWC
+    # calls; the pool carries Streamlit's script context)
+    def _kick_metars():
+        from concurrent.futures import ThreadPoolExecutor
+
+        from streamlit.runtime.scriptrunner import (
+            add_script_run_ctx, get_script_run_ctx,
+        )
+        if "_prefetch_pool2" not in st.session_state:
+            st.session_state["_prefetch_pool2"] = \
+                ThreadPoolExecutor(max_workers=1)
+        pool = st.session_state["_prefetch_pool2"]
+        ctx = get_script_run_ctx()
+
+        def _job():
+            try:
+                return cached_current_metars(
+                    icaos_tuple=tuple(JETBLUE_ICAOS),
+                    vis_threshold_sm=vis_threshold,
+                    ceiling_threshold_ft=ceiling_threshold,
+                    wind_threshold_kt=wind_threshold,
+                )
+            except Exception:
+                return None
+
+        fut = pool.submit(_job)
+        try:
+            for t in pool._threads:
+                add_script_run_ctx(t, ctx)
+        except Exception:
+            pass
+        return fut
+
+    _metar_fut = _kick_metars()
+
     with st.spinner(f"Fetching TAFs for {len(JETBLUE_ICAOS)} stations..."):
         try:
             results = cached_analyze(
@@ -1176,17 +1214,23 @@ if run_button:
 
     # Airport status board: one row per alerting airport,
     # severity-sorted, with the driving condition as a colored chip.
-    with st.spinner("Fetching current METARs..."):
-        try:
-            metar_rows = cached_current_metars(
-                icaos_tuple=tuple(JETBLUE_ICAOS),
-                vis_threshold_sm=vis_threshold,
-                ceiling_threshold_ft=ceiling_threshold,
-                wind_threshold_kt=wind_threshold,
-            )
-        except Exception as e:
-            metar_rows = []
-            st.warning(f"METAR fetch failed: {e}")
+    metar_rows = None
+    try:
+        metar_rows = _metar_fut.result(timeout=45)
+    except Exception:
+        metar_rows = None
+    if metar_rows is None:
+        with st.spinner("Fetching current METARs..."):
+            try:
+                metar_rows = cached_current_metars(
+                    icaos_tuple=tuple(JETBLUE_ICAOS),
+                    vis_threshold_sm=vis_threshold,
+                    ceiling_threshold_ft=ceiling_threshold,
+                    wind_threshold_kt=wind_threshold,
+                )
+            except Exception as e:
+                metar_rows = []
+                st.warning(f"METAR fetch failed: {e}")
     metar_all = metar_rows
     metar_rows = [r for r in metar_all
                   if r["vis_bad"] or r["cig_bad"] or r["wind_bad"]]
