@@ -477,7 +477,7 @@ def _glm_bolt_icon():
         '<svg xmlns="http://www.w3.org/2000/svg" width="32" '
         'height="48" viewBox="0 0 32 48">'
         '<path d="M18 2 L8 26 L14 26 L10 46 L26 18 L18 18 Z" '
-        'fill="#1E6FE8" stroke="#FFFFFF" stroke-width="2" '
+        'fill="#FFD400" stroke="#FFFFFF" stroke-width="2" '
         'stroke-linejoin="round"/>'
         "</svg>"
     )
@@ -1487,6 +1487,21 @@ if run_button:
                     size_min_pixels=8, size_max_pixels=14,
                     pickable=False,
                 ))
+
+        # Country borders: thin white outlines over the dark
+        # basemap / IR imagery, under all markers. Deck fetches
+        # the GeoJSON itself (raw.githubusercontent is CORS-open)
+        # and the browser caches it after first load.
+        layers.append(pdk.Layer(
+            "GeoJsonLayer",
+            data=("https://raw.githubusercontent.com/johan/"
+                  "world.geo.json/master/countries.geo.json"),
+            stroked=True, filled=False,
+            get_line_color=[255, 255, 255, 130],
+            line_width_min_pixels=1,
+            get_line_width=1,
+            pickable=False,
+        ))
 
         layers.extend(_base_layers)
         deck = pdk.Deck(
