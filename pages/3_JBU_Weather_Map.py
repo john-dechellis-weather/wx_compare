@@ -464,13 +464,13 @@ def _legend_html() -> str:
         # ring leader: rim right point at its own height (100,88)
         # rim point toward label: (74+25.9, 96-7) ~ (100, 89)
         f'<line x1="101" y1="89" x2="112" y2="89" {LINE}/>'
-        f'<text x="{LX}" y="93" {LBL}>TAF forecast alert '
-        "(ring)</text>"
+        f'<text x="{LX}" y="93" {LBL}>TAF below '
+        "criteria</text>"
         # dot leader: down from dot bottom (74,107)+edge, elbow
         # right at y=140
         f'<polyline points="74,110 74,140 112,140" {LINE}/>'
-        f'<text x="{LX}" y="144" {LBL}>METAR breaching NOW '
-        "(dot)</text>"
+        f'<text x="{LX}" y="144" {LBL}>METAR below '
+        "criteria</text>"
         "</svg>"
     )
     row = ("display:flex; align-items:center; gap:10px; "
@@ -484,9 +484,9 @@ def _legend_html() -> str:
         'style="flex:none; width:1.4em; height:1.4em;"/>'
         f'<span style="{txt}">{label}</span></div>'
         for u, label in (
-            (plane_b, "JBU aircraft (points along heading)"),
-            (plane_r, "Destination has TS / LIFR / gusts "
-                      "&gt;35kt"),
+            (plane_b, "JBU flight (with heading)"),
+            (plane_r, "Destination METAR has TS / LIFR / "
+                      "&gt;G35kt"),
         )
     )
     return (
@@ -1244,6 +1244,9 @@ if run_button:
             index=2, horizontal=True, key="radar_mode_f",
         )
         radar_on = radar_mode != "Off"
+        show_cs = st.checkbox(
+            "Show flight numbers", value=True, key="show_cs_f",
+        )
         layers = []
         _mrms_ts = None
         if radar_on:
@@ -1320,15 +1323,16 @@ if run_button:
                 get_angle="angle",
                 pickable=True,
             ))
-            layers.append(pdk.Layer(
-                "TextLayer", data=fleet_disp,
-                get_position="[lon, lat]",
-                get_text="cs",
-                get_size=11,
-                get_color="lcolor",
-                get_text_anchor='"start"',
-                get_pixel_offset=[12, -10],
-            ))
+            if show_cs:
+                layers.append(pdk.Layer(
+                    "TextLayer", data=fleet_disp,
+                    get_position="[lon, lat]",
+                    get_text="cs",
+                    get_size=11,
+                    get_color="lcolor",
+                    get_text_anchor='"start"',
+                    get_pixel_offset=[12, -10],
+                ))
 
         layers.extend(_base_layers)
         deck = pdk.Deck(
