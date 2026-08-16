@@ -540,7 +540,7 @@ def build_map_markers(board_rows, metar_rows, coords):
 
     Solid fill = current NON-TS METAR breach; ring = NON-TS TAF
     forecast; thunderstorms (either source) render as the classic
-    WMO lightning glyph instead - standalone at TS-only stations,
+    red TS text above the station instead,
     offset right of the dot/ring when other conditions coexist.
     Each element keeps its own severity color."""
     taf = {}
@@ -710,125 +710,6 @@ _FLEET_TILES = [
     (45.8, -69.5), (25.0, -76.5), (30.8, -79.2),
     (37.3, -120.5), (44.8, -77.5),
 ]
-
-
-def _ltg_bolt_icon():
-    """Filled lightning bolt for the light basemap: warm gold
-    with a thin dark outline."""
-    import urllib.parse
-    svg = (
-        '<svg xmlns="http://www.w3.org/2000/svg" width="32" '
-        'height="48" viewBox="0 0 32 48">'
-        '<path d="M18 2 L8 26 L14 26 L10 46 L26 18 L18 18 Z" '
-        'fill="#FFC400" stroke="#333333" stroke-width="1.6" '
-        'stroke-linejoin="round"/>'
-        "</svg>"
-    )
-    return {"url": ("data:image/svg+xml;charset=utf-8,"
-                    + urllib.parse.quote(svg)),
-            "width": 32, "height": 48, "anchorX": 16,
-            "anchorY": 24, "mask": False}
-
-
-_LTG_ICON = _ltg_bolt_icon()
-
-
-@st.cache_data(ttl=180, show_spinner=False, max_entries=2)
-def cached_nldn_points(bucket3: str):
-    """CG strike locations from MRMS's NLDN 5-min density grid
-    (ground network - strikes plot on the cores, unlike GLM's
-    anvil-lit optical flashes). Returns (points, source_label);
-    raises if the product is absent from the public feed."""
-    import gzip
-    import re as _re
-    import tempfile
-    from datetime import datetime as _dt
-    from datetime import timedelta as _td
-    from datetime import timezone as _tz
-
-    import numpy as _np
-    import requests as _rq
-
-    S3 = "https://noaa-mrms-pds.s3.amazonaws.com"
-    PFX = "CONUS/NLDN_CG_005min_AvgDensity_00.00"
-    key = None
-    for day_off in (0, 1):
-        d = (_dt.now(_tz.utc)
-             - _td(days=day_off)).strftime("%Y%m%d")
-        r = _rq.get(f"{S3}/?list-type=2&prefix={PFX}/{d}/",
-                    timeout=10)
-        if r.status_code != 200:
-            continue
-        keys = _re.findall(r"<Key>([^<]+\.grib2\.gz)</Key>",
-                           r.text)
-        if keys:
-            key = max(keys)
-            break
-    if not key:
-        raise RuntimeError("NLDN product not listed")
-    r = _rq.get(f"{S3}/{key}", timeout=20)
-    r.raise_for_status()
-    raw = gzip.decompress(r.content)
-    with tempfile.NamedTemporaryFile(suffix=".grib2",
-                                     delete=False) as f:
-        f.write(raw)
-        path = f.name
-    del raw
-    import xarray as xr
-    ds = xr.open_dataset(path, engine="cfgrib",
-                         backend_kwargs={"indexpath": ""})
-    var = list(ds.data_vars)[0]
-    vals = ds[var].values.astype(_np.float32)
-    lats = ds.latitude.values
-    lons = ds.longitude.values
-    ds.close()
-    import os as _os
-    _os.unlink(path)
-    ii, jj = _np.where(_np.isfinite(vals) & (vals > 0))
-    la = lats[ii].astype(float)
-    lo = lons[jj].astype(float)
-    lo = _np.where(lo > 180, lo - 360, lo)
-    pts = [{"lon": float(x), "lat": float(y)}
-           for x, y in zip(lo.tolist(), la.tolist())][:15000]
-    return pts, "NLDN CG (5 min, via MRMS)"
-
-
-@st.cache_data(ttl=120, show_spinner=False, max_entries=2)
-def cached_glm_fallback(bucket3: str):
-    """GLM flashes (CONUS window) - fallback when the NLDN
-    product is absent from the public MRMS feed."""
-    from datetime import datetime as _dt
-    from datetime import timedelta as _td
-    from datetime import timezone as _tz
-
-    import xarray as xr
-    from goes2go.data import goes_timerange
-
-    end = _dt.now(_tz.utc) - _td(minutes=2)
-    start = end - _td(minutes=8)
-    files = goes_timerange(
-        start=start.replace(tzinfo=None),
-        end=end.replace(tzinfo=None),
-        satellite="goes19", product="GLM-L2-LCFA",
-        return_as="filelist", download=True, overwrite=False,
-        verbose=False, save_dir=str(_MAP_CACHE_ROOT / "glm"),
-    )
-    pts = []
-    base = _MAP_CACHE_ROOT / "glm"
-    for _, row in files.iterrows():
-        try:
-            ds = xr.open_dataset(base / row["file"])
-            la = ds["flash_lat"].values
-            lo = ds["flash_lon"].values
-            ds.close()
-        except Exception:
-            continue
-        for a, b in zip(la.tolist(), lo.tolist()):
-            if 20 <= a <= 55 and -130 <= b <= -60:
-                pts.append({"lat": float(a), "lon": float(b)})
-        if len(pts) > 15000:
-            break
-    return pts[:15000], "GLM flashes (last ~10 min)"
 
 
 @st.cache_data(ttl=90, show_spinner=False, max_entries=2)
@@ -1363,39 +1244,8 @@ if run_button:
             index=2, horizontal=True, key="radar_mode_f",
         )
         radar_on = radar_mode != "Off"
-        ltg_on = st.checkbox(
-            "Lightning", value=False, key="ltg_f",
-            help="CG strikes from the NLDN ground network (via "
-                 "MRMS, 5-min grid) - strikes plot on storm "
-                 "cores. Falls back to GOES GLM optical flashes "
-                 "if the NLDN feed is unavailable.",
-        )
         layers = []
         _mrms_ts = None
-        _ltg_src = None
-        if ltg_on:
-            _lb = datetime.now(timezone.utc)
-            _lb3 = (_lb.strftime("%Y%m%d%H")
-                    + f"{(_lb.minute // 3) * 3:02d}")
-            _lpts = []
-            try:
-                _lpts, _ltg_src = cached_nldn_points(_lb3)
-            except Exception:
-                try:
-                    _lpts, _ltg_src = cached_glm_fallback(_lb3)
-                except Exception:
-                    _lpts, _ltg_src = [], None
-            if _lpts:
-                for _p in _lpts:
-                    _p["icon"] = _LTG_ICON
-                layers.append(pdk.Layer(
-                    "IconLayer", data=_lpts,
-                    get_position="[lon, lat]",
-                    get_icon="icon",
-                    get_size=12, size_min_pixels=7,
-                    size_max_pixels=16,
-                    pickable=False,
-                ))
         if radar_on:
             _rb = datetime.now(timezone.utc).strftime(
                 "%Y%m%d%H%M")[:-1]
@@ -1491,8 +1341,6 @@ if run_button:
             tooltip={"html": "<b>{tip}</b>"},
         )
         _rad = ""
-        if ltg_on and _ltg_src:
-            _rad += f" Lightning: {_ltg_src}."
         if radar_on:
             if radar_mode == "MRMS hi-res":
                 _rad = (" Radar: MRMS 1km merged reflectivity "

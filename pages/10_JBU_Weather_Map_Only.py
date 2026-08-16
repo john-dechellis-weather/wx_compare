@@ -469,27 +469,6 @@ def _a320_icon_uri(fill="#005ADC"):
             + urllib.parse.quote(svg))
 
 
-def _glm_bolt_icon():
-    """Small filled lightning bolt: blue with a thin white
-    outline, for GLM flash points."""
-    import urllib.parse
-    svg = (
-        '<svg xmlns="http://www.w3.org/2000/svg" width="32" '
-        'height="48" viewBox="0 0 32 48">'
-        '<path d="M18 2 L8 26 L14 26 L10 46 L26 18 L18 18 Z" '
-        'fill="#FFD400" stroke="#FFFFFF" stroke-width="2" '
-        'stroke-linejoin="round"/>'
-        "</svg>"
-    )
-    return {"url": ("data:image/svg+xml;charset=utf-8,"
-                    + urllib.parse.quote(svg)),
-            "width": 32, "height": 48, "anchorX": 16,
-            "anchorY": 24, "mask": False}
-
-
-_GLM_ICON = _glm_bolt_icon()
-
-
 _CS_ICON_CACHE: dict = {}
 
 
@@ -637,7 +616,7 @@ def build_map_markers(board_rows, metar_rows, coords):
 
     Solid fill = current NON-TS METAR breach; ring = NON-TS TAF
     forecast; thunderstorms (either source) render as the classic
-    WMO lightning glyph instead - standalone at TS-only stations,
+    red TS text above the station instead,
     offset right of the dot/ring when other conditions coexist.
     Each element keeps its own severity color."""
     taf = {}
@@ -816,51 +795,6 @@ _FLEET_TILES = [
     (45, -60), (47, -52), (38, -27), (50, -14),
     (52, -8), (51, 0), (56, -3), (49, 2), (40, -4),
 ]
-
-
-@st.cache_data(ttl=120, show_spinner=False, max_entries=2)
-def cached_glm_flashes(bucket3: str):
-    """GOES-East GLM flash locations from the last ~10 minutes,
-    network-wide. Returns list of {lon, lat} dicts (capped)."""
-    from datetime import datetime as _dt
-    from datetime import timedelta as _td
-    from datetime import timezone as _tz
-
-    import xarray as xr
-    from goes2go.data import goes_timerange
-
-    end = _dt.now(_tz.utc) - _td(minutes=2)
-    start = end - _td(minutes=8)
-    try:
-        files = goes_timerange(
-            start=start.replace(tzinfo=None),
-            end=end.replace(tzinfo=None),
-            satellite="goes19",
-            product="GLM-L2-LCFA",
-            return_as="filelist",
-            download=True,
-            overwrite=False,
-            verbose=False,
-            save_dir=str(_MAP_CACHE_ROOT / "glm"),
-        )
-    except Exception:
-        return []
-    pts = []
-    base = _MAP_CACHE_ROOT / "glm"
-    for _, row in files.iterrows():
-        try:
-            ds = xr.open_dataset(base / row["file"])
-            la = ds["flash_lat"].values
-            lo = ds["flash_lon"].values
-            ds.close()
-        except Exception:
-            continue
-        for a, b in zip(la.tolist(), lo.tolist()):
-            if -12 <= a <= 64 and -132 <= b <= 12:
-                pts.append({"lat": float(a), "lon": float(b)})
-        if len(pts) > 12000:
-            break
-    return pts[:12000]
 
 
 @st.cache_data(ttl=90, show_spinner=False, max_entries=2)
@@ -1353,12 +1287,12 @@ if run_button:
                  "on when zoomed into an area of interest.",
         )
         sat_on = st.checkbox(
-            "IR satellite + lightning (GOES-East)", value=False,
+            "IR satellite (GOES-East)", value=False,
             key="sat_glm_f",
-            help="Band-13 clean IR via NASA GIBS (~10-min "
-                 "imagery) with GLM flash points from the last "
-                 "10 minutes - covers the network where radar "
-                 "does not, east past the Azores",
+            help="Band-13 clean IR via NASA GIBS - covers the "
+                 "network where radar does not, east past the "
+                 "Azores (imagery runs 20-60 min behind real "
+                 "time)",
         )
         layers = []
         _mrms_ts = None
@@ -1384,21 +1318,6 @@ if run_button:
                 bounds=[-130.0, -5.0, 10.0, 62.0],
                 opacity=_sat_op,
             ))
-            try:
-                _flashes = cached_glm_flashes(_sb)
-            except Exception:
-                _flashes = []
-            if _flashes:
-                for _f in _flashes:
-                    _f["icon"] = _GLM_ICON
-                layers.append(pdk.Layer(
-                    "IconLayer", data=_flashes,
-                    get_position="[lon, lat]",
-                    get_icon="icon",
-                    get_size=13, size_min_pixels=7,
-                    size_max_pixels=18,
-                    pickable=False,
-                ))
         if radar_on:
             _b = datetime.now(timezone.utc)
             _rb = (_b.strftime("%Y%m%d%H")
@@ -1517,12 +1436,9 @@ if run_button:
         )
         _rad = ""
         if sat_on:
-            _rad += (" Satellite: GOES-East IR via GIBS "
-                     "(20-60 min behind); GLM lightning ~2-10 "
-                     "min old. Bolts naturally sit downstream "
-                     "of radar cores - GLM is an optical "
-                     "cloud-top sensor that lights up the "
-                     "anvil, plus ~20km parallax.")
+            _rad += (" Satellite: GOES-East Band-13 IR via "
+                     "GIBS (imagery 20-60 min behind real "
+                     "time).")
         if radar_on:
             if radar_mode == "MRMS hi-res":
                 _rad = (" Radar: MRMS 1km merged reflectivity "

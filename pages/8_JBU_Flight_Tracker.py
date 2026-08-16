@@ -274,47 +274,6 @@ def cached_l2(
     return frames, gif
 
 
-@st.cache_data(ttl=300, show_spinner=False, max_entries=4)
-def cached_glm(clat: float, clon: float, zoom: float, bucket: str):
-    """GLM lightning flash locations from the last ~6 minutes within the
-    view window. Returns tuple of (lat, lon) pairs; empty on failure."""
-    import xarray as xr
-    from goes2go.data import goes_timerange
-
-    sat = "goes19" if clon > -105 else "goes18"
-    end = datetime.now(timezone.utc) - timedelta(minutes=6)
-    start = end - timedelta(minutes=6)
-    try:
-        files = goes_timerange(
-            start=start.replace(tzinfo=None),
-            end=end.replace(tzinfo=None),
-            satellite=sat,
-            product="GLM-L2-LCFA",
-            return_as="filelist",
-            download=True,
-            overwrite=False,
-            verbose=False,
-            save_dir=str(CACHE_ROOT / "glm"),
-        )
-    except Exception:
-        return tuple()
-    pts = []
-    base = CACHE_ROOT / "glm"
-    for _, row in files.iterrows():
-        try:
-            ds = xr.open_dataset(base / row["file"])
-            la = ds["flash_lat"].values
-            lo = ds["flash_lon"].values
-            ds.close()
-        except Exception:
-            continue
-        for a, o in zip(la, lo):
-            if (abs(float(a) - clat) <= zoom
-                    and abs(float(o) - clon) <= zoom):
-                pts.append((round(float(a), 3), round(float(o), 3)))
-    return tuple(pts)
-
-
 @st.cache_data(ttl=600, show_spinner=False, max_entries=4)
 def cached_ir(clat: float, clon: float, callsign: str, bucket: str,
               lightning=tuple(), trail=tuple(),
@@ -677,9 +636,7 @@ if track_cs:
                     )
         else:
             product = "ET" if "Echo Tops" in radar_product else "REF"
-            radar_flashes = cached_glm(
-                ckey_lat, ckey_lon, zoom, bucket5
-            )
+            radar_flashes = tuple()
             if loop_mode:
                 # FAST loop: cached site-centered frames + live
                 # stamping. First build renders; afterwards refresh
@@ -743,10 +700,10 @@ if track_cs:
 
     # --- IR Satellite (opt-in) ---
     if show_ir:
-        st.subheader("IR Satellite (GOES Band 13) + GLM Lightning")
-        with st.spinner("Fetching GOES + GLM (15-40s first time)..."):
+        st.subheader("IR Satellite (GOES Band 13)")
+        with st.spinner("Fetching GOES imagery (15-40s first time)..."):
             try:
-                flashes = cached_glm(ckey_lat, ckey_lon, zoom, bucket5)
+                flashes = tuple()
             except Exception:
                 flashes = tuple()
             try:
@@ -757,11 +714,6 @@ if track_cs:
                     routes_t=routes_t,
                 )
                 st.image(ir_png, use_container_width=True)
-                st.caption(
-                    f"{len(flashes)} GLM flashes (last ~6 min) in view"
-                    if flashes else
-                    "No GLM flashes in view (last ~6 min)"
-                )
             except Exception as e:
                 st.warning(f"Satellite fetch failed: {e}")
 
