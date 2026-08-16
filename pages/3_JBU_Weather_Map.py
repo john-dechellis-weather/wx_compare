@@ -605,8 +605,8 @@ def render_status_board(rows) -> str:
         return (
             f'<td style="background-color:#FFFFFF; color:{fg}; '
             f"-webkit-text-fill-color:{fg}; font-family:{_FONT}; "
-            f"font-size:clamp(11px, 1.05vw, 17px); "
-            f"padding:0.4em 1em; "
+            f"font-size:clamp(7px, 0.55vw, 9px); "
+            f"padding:0.25em 0.6em; "
             f"border:1px solid #000000; font-weight:{w}; {deco}"
             f'white-space:nowrap;">{text}</td>'
         )
@@ -1310,23 +1310,6 @@ if run_button:
     # Status strip: the three numbers that summarize the network
     n_sev_all = sum(1 for r in board_rows if r[0] == 0)
 
-    # Alerts table and METAR table side by side, tops level at
-    # the top of the page, minimal gutter between them
-    col_b, col_m = st.columns([1, 2.3], gap="small")
-    with col_b:
-        if board_rows:
-            st.markdown(render_status_board(board_rows),
-                        unsafe_allow_html=True)
-        else:
-            st.markdown(_no_alerts(), unsafe_allow_html=True)
-        st.markdown(_legend_html(), unsafe_allow_html=True)
-    with col_m:
-        if metar_rows:
-            st.markdown(render_metar_table(metar_rows),
-                        unsafe_allow_html=True)
-        else:
-            st.markdown(_no_alerts(), unsafe_allow_html=True)
-
     @st.fragment
     def _map_fragment():
         import pydeck as pdk
@@ -1486,10 +1469,26 @@ if run_button:
             f"airborne{_cov}.{_rad}"
         )
 
-    if _deck is not None:
-        _map_fragment()
-    else:
-        st.caption(f"Map unavailable: {_map_err}")
+
+    # Board + key left; METAR table with the MAP directly under
+    # it right - the map fills the column, width auto-fitting
+    # the window
+    col_b, col_m = st.columns([1, 2.6], gap="small")
+    with col_b:
+        if board_rows:
+            st.markdown(render_status_board(board_rows),
+                        unsafe_allow_html=True)
+        else:
+            st.markdown(_no_alerts(), unsafe_allow_html=True)
+        st.markdown(_legend_html(), unsafe_allow_html=True)
+    with col_m:
+        if metar_rows:
+            st.markdown(render_metar_table(metar_rows),
+                        unsafe_allow_html=True)
+        if _deck is not None:
+            _map_fragment()
+        else:
+            st.caption(f"Map unavailable: {_map_err}")
 
     if tile_fails:
         with st.expander(
