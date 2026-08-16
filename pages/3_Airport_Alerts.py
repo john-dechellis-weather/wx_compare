@@ -1386,19 +1386,16 @@ if run_button:
             for d in fleet:
                 dest = (d.get("dest") or "").upper()
                 warn = dest_warn.get(dest)
-                tip = d.get("cs", "?")
-                if d.get("orig") or dest:
-                    tip += (f" | {d.get('orig', '?')} -> "
-                            f"{dest or '?'}")
+                tip = d.get("tip", d.get("callsign", "?"))
+                if dest:
+                    tip += f" | -> {dest}"
                 if warn:
                     tip += f" WARNING {warn}"
-                trk = d.get("trk")
                 fleet_disp.append({
                     "lon": d["lon"], "lat": d["lat"],
-                    "cs": d.get("cs", ""),
+                    "cs": d.get("callsign", ""),
                     "tip": tip,
-                    "angle": (360 - trk) % 360
-                             if trk is not None else 0,
+                    "angle": d.get("angle", 0),
                     "icon": (_AC_ICON_RED if warn else _AC_ICON),
                     "lcolor": ([224, 26, 26, 255] if warn
                                else [0, 90, 220, 255]),
