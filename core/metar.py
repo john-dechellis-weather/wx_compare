@@ -171,7 +171,14 @@ def _parse_visibility(v) -> Optional[float]:
     if v is None:
         return None
     if isinstance(v, (int, float)):
-        return float(v)
+        val = float(v)
+        # Meter-reported international visibility safety net
+        # (same magnitude discriminator as the TAF parser)
+        if val >= 9999:
+            return 10.0
+        if val >= 50:
+            return val / 1609.34
+        return val
     s = str(v).strip()
     if not s:
         return None

@@ -267,9 +267,19 @@ def _period_visibility_sm(period) -> Optional[float]:
     if v.value is None:
         return None
     try:
-        return float(v.value)
+        val = float(v.value)
     except (TypeError, ValueError):
         return None
+    # ICAO-format TAFs (Caribbean, Mexico, S. America) report
+    # visibility in METERS (e.g. 0800, 4000, 9999). No real SM
+    # value exceeds ~50 and no meter value sits below 50, so the
+    # magnitude discriminates units cleanly. 9999 (and CAVOK's
+    # encoding) means unlimited.
+    if val >= 9999:
+        return None
+    if val >= 50:
+        return val / 1609.34
+    return val
 
 
 def _period_ceiling_ft(period) -> Optional[int]:
