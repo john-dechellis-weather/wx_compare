@@ -540,6 +540,7 @@ if active:
         prog.progress(0.5, text="Rendering frames...")
 
         # Phase 2: serial renders (matplotlib), with progress
+        _errs = {}
         for i, (m, cyc, h) in enumerate(plan):
             prog.progress(
                 0.5 + 0.5 * (i + 1) / max(len(plan), 1),
@@ -548,6 +549,10 @@ if active:
             )
             res = data.get((m, h))
             if isinstance(res, Exception) or res is None:
+                if isinstance(res, Exception):
+                    _errs.setdefault(
+                        m, f"f{h:02d}: {type(res).__name__}: "
+                           f"{res}"[:200])
                 continue
             vals, lats, lons = res
             cycle = datetime.fromisoformat(cyc)
@@ -561,10 +566,18 @@ if active:
                     product, vals, lats, lons,
                     round(clat, 2), round(clon, 2), zoom, title,
                 )
-            except Exception:
+            except Exception as _re:
+                _errs.setdefault(
+                    m, f"render f{h:02d}: "
+                       f"{type(_re).__name__}: {_re}"[:200])
                 continue
             frames.setdefault(m, {})[h] = png
         prog.empty()
+        # Surface the first real exception for any model that
+        # produced zero frames - no more silent failures
+        for _m, _e in _errs.items():
+            if not frames.get(_m):
+                skipped.append(f"{MODELS[_m]['label']}: {_e}")
         if skipped:
             st.warning(" | ".join(skipped))
         frames = {m: f for m, f in frames.items() if f}
