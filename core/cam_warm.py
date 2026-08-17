@@ -58,6 +58,26 @@ WARM_HOURS = list(range(0, max(WARM_MAX.values()) + 1))
 # hourly, NAM 6-hourly, the HRW pair only 00/12Z - so after the
 # one-time fill (~10-15 min) steady-state cost is modest.
 WARM_MODELS = ["hrrr", "nam_nest", "hiresw_arw", "hiresw_fv3"]
+# Warm JOBS: a job is "model" (legacy, product=WARM_PRODUCT) or
+# "model@PRODUCT". REFS jobs warm the flagship ensemble products
+# so hub loads scrub instantly, same as the deterministic grid.
+REFS_WARM_JOBS = [
+    "refs_pmmn@REFC",
+    "refs_prob@PROB_CIG1000",
+    "refs_prob@PROB_VIS1",
+    "refs_prob@PROB_REFC40",
+]
+WARM_JOBS = WARM_MODELS + REFS_WARM_JOBS
+for _j in REFS_WARM_JOBS:
+    WARM_MAX[_j] = 24
+
+
+def _job(key: str) -> tuple:
+    """(model, product) for a warm job key."""
+    if "@" in key:
+        m, p = key.split("@", 1)
+        return m, p
+    return key, WARM_PRODUCT
 CHECK_INTERVAL_S = 600
 
 _started = False
@@ -84,12 +104,18 @@ def _read_manifest(cache_root: Path, model: str) -> dict:
         return {}
 
 
-def _frame_path(cache_root: Path, model: str, cycle_iso: str,
+def _frame_path(cache_root: Path, key: str, cycle_iso: str,
                 icao: str, fhr: int) -> Path:
+    model, product = _job(key)
     safe_cycle = cycle_iso.replace(":", "").replace("+", "")
-    d = _warm_dir(cache_root) / model / safe_cycle
+    d = _warm_dir(cache_root) / key.replace("@", "__") / safe_cycle
     d.mkdir(parents=True, exist_ok=True)
-    return d / f"{icao}_{WARM_PRODUCT}_f{fhr:02d}.png"
+    return d / f"{icao}_{product}_f{fhr:02d}.png"
+
+
+def warm_cycle(cache_root: Path, key: str):
+    """Warmed cycle iso for a job key, or None."""
+    return _read_manifest(cache_root, key).get("cycle")
 
 
 def warm_get(cache_root: Path, model: str, icao: str,
@@ -118,13 +144,15 @@ def warm_report(cache_root: Path) -> list:
     from core.hrrr_cam import MODELS
 
     out = []
-    for m in WARM_MODELS:
+    for m in WARM_JOBS:
+        _mm, _pp = _job(m)
         man = _read_manifest(cache_root, m)
         cyc = man.get("cycle") or "-"
         style = man.get("style", "pre-ring")
         mh = warm_hours(m)
-        max_h = min(max(mh), MODELS[m]["max_fhr"])
-        hours = [h for h in mh if h <= max_h]
+        max_h = min(max(mh), MODELS[_mm]["max_fhr"])
+        _lo2 = MODELS[_mm].get("min_fhr", 0)
+        hours = [h for h in mh if _lo2 <= h <= max_h]
         have = 0
         if man.get("cycle"):
             have = sum(
@@ -147,20 +175,22 @@ def warm_status(cache_root: Path) -> dict:
     }
 
 
-def _warm_model(cache_root: Path, model: str, log) -> None:
-    """Warm one model for its newest cycle if not already done."""
+def _warm_model(cache_root: Path, key: str, log) -> None:
+    """Warm one job (model or model@product) for its newest cycle."""
     from core.hrrr_cam import (
         MODELS, latest_cycle, parallel_fetch_decode, render_field,
     )
 
-    mh = warm_hours(model)
+    model, w_product = _job(key)
+    mh = warm_hours(key)
     max_h = min(max(mh), MODELS[model]["max_fhr"])
-    hours = [h for h in mh if h <= max_h]
+    lo = MODELS[model].get("min_fhr", 0)
+    hours = [h for h in mh if lo <= h <= max_h]
     cyc = latest_cycle(model, max_h)
     if cyc is None:
         return
     cycle_iso = cyc.isoformat()
-    man = _read_manifest(cache_root, model)
+    man = _read_manifest(cache_root, key)
     # Completeness is recomputed against the CURRENT hub set and
     # warm depth from the files themselves - a manifest's old
     # "complete" flag must not skip a newly added hub (KBOS once
@@ -170,11 +200,11 @@ def _warm_model(cache_root: Path, model: str, log) -> None:
         (icao, h)
         for icao in HUBS
         for h in hours
-        if not _frame_path(cache_root, model, cycle_iso,
+        if not _frame_path(cache_root, key, cycle_iso,
                            icao, h).exists()
     ]
     if (man.get("cycle") == cycle_iso
-            and man.get("product") == WARM_PRODUCT
+            and man.get("product") == w_product
             and man.get("style") == WARM_STYLE
             and not missing):
         return
@@ -184,7 +214,7 @@ def _warm_model(cache_root: Path, model: str, log) -> None:
     build = missing if same_cycle else [
         (icao, h) for icao in HUBS for h in hours
     ]
-    log(f"warming {model} cycle {cycle_iso} "
+    log(f"warming {key} cycle {cycle_iso} "
         f"({len(build)} frames{' - fill-in' if same_cycle else ''})")
     coords = dict(HUBS)
     tasks = []
@@ -192,7 +222,7 @@ def _warm_model(cache_root: Path, model: str, log) -> None:
         lat, lon = coords[icao]
         tasks.append({
             "key": (icao, h),
-            "model": model, "product": WARM_PRODUCT,
+            "model": model, "product": w_product,
             "cycle": cyc, "fhr": h,
             "lat": lat, "lon": lon, "zoom_deg": WARM_ZOOM,
         })
@@ -212,12 +242,12 @@ def _warm_model(cache_root: Path, model: str, log) -> None:
             )
             try:
                 png = render_field(
-                    WARM_PRODUCT, vals, lats, lons,
+                    w_product, vals, lats, lons,
                     _hla, _hlo, WARM_ZOOM, title,
                 )
             except Exception:
                 continue
-            _frame_path(cache_root, model, cycle_iso, icao,
+            _frame_path(cache_root, key, cycle_iso, icao,
                         h).write_bytes(png)
             n_ok += 1
             del png, vals, lats, lons
@@ -225,18 +255,18 @@ def _warm_model(cache_root: Path, model: str, log) -> None:
             gc.collect()
             time.sleep(0.25)   # stay polite to user requests
 
-    _manifest_path(cache_root, model).write_text(json.dumps({ "style": WARM_STYLE,
+    _manifest_path(cache_root, key).write_text(json.dumps({ "style": WARM_STYLE,
         "cycle": cycle_iso,
-        "product": WARM_PRODUCT,
+        "product": w_product,
         "complete": True,
         "frames": n_ok,
         "warmed_at": datetime.now(timezone.utc).isoformat(),
     }))
     data.clear()
-    log(f"warmed {model}: {n_ok} frames")
+    log(f"warmed {key}: {n_ok} frames")
 
     # Prune older cycle dirs for this model (keep the newest 2)
-    mdir = _warm_dir(cache_root) / model
+    mdir = _warm_dir(cache_root) / key.replace("@", "__")
     if mdir.exists():
         dirs = sorted(d for d in mdir.iterdir() if d.is_dir())
         for d in dirs[:-2]:
@@ -264,7 +294,7 @@ def _daemon(cache_root: Path) -> None:
 
     log("warmer daemon started")
     while True:
-        for model in WARM_MODELS:
+        for model in WARM_JOBS:
             try:
                 _warm_model(cache_root, model, log)
             except Exception:
