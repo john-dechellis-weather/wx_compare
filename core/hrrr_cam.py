@@ -925,9 +925,18 @@ def render_field(
     buf = io.BytesIO()
     # Wide (CONUS-class) renders carry the pixels for deep
     # digital zoom-in; hub-scale renders stay light
+    # Mid tier (±5 deg warm frames) is the instant-open payload:
+    # ~202 frames base64'd into ONE embed. dpi is the direct
+    # multiplier on that payload, so it is a page-load budget,
+    # not just a quality dial. 180 -> 1440x1260, map ~1400 px
+    # across 10 deg = 140 px/deg (vs 112 px/deg on the old
+    # ±2.5/dpi-100 frames), so it is SHARPER per degree than
+    # what shipped before while covering 4x the area, with
+    # ~1.5x digital zoom-in headroom. Raise toward 230 only
+    # after checking the open-page transfer size.
     fig.savefig(buf, format="png",
                 dpi=(260 if zoom_deg > 10
-                     else 230 if zoom_deg > 4 else 100))
+                     else 180 if zoom_deg > 4 else 100))
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()

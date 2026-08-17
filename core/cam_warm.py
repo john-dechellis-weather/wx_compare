@@ -34,11 +34,14 @@ HUBS = {
     "KBOS": (42.3629, -71.0064),
 }
 WARM_ZOOM = 2.5
-# Frames render at RENDER_FACTOR x the display zoom: sharp at
-# the hub AND wheel-out headroom to the FULL region - 2.6 x 2.5
-# = ±6.5 deg, which from JFK spans Caribou ME to Norfolk VA
-# (all of New England AND the Mid-Atlantic in one frame)
-RENDER_FACTOR = 4  # +-7.5 deg: 33N-48N from JFK, verbatim
+# Frames render at RENDER_FACTOR x the display zoom. The whole
+# frame IS the default view now (no home pre-zoom): the user
+# opens fully zoomed out and wheels IN for detail. So this
+# factor sets the size of the map you see on page open.
+# 2.5 x 2 = ±5 deg = a 10x10 degree box; from JFK that runs
+# 35.6N-45.6N, 68.8W-78.8W (Cape Hatteras to Montreal,
+# Cleveland to Nantucket) with model data across all of it.
+RENDER_FACTOR = 2  # +-5 deg: 10x10 box, shown whole at open
 # Design A: deterministic CAM jobs warm ONE CONUS frame set per
 # model-hour (serves every hub via client-side transform) - the
 # hub dimension collapses, 5x fewer frames at higher dpi. REFS
@@ -58,7 +61,16 @@ def _job_geom(key: str):
 # (v2: 10 nm range ring; v3: fix hub-center leak - every frame
 # had rendered centered on the LAST hub in the dict, Boston,
 # regardless of which hub's path it was saved under)
-WARM_STYLE = 4   # v4: contour-smoothed rendering
+WARM_STYLE = 5   # v5: ±5 deg canvas, full-frame default view
+# ^^ THIS MUST BE BUMPED WHENEVER RENDER_FACTOR / WARM_ZOOM /
+# dpi CHANGE. Frame paths do NOT encode geometry and warm_get
+# does NOT check style - it serves whatever bytes sit on disk
+# for the manifest's cycle. A geometry change without a style
+# bump leaves the manifest reading "current", so the warmer
+# never rebuilds and the page serves frames at the OLD zoom
+# forever. (Exactly what happened 8/17: RENDER_FACTOR moved
+# but style stayed 4, so ±2.5 deg frames kept being served
+# while every constant in the file claimed otherwise.)
 WARM_PRODUCT = "REFD"
 # Per-model warm depth: HRRR's hourly cycles top out at f18;
 # NAM/HRW warm a full day. Raise these toward 48/60 for total
