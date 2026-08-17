@@ -197,14 +197,15 @@ def build_scrub_html(frames: dict, hour_axis: list,
         "input[type=range]{width:70%}"
         "#fswrap.fs{background:#c0c0c0;overflow:auto;"
         "height:100vh;padding:6px 14px;box-sizing:border-box}"
-        "#fswrap.fs .camgrid img{max-height:42vh;width:auto;"
-        "max-width:100%;display:block;margin:0 auto}"
-        "#fswrap.fs .zoomwrap img{max-height:86vh}"
+        "#fswrap.fs .camgrid{grid-template-columns:1fr}"
+        "#fswrap.fs .camgrid>div{display:none}"
+        "#fswrap.fs .camgrid>div.solo{display:block}"
+        "#fswrap.fs .camgrid>div.solo img{max-height:84vh;"
+        "width:auto;max-width:100%;display:block;margin:0 auto}"
+        "#fswrap.fs .fsb{display:none}"
         "</style>"
         "<div id='fswrap'>"
-        "<div class='ctl'><button id='fsbtn' style='font:12px "
-        "monospace;margin-right:14px;cursor:pointer;padding:"
-        "3px 10px'>&#x26F6; Click for full size</button>"
+        "<div class='ctl'>"
         "<button id='fsx' style='display:none;position:fixed;"
         "top:10px;right:14px;z-index:99;font:bold 15px monospace;"
         "cursor:pointer;padding:4px 12px'>&#10005;</button>"
@@ -216,8 +217,13 @@ def build_scrub_html(frames: dict, hour_axis: list,
     )
     for m in order:
         _wrap = " class='zoomwrap'" if single else ""
-        html += ("<div><div class='camlbl'>" + names[m]
-                 + "</div><div" + _wrap + "><img id='img_"
+        html += ("<div id='cell_" + m + "'>"
+                 "<div class='camlbl'>" + names[m]
+                 + " <button class='fsb' data-m='" + m
+                 + "' style='font:11px monospace;cursor:pointer;"
+                 "margin-left:10px;padding:1px 8px'>&#x26F6; "
+                 "full size</button>"
+                 "</div><div" + _wrap + "><img id='img_"
                  + m + "'></div></div>")
     html += "</div></div><script>"
     html += "const D=" + _json.dumps(model_arrays) + ";"
@@ -237,12 +243,16 @@ def build_scrub_html(frames: dict, hour_axis: list,
         "else{el.style.display='none';}}}}"
         "sl.addEventListener('input',upd);upd();"
         "const fw=document.getElementById('fswrap'),"
-        "fb=document.getElementById('fsbtn'),"
         "fx=document.getElementById('fsx');"
-        "fb.addEventListener('click',()=>{"
+        "document.querySelectorAll('.fsb').forEach(b=>{"
+        "b.addEventListener('click',()=>{"
+        "fw.querySelectorAll('.camgrid>div').forEach("
+        "d=>d.classList.remove('solo'));"
+        "document.getElementById('cell_'+b.dataset.m)"
+        ".classList.add('solo');"
         "(fw.requestFullscreen||fw.webkitRequestFullscreen"
         "||function(){alert('Fullscreen not permitted in this "
-        "embed');}).call(fw);});"
+        "embed');}).call(fw);});});"
         "fx.addEventListener('click',()=>{"
         "(document.exitFullscreen||"
         "document.webkitExitFullscreen||function(){})"
@@ -250,8 +260,9 @@ def build_scrub_html(frames: dict, hour_axis: list,
         "function fchg(){const on=!!(document.fullscreenElement"
         "||document.webkitFullscreenElement);"
         "fx.style.display=on?'':'none';"
-        "fb.style.display=on?'none':'';"
-        "fw.classList.toggle('fs',on);}"
+        "fw.classList.toggle('fs',on);"
+        "if(!on){fw.querySelectorAll('.camgrid>div')"
+        ".forEach(d=>d.classList.remove('solo'));}}"
         "document.addEventListener('fullscreenchange',fchg);"
         "document.addEventListener('webkitfullscreenchange',"
         "fchg);"
@@ -303,8 +314,15 @@ with st.sidebar:
     st.header("Region")
     icao_input = st.text_input("Airport ICAO", value="KJFK",
                                max_chars=4).strip().upper()
+    conus_view = st.checkbox(
+        "Full CONUS view", value=False,
+        help="Renders all panels centered on the lower 48 "
+             "(no extra download - the full field is always "
+             "fetched; only the crop changes). Not prewarmed, "
+             "so first load of a cycle renders live.",
+    )
     zoom = st.slider(
-        "Zoom (degrees)", 1.0, 6.0, 2.5, 0.5,
+        "Zoom (degrees)", 1.0, 13.0, 2.5, 0.5,
         help="Geographic window - zoom in/out. 2.5 serves "
              "instantly from the warm store; other values "
              "render live.",
@@ -427,6 +445,8 @@ if active:
         st.error(f"Cannot resolve coordinates for {icao}.")
         st.stop()
     clat, clon = coords
+    if conus_view:
+        clat, clon, zoom = 39.0, -98.0, 13.0
 
     product = PRODUCT_KEY[product_label]
 
