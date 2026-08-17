@@ -1417,6 +1417,7 @@ if run_button:
         if fleet:
             fleet_disp = []
             gnd_disp = []
+            _entries = []
             for d in fleet:
                 dest = (d.get("dest") or "").upper()
                 warn = dest_warn.get(dest)
@@ -1455,14 +1456,11 @@ if run_button:
                                             "TS TAF ~"
                                             f"{eta:%H:%M}Z")
                                     break
-                # Ground/gate aircraft (low-and-slow) go to a
-                # meter-sized layer: sub-pixel at network zoom,
-                # full aircraft when zoomed into the airport
                 _alt = d.get("alt")
                 _gsv = d.get("gs") or 0
                 _ground = ((_alt is None or _alt < 1500)
                            and _gsv < 60)
-                (gnd_disp if _ground else fleet_disp).append({
+                _entries.append(({
                     "lon": d["lon"], "lat": d["lat"],
                     "cs": d.get("callsign", ""),
                     "tip": tip,
@@ -1474,7 +1472,44 @@ if run_button:
                                else [238, 119, 0, 255]
                                if ts_arrival
                                else [0, 90, 220, 255]),
-                })
+                }, bool(warn), ts_arrival, _ground,
+                    _alt or 0))
+            # Hub-cluster thinning: within 12nm of any JBU
+            # airport, only the 2 highest-priority aircraft stay
+            # always-visible (warning colors never thinned
+            # below the cap); the rest join the ground traffic
+            # on the meter-sized zoom-in layer.
+            import math as _m2
+            _apts = list(coords.values())
+
+            def _near_apt(e):
+                la, lo = e[0]["lat"], e[0]["lon"]
+                best, bi = 99.0, -1
+                for i, (ala, alo) in enumerate(_apts):
+                    dx = (lo - alo) * _m2.cos(
+                        _m2.radians((la + ala) / 2))
+                    dnm = 60.0 * _m2.hypot(la - ala, dx)
+                    if dnm < best:
+                        best, bi = dnm, i
+                return bi if best <= 12.0 else -1
+
+            _clusters = {}
+            for e in _entries:
+                if e[3]:                     # ground -> recede
+                    gnd_disp.append(e[0])
+                    continue
+                k = _near_apt(e)
+                if k < 0:
+                    fleet_disp.append(e[0])  # enroute: always
+                else:
+                    _clusters.setdefault(k, []).append(e)
+            for k, group in _clusters.items():
+                group.sort(key=lambda e: (not e[1], not e[2],
+                                          -e[4]))
+                for n, e in enumerate(group):
+                    (fleet_disp if n < 2
+                     else gnd_disp).append(e[0])
+
             layers.append(pdk.Layer(
                 "IconLayer", data=fleet_disp,
                 get_position="[lon, lat]",
