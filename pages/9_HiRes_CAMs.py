@@ -406,7 +406,7 @@ if active:
         specs, notes = [], {}
         for m in GRID_ORDER:
             cfg = MODELS[m]
-            if not show_models.get(m):
+            if not show_models.get(m, m == _single_model):
                 notes[m] = "(unchecked in sidebar)"
                 continue
             if product not in cfg["products"]:
@@ -437,6 +437,7 @@ if active:
         "All models (2x2)": None,
         "HRRR": "hrrr", "NAM 3km": "nam_nest",
         "HRW-ARW": "hiresw_arw", "HRW-FV3": "hiresw_fv3",
+        "RRFS (exp)": "rrfs",
     }
     view_choice = st.radio(
         "View", list(_VIEW_LABELS.keys()),
@@ -473,7 +474,7 @@ if active:
         hours = list(range(fhr_lo, fhr_lo + span + 1))
         active_models = [
             m for m in GRID_ORDER
-            if show_models.get(m) and product in MODELS[m]["products"]
+            if show_models.get(m, m == _single_model) and product in MODELS[m]["products"]
         ]
         frames = {}      # model -> {fhr: png}
         skipped = []
@@ -508,7 +509,12 @@ if active:
         if warm_ok_s:
             still_plan = []
             for m, cyc, h in plan:
-                got = warm_get(CACHE_ROOT, m, icao, h)                     if h in warm_hours(m) else None
+                got = None
+                try:
+                    if h in warm_hours(m):
+                        got = warm_get(CACHE_ROOT, m, icao, h)
+                except Exception:
+                    got = None
                 if got:
                     frames.setdefault(m, {})[h] = got[0]
                 else:
