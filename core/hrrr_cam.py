@@ -171,7 +171,7 @@ MODELS = {
              ".grib2.idx"),
             ("https://noaa-rrfs-ops-pds.s3.amazonaws.com/"
              "refs.{ymd}/{cc:02d}/ensprod/refs.t{cc:02d}z."
-             "mean.f{ff:02d}.conus.grib2.idx"),
+             "prob.f{ff:02d}.conus.grib2.idx"),
         ],
         "cycles": [0, 6, 12, 18],
         "probe_back": 31,
