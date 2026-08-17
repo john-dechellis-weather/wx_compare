@@ -1286,38 +1286,14 @@ if run_button:
                  "this switch is the reliable control - flip it "
                  "on when zoomed into an area of interest.",
         )
-        sat_on = st.checkbox(
-            "IR satellite (GOES-East)", value=False,
-            key="sat_glm_f",
-            help="Band-13 clean IR via NASA GIBS - covers the "
-                 "network where radar does not, east past the "
-                 "Azores (imagery runs 20-60 min behind real "
-                 "time)",
-        )
+        # IR satellite layer removed 8/17: GOES-East Band-13 via
+        # NASA GIBS ran 20-60 min behind, too stale to be worth
+        # the screen real estate on an ops map. Replacement is a
+        # lightning layer sourced from a real observation network
+        # (see the lightning-source note in the handoff) - NOT a
+        # modeled flash-rate forecast.
         layers = []
         _mrms_ts = None
-        if sat_on:
-            _sat_op = st.slider(
-                "IR opacity", 10, 90, 45, 5, key="sat_op_f",
-                help="Transparency of the satellite layer",
-            ) / 100.0
-            _b2 = datetime.now(timezone.utc)
-            _sb = (_b2.strftime("%Y%m%d%H")
-                   + f"{(_b2.minute // 5) * 5:02d}")
-            _gibs = (
-                "https://gibs.earthdata.nasa.gov/wms/epsg4326/"
-                "best/wms.cgi?SERVICE=WMS&VERSION=1.1.1"
-                "&REQUEST=GetMap"
-                "&LAYERS=GOES-East_ABI_Band13_Clean_Infrared"
-                "&STYLES=&SRS=EPSG:4326&BBOX=-130,-5,10,62"
-                "&WIDTH=2800&HEIGHT=1340&FORMAT=image/png"
-                f"&TRANSPARENT=TRUE&TIME=default&_={_sb}"
-            )
-            layers.append(pdk.Layer(
-                "BitmapLayer", data=None, image=_gibs,
-                bounds=[-130.0, -5.0, 10.0, 62.0],
-                opacity=_sat_op,
-            ))
         if radar_on:
             _b = datetime.now(timezone.utc)
             _rb = (_b.strftime("%Y%m%d%H")
@@ -1435,10 +1411,6 @@ if run_button:
             tooltip={"html": "<b>{tip}</b>"},
         )
         _rad = ""
-        if sat_on:
-            _rad += (" Satellite: GOES-East Band-13 IR via "
-                     "GIBS (imagery 20-60 min behind real "
-                     "time).")
         if radar_on:
             if radar_mode == "MRMS hi-res":
                 _rad = (" Radar: MRMS 1km merged reflectivity "
