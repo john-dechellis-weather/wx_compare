@@ -78,6 +78,8 @@ PAGES = {
     "Forecast Tools": [
         st.Page("pages/9_HiRes_CAMs.py",
                 title="Hi-Res CAMs"),
+        st.Page("pages/11_REFS_Ensemble.py",
+                title="REFS Ensemble"),
         st.Page("pages/8_Forecast_Wind_Plots.py",
                 title="Forecast Wind Plots"),
         st.Page("pages/1_Forecast_Flight_Conditions.py",
