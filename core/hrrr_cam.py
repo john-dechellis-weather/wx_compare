@@ -8,7 +8,7 @@ Models:
   hrrr        HRRR CONUS (hourly cycles, f00-f18 here)
   nam_nest    NAM 3 km CONUS nest (00/06/12/18Z)   [retires Oct 2026]
   hiresw_arw  Hi-Res Window ARW CONUS (00/12Z)     [retires Oct 2026]
-  rrfs        RRFS 3 km CONUS (00/06/12/18Z) - parallel NOMADS feed
+  rrfs        RRFS 3km CONUS pre-ops (8 cycles/day, 84h) - AWS ops bucket idx feed
               announced for ~Aug 11 2026, operational Oct 6 2026.
               Until files appear the panel reports "no cycle found".
 """
@@ -190,65 +190,6 @@ MODELS = {
         "products": {"REFD", "RETOP", "VIS", "CEIL", "GUST"},
         "note": ("NBM v5 blend, 2.5 km; reflectivity is the "
                  "HOURLY MAX at 1 km AGL (no composite)"),
-    },
-    "rrfs": {
-        "label": "RRFS",
-        # v1.0 feed on NOMADS publishes NO .idx sidecars (verified
-        # by directory listing 8/12), and full files run 330-370 MB,
-        # so RRFS uses the grib-filter CGI like HRRR. Cycle detection
-        # HEAD-probes the grib file itself (zero-byte check). The
-        # 2dfld file carries all six of our 2-D products.
-        "file": "rrfs.t{cc:02d}z.2dfld.3km.f{ff:03d}.conus.grib2",
-        # AWS open-data mirror first: those buckets publish .idx
-        # sidecars even when NOMADS omits them, and an idx hit
-        # promotes RRFS to the byte-range mechanism (no filter
-        # needed). NOMADS grib HEADs trail for cycle detection when
-        # AWS lags.
-        # Registry-verified (registry.opendata.aws/noaa-rrfs):
-        # rrfs_public/ = operational-equivalent set most users
-        # should use; rrfs_a/ = fuller dev set. NODD buckets ship
-        # .idx sidecars -> byte-range mechanism. NOMADS 2dfld HEADs
-        # trail as cycle-detection fallback (no idx there).
-        "probe_candidates": [
-            ("https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_public/"
-             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev.3km"
-             ".f{ff:03d}.conus.grib2.idx"),
-            ("https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_a/"
-             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev.3km"
-             ".f{ff:03d}.conus.grib2.idx"),
-            ("https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_public/"
-             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.2dfld.3km"
-             ".f{ff:03d}.conus.grib2.idx"),
-            (f"{NOMADS}/pub/data/nccf/com/rrfs/v1.0/"
-             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.2dfld.3km"
-             ".f{ff:03d}.conus.grib2"),
-            (f"{NOMADS}/pub/data/nccf/com/rrfs/para/"
-             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.2dfld.3km"
-             ".f{ff:03d}.conus.grib2"),
-        ],
-        # Modern NOMADS filter is gribfilter.php?ds=NAME (hrrr_2d
-        # convention suggests rrfs_2d for the 2dfld files); entries
-        # are (url, ds_or_None). Legacy .pl spellings trail as
-        # fallbacks.
-        "filter_candidates": [
-            (f"{NOMADS}/gribfilter.php", "rrfs_2d"),
-            (f"{NOMADS}/gribfilter.php", "rrfs"),
-            (f"{NOMADS}/gribfilter.php", "rrfs_3km"),
-            (f"{NOMADS}/gribfilter.php", "rrfs_conus_2d"),
-            (f"{NOMADS}/cgi-bin/filter_rrfs_2d.pl", None),
-            (f"{NOMADS}/cgi-bin/filter_rrfs.pl", None),
-        ],
-        "dir_candidates": [
-            "/rrfs.{ymd}/{cc:02d}",
-            "/v1.0/rrfs.{ymd}/{cc:02d}",
-            "/para/rrfs.{ymd}/{cc:02d}",
-        ],
-        "cycles": [0, 3, 6, 9, 12, 15, 18, 21],
-        "max_fhr": 60,
-        "products": {"REFD", "REFC", "RETOP", "VIS", "CEIL",
-                     "GUST"},
-        "note": ("RRFS parallel feed via AWS open-data bucket "
-                 "(3-hourly cycles to f60); operational Oct 2026"),
     },
 }
 
