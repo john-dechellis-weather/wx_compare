@@ -162,6 +162,44 @@ def cached_panel(
 _AXCAL = dict(l=0.125, r=0.745, t=0.100, b=0.110)
 
 
+def _render_chunk(pchunk, data, frames, errs, prog,
+                  done, total, product, rlat, rlon, rzoom):
+    from core.hrrr_cam import MODELS, render_field
+    from datetime import datetime as _dt, timedelta as _td2
+    for j, (m, cyc, h) in enumerate(pchunk):
+        prog.progress(
+            min(0.99, (done + j + 1) / max(total, 1)),
+            text=f"Rendering {MODELS[m]['label']} f{h:02d} "
+                 f"({done + j + 1}/{total})",
+        )
+        res = data.get((m, h))
+        if isinstance(res, Exception) or res is None:
+            if isinstance(res, Exception):
+                errs.setdefault(
+                    m, f"f{h:02d}: {type(res).__name__}: "
+                       f"{res}"[:200])
+            continue
+        vals, lats, lons = res
+        cycle = _dt.fromisoformat(cyc)
+        valid = cycle + _td2(hours=h)
+        title = (
+            f"{MODELS[m]['label']} {cycle:%m/%d %H}Z  f{h:02d}  "
+            f"valid {valid:%m/%d %H}Z"
+        )
+        try:
+            png = render_field(
+                product, vals, lats, lons,
+                rlat, rlon, rzoom, title,
+            )
+        except Exception as _re:
+            errs.setdefault(
+                m, f"render f{h:02d}: "
+                   f"{type(_re).__name__}: {_re}"[:200])
+            continue
+        frames.setdefault(m, {})[h] = png
+        data[(m, h)] = None
+
+
 def build_scrub_html(frames: dict, hour_axis: list,
                      order: list, single: bool = False,
                      home=None, conus=None,
@@ -630,42 +668,25 @@ if active:
             "lat": rlat, "lon": rlon,
             "zoom_deg": rzoom,
         } for m, cyc, h in plan]
-        data = parallel_fetch_decode(tasks, max_workers=2)
-        prog.progress(0.5, text="Rendering frames...")
-
-        # Phase 2: serial renders (matplotlib), with progress
+        # Chunked pipeline: fetch a slice, render it, FREE it -
+        # peak memory is bounded by the chunk, not the preload.
+        # (Holding all decoded CONUS frames at once OOM-killed
+        # the instance at ~45 MB x N; even decimated, unbounded
+        # accumulation is the disease - chunking is the cure.)
+        _CHUNK = 12
         _errs = {}
-        for i, (m, cyc, h) in enumerate(plan):
-            prog.progress(
-                0.5 + 0.5 * (i + 1) / max(len(plan), 1),
-                text=f"Rendering {MODELS[m]['label']} f{h:02d} "
-                     f"({i + 1}/{len(plan)})",
-            )
-            res = data.get((m, h))
-            if isinstance(res, Exception) or res is None:
-                if isinstance(res, Exception):
-                    _errs.setdefault(
-                        m, f"f{h:02d}: {type(res).__name__}: "
-                           f"{res}"[:200])
-                continue
-            vals, lats, lons = res
-            cycle = datetime.fromisoformat(cyc)
-            valid = cycle + _td(hours=h)
-            title = (
-                f"{MODELS[m]['label']} {cycle:%m/%d %H}Z  f{h:02d}  "
-                f"valid {valid:%m/%d %H}Z"
-            )
-            try:
-                png = render_field(
-                    product, vals, lats, lons,
-                    rlat, rlon, rzoom, title,
-                )
-            except Exception as _re:
-                _errs.setdefault(
-                    m, f"render f{h:02d}: "
-                       f"{type(_re).__name__}: {_re}"[:200])
-                continue
-            frames.setdefault(m, {})[h] = png
+        _done = 0
+        for _c0 in range(0, len(tasks), _CHUNK):
+            _tchunk = tasks[_c0:_c0 + _CHUNK]
+            data = parallel_fetch_decode(_tchunk, max_workers=2)
+            _pchunk = plan[_c0:_c0 + _CHUNK]
+            _render_chunk(_pchunk, data, frames, _errs,
+                          prog, _done, len(plan), product,
+                          rlat, rlon, rzoom)
+            _done += len(_pchunk)
+            data.clear()
+            import gc as _gc
+            _gc.collect()
         prog.empty()
         # Surface the first real exception for any model that
         # produced zero frames - no more silent failures
