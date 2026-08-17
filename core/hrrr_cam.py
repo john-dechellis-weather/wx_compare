@@ -831,11 +831,22 @@ def render_field(
         ax.add_feature(states, linewidth=0.5, zorder=3)
     except Exception:
         pass
-    gl = ax.gridlines(draw_labels=True, linewidth=0.3, linestyle=":",
-                      color="gray")
-    gl.top_labels = False
-    gl.right_labels = False
-    gl.xlabel_style = {"size": 8}
+    if 4 < zoom_deg <= 10:
+        # Regional (2x) frames are viewed pre-zoomed: put the
+        # degree labels INLINE along the gridlines so the chart
+        # stays labeled wherever the user zooms or pans - edge
+        # labels vanish outside the cropped view (observed live)
+        gl = ax.gridlines(draw_labels=True, linewidth=0.3,
+                          linestyle=":", color="gray",
+                          x_inline=True, y_inline=True)
+        gl.xlabel_style = {"size": 7, "color": "#555"}
+        gl.ylabel_style = {"size": 7, "color": "#555"}
+    else:
+        gl = ax.gridlines(draw_labels=True, linewidth=0.3,
+                          linestyle=":", color="gray")
+        gl.top_labels = False
+        gl.right_labels = False
+        gl.xlabel_style = {"size": 8}
     gl.ylabel_style = {"size": 8}
 
     # 10 nm range ring around the center site (white dashed with a
