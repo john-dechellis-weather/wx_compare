@@ -1308,6 +1308,59 @@ if run_button:
             dest_ts_windows[a.icao] = wins
 
     dest_warn = {}
+    def _ltg_cb_hazard(rmk: str):
+        """Lightning/CB in remarks, movement-aware. Non-distant
+        groups always trigger; DSNT groups trigger only when a
+        MOV direction points back toward the station (within 45
+        degrees of the location's reciprocal). Returns the
+        verbatim remark segment, or None."""
+        import re as _r2
+        _AZ = {"N": 0, "NE": 45, "E": 90, "SE": 135, "S": 180,
+               "SW": 225, "W": 270, "NW": 315}
+        toks = rmk.split()
+        for i, t in enumerate(toks):
+            if "LTG" not in t and t != "CB":
+                continue
+            j = i + 1
+            seg = [t]
+            if i > 0 and toks[i - 1] in ("OCNL", "FRQ", "CONS"):
+                seg.insert(0, toks[i - 1])
+            dsnt = False
+            locs, mov = [], None
+            while j < len(toks) and len(seg) < 7:
+                u = toks[j]
+                if u == "DSNT":
+                    dsnt = True
+                elif u == "MOV" and j + 1 < len(toks):
+                    mov = toks[j + 1]
+                    seg.append(u)
+                    seg.append(mov)
+                    j += 2
+                    continue
+                elif _r2.fullmatch(r"[NSEW]{1,2}(-[NSEW]{1,2})*",
+                                   u) or u in ("ALQDS", "OHD",
+                                               "VC"):
+                    locs.append(u)
+                else:
+                    break
+                seg.append(u)
+                j += 1
+            if not dsnt:
+                return " ".join(seg)
+            # Distant-but-ALQDS: lightning in all quadrants
+            # implies airmass storms building around the field
+            if "ALQDS" in locs:
+                return " ".join(seg)
+            if mov and mov in _AZ:
+                for lo in locs:
+                    for p in lo.split("-"):
+                        if p in _AZ:
+                            recip = (_AZ[p] + 180) % 360
+                            diff = abs(_AZ[mov] - recip)
+                            if min(diff, 360 - diff) <= 45:
+                                return " ".join(seg)
+        return None
+
     # Arrival-hazard lookups from current METARs:
     #  - rain: heavy rain, or any rain with vis <= 3 sm
     #  - ltg: any lightning group in the remarks (LTG covers
@@ -1328,10 +1381,10 @@ if run_button:
         if heavy or (anyra and visv is not None and visv <= 3):
             dest_rain[r["icao"]] = ("+RA" if heavy
                                     else f"RA/{visv:g}SM")
-        if rmk and "LTG" in rmk:
-            m = _re.search(r"((?:OCNL |FRQ |CONS )?LTG\S*"
-                           r"(?: DSNT)?)", rmk)
-            dest_ltg[r["icao"]] = (m.group(1) if m else "LTG")
+        if rmk:
+            hit = _ltg_cb_hazard(rmk)
+            if hit:
+                dest_ltg[r["icao"]] = hit
 
     dest_lifr = {}
     for r in metar_all:
@@ -1562,9 +1615,8 @@ if run_button:
                         if _dnm / _gs * 60 + 6 <= 20:
                             if dest in dest_ltg:
                                 ltg_arr = True
-                                tip += (" | ARRIVING: "
-                                        + dest_ltg[dest]
-                                        + " in remarks")
+                                tip += (" | ARRIVING - RMK: "
+                                        + dest_ltg[dest])
                             elif dest in dest_rain:
                                 rain_arr = True
                                 tip += (" | ARRIVING: "
