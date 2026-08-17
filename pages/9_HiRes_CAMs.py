@@ -44,6 +44,7 @@ CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 # Background hub pre-warmer: renders JFK/MCO/FLL/DCA reflectivity
 # frames for each new model cycle so hub views serve instantly.
 from core.cam_warm import (
+    CONUS_CENTER, CONUS_KEY, CONUS_ZOOM,
     HUBS as WARM_HUBS, WARM_HOURS, WARM_PRODUCT, WARM_ZOOM,
     ensure_warmer_started, warm_get, warm_hours, warm_report,
     warm_status,
@@ -158,8 +159,13 @@ def cached_panel(
     )
 
 
+_AXCAL = dict(l=0.125, r=0.745, t=0.100, b=0.110)
+
+
 def build_scrub_html(frames: dict, hour_axis: list,
-                     order: list, single: bool = False) -> tuple:
+                     order: list, single: bool = False,
+                     home=None, conus=None,
+                     axcal=None) -> tuple:
     """Client-side shared-slider grid from {model: {fhr: png}}.
     Returns (html, height). Used by smooth-scrub mode AND the
     instant-open warm path."""
@@ -189,7 +195,8 @@ def build_scrub_html(frames: dict, hour_axis: list,
         ".camgrid{display:grid;grid-template-columns:"
         + _cols + ";gap:6px}"
         ".camgrid img{width:100%;border:1px solid #888}"
-        ".zoomwrap{overflow:hidden;cursor:grab}"
+        ".zoomwrap{overflow:hidden;cursor:grab;"
+        "aspect-ratio:1/1;background:#fff}"
         ".zoomwrap img{transform-origin:0 0;user-select:none;"
         "-webkit-user-drag:none}"
         ".camlbl{font:bold 13px monospace;margin:2px 0}"
@@ -216,7 +223,7 @@ def build_scrub_html(frames: dict, hour_axis: list,
         "</div><div class='camgrid'>"
     )
     for m in order:
-        _wrap = " class='zoomwrap'" if single else ""
+        _wrap = " class='zoomwrap'"
         html += ("<div id='cell_" + m + "'>"
                  "<div class='camlbl'>" + names[m]
                  + " <button class='fsb' data-m='" + m
@@ -267,14 +274,32 @@ def build_scrub_html(frames: dict, hour_axis: list,
         "document.addEventListener('webkitfullscreenchange',"
         "fchg);"
     )
-    if single:
-        # Wheel zoom (cursor-anchored) + drag pan on the single
+    _cal = axcal or _AXCAL
+    _homejs = "null"
+    if home and conus:
+        _hla, _hlo, _hw = home
+        _cla, _clo, _cz = conus
+        fx = (_cal["l"] + (_cal["r"] - _cal["l"])
+              * ((_hlo - (_clo - _cz)) / (2.0 * _cz)))
+        fy = (_cal["t"] + (1.0 - _cal["t"] - _cal["b"])
+              * (((_cla + _cz) - _hla) / (2.0 * _cz)))
+        s0 = (_cal["r"] - _cal["l"]) * _cz / max(_hw, 0.5)
+        _homejs = "{fx:%.4f,fy:%.4f,s:%.2f}" % (fx, fy, s0)
+    html += "<script>const HOME=" + _homejs + ";</script>"
+    if True:
+        # Wheel zoom (cursor-anchored) + drag pan on every
         # panel; transform persists across frame swaps because
         # the <img> element is reused
         html += (
             "document.querySelectorAll('.zoomwrap').forEach("
             "w=>{const im=w.querySelector('img');"
             "let s=1,tx=0,ty=0,dragging=false,lx=0,ly=0;"
+            "function goHome(){if(!HOME){s=1;tx=0;ty=0;ap();"
+            "return;}const r=w.getBoundingClientRect();"
+            "s=HOME.s;tx=r.width/2-HOME.fx*r.width*s;"
+            "ty=r.height/2-HOME.fy*r.height*s;ap();}"
+            "w.addEventListener('dblclick',goHome);"
+            "setTimeout(goHome,60);"
             "function ap(){im.style.transform="
             "'translate('+tx+'px,'+ty+'px) scale('+s+')';}"
             "w.addEventListener('wheel',e=>{e.preventDefault();"
@@ -314,19 +339,28 @@ with st.sidebar:
     st.header("Region")
     icao_input = st.text_input("Airport ICAO", value="KJFK",
                                max_chars=4).strip().upper()
-    conus_view = st.checkbox(
-        "Full CONUS view", value=False,
-        help="Renders all panels centered on the lower 48 "
-             "(no extra download - the full field is always "
-             "fetched; only the crop changes). Not prewarmed, "
-             "so first load of a cycle renders live.",
-    )
     zoom = st.slider(
-        "Zoom (degrees)", 1.0, 13.0, 2.5, 0.5,
-        help="Geographic window - zoom in/out. 2.5 serves "
-             "instantly from the warm store; other values "
-             "render live.",
+        "Default view size (deg half-width)", 1.5, 28.0, 3.0, 0.5,
+        help="Every frame is rendered CONUS-wide; this sets how "
+             "zoomed-in panels OPEN on your hub. Wheel out on "
+             "any panel to see the whole US, drag to pan, "
+             "double-click to snap home.",
     )
+    with st.expander("Home-position calibration"):
+        st.caption("If panels open off-center from the hub, "
+                   "nudge the map-axes fractions until the "
+                   "hub sits centered at load, then tell "
+                   "Claude the four numbers to harden.")
+        _c1 = st.number_input("axes left", 0.0, 0.4, 0.125,
+                              0.005, key="axl")
+        _c2 = st.number_input("axes right", 0.5, 1.0, 0.745,
+                              0.005, key="axr")
+        _c3 = st.number_input("axes top", 0.0, 0.4, 0.100,
+                              0.005, key="axt")
+        _c4 = st.number_input("axes bottom", 0.0, 0.4, 0.110,
+                              0.005, key="axb")
+        st.session_state["_axcal"] = dict(
+            l=_c1, r=_c2, t=_c3, b=_c4)
     panel_scale = st.slider(
         "Panel size (%)", 50, 100, 85, 5,
         help="Display size of the CAM panels",
@@ -445,8 +479,9 @@ if active:
         st.error(f"Cannot resolve coordinates for {icao}.")
         st.stop()
     clat, clon = coords
-    if conus_view:
-        clat, clon, zoom = 39.0, -98.0, 13.0
+    view_zoom = zoom                      # display transform
+    rlat, rlon = CONUS_CENTER             # render target
+    rzoom = CONUS_ZOOM
 
     product = PRODUCT_KEY[product_label]
 
@@ -563,17 +598,15 @@ if active:
                 plan.append((m, cycle_iso, h))
 
         # Pull any prewarmed frames first; only the rest download.
-        warm_ok_s = (
-            icao in WARM_HUBS and product == WARM_PRODUCT
-            and abs(zoom - WARM_ZOOM) < 0.01
-        )
+        warm_ok_s = (product == WARM_PRODUCT)
         if warm_ok_s:
             still_plan = []
             for m, cyc, h in plan:
                 got = None
                 try:
                     if h in warm_hours(m):
-                        got = warm_get(CACHE_ROOT, m, icao, h)
+                        got = warm_get(CACHE_ROOT, m,
+                                       CONUS_KEY, h)
                 except Exception:
                     got = None
                 if got:
@@ -594,8 +627,8 @@ if active:
             "key": (m, h),
             "model": m, "product": product,
             "cycle": datetime.fromisoformat(cyc), "fhr": h,
-            "lat": round(clat, 2), "lon": round(clon, 2),
-            "zoom_deg": zoom,
+            "lat": rlat, "lon": rlon,
+            "zoom_deg": rzoom,
         } for m, cyc, h in plan]
         data = parallel_fetch_decode(tasks, max_workers=2)
         prog.progress(0.5, text="Rendering frames...")
@@ -625,7 +658,7 @@ if active:
             try:
                 png = render_field(
                     product, vals, lats, lons,
-                    round(clat, 2), round(clon, 2), zoom, title,
+                    rlat, rlon, rzoom, title,
                 )
             except Exception as _re:
                 _errs.setdefault(
@@ -649,7 +682,7 @@ if active:
         else:
             html, hgt = build_scrub_html(
                 frames, hours, GRID_ORDER,
-                single=bool(_single_model),
+                single=bool(_single_model, home=(clat, clon, view_zoom), conus=(rlat, rlon, rzoom), axcal=st.session_state.get('_axcal')),
             )
             _sc = st.session_state.get("panel_scale_v", 85)
             if _sc >= 100:
@@ -699,7 +732,7 @@ if active:
             ):
                 grid.update(cached_grid_frame(
                     tuple(remaining), product,
-                    round(clat, 2), round(clon, 2), zoom,
+                    rlat, rlon, rzoom,
                 ))
 
         spec_fhr = {m: fh for m, _c, fh in specs}
@@ -749,7 +782,7 @@ else:
     try:
         for _m in _OPEN_ORDER:
             for _h in warm_hours(_m):
-                got = warm_get(CACHE_ROOT, _m, _open_hub, _h)
+                got = warm_get(CACHE_ROOT, _m, CONUS_KEY, _h)
                 if got:
                     _warm_frames.setdefault(_m, {})[_h] = got[0]
     except Exception:
@@ -765,7 +798,7 @@ else:
                         for h in v})
         _html, _hgt = build_scrub_html(
             _warm_frames, _axis, _OPEN_ORDER
-        )
+        , home=(WARM_HUBS[_open_hub][0], WARM_HUBS[_open_hub][1], 3.0), conus=(CONUS_CENTER[0], CONUS_CENTER[1], CONUS_ZOOM), axcal=st.session_state.get('_axcal'))
         _sc2 = st.session_state.get("panel_scale_v", 85)
         if _sc2 >= 100:
             _embed_html(_html, height=_hgt)
