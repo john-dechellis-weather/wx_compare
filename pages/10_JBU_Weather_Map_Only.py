@@ -69,25 +69,33 @@ def _tio_bounds(z, x0, x1, y0, y1):
 
 @st.cache_data(ttl=_TIO_TTL, show_spinner=False)
 def tio_ir_mosaic(z, x0, x1, y0, y1, key, bucket):
-    """Stitch a block of IR tiles into ONE PNG data URI, server-side.
+    """Stitch a block of IR tiles into ONE PNG, served from disk.
 
-    Deliberately NOT a client-side deck.gl TileLayer, for two
-    reasons: (1) a TileLayer puts the raw API key in the page
-    source for every viewer, (2) every open browser pane would
-    bill its own tiles against the same account quota, so cost
-    would scale with viewers instead of with time. Stitching here
-    keeps the key on Render and makes the call count deterministic.
+    Deliberately NOT a client-side deck.gl TileLayer: that would
+    put the raw API key in the page source for every viewer, and
+    every open browser pane would bill its own tiles against the
+    same account quota, so cost would scale with viewers instead
+    of with time. Stitching here keeps the key on Render and makes
+    the call count deterministic.
 
-    Returns (data_uri_or_None, diag). Never raises - a dead mosaic
+    Returns a URL, NOT a data URI. deck.gl's JSON layer runs string
+    props through a JS expression parser, and a "data:image/png;
+    base64,..." value dies on the colon at character 4 ("Unexpected
+    ':' at character 4" - jsep's error, seen live 8/17). An ordinary
+    URL path is the shape the old GIBS layer used and it survives
+    the parser. It also keeps ~400 KB of base64 out of every rerun.
+
+    Returns (url_or_None, diag). Never raises - a dead mosaic
     reports why instead of taking the map down with it.
     """
-    import base64
     import io
+    import time
     import requests as _rq
+    from pathlib import Path as _P
     from PIL import Image
 
     diag = {"tiles_requested": 0, "tiles_ok": 0, "status": {},
-            "quota": {}, "alpha": None, "error": None}
+            "quota": {}, "alpha": None, "url": None, "error": None}
     cols, rows = (x1 - x0 + 1), (y1 - y0 + 1)
     canvas = Image.new("RGBA", (cols * 256, rows * 256),
                        (0, 0, 0, 0))
@@ -114,8 +122,7 @@ def tio_ir_mosaic(z, x0, x1, y0, y1, key, bucket):
                     continue
                 im = Image.open(io.BytesIO(r.content)).convert("RGBA")
                 if diag["alpha"] is None:
-                    _a = im.getchannel("A")
-                    _lo, _hi = _a.getextrema()
+                    _lo, _hi = im.getchannel("A").getextrema()
                     diag["alpha"] = (
                         "opaque (no transparency - use the opacity "
                         "slider)" if _lo == 255 else
@@ -124,10 +131,21 @@ def tio_ir_mosaic(z, x0, x1, y0, y1, key, bucket):
                 diag["tiles_ok"] += 1
         if not diag["tiles_ok"]:
             return None, diag
-        buf = io.BytesIO()
-        canvas.save(buf, format="PNG")
-        return ("data:image/png;base64,"
-                + base64.b64encode(buf.getvalue()).decode()), diag
+        # static/ sits next to Homepage.py (pages/ -> repo root) and
+        # is served at /app/static/ once enableStaticServing is on.
+        sdir = _P(__file__).resolve().parent.parent / "static"
+        sdir.mkdir(parents=True, exist_ok=True)
+        _now = time.time()
+        for _old in sdir.glob("ir_*.png"):
+            try:
+                if _now - _old.stat().st_mtime > 3600:
+                    _old.unlink()
+            except OSError:
+                pass
+        name = f"ir_{bucket}.png"
+        canvas.save(sdir / name, format="PNG")
+        diag["url"] = f"/app/static/{name}"
+        return diag["url"], diag
     except Exception as exc:
         diag["error"] = f"{type(exc).__name__}: {exc}"
         return None, diag
@@ -1422,14 +1440,14 @@ if run_button:
                 _b2 = datetime.now(timezone.utc)
                 _sb = (_b2.strftime("%Y%m%d%H")
                        + f"{(_b2.minute // 5) * 5:02d}")
-                _ir_uri, _ir_diag = tio_ir_mosaic(
+                _ir_url, _ir_diag = tio_ir_mosaic(
                     _TIO_Z, _TIO_X0, _TIO_X1, _TIO_Y0, _TIO_Y1,
                     _tio_key, _sb)
-                if _ir_uri:
+                if _ir_url:
                     _w, _s, _e, _n = _tio_bounds(
                         _TIO_Z, _TIO_X0, _TIO_X1, _TIO_Y0, _TIO_Y1)
                     layers.append(pdk.Layer(
-                        "BitmapLayer", data=None, image=_ir_uri,
+                        "BitmapLayer", data=None, image=_ir_url,
                         bounds=[_w, _s, _e, _n],
                         opacity=_sat_op,
                     ))
