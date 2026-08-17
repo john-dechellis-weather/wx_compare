@@ -52,6 +52,10 @@ _TIO_Z, _TIO_X0, _TIO_X1, _TIO_Y0, _TIO_Y1 = 3, 1, 3, 2, 3
 # 1800 (12/hr) or get the key upgraded. Check the quota numbers in
 # the diagnostics expander before assuming which applies.
 _TIO_TTL = int(_os.environ.get("TIO_IR_TTL", "600"))
+# Assumed map viewport width in px, used only to fit the default
+# camera to the imagery. Lower it to zoom out (more margin
+# around the frame), raise it to zoom in. Override: IR_FIT_PX.
+_IR_FIT_PX = float(_os.environ.get("IR_FIT_PX", "1400"))
 
 
 def _tio_bounds(z, x0, x1, y0, y1):
@@ -142,6 +146,34 @@ def tio_ir_mosaic(z, x0, x1, y0, y1, key, bucket):
                 diag["tiles_ok"] += 1
         if not diag["tiles_ok"]:
             return None, diag
+        # Trim the geostationary limb cap. The blend is three GEO
+        # disks, so the top of the mosaic is a scalloped no-data
+        # arc (white/transparent) that reads as "clear sky" if
+        # left on an ops map - dangerous, since it is really "no
+        # satellite sees this". Scan down for the first row that
+        # is essentially all data and cut there, i.e. at the
+        # LOWEST dip of the scallop. Detected rather than
+        # hardcoded because the arcs move whenever the
+        # constellation or sub-satellite points change.
+        _px = canvas.load()
+        _W, _H = canvas.size
+        _cut = 0
+        for _ry in range(_H):
+            _blank = 0
+            for _rx in range(0, _W, 4):          # every 4th px
+                _r, _g, _b, _a = _px[_rx, _ry]
+                if _a < 10 or (_r > 235 and _g > 235 and _b > 235
+                               and max(_r, _g, _b)
+                               - min(_r, _g, _b) < 12):
+                    _blank += 1
+            if _blank / max(1, len(range(0, _W, 4))) < 0.02:
+                _cut = _ry
+                break
+        else:
+            _cut = 0
+        if _cut > 0:
+            canvas = canvas.crop((0, _cut, _W, _H))
+        diag["limb_crop_rows"] = _cut
         # static/ sits next to Homepage.py (pages/ -> repo root) and
         # is served at /app/static/ once enableStaticServing is on.
         sdir = _P(__file__).resolve().parent.parent / "static"
@@ -166,11 +198,50 @@ def tio_ir_mosaic(z, x0, x1, y0, y1, key, bucket):
                 "(a relative path is read as a local file).")
             return None, diag
         diag["url"] = f"{base}/app/static/{name}"
+        # North edge moves up-image as we crop, so recompute it.
+        _w0, _s0, _e0, _n0 = _tio_bounds(z, x0, x1, y0, y1)
+        _full_rows = (y1 - y0 + 1) * 256
+        import math as _m
+        _n_merc = _m.log(_m.tan(_m.pi / 4 + _m.radians(_n0) / 2))
+        _s_merc = _m.log(_m.tan(_m.pi / 4 + _m.radians(_s0) / 2))
+        _cut_merc = _n_merc - (_n_merc - _s_merc) * (
+            diag.get("limb_crop_rows", 0) / _full_rows)
+        diag["north_lat"] = round(_m.degrees(
+            2 * _m.atan(_m.exp(_cut_merc)) - _m.pi / 2), 3)
+        diag["bounds"] = [_w0, _s0, _e0, diag["north_lat"]]
         return diag["url"], diag
     except Exception as exc:
         diag["error"] = f"{type(exc).__name__}: {exc}"
         return None, diag
 
+
+
+def _ir_view_state():
+    """Default camera framed on the IR mosaic's actual footprint.
+
+    Falls back to the old hand-picked CONUS/Atlantic view when the
+    satellite layer is off or failed, so the map never depends on
+    the mosaic having rendered.
+    """
+    import math as _m
+    bb = st.session_state.get("_ir_view")
+    if not bb:
+        return dict(latitude=30.0, longitude=-65.0, zoom=3.0,
+                    min_zoom=2.2, max_zoom=11)
+    w, s_, e, n = bb
+
+    def _my(d):
+        return _m.log(_m.tan(_m.pi / 4 + _m.radians(d) / 2))
+
+    # Mercator-correct vertical midpoint - a plain (n+s)/2 sits too
+    # far north once the frame spans the equator to ~60N.
+    lat = _m.degrees(
+        2 * _m.atan(_m.exp((_my(n) + _my(s_)) / 2)) - _m.pi / 2)
+    # Fit the longitude span: deck.gl world width is 512*2**z px.
+    z = _m.log2(_IR_FIT_PX * 360.0 / (512.0 * max(e - w, 1e-6)))
+    return dict(latitude=round(lat, 3),
+                longitude=round((w + e) / 2, 3),
+                zoom=round(z, 2), min_zoom=2.2, max_zoom=11)
 
 
 # ---------------------------------------------------------------------------
@@ -1465,8 +1536,10 @@ if run_button:
                     _TIO_Z, _TIO_X0, _TIO_X1, _TIO_Y0, _TIO_Y1,
                     _tio_key, _sb)
                 if _ir_url:
-                    _w, _s, _e, _n = _tio_bounds(
-                        _TIO_Z, _TIO_X0, _TIO_X1, _TIO_Y0, _TIO_Y1)
+                    _w, _s, _e, _n = _ir_diag.get("bounds") or list(
+                        _tio_bounds(_TIO_Z, _TIO_X0, _TIO_X1,
+                                    _TIO_Y0, _TIO_Y1))
+                    st.session_state["_ir_view"] = (_w, _s, _e, _n)
                     layers.append(pdk.Layer(
                         "BitmapLayer", data=None, image=_ir_url,
                         bounds=[_w, _s, _e, _n],
@@ -1594,10 +1667,7 @@ if run_button:
         layers.extend(_base_layers)
         deck = pdk.Deck(
             layers=layers,
-            initial_view_state=pdk.ViewState(
-                latitude=30.0, longitude=-65.0,
-                zoom=3.0, min_zoom=2.2, max_zoom=11,
-            ),
+            initial_view_state=pdk.ViewState(**_ir_view_state()),
             map_style="dark",
             tooltip={"html": "<b>{tip}</b>"},
         )
