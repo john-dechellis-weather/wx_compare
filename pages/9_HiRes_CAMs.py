@@ -415,7 +415,7 @@ if active:
                     f"not available in {cfg['label']}."
                 )
                 continue
-            fh = min(fhr_all, cfg["max_fhr"])
+            fh = min(fhr_all, _eff_max_fhr(m, cfg))
             cyc = cached_model_cycle(m, fh, bucket10)
             if cyc is None:
                 msg = f"No complete {cfg['label']} cycle found."
@@ -447,6 +447,23 @@ if active:
              "controls true render detail).",
     )
     _single_model = _VIEW_LABELS[view_choice]
+    hrrr_ext = st.checkbox(
+        "HRRR long-range (latest 00/06/12/18Z run, to 48h)",
+        value=False, key="hrrr_ext",
+        help="HRRR runs hourly to 18h, but the four synoptic "
+             "cycles extend to 48h. With this on, requesting "
+             "hours past 18 selects the newest long-range run - "
+             "and the whole scrub renders from that single run "
+             "for consistency. Hours past 18 aren't prewarmed, "
+             "so they download on demand. NAM 3km (60h) and the "
+             "HiRes Windows pair (48h) always run long, so they "
+             "need no such option.",
+    )
+
+    def _eff_max_fhr(m, cfg):
+        if m == "hrrr" and hrrr_ext:
+            return 48
+        return cfg["max_fhr"]
     GRID_ORDER = ([_single_model] if _single_model
                   else ["hrrr", "nam_nest", "hiresw_arw",
                         "hiresw_fv3"])
@@ -467,7 +484,7 @@ if active:
         plan = []      # (model, cycle_iso, hour)
         for m in active_models:
             cfg = MODELS[m]
-            mh = [h for h in hours if h <= cfg["max_fhr"]]
+            mh = [h for h in hours if h <= _eff_max_fhr(m, cfg)]
             if not mh:
                 skipped.append(f"{cfg['label']}: range beyond its max")
                 continue
