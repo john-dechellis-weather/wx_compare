@@ -927,7 +927,7 @@ def render_field(
     # digital zoom-in; hub-scale renders stay light
     fig.savefig(buf, format="png",
                 dpi=(260 if zoom_deg > 10
-                     else 200 if zoom_deg > 4 else 100))
+                     else 230 if zoom_deg > 4 else 100))
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
