@@ -70,7 +70,7 @@ REFS_WARM_JOBS = [
 ]
 WARM_JOBS = WARM_MODELS + REFS_WARM_JOBS
 for _j in REFS_WARM_JOBS:
-    WARM_MAX[_j] = 24
+    WARM_MAX[_j] = 60   # full REFS run - hub scrubs instant to f60
 
 
 def _job(key: str) -> tuple:
