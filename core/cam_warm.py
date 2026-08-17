@@ -38,7 +38,7 @@ WARM_ZOOM = 2.5
 # the hub AND wheel-out headroom to the FULL region - 2.6 x 2.5
 # = ±6.5 deg, which from JFK spans Caribou ME to Norfolk VA
 # (all of New England AND the Mid-Atlantic in one frame)
-RENDER_FACTOR = 2.0
+RENDER_FACTOR = 2.2
 # Design A: deterministic CAM jobs warm ONE CONUS frame set per
 # model-hour (serves every hub via client-side transform) - the
 # hub dimension collapses, 5x fewer frames at higher dpi. REFS
