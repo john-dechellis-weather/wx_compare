@@ -262,7 +262,7 @@ def build_scrub_html(frames: dict, hour_axis: list,
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
-st.title("Hi-Res CAMs - 4 Panel ""(HRRR | NAM | ARW | FV3)")
+st.title("Hi-Res CAMs - 4 Panel ""(HRRR | RRFS | ARW | FV3)")
 st.caption(
     "Convection-allowing model viewer - aviation products, "
     "hourly-updating, with prewarmed hub views."
@@ -323,7 +323,7 @@ with st.sidebar:
             )
             for _ph in WARM_HUBS:
                 _hits = 0
-                for _pm in ["hrrr", "nam_nest",
+                for _pm in ["hrrr", "rrfs",
                             "hiresw_arw", "hiresw_fv3"]:
                     if warm_get(CACHE_ROOT, _pm, _ph, 1):
                         _hits += 1
@@ -692,7 +692,7 @@ else:
                                 use_container_width=True):
             st.session_state["open_hub"] = _hk
     _open_hub = st.session_state.get("open_hub", "KJFK")
-    _OPEN_ORDER = ["hrrr", "nam_nest", "hiresw_arw",
+    _OPEN_ORDER = ["hrrr", "rrfs", "hiresw_arw",
                    "hiresw_fv3"]
     _warm_frames: dict = {}
     try:
@@ -737,11 +737,11 @@ else:
         """
         ### What this page is
 
-        The classic 4-panel CAM comparison - HRRR, NAM 3km,
-        and both HiRes Window members (ARW, FV3) - centered on
-        your airport,
+        The classic 4-panel CAM comparison - HRRR, RRFS
+        (NAM's operational successor), and both HiRes Window
+        members (ARW, FV3) - centered on your airport,
         aviation products only: 1km reflectivity, echo tops, visibility, ceiling, and gusts,
-        with smooth scrubbing. Hub buttons serve prewarmed HRRR
-        reflectivity instantly; NAM renders live.
+        with smooth scrubbing. Hub buttons serve all four
+        panels prewarmed - reflectivity scrubs instantly.
         """
     )
