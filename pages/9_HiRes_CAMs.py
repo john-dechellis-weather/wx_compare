@@ -526,12 +526,13 @@ if active:
         st.error(f"Cannot resolve coordinates for {icao}.")
         st.stop()
     clat, clon = coords
+    from core.cam_warm import RENDER_FACTOR
     if conus_view:
         rlat, rlon = CONUS_CENTER
         rzoom = CONUS_ZOOM
     else:
-        rlat, rlon, rzoom = (round(clat, 2), round(clon, 2),
-                             zoom)
+        rlat, rlon = round(clat, 2), round(clon, 2)
+        rzoom = zoom * RENDER_FACTOR
 
     product = PRODUCT_KEY[product_label]
 
@@ -720,10 +721,9 @@ if active:
             html, hgt = build_scrub_html(
                 frames, hours, GRID_ORDER,
                 single=bool(_single_model),
-                home=((clat, clon, 3.0) if conus_view
-                      else None),
-                conus=((rlat, rlon, rzoom) if conus_view
-                       else None),
+                home=(clat, clon, 3.0 if conus_view
+                      else zoom),
+                conus=(rlat, rlon, rzoom),
                 axcal=st.session_state.get("_axcal"),
             )
             _sc = st.session_state.get("panel_scale_v", 85)
@@ -838,8 +838,13 @@ else:
         )
         _axis = sorted({h for v in _warm_frames.values()
                         for h in v})
+        from core.cam_warm import RENDER_FACTOR as _RF
+        _hla2, _hlo2 = WARM_HUBS[_open_hub]
         _html, _hgt = build_scrub_html(
-            _warm_frames, _axis, _OPEN_ORDER
+            _warm_frames, _axis, _OPEN_ORDER,
+            home=(_hla2, _hlo2, WARM_ZOOM),
+            conus=(_hla2, _hlo2, WARM_ZOOM * _RF),
+            axcal=st.session_state.get("_axcal"),
         )
         _sc2 = st.session_state.get("panel_scale_v", 85)
         if _sc2 >= 100:
