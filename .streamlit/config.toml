@@ -5,3 +5,13 @@ backgroundColor = "#1d293d"
 secondaryBackgroundColor = "#0f172b"
 textColor = "#e2e8f0"
 font = "sans serif"
+
+[server]
+# Serves repo-root static/ at /app/static/. Required by the IR
+# satellite layer on the International map: deck.gl BitmapLayer
+# needs a URL for its image prop, and a base64 data URI gets
+# parsed as a JS expression and dies on the colon ("Unexpected
+# ":" at character 4"). Writing the stitched mosaic to static/
+# and handing deck.gl a path is the shape the old GIBS layer
+# used, and it survives the parser.
+enableStaticServing = true
