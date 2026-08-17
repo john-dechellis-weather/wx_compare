@@ -751,6 +751,14 @@ def render_field(
                   "#FF9900", "#FF4040", "#B21E28", "#A349A4"]
         cmap = ListedColormap(colors); norm = BoundaryNorm(bounds, cmap.N)
 
+    # Wide (CONUS-class) renders: decimate the 3km grid 2x
+    # before contouring - ~4x less memory and time, and the
+    # national view cannot resolve 3km anyway. This is what
+    # keeps full-CONUS frames from OOM-killing small instances.
+    if zoom_deg > 10 and vals.ndim == 2 and vals.shape[0] > 800:
+        vals = vals[::2, ::2]
+        lats = lats[::2, ::2]
+        lons = lons[::2, ::2]
     fig = plt.figure(figsize=(8, 7))
     ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
     ax.set_extent(
@@ -874,7 +882,7 @@ def render_field(
     # Wide (CONUS-class) renders carry the pixels for deep
     # digital zoom-in; hub-scale renders stay light
     fig.savefig(buf, format="png",
-                dpi=240 if zoom_deg > 10 else 100)
+                dpi=200 if zoom_deg > 10 else 100)
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
