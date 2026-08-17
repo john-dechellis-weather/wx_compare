@@ -495,30 +495,45 @@ def _legend_html() -> str:
 
         )
     )
-    def ring_sw(color, dot=False):
-        inner = (f'<circle cx="10" cy="10" r="3.6" '
-                 f'fill="{color}" stroke="#000" '
-                 'stroke-width="0.8"/>' if dot else "")
-        return ('<svg width="20" height="20" '
+    def ring_sw(color, dot=None):
+        inner = ""
+        if dot:
+            inner = (f'<circle cx="9" cy="9" r="3.2" '
+                     f'fill="{dot}" stroke="#000000" '
+                     'stroke-width="0.7"/>')
+        return ('<svg width="18" height="18" '
+                'style="flex:none;" '
                 'xmlns="http://www.w3.org/2000/svg">'
-                f'<circle cx="10" cy="10" r="7" fill="none" '
-                f'stroke="{color}" stroke-width="2.6"/>'
+                f'<circle cx="9" cy="9" r="6.3" fill="none" '
+                f'stroke="{color}" stroke-width="2.4"/>'
                 + inner + "</svg>")
 
-    rings_sec = "".join(
-        f'<div style="{row}">'
-        f'<span style="width:24px; text-align:center;">'
-        f"{ring_sw(c, dot)}</span>"
-        f'<span style="{txt}">{label}</span></div>'
-        for c, dot, label in (
-            ("#FF00FF", False, "LIFR in TAF"),
-            ("#FF00FF", True, "LIFR in TAF and METAR"),
-            ("#E01A1A", False, "IFR in TAF"),
-            ("#E01A1A", True, "IFR in TAF and METAR"),
-            ("#0B6B0B", False, "&ge;40kt wind in TAF"),
-            ("#4CBB17", False, "&ge;30kt wind in TAF"),
-            ("#F2C200", False, "Thunderstorm in TAF"),
-        )
+    ktxt = ("color:#000; -webkit-text-fill-color:#000; "
+            "font-family:Georgia, 'Times New Roman', serif; "
+            "font-size:clamp(8px, 0.62vw, 11px); "
+            "white-space:nowrap;")
+    pair_row = ("display:flex; align-items:center; gap:5px; "
+                "padding:2px 0; flex-wrap:nowrap;")
+
+    def pair(sw1, l1, sw2, l2):
+        return (f'<div style="{pair_row}">{sw1}'
+                f'<span style="{ktxt}">{l1}</span>'
+                '<span style="width:10px;"></span>'
+                f"{sw2}"
+                f'<span style="{ktxt}">{l2}</span></div>')
+
+    rings_sec = (
+        pair(ring_sw("#FF00FF"), "LIFR in TAF",
+             ring_sw("#FF00FF", "#FF00FF"),
+             "LIFR in TAF and METAR")
+        + pair(ring_sw("#E01A1A"), "IFR in TAF",
+               ring_sw("#E01A1A", "#E01A1A"),
+               "IFR in TAF and METAR")
+        + pair(ring_sw("#4CBB17"), "&ge;30kt in TAF",
+               ring_sw("#0B6B0B"), "&ge;40kt in TAF")
+        + pair(ring_sw("#F2C200"), "TS in TAF",
+               ring_sw("#F2C200", "#EE7700"),
+               "TS in TAF and METAR")
     )
     return (
         '<div style="background:#FFFFFF; border:1px solid #000; '
@@ -540,8 +555,9 @@ def _metar_severity(r, include_ts=True):
     glyph)."""
     toks = []
     tier = 3
+    ts_drive = False
     if include_ts and r.get("ts_now"):
-        tier = min(tier, 1)
+        ts_drive = True
         toks.append("TS")
     if r.get("vis_bad") and r.get("vis") is not None:
         v = r["vis"]
@@ -562,6 +578,10 @@ def _metar_severity(r, include_ts=True):
             toks.append(f"{int(w)}KT")
     if not toks:
         return None, ""
+    if tier >= 3 and ts_drive:
+        # TS is the sole driver: orange dot (matches the key's
+        # TS-and-METAR concentric symbol)
+        return "#EE7700", "/".join(toks)
     color = (_MAGENTA, _RED, _ORANGE)[min(tier, 2)]
     return color, "/".join(toks)
 
@@ -1315,7 +1335,7 @@ if run_button:
     # Status strip: the three numbers that summarize the network
     n_sev_all = sum(1 for r in board_rows if r[0] == 0)
 
-    @st.fragment
+    @st.fragment(run_every="120s")
     def _map_fragment():
         import pydeck as pdk
         radar_mode = st.radio(
@@ -1330,8 +1350,9 @@ if run_button:
         layers = []
         _mrms_ts = None
         if radar_on:
-            _rb = datetime.now(timezone.utc).strftime(
-                "%Y%m%d%H%M")[:-1]
+            _b = datetime.now(timezone.utc)
+            _rb = (_b.strftime("%Y%m%d%H")
+                   + f"{(_b.minute // 2) * 2:02d}")
             _mrms_ts = None
             if radar_mode == "MRMS hi-res":
                 # NOAA ArcGIS export: 1km QC'd MRMS merged
@@ -1458,7 +1479,7 @@ if run_button:
             map_style="light",
             tooltip={"html": "<b>{tip}</b>"},
         )
-        _rad = ""
+        _rad = " Map auto-refreshes every 2 min."
         if radar_on:
             if radar_mode == "MRMS hi-res":
                 _rad = (" Radar: MRMS 1km merged reflectivity "
