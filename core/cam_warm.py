@@ -44,7 +44,7 @@ RENDER_FACTOR = 3.0   # +-7.5 deg: 33N-48N from JFK, verbatim
 # hub dimension collapses, 5x fewer frames at higher dpi. REFS
 # jobs stay hub-cropped at WARM_ZOOM.
 CONUS_CENTER = (39.5, -97.5)
-CONUS_ZOOM = 28.0
+CONUS_ZOOM = 15.0
 CONUS_KEY = "CONUS"
 
 
