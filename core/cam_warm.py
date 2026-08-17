@@ -43,8 +43,13 @@ WARM_PRODUCT = "REFD"
 # Per-model warm depth: HRRR's hourly cycles top out at f18;
 # NAM/HRW warm a full day. Raise these toward 48/60 for total
 # coverage at ~2.5x the disk and fill time.
-WARM_MAX = {"hrrr": 18, "rrfs": 24, "nam_nest": 24,
-            "hiresw_arw": 24, "hiresw_fv3": 24}
+# Every model warmed to its full horizon. HRRR stays 18 by
+# design: warming to 48 would pin its warm store to the four
+# synoptic cycles, sacrificing the hourly freshness that is
+# HRRR's whole identity (f19-48 stays live behind the extended
+# toggle).
+WARM_MAX = {"hrrr": 18, "rrfs": 84, "nam_nest": 60,
+            "hiresw_arw": 48, "hiresw_fv3": 48}
 
 
 def warm_hours(model: str) -> list:
