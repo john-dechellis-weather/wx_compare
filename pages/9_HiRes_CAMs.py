@@ -159,7 +159,7 @@ def cached_panel(
     )
 
 
-_AXCAL = dict(l=0.125, r=0.745, t=0.100, b=0.110)
+_AXCAL = dict(l=0.015, r=0.985, t=0.045, b=0.075)
 
 
 def _render_chunk(pchunk, data, frames, errs, prog,
@@ -392,13 +392,13 @@ with st.sidebar:
                    "nudge the map-axes fractions until the "
                    "hub sits centered at load, then tell "
                    "Claude the four numbers to harden.")
-        _c1 = st.number_input("axes left", 0.0, 0.4, 0.125,
+        _c1 = st.number_input("axes left", 0.0, 0.4, 0.015,
                               0.005, key="axl")
-        _c2 = st.number_input("axes right", 0.5, 1.0, 0.745,
+        _c2 = st.number_input("axes right", 0.5, 1.0, 0.985,
                               0.005, key="axr")
-        _c3 = st.number_input("axes top", 0.0, 0.4, 0.100,
+        _c3 = st.number_input("axes top", 0.0, 0.4, 0.045,
                               0.005, key="axt")
-        _c4 = st.number_input("axes bottom", 0.0, 0.4, 0.110,
+        _c4 = st.number_input("axes bottom", 0.0, 0.4, 0.075,
                               0.005, key="axb")
         st.session_state["_axcal"] = dict(
             l=_c1, r=_c2, t=_c3, b=_c4)
