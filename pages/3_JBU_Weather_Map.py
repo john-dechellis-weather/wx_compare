@@ -487,30 +487,37 @@ def _legend_html() -> str:
         'style="flex:none; width:1.4em; height:1.4em;"/>'
         f'<span style="{txt}">{label}</span></div>'
         for u, label in (
-            (plane_b, "JBU flight (with heading)"),
+            (plane_b, "JBU flight (mouse over for flight "
+                      "info)"),
             (plane_r, "Hazardous Weather in current METAR"),
             (_a320_icon_uri("#EE7700"),
              "Arriving (&lt;20 min) into TS TAF window"),
 
         )
     )
-    def ring_sw(color):
-        return ('<svg width="18" height="18" '
+    def ring_sw(color, dot=False):
+        inner = (f'<circle cx="10" cy="10" r="3.6" '
+                 f'fill="{color}" stroke="#000" '
+                 'stroke-width="0.8"/>' if dot else "")
+        return ('<svg width="20" height="20" '
                 'xmlns="http://www.w3.org/2000/svg">'
-                f'<circle cx="9" cy="9" r="6.5" fill="none" '
-                f'stroke="{color}" stroke-width="2.6"/></svg>')
+                f'<circle cx="10" cy="10" r="7" fill="none" '
+                f'stroke="{color}" stroke-width="2.6"/>'
+                + inner + "</svg>")
 
     rings_sec = "".join(
         f'<div style="{row}">'
-        f'<span style="width:22px; text-align:center;">'
-        f"{ring_sw(c)}</span>"
+        f'<span style="width:24px; text-align:center;">'
+        f"{ring_sw(c, dot)}</span>"
         f'<span style="{txt}">{label}</span></div>'
-        for c, label in (
-            ("#FF00FF", "LIFR in TAF"),
-            ("#E01A1A", "IFR in TAF"),
-            ("#0B6B0B", "&ge;40kt wind in TAF"),
-            ("#4CBB17", "&ge;30kt wind in TAF"),
-            ("#F2C200", "Thunderstorm in TAF"),
+        for c, dot, label in (
+            ("#FF00FF", False, "LIFR in TAF"),
+            ("#FF00FF", True, "LIFR in TAF and METAR"),
+            ("#E01A1A", False, "IFR in TAF"),
+            ("#E01A1A", True, "IFR in TAF and METAR"),
+            ("#0B6B0B", False, "&ge;40kt wind in TAF"),
+            ("#4CBB17", False, "&ge;30kt wind in TAF"),
+            ("#F2C200", False, "Thunderstorm in TAF"),
         )
     )
     return (
