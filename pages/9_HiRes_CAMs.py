@@ -216,8 +216,13 @@ def build_scrub_html(frames: dict, hour_axis: list,
         "document.getElementById('hlbl').textContent=L[i];"
         "for(const m in D){const el="
         "document.getElementById('img_'+m);"
-        "if(D[m][i]){el.src=D[m][i];el.style.display='';}"
-        "else{el.style.display='none';}}}"
+        "if(D[m][i]){el.src=D[m][i];el.style.display='';"
+        "el.style.opacity=1;el.title='';}"
+        "else{let k=i;while(k>=0&&!D[m][k])k--;"
+        "if(k>=0){el.src=D[m][k];el.style.display='';"
+        "el.style.opacity=0.35;"
+        "el.title='beyond this model\\'s last hour ('+L[k]+')';}"
+        "else{el.style.display='none';}}}}"
         "sl.addEventListener('input',upd);upd();"
     )
     if single:
@@ -345,13 +350,13 @@ with st.sidebar:
     )
     if smooth:
         fhr_lo, fhr_hi = st.slider(
-            "Preload hours", 0, 60, (0, 24),
+            "Preload hours", 0, 84, (0, 24),
             help="All hours in this range are fetched upfront. "
              "Span capped at 24 hours to keep the page light.",
         )
     else:
         fhr_all = st.slider(
-            "Forecast hour (all models)", 0, 60, 1,
+            "Forecast hour (all models)", 0, 84, 1,
             help="HRRR f18 hourly (f48 synoptic); NAM to f60 "
                  "on synoptics; HRW ARW/FV3 to f48 on 00/12Z. "
                  "Panels clamp to their own max.",
