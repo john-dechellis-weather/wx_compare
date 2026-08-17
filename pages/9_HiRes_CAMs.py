@@ -362,9 +362,9 @@ def build_scrub_html(frames: dict, hour_axis: list,
         )
     html += "</script>"
     if single:
-        return html, 140 + 720
+        return html, 140 + 940
     rows = (len(order) + 1) // 2
-    return html, 140 + rows * 560
+    return html, 140 + rows * 660
 
 
 # ---------------------------------------------------------------------------
