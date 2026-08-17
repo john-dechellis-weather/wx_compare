@@ -66,8 +66,21 @@ PRODUCT_LABELS = {
 # qualifier after the fcst column, e.g.
 #   "n:off:d=...:REFC:entire atmosphere:24 hour fcst:prob >40:"
 # Each entry: (VAR, [required substrings anywhere in the line]).
+# Exceedance probabilities are matched NUMERICALLY: the idx
+# line's "prob <VALUE" / "prob >VALUE" number is parsed and
+# compared within a tolerance, so decimal spelling ("<804" vs
+# "<804.672") and prefix collisions ("<804" swallowing "<8045")
+# cannot misroute a threshold. Aviation values are meters:
+# 500ft=152.4  1000ft=304.8  2000ft=609.6
+# 1/2sm=804.7  1sm=1609.3    3sm=4828
 PROB_DEFS = {
-    "PROB_REFC40": ("REFC", ["prob", ">40"]),
+    "PROB_REFC40": ("REFC", "", ">", 40.0, 1.0),
+    "PROB_CIG500": ("HGT", "cloud ceiling", "<", 152.4, 3.0),
+    "PROB_CIG1000": ("HGT", "cloud ceiling", "<", 304.8, 3.0),
+    "PROB_CIG2000": ("HGT", "cloud ceiling", "<", 609.6, 3.0),
+    "PROB_VIS05": ("VIS", "surface", "<", 804.7, 5.0),
+    "PROB_VIS1": ("VIS", "surface", "<", 1609.3, 8.0),
+    "PROB_VIS3": ("VIS", "surface", "<", 4828.0, 15.0),
 }
 
 IDX_MATCHERS = {
@@ -176,7 +189,10 @@ MODELS = {
         "cycles": [0, 6, 12, 18],
         "probe_back": 31,
         "max_fhr": 60,
-        "products": {"PROB_REFC40"},
+        "products": {
+            "PROB_REFC40", "PROB_CIG500", "PROB_CIG1000",
+            "PROB_CIG2000", "PROB_VIS05", "PROB_VIS1",
+            "PROB_VIS3"},
         "note": "HREF successor (SCN 26-48), pre-implementation",
     },
     "refs_pmmn": {
@@ -485,13 +501,18 @@ def _fetch_field_idx(cfg: dict, product: str, cycle, fhr: int) -> bytes:
     lines = r.text.splitlines()
     start = end = None
     if product in PROB_DEFS:
-        var_name, subs = PROB_DEFS[product]
+        import re as _re
+        var_name, lev_sub, op, target, tol = PROB_DEFS[product]
         for i, line in enumerate(lines):
             parts = line.split(":")
             if len(parts) < 5 or parts[3] != var_name:
                 continue
-            low = line.lower()
-            if all(s in low for s in subs):
+            if lev_sub and lev_sub not in parts[4].lower():
+                continue
+            m = _re.search(r"prob\s*([<>])\s*([\d.]+)",
+                           line.lower())
+            if (m and m.group(1) == op
+                    and abs(float(m.group(2)) - target) <= tol):
                 start = int(parts[1])
                 for nxt in lines[i + 1:]:
                     p2 = nxt.split(":")
