@@ -280,10 +280,12 @@ with st.sidebar:
     st.session_state["panel_scale_v"] = panel_scale
 
     # HRRR + NAM 3km nest (proven idx path, instantaneous fields
-    # like HRRR - clean scrubber pairing). NBM/RRFS stay dormant
-    # in core.hrrr_cam. NAM retires Oct 2026; revisit then.
-    show_models = {"hrrr": True, "nam_nest": True,
-                   "hiresw_arw": True, "hiresw_fv3": True}
+    # RRFS holds NAM's grid slot as of 8/17 (NAM retires Oct
+    # 2026; its successor earned the seat early). NAM remains a
+    # single-view choice for comparison until retirement.
+    show_models = {"hrrr": True, "rrfs": True,
+                   "hiresw_arw": True, "hiresw_fv3": True,
+                   "nam_nest": True}
 
     st.header("Product")
     product_label = st.selectbox(
@@ -435,9 +437,9 @@ if active:
 
     _VIEW_LABELS = {
         "All models (2x2)": None,
-        "HRRR": "hrrr", "NAM 3km": "nam_nest",
+        "HRRR": "hrrr", "RRFS": "rrfs",
+        "NAM 3km": "nam_nest",
         "HRW-ARW": "hiresw_arw", "HRW-FV3": "hiresw_fv3",
-        "RRFS (exp)": "rrfs",
     }
     view_choice = st.radio(
         "View", list(_VIEW_LABELS.keys()),
@@ -466,7 +468,7 @@ if active:
             return 48
         return cfg["max_fhr"]
     GRID_ORDER = ([_single_model] if _single_model
-                  else ["hrrr", "nam_nest", "hiresw_arw",
+                  else ["hrrr", "rrfs", "hiresw_arw",
                         "hiresw_fv3"])
 
     if smooth:
