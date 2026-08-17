@@ -657,9 +657,15 @@ def fetch_and_decode(
         # side decimation alone still let the smooth pipeline
         # accumulate gigabytes before the first plot.
         if zoom_deg > 10 and vals.shape[0] > 800:
-            vals = np.ascontiguousarray(vals[::2, ::2])
-            lats = np.ascontiguousarray(lats[::2, ::2])
-            lons = np.ascontiguousarray(lons[::2, ::2])
+            # Decimation factor tunable WITHOUT redeploy via the
+            # WIDE_DECIM env var (2 = 6 km effective, 4 = 12 km).
+            # 4 quarters the quadmesh memory again - the dial to
+            # prove/relieve single-render OOM on small instances.
+            import os as _os
+            _df = max(2, int(_os.environ.get("WIDE_DECIM", "2")))
+            vals = np.ascontiguousarray(vals[::_df, ::_df])
+            lats = np.ascontiguousarray(lats[::_df, ::_df])
+            lons = np.ascontiguousarray(lons[::_df, ::_df])
     else:
         vals = vals.astype(np.float32, copy=False)
         lats = lats.astype(np.float32, copy=False)
