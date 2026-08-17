@@ -380,12 +380,18 @@ with st.sidebar:
     st.header("Region")
     icao_input = st.text_input("Airport ICAO", value="KJFK",
                                max_chars=4).strip().upper()
+    conus_view = st.checkbox(
+        "Full CONUS view", value=False,
+        help="Render every panel continent-wide (edge-to-edge "
+             "map, slim bottom colorbar). Crisp at national "
+             "scale; hub views stay on native crops. Not "
+             "prewarmed - renders live, then caches 30 min.",
+    )
     zoom = st.slider(
-        "Default view size (deg half-width)", 1.5, 28.0, 3.0, 0.5,
-        help="Every frame is rendered CONUS-wide; this sets how "
-             "zoomed-in panels OPEN on your hub. Wheel out on "
-             "any panel to see the whole US, drag to pan, "
-             "double-click to snap home.",
+        "Zoom (degrees)", 1.0, 6.0, 2.5, 0.5,
+        help="Geographic window for hub renders. 2.5 serves "
+             "instantly from the warm store. Wheel/drag on any "
+             "panel pans within the frame; double-click resets.",
     )
     with st.expander("Home-position calibration"):
         st.caption("If panels open off-center from the hub, "
@@ -520,9 +526,12 @@ if active:
         st.error(f"Cannot resolve coordinates for {icao}.")
         st.stop()
     clat, clon = coords
-    view_zoom = zoom                      # display transform
-    rlat, rlon = CONUS_CENTER             # render target
-    rzoom = CONUS_ZOOM
+    if conus_view:
+        rlat, rlon = CONUS_CENTER
+        rzoom = CONUS_ZOOM
+    else:
+        rlat, rlon, rzoom = (round(clat, 2), round(clon, 2),
+                             zoom)
 
     product = PRODUCT_KEY[product_label]
 
@@ -639,7 +648,11 @@ if active:
                 plan.append((m, cycle_iso, h))
 
         # Pull any prewarmed frames first; only the rest download.
-        warm_ok_s = (product == WARM_PRODUCT)
+        warm_ok_s = (
+            (not conus_view) and icao in WARM_HUBS
+            and product == WARM_PRODUCT
+            and abs(zoom - WARM_ZOOM) < 0.01
+        )
         if warm_ok_s:
             still_plan = []
             for m, cyc, h in plan:
@@ -647,7 +660,7 @@ if active:
                 try:
                     if h in warm_hours(m):
                         got = warm_get(CACHE_ROOT, m,
-                                       CONUS_KEY, h)
+                                       icao, h)
                 except Exception:
                     got = None
                 if got:
@@ -707,8 +720,10 @@ if active:
             html, hgt = build_scrub_html(
                 frames, hours, GRID_ORDER,
                 single=bool(_single_model),
-                home=(clat, clon, view_zoom),
-                conus=(rlat, rlon, rzoom),
+                home=((clat, clon, 3.0) if conus_view
+                      else None),
+                conus=((rlat, rlon, rzoom) if conus_view
+                       else None),
                 axcal=st.session_state.get("_axcal"),
             )
             _sc = st.session_state.get("panel_scale_v", 85)
@@ -809,7 +824,7 @@ else:
     try:
         for _m in _OPEN_ORDER:
             for _h in warm_hours(_m):
-                got = warm_get(CACHE_ROOT, _m, CONUS_KEY, _h)
+                got = warm_get(CACHE_ROOT, _m, _open_hub, _h)
                 if got:
                     _warm_frames.setdefault(_m, {})[_h] = got[0]
     except Exception:
@@ -825,7 +840,7 @@ else:
                         for h in v})
         _html, _hgt = build_scrub_html(
             _warm_frames, _axis, _OPEN_ORDER
-        , home=(WARM_HUBS[_open_hub][0], WARM_HUBS[_open_hub][1], 3.0), conus=(CONUS_CENTER[0], CONUS_CENTER[1], CONUS_ZOOM), axcal=st.session_state.get('_axcal'))
+        )
         _sc2 = st.session_state.get("panel_scale_v", 85)
         if _sc2 >= 100:
             _embed_html(_html, height=_hgt)
