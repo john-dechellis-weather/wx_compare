@@ -62,6 +62,8 @@ PRODUCT_LABELS = {
     "PROB_VIS05": "P(Visibility < 1/2 sm)  %",
     "PROB_VIS1": "P(Visibility < 1 sm)  %",
     "PROB_VIS3": "P(Visibility < 3 sm)  %",
+    "PROB_RETOP30": "P(Echo Tops > 30 kft)  %",
+    "PROB_RETOP35": "P(Echo Tops > 35 kft)  %",
 }
 
 # For idx-based fetching: (grib var name, level substring to match)
@@ -88,6 +90,9 @@ PROB_DEFS = {
     "PROB_VIS05": ("VIS", "surface", "<", 804.7, 5.0),
     "PROB_VIS1": ("VIS", "surface", "<", 1609.3, 8.0),
     "PROB_VIS3": ("VIS", "surface", "<", 4828.0, 15.0),
+    # Echo tops (meters): 30 kft = 9144, 35 kft = 10668
+    "PROB_RETOP30": ("RETOP", "", ">", 9144.0, 30.0),
+    "PROB_RETOP35": ("RETOP", "", ">", 10668.0, 30.0),
 }
 
 IDX_MATCHERS = {
@@ -201,7 +206,7 @@ MODELS = {
         "products": {
             "PROB_REFC40", "PROB_CIG500", "PROB_CIG1000",
             "PROB_CIG2000", "PROB_VIS05", "PROB_VIS1",
-            "PROB_VIS3"},
+            "PROB_VIS3", "PROB_RETOP30", "PROB_RETOP35"},
         "note": "HREF successor (SCN 26-48), pre-implementation",
     },
     "refs_pmmn": {
