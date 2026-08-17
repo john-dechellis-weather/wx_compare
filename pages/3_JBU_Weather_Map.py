@@ -516,9 +516,13 @@ def _legend_html() -> str:
                 "padding:2px 0; flex-wrap:nowrap;")
 
     def pair(sw1, l1, sw2, l2):
-        return (f'<div style="{pair_row}">{sw1}'
-                f'<span style="{ktxt}">{l1}</span>'
-                '<span style="width:10px;"></span>'
+        # First column fixed-width so every second swatch starts
+        # at the same x - uniform spacing across all pair rows
+        return (f'<div style="{pair_row}">'
+                '<span style="display:inline-flex; '
+                'align-items:center; gap:5px; '
+                'min-width:118px; flex:none;">'
+                f'{sw1}<span style="{ktxt}">{l1}</span></span>'
                 f"{sw2}"
                 f'<span style="{ktxt}">{l2}</span></div>')
 
@@ -530,7 +534,11 @@ def _legend_html() -> str:
                ring_sw("#E01A1A", "#E01A1A"),
                "IFR in TAF and METAR")
         + pair(ring_sw("#4CBB17"), "&ge;30kt in TAF",
-               ring_sw("#0B6B0B"), "&ge;40kt in TAF")
+               ring_sw("#4CBB17", "#4CBB17"),
+               "&ge;30kt in TAF and METAR")
+        + pair(ring_sw("#0B6B0B"), "&ge;40kt in TAF",
+               ring_sw("#0B6B0B", "#0B6B0B"),
+               "&ge;40kt in TAF and METAR")
         + pair(ring_sw("#F2C200"), "TS in TAF",
                ring_sw("#F2C200", "#EE7700"),
                "TS in TAF and METAR")
@@ -569,21 +577,30 @@ def _metar_severity(r, include_ts=True):
         t = 0 if c < 500 else (1 if c < 1000 else 2)
         tier = min(tier, t)
         toks.append(f"CIG {c}")
+    wind_g40 = wind_g30 = False
     if r.get("wind_bad"):
         w = max([x for x in (r.get("spd"), r.get("gst"))
                  if x is not None], default=None)
         if w is not None:
-            t = 0 if w >= 40 else (1 if w >= 35 else 2)
-            tier = min(tier, t)
+            wind_g40 = w >= 40
+            wind_g30 = w >= 30
             toks.append(f"{int(w)}KT")
     if not toks:
         return None, ""
-    if tier >= 3 and ts_drive:
-        # TS is the sole driver: orange dot (matches the key's
-        # TS-and-METAR concentric symbol)
+    # Dot color ladder mirrors the ring ladder:
+    # LIFR magenta > IFR red > G40 dk green > G30 lt green >
+    # TS orange
+    if tier <= 1:
+        return (_MAGENTA, _RED)[tier], "/".join(toks)
+    if wind_g40:
+        return "#0B6B0B", "/".join(toks)
+    if wind_g30:
+        return "#4CBB17", "/".join(toks)
+    if ts_drive:
         return "#EE7700", "/".join(toks)
-    color = (_MAGENTA, _RED, _ORANGE)[min(tier, 2)]
-    return color, "/".join(toks)
+    if tier <= 2:
+        return _ORANGE, "/".join(toks)
+    return None, ""
 
 
 def build_map_markers(board_rows, metar_rows, coords,
@@ -955,6 +972,7 @@ def cached_fleet(bucket: str):
             # deck.gl IconLayer angle is CCW; heading is CW from N
             "angle": (360.0 - trk) % 360.0,
             "gs": gs,
+            "alt": alt,
             "tip": f"{cs} | {alt_s}",
         })
     ok = len(_FLEET_TILES) - len(fails)
@@ -1398,6 +1416,7 @@ if run_button:
                 ))
         if fleet:
             fleet_disp = []
+            gnd_disp = []
             for d in fleet:
                 dest = (d.get("dest") or "").upper()
                 warn = dest_warn.get(dest)
@@ -1436,7 +1455,14 @@ if run_button:
                                             "TS TAF ~"
                                             f"{eta:%H:%M}Z")
                                     break
-                fleet_disp.append({
+                # Ground/gate aircraft (low-and-slow) go to a
+                # meter-sized layer: sub-pixel at network zoom,
+                # full aircraft when zoomed into the airport
+                _alt = d.get("alt")
+                _gsv = d.get("gs") or 0
+                _ground = ((_alt is None or _alt < 1500)
+                           and _gsv < 60)
+                (gnd_disp if _ground else fleet_disp).append({
                     "lon": d["lon"], "lat": d["lat"],
                     "cs": d.get("callsign", ""),
                     "tip": tip,
@@ -1458,6 +1484,16 @@ if run_button:
                 get_angle="angle",
                 pickable=True,
             ))
+            if gnd_disp:
+                layers.append(pdk.Layer(
+                    "IconLayer", data=gnd_disp,
+                    get_position="[lon, lat]",
+                    get_icon="icon",
+                    get_size=850, size_units="meters",
+                    size_max_pixels=26,
+                    get_angle="angle",
+                    pickable=True,
+                ))
             if show_cs:
                 layers.append(pdk.Layer(
                     "TextLayer", data=fleet_disp,
