@@ -33,12 +33,12 @@ HUBS = {
     "KDCA": (38.8521, -77.0377),
     "KBOS": (42.3629, -71.0064),
 }
-WARM_ZOOM = 1.0
+WARM_ZOOM = 2.5
 # Frames render at RENDER_FACTOR x the display zoom: sharp at
 # the hub AND wheel-out headroom to the FULL region - 2.6 x 2.5
 # = ±6.5 deg, which from JFK spans Caribou ME to Norfolk VA
 # (all of New England AND the Mid-Atlantic in one frame)
-RENDER_FACTOR = 15.0   # +-7.5 deg: 33N-48N from JFK, verbatim
+RENDER_FACTOR = 6  # +-7.5 deg: 33N-48N from JFK, verbatim
 # Design A: deterministic CAM jobs warm ONE CONUS frame set per
 # model-hour (serves every hub via client-side transform) - the
 # hub dimension collapses, 5x fewer frames at higher dpi. REFS
