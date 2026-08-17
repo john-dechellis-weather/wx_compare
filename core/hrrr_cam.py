@@ -891,15 +891,31 @@ def render_field(
                     textcoords="offset points", fontsize=6,
                     fontweight="bold", color="#0000CC", zorder=10)
 
-    ax.set_title(title, fontsize=10)
-    plt.colorbar(mesh, ax=ax, pad=0.02, shrink=0.85,
-                 label=PRODUCT_LABELS.get(product, product))
+    if zoom_deg > 10:
+        # Wide (CONUS-class) frames are viewed magnified: keep
+        # the map nearly edge-to-edge and park a slim horizontal
+        # colorbar under it, so hub-zoomed views show map, not
+        # a monster legend (observed live at 6x magnification)
+        ax.set_title(title, fontsize=8, pad=2)
+        cb = plt.colorbar(
+            mesh, ax=ax, orientation="horizontal",
+            fraction=0.030, pad=0.015, aspect=55,
+            label=PRODUCT_LABELS.get(product, product))
+        cb.ax.tick_params(labelsize=6)
+        cb.set_label(PRODUCT_LABELS.get(product, product),
+                     fontsize=6)
+        fig.subplots_adjust(left=0.015, right=0.985,
+                            top=0.955, bottom=0.075)
+    else:
+        ax.set_title(title, fontsize=10)
+        plt.colorbar(mesh, ax=ax, pad=0.02, shrink=0.85,
+                     label=PRODUCT_LABELS.get(product, product))
     # NOTE: no bbox_inches="tight" - crops the GeoAxes (see core.radar).
     buf = io.BytesIO()
     # Wide (CONUS-class) renders carry the pixels for deep
     # digital zoom-in; hub-scale renders stay light
     fig.savefig(buf, format="png",
-                dpi=200 if zoom_deg > 10 else 100)
+                dpi=260 if zoom_deg > 10 else 100)
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
