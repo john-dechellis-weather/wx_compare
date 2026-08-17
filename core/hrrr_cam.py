@@ -891,7 +891,7 @@ def render_field(
                     textcoords="offset points", fontsize=6,
                     fontweight="bold", color="#0000CC", zorder=10)
 
-    if zoom_deg > 10:
+    if zoom_deg > 4:
         # Wide (CONUS-class) frames are viewed magnified: keep
         # the map nearly edge-to-edge and park a slim horizontal
         # colorbar under it, so hub-zoomed views show map, not
@@ -915,7 +915,8 @@ def render_field(
     # Wide (CONUS-class) renders carry the pixels for deep
     # digital zoom-in; hub-scale renders stay light
     fig.savefig(buf, format="png",
-                dpi=260 if zoom_deg > 10 else 100)
+                dpi=(260 if zoom_deg > 10
+                     else 200 if zoom_deg > 4 else 100))
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
