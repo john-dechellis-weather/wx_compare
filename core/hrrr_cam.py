@@ -110,6 +110,10 @@ MODELS = {
              "2p5km.f{ff:03d}.conus.grib2.idx"),
         ],
         "cycles": [0, 3, 6, 9, 12, 15, 18, 21],
+        # Pre-ops posting lags hours behind the clock and recent
+        # cycles upload hour-by-hour; walk a full day-plus back
+        # so a mature cycle with the requested hour is reachable
+        "probe_back": 31,
         "max_fhr": 84,
         "products": {"REFD", "REFC", "RETOP", "VIS", "CEIL",
                      "GUST"},
@@ -267,7 +271,8 @@ def latest_cycle(
     cfg["_probe_diag"] = diag
     if cfg.get("_idx_resolved"):
         candidates = [cfg["_idx_resolved"]]
-    max_back = 31 if len(candidates) == 1 else 13
+    max_back = cfg.get(
+        "probe_back", 31 if len(candidates) == 1 else 13)
     for back in range(1, max_back):
         cyc = (now - timedelta(hours=back)).replace(
             minute=0, second=0, microsecond=0
