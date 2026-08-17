@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
 
+import os as _os
+
 import streamlit as st
 
 st.set_page_config(
@@ -24,6 +26,112 @@ apply_retro_theme()
 
 from auth import check_password
 check_password()
+
+
+# ---------------------------------------------------------------------------
+# Tomorrow.io "satellite-cloud" IR tiles
+# ---------------------------------------------------------------------------
+# This field is UNDOCUMENTED. It is not in the published data-layer
+# catalog, and every documented tile field is camelCase while this
+# one is kebab-case - so it is almost certainly a platform-internal
+# layer id that happens to answer on the public tile endpoint.
+# Treat it as unversioned: it can change name, change enhancement,
+# or start 4xx-ing without notice. The diagnostics expander is the
+# early-warning system - it surfaces status codes and the account's
+# remaining quota on every render.
+_TIO_TILE = ("https://api.tomorrow.io/v4/map/tile/"
+             "{z}/{x}/{y}/satellite-cloud/now.png")
+# Tile block: z3 x1-3, y2-3 => 135W-0E, 0N-66.5N. Six tiles covers
+# CONUS, the Caribbean, the whole North Atlantic past the Azores,
+# and up to northern Canada. Widen via x1 (each z3 tile is 45 lon).
+_TIO_Z, _TIO_X0, _TIO_X1, _TIO_Y0, _TIO_Y1 = 3, 1, 3, 2, 3
+# Refresh cadence is a QUOTA decision, not just a freshness one:
+# each cache miss costs (x1-x0+1)*(y1-y0+1) = 6 calls. At the 600 s
+# default that is 36 calls/hour. Tomorrow.io's free tier caps at 25
+# calls/HOUR, so on a free key this WILL 429 - raise TIO_IR_TTL to
+# 1800 (12/hr) or get the key upgraded. Check the quota numbers in
+# the diagnostics expander before assuming which applies.
+_TIO_TTL = int(_os.environ.get("TIO_IR_TTL", "600"))
+
+
+def _tio_bounds(z, x0, x1, y0, y1):
+    """(west, south, east, north) degrees for an inclusive tile block."""
+    import math
+    n = 2.0 ** z
+
+    def _lat(yy):
+        return math.degrees(
+            math.atan(math.sinh(math.pi * (1.0 - 2.0 * yy / n))))
+
+    return (x0 / n * 360.0 - 180.0, _lat(y1 + 1),
+            (x1 + 1) / n * 360.0 - 180.0, _lat(y0))
+
+
+@st.cache_data(ttl=_TIO_TTL, show_spinner=False)
+def tio_ir_mosaic(z, x0, x1, y0, y1, key, bucket):
+    """Stitch a block of IR tiles into ONE PNG data URI, server-side.
+
+    Deliberately NOT a client-side deck.gl TileLayer, for two
+    reasons: (1) a TileLayer puts the raw API key in the page
+    source for every viewer, (2) every open browser pane would
+    bill its own tiles against the same account quota, so cost
+    would scale with viewers instead of with time. Stitching here
+    keeps the key on Render and makes the call count deterministic.
+
+    Returns (data_uri_or_None, diag). Never raises - a dead mosaic
+    reports why instead of taking the map down with it.
+    """
+    import base64
+    import io
+    import requests as _rq
+    from PIL import Image
+
+    diag = {"tiles_requested": 0, "tiles_ok": 0, "status": {},
+            "quota": {}, "alpha": None, "error": None}
+    cols, rows = (x1 - x0 + 1), (y1 - y0 + 1)
+    canvas = Image.new("RGBA", (cols * 256, rows * 256),
+                       (0, 0, 0, 0))
+    try:
+        for xi, x in enumerate(range(x0, x1 + 1)):
+            for yi, y in enumerate(range(y0, y1 + 1)):
+                url = _TIO_TILE.format(z=z, x=x, y=y)
+                diag["tiles_requested"] += 1
+                r = _rq.get(url, params={"apikey": key}, timeout=20)
+                diag["status"][f"{z}/{x}/{y}"] = r.status_code
+                # Quota headers are the whole ballgame on this
+                # endpoint - keep the last seen values.
+                for h, lbl in (
+                    ("X-RateLimit-Remaining-Hour", "remaining_hour"),
+                    ("X-RateLimit-Remaining-Day", "remaining_day"),
+                    ("X-RateLimit-Limit-Hour", "limit_hour"),
+                ):
+                    if h in r.headers:
+                        diag["quota"][lbl] = r.headers[h]
+                if r.status_code != 200:
+                    diag["error"] = (
+                        f"tile {z}/{x}/{y} -> HTTP {r.status_code}: "
+                        f"{r.text[:160]}")
+                    continue
+                im = Image.open(io.BytesIO(r.content)).convert("RGBA")
+                if diag["alpha"] is None:
+                    _a = im.getchannel("A")
+                    _lo, _hi = _a.getextrema()
+                    diag["alpha"] = (
+                        "opaque (no transparency - use the opacity "
+                        "slider)" if _lo == 255 else
+                        f"has transparency (alpha {_lo}-{_hi})")
+                canvas.paste(im, (xi * 256, yi * 256))
+                diag["tiles_ok"] += 1
+        if not diag["tiles_ok"]:
+            return None, diag
+        buf = io.BytesIO()
+        canvas.save(buf, format="PNG")
+        return ("data:image/png;base64,"
+                + base64.b64encode(buf.getvalue()).decode()), diag
+    except Exception as exc:
+        diag["error"] = f"{type(exc).__name__}: {exc}"
+        return None, diag
+
 
 
 # ---------------------------------------------------------------------------
@@ -1286,14 +1394,58 @@ if run_button:
                  "this switch is the reliable control - flip it "
                  "on when zoomed into an area of interest.",
         )
-        # IR satellite layer removed 8/17: GOES-East Band-13 via
-        # NASA GIBS ran 20-60 min behind, too stale to be worth
-        # the screen real estate on an ops map. Replacement is a
-        # lightning layer sourced from a real observation network
-        # (see the lightning-source note in the handoff) - NOT a
-        # modeled flash-rate forecast.
+        sat_on = st.checkbox(
+            "IR satellite (Tomorrow.io)", value=False,
+            key="sat_glm_f",
+            help="Enhanced IR brightness temperature, global "
+                 "coverage - replaces the GOES-East/GIBS layer "
+                 "that ran 20-60 min behind. Imagery is opaque, "
+                 "so the opacity slider is how you keep the "
+                 "basemap and aircraft readable underneath.",
+        )
         layers = []
         _mrms_ts = None
+        if sat_on:
+            _sat_op = st.slider(
+                "IR opacity", 10, 90, 45, 5, key="sat_op_f",
+                help="Transparency of the satellite layer",
+            ) / 100.0
+            _tio_key = _os.environ.get("TOMORROW_API_KEY", "").strip()
+            if not _tio_key:
+                st.warning(
+                    "Satellite layer needs TOMORROW_API_KEY set in "
+                    "the Render dashboard (Environment tab). The "
+                    "key stays server-side - it is never sent to "
+                    "the browser."
+                )
+            else:
+                _b2 = datetime.now(timezone.utc)
+                _sb = (_b2.strftime("%Y%m%d%H")
+                       + f"{(_b2.minute // 5) * 5:02d}")
+                _ir_uri, _ir_diag = tio_ir_mosaic(
+                    _TIO_Z, _TIO_X0, _TIO_X1, _TIO_Y0, _TIO_Y1,
+                    _tio_key, _sb)
+                if _ir_uri:
+                    _w, _s, _e, _n = _tio_bounds(
+                        _TIO_Z, _TIO_X0, _TIO_X1, _TIO_Y0, _TIO_Y1)
+                    layers.append(pdk.Layer(
+                        "BitmapLayer", data=None, image=_ir_uri,
+                        bounds=[_w, _s, _e, _n],
+                        opacity=_sat_op,
+                    ))
+                else:
+                    st.warning(
+                        "Satellite IR unavailable: "
+                        + str(_ir_diag.get("error", "unknown"))
+                    )
+                with st.expander("Satellite tile diagnostics"):
+                    st.caption(
+                        "satellite-cloud is an undocumented field. "
+                        "If it ever changes or the quota runs out, "
+                        "the status codes and remaining-quota "
+                        "numbers below say so directly."
+                    )
+                    st.json(_ir_diag)
         if radar_on:
             _b = datetime.now(timezone.utc)
             _rb = (_b.strftime("%Y%m%d%H")
@@ -1411,15 +1563,20 @@ if run_button:
             tooltip={"html": "<b>{tip}</b>"},
         )
         _rad = ""
+        if sat_on:
+            _rad += (" Satellite: enhanced IR via Tomorrow.io "
+                     "(satellite-cloud tiles).")
         if radar_on:
+            # += not =: a bare assignment here clobbered the
+            # satellite credit whenever radar was also on.
             if radar_mode == "MRMS hi-res":
-                _rad = (" Radar: MRMS 1km merged reflectivity "
-                        "(NOAA), ~2-min updates.")
+                _rad += (" Radar: MRMS 1km merged reflectivity "
+                         "(NOAA), ~2-min updates.")
             elif radar_mode == "Echo tops":
-                _rad = " Radar: NEXRAD echo tops via IEM."
+                _rad += " Radar: NEXRAD echo tops via IEM."
             else:
-                _rad = (" Radar: NEXRAD reflectivity via IEM "
-                        "(cells fallback).")
+                _rad += (" Radar: NEXRAD reflectivity via IEM "
+                         "(cells fallback).")
         st.pydeck_chart(deck, height=map_height)
         st.caption(
             "Solid dot = METAR breach NOW; ring = TAF "
