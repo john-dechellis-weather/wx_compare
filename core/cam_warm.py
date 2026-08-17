@@ -34,6 +34,9 @@ HUBS = {
     "KBOS": (42.3629, -71.0064),
 }
 WARM_ZOOM = 2.5
+# Frames render at RENDER_FACTOR x the display zoom: sharp at
+# the hub AND wheel-out headroom to a regional view (~±5 deg)
+RENDER_FACTOR = 2.0
 # Design A: deterministic CAM jobs warm ONE CONUS frame set per
 # model-hour (serves every hub via client-side transform) - the
 # hub dimension collapses, 5x fewer frames at higher dpi. REFS
@@ -48,7 +51,7 @@ def _job_geom(key: str):
     verdict 8/17: hub-native frames are ~3x sharper than any
     browser-tenable CONUS frame, so ALL jobs warm hub crops;
     CONUS is an explicit render mode (never warmed)."""
-    return list(HUBS), dict(HUBS), WARM_ZOOM
+    return list(HUBS), dict(HUBS), WARM_ZOOM * RENDER_FACTOR
 # Bump when render styling changes so prewarmed frames rebuild
 # (v2: 10 nm range ring; v3: fix hub-center leak - every frame
 # had rendered centered on the LAST hub in the dict, Boston,
