@@ -285,7 +285,7 @@ with st.sidebar:
     # single-view choice for comparison until retirement.
     show_models = {"hrrr": True, "rrfs": True,
                    "hiresw_arw": True, "hiresw_fv3": True,
-                   "nam_nest": True}
+                   "nam_nest": True, "refs_mean": True}
 
     st.header("Product")
     product_label = st.selectbox(
@@ -438,6 +438,7 @@ if active:
     _VIEW_LABELS = {
         "All models (2x2)": None,
         "HRRR": "hrrr", "RRFS": "rrfs",
+        "REFS mean": "refs_mean",
         "NAM 3km": "nam_nest",
         "HRW-ARW": "hiresw_arw", "HRW-FV3": "hiresw_fv3",
     }
