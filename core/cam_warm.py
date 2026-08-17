@@ -43,7 +43,7 @@ WARM_PRODUCT = "REFD"
 # Per-model warm depth: HRRR's hourly cycles top out at f18;
 # NAM/HRW warm a full day. Raise these toward 48/60 for total
 # coverage at ~2.5x the disk and fill time.
-WARM_MAX = {"hrrr": 18, "nam_nest": 24,
+WARM_MAX = {"hrrr": 18, "rrfs": 24, "nam_nest": 24,
             "hiresw_arw": 24, "hiresw_fv3": 24}
 
 
@@ -57,7 +57,8 @@ WARM_HOURS = list(range(0, max(WARM_MAX.values()) + 1))
 # manifest skips work until IT publishes a new cycle - HRRR churns
 # hourly, NAM 6-hourly, the HRW pair only 00/12Z - so after the
 # one-time fill (~10-15 min) steady-state cost is modest.
-WARM_MODELS = ["hrrr", "nam_nest", "hiresw_arw", "hiresw_fv3"]
+WARM_MODELS = ["hrrr", "rrfs", "nam_nest",
+               "hiresw_arw", "hiresw_fv3"]
 # Warm JOBS: a job is "model" (legacy, product=WARM_PRODUCT) or
 # "model@PRODUCT". REFS jobs warm the flagship ensemble products
 # so hub loads scrub instantly, same as the deterministic grid.
