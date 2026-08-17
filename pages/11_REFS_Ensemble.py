@@ -168,6 +168,8 @@ PRODUCTS = {
     "Prob visibility < 1/2 sm": ("refs_prob", "PROB_VIS05"),
     "Prob visibility < 1 sm": ("refs_prob", "PROB_VIS1"),
     "Prob visibility < 3 sm": ("refs_prob", "PROB_VIS3"),
+    "Prob echo tops > 30 kft": ("refs_prob", "PROB_RETOP30"),
+    "Prob echo tops > 35 kft": ("refs_prob", "PROB_RETOP35"),
 }
 
 with st.sidebar:
