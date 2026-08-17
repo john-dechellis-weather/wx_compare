@@ -153,9 +153,10 @@ def build_scrub_html(frames: dict, hour_axis: list,
 
 
 PRODUCTS = {
-    "Ensemble mean": "refs_mean",
-    "Prob-matched mean (PMMN)": "refs_pmmn",
-    "Local prob-matched (LPMM)": "refs_lpmm",
+    "Ensemble mean": ("refs_mean", "REFC"),
+    "Prob-matched mean (PMMN)": ("refs_pmmn", "REFC"),
+    "Local prob-matched (LPMM)": ("refs_lpmm", "REFC"),
+    "Probability REFC >= 40 dBZ": ("refs_prob", "PROB_REFC40"),
 }
 
 with st.sidebar:
@@ -208,7 +209,7 @@ else:
             st.rerun()
 
     icao = active
-    model = PRODUCTS[prod_label]
+    model, field = PRODUCTS[prod_label]
     coords = cached_station_coords(icao)
     if coords is None:
         st.error(f"Cannot resolve coordinates for {icao}.")
@@ -217,7 +218,7 @@ else:
     now = datetime.now(timezone.utc)
     bucket10 = now.strftime("%Y%m%d%H") + str(now.minute // 10)
 
-    st.info(f"**{icao}** | {prod_label} | composite reflectivity")
+    st.info(f"**{icao}** | {prod_label}")
 
     span = min(fhr_hi - fhr_lo, 24)
     hours = [h for h in range(fhr_lo, fhr_lo + span + 1)
@@ -233,47 +234,38 @@ else:
         )
         st.stop()
 
-    from core.hrrr_cam import parallel_fetch_decode, render_field
+    @st.cache_data(ttl=10800, show_spinner=False,
+                   max_entries=600)
+    def cached_refs_frame(model: str, field: str,
+                          cycle_iso: str, h: int,
+                          la: float, lo: float, zm: float):
+        from core.hrrr_cam import fetch_and_decode, render_field
+        cyc = datetime.fromisoformat(cycle_iso)
+        vals, lats, lons = fetch_and_decode(
+            model, field, cyc, h, la, lo, zm)
+        valid = cyc + timedelta(hours=h)
+        title = (f"{MODELS[model]['label']} "
+                 f"{cyc:%m/%d %H}Z  f{h:02d}  "
+                 f"valid {valid:%m/%d %H}Z")
+        return render_field(field, vals, lats, lons,
+                            la, lo, zm, title)
 
-    prog = st.progress(0.0, text=f"Downloading {len(hours)} "
-                                 "ensemble fields...")
-    tasks = [{
-        "key": (model, h),
-        "model": model, "product": "REFC",
-        "cycle": datetime.fromisoformat(cycle_iso), "fhr": h,
-        "lat": round(clat, 2), "lon": round(clon, 2),
-        "zoom_deg": zoom,
-    } for h in hours]
-    data = parallel_fetch_decode(tasks, max_workers=2)
-    prog.progress(0.5, text="Rendering frames...")
-
+    prog = st.progress(0.0, text=f"Loading {len(hours)} "
+                                 "ensemble frames...")
     frames = {model: {}}
     _errs = {}
-    cycle = datetime.fromisoformat(cycle_iso)
     for i, h in enumerate(hours):
-        prog.progress(0.5 + 0.5 * (i + 1) / len(hours),
-                      text=f"Rendering f{h:02d}")
-        res = data.get((model, h))
-        if isinstance(res, Exception) or res is None:
-            if isinstance(res, Exception):
-                _errs.setdefault(
-                    model, f"f{h:02d}: {type(res).__name__}: "
-                           f"{res}"[:200])
-            continue
-        vals, lats, lons = res
-        valid = cycle + timedelta(hours=h)
-        title = (f"{MODELS[model]['label']} "
-                 f"{cycle:%m/%d %H}Z  f{h:02d}  "
-                 f"valid {valid:%m/%d %H}Z")
+        prog.progress((i + 1) / len(hours),
+                      text=f"Frame f{h:02d} ({i + 1}/"
+                           f"{len(hours)})")
         try:
-            frames[model][h] = render_field(
-                "REFC", vals, lats, lons,
-                round(clat, 2), round(clon, 2), zoom, title,
-            )
+            frames[model][h] = cached_refs_frame(
+                model, field, cycle_iso, h,
+                round(clat, 2), round(clon, 2), zoom)
         except Exception as _re:
             _errs.setdefault(
-                model, f"render f{h:02d}: "
-                       f"{type(_re).__name__}: {_re}"[:200])
+                model, f"f{h:02d}: {type(_re).__name__}: "
+                       f"{_re}"[:220])
     prog.empty()
 
     if not frames[model]:
@@ -286,9 +278,28 @@ else:
     html, hgt = build_scrub_html(frames, got_hours, [model],
                                  single=True)
     streamlit.components.v1.html(html, height=hgt)
+    with st.expander("File inventory (what this REFS file "
+                     "contains)"):
+        try:
+            import requests as _rq
+            _tpl = (MODELS[model].get("_idx_resolved")
+                    or MODELS[model]["idx"])
+            _cyc = datetime.fromisoformat(cycle_iso)
+            _iu = _tpl.format(ymd=_cyc.strftime("%Y%m%d"),
+                              cc=_cyc.hour, ff=got_hours[-1])
+            _it = _rq.get(_iu, timeout=15).text
+            _sel = st.text_input("Filter lines", value="prob"
+                                 if field.startswith("PROB")
+                                 else "")
+            _show = [l for l in _it.splitlines()
+                     if _sel.lower() in l.lower()][:120]
+            st.code("\n".join(_show) or "(no matching lines)")
+        except Exception as _ie:
+            st.caption(f"inventory unavailable: {_ie}")
+
     st.caption(
         f"{len(got_hours)} frames | wheel to zoom "
         "(cursor-anchored), drag to pan; view holds while "
-        "scrubbing | probabilities land here next once a "
-        "percent render path exists"
+        "scrubbing | frames cache server-side for 3h - "
+        "repeat loads of this cycle are instant for everyone"
     )
