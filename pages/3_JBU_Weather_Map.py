@@ -1378,9 +1378,21 @@ if run_button:
             r"(?:^|\s)[+-]?(?:FZ|SH|DZ|TS)?RA(?:[A-Z]{2})?"
             r"(?:\s|$)", body))
         visv = r.get("vis")
-        if heavy or (anyra and visv is not None and visv <= 3):
-            dest_rain[r["icao"]] = ("+RA" if heavy
-                                    else f"RA/{visv:g}SM")
+        # Remarks-side heavy rain: the hourly precip group
+        # (Prrrr, hundredths of an inch) at >= 0.30"/hr is a
+        # heavy-rate hour even when the body says plain RA
+        p_amt = None
+        _pm = _re.search(r"(?:^|\s)P(\d{4})(?:\s|$)", rmk)
+        if _pm:
+            p_amt = int(_pm.group(1)) / 100.0
+        heavy_rmk = (anyra and p_amt is not None
+                     and p_amt >= 0.30)
+        if heavy or heavy_rmk or (anyra and visv is not None
+                                  and visv <= 3):
+            dest_rain[r["icao"]] = (
+                "+RA" if heavy
+                else f"RA P{p_amt:.2f}\"/hr" if heavy_rmk
+                else f"RA/{visv:g}SM")
         if rmk:
             hit = _ltg_cb_hazard(rmk)
             if hit:
