@@ -708,6 +708,16 @@ def render_field(
     import cartopy.crs as ccrs
     import cartopy.feature as cfeature
 
+    # Wide (CONUS-class) renders: decimate the 3km grid 2x
+    # BEFORE data is derived, so C and X/Y stay married in
+    # pcolormesh (~4x less contouring memory/time; a national
+    # view cannot resolve 3km anyway).
+    if zoom_deg > 10 and getattr(vals, "ndim", 0) == 2 \
+            and vals.shape[0] > 800:
+        vals = vals[::2, ::2]
+        lats = lats[::2, ::2]
+        lons = lons[::2, ::2]
+
     data = np.ma.masked_invalid(vals)
 
     if product.startswith("PROB"):
@@ -751,14 +761,6 @@ def render_field(
                   "#FF9900", "#FF4040", "#B21E28", "#A349A4"]
         cmap = ListedColormap(colors); norm = BoundaryNorm(bounds, cmap.N)
 
-    # Wide (CONUS-class) renders: decimate the 3km grid 2x
-    # before contouring - ~4x less memory and time, and the
-    # national view cannot resolve 3km anyway. This is what
-    # keeps full-CONUS frames from OOM-killing small instances.
-    if zoom_deg > 10 and vals.ndim == 2 and vals.shape[0] > 800:
-        vals = vals[::2, ::2]
-        lats = lats[::2, ::2]
-        lons = lons[::2, ::2]
     fig = plt.figure(figsize=(8, 7))
     ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
     ax.set_extent(
