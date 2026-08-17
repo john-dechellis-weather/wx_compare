@@ -651,6 +651,15 @@ def fetch_and_decode(
         lons = np.ascontiguousarray(
             lons_w[r0:r1, c0:c1], dtype=np.float32
         )
+        # Wide (CONUS-class) requests: decimate 2x AT DECODE so
+        # every downstream holder (result dicts, render queues)
+        # carries ~5 MB frames instead of ~45 MB - the render-
+        # side decimation alone still let the smooth pipeline
+        # accumulate gigabytes before the first plot.
+        if zoom_deg > 10 and vals.shape[0] > 800:
+            vals = np.ascontiguousarray(vals[::2, ::2])
+            lats = np.ascontiguousarray(lats[::2, ::2])
+            lons = np.ascontiguousarray(lons[::2, ::2])
     else:
         vals = vals.astype(np.float32, copy=False)
         lats = lats.astype(np.float32, copy=False)
