@@ -157,6 +157,12 @@ PRODUCTS = {
     "Prob-matched mean (PMMN)": ("refs_pmmn", "REFC"),
     "Local prob-matched (LPMM)": ("refs_lpmm", "REFC"),
     "Probability REFC >= 40 dBZ": ("refs_prob", "PROB_REFC40"),
+    "Prob ceiling < 500 ft": ("refs_prob", "PROB_CIG500"),
+    "Prob ceiling < 1000 ft": ("refs_prob", "PROB_CIG1000"),
+    "Prob ceiling < 2000 ft": ("refs_prob", "PROB_CIG2000"),
+    "Prob visibility < 1/2 sm": ("refs_prob", "PROB_VIS05"),
+    "Prob visibility < 1 sm": ("refs_prob", "PROB_VIS1"),
+    "Prob visibility < 3 sm": ("refs_prob", "PROB_VIS3"),
 }
 
 with st.sidebar:
@@ -167,7 +173,7 @@ with st.sidebar:
     ).strip().upper()
 
     st.header("Ensemble product")
-    prod_label = st.radio(
+    prod_label = st.selectbox(
         "Product", list(PRODUCTS.keys()), index=1,
         help="Mean smooths displaced cells into broad signal; "
              "PMMN/LPMM keep realistic reflectivity structure "
