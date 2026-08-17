@@ -24,8 +24,13 @@ CACHE_ROOT = (_persistent if _persistent.exists()
               else Path("/tmp/wx_compare_cache"))
 CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 
-from core.cam_warm import HUBS as REFS_HUBS
+from core.cam_warm import (
+    HUBS as REFS_HUBS, WARM_ZOOM, ensure_warmer_started,
+    warm_cycle, warm_get, warm_hours,
+)
 from core.hrrr_cam import MODELS
+
+ensure_warmer_started(CACHE_ROOT)
 
 st.title("REFS Ensemble")
 st.caption(
@@ -235,7 +240,16 @@ else:
                    f"f{_lo:02d} - raise the hour range.")
         st.stop()
 
-    cycle_iso = cached_refs_cycle(model, hours[-1], bucket10)
+    _wk = f"{model}@{field}"
+    _warm_ok = (icao in REFS_HUBS
+                and abs(zoom - WARM_ZOOM) < 0.01)
+    cycle_iso = None
+    if _warm_ok:
+        _wc = warm_cycle(CACHE_ROOT, _wk)
+        if _wc and hours[-1] in warm_hours(_wk):
+            cycle_iso = _wc
+    if cycle_iso is None:
+        cycle_iso = cached_refs_cycle(model, hours[-1], bucket10)
     if cycle_iso is None:
         pd = MODELS[model].get("_probe_diag") or {}
         st.warning(
@@ -270,9 +284,14 @@ else:
                       text=f"Frame f{h:02d} ({i + 1}/"
                            f"{len(hours)})")
         try:
-            frames[model][h] = cached_refs_frame(
-                model, field, cycle_iso, h,
-                round(clat, 2), round(clon, 2), zoom)
+            got = (warm_get(CACHE_ROOT, _wk, icao, h)
+                   if _warm_ok else None)
+            if got and got[1] == cycle_iso:
+                frames[model][h] = got[0]
+            else:
+                frames[model][h] = cached_refs_frame(
+                    model, field, cycle_iso, h,
+                    round(clat, 2), round(clon, 2), zoom)
         except Exception as _re:
             _errs.setdefault(
                 model, f"f{h:02d}: {type(_re).__name__}: "
@@ -319,6 +338,7 @@ else:
     st.caption(
         f"{len(got_hours)} frames | wheel to zoom "
         "(cursor-anchored), drag to pan; view holds while "
-        "scrubbing | frames cache server-side for 3h - "
-        "repeat loads of this cycle are instant for everyone"
+        "scrubbing | hub views prewarm to disk each cycle "
+        "(PMMN + CIG/VIS/REFC probs); everything else caches "
+        "server-side for 3h"
     )
