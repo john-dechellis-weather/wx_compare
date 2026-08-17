@@ -482,6 +482,12 @@ def _a320_icon_uri(fill="#005ADC"):
 
 _AC_ICON = {"url": _a320_icon_uri(), "width": 64, "height": 64,
             "anchorX": 32, "anchorY": 32, "mask": False}
+_AC_ICON_GRN = {"url": _a320_icon_uri("#0E8A3E"), "width": 64,
+                "height": 64, "anchorX": 32, "anchorY": 32,
+                "mask": False}
+_AC_ICON_PUR = {"url": _a320_icon_uri("#A020F0"), "width": 64,
+                "height": 64, "anchorX": 32, "anchorY": 32,
+                "mask": False}
 _AC_ICON_ORG = {"url": _a320_icon_uri("#EE7700"), "width": 64,
                 "height": 64, "anchorX": 32, "anchorY": 32,
                 "mask": False}
@@ -546,9 +552,14 @@ def _legend_html() -> str:
         for u, label in (
             (plane_b, "JBU flight (mouse over for flight "
                       "info)"),
-            (plane_r, "Hazardous Weather in current METAR"),
+            (_a320_icon_uri("#A020F0"),
+             "Destination METAR is LIFR"),
+            (plane_r, "TS / &gt;G35kt in current METAR"),
             (_a320_icon_uri("#EE7700"),
-             "Arriving (&lt;20 min) into TS TAF window"),
+             "Arriving (&lt;20 min): lightning in remarks"),
+            (_a320_icon_uri("#0E8A3E"),
+             "Arriving (&lt;20 min): +RA or RA &amp; vis "
+             "&le;3sm"),
 
         )
     )
@@ -1297,11 +1308,39 @@ if run_button:
             dest_ts_windows[a.icao] = wins
 
     dest_warn = {}
+    # Arrival-hazard lookups from current METARs:
+    #  - rain: heavy rain, or any rain with vis <= 3 sm
+    #  - ltg: any lightning group in the remarks (LTG covers
+    #    FRQ/OCNL/CONS prefixes, DSNT, and the CA/CG/IC/CC
+    #    type suffixes per the ASOS remarks format)
+    import re as _re
+    dest_rain = {}
+    dest_ltg = {}
+    for r in metar_all:
+        raw = r.get("raw") or ""
+        body, _, rmk = raw.partition(" RMK")
+        heavy = bool(_re.search(
+            r"(?:^|\s)\+(?:FZ|SH|DZ|TS)?RA", body))
+        anyra = bool(_re.search(
+            r"(?:^|\s)[+-]?(?:FZ|SH|DZ|TS)?RA(?:[A-Z]{2})?"
+            r"(?:\s|$)", body))
+        visv = r.get("vis")
+        if heavy or (anyra and visv is not None and visv <= 3):
+            dest_rain[r["icao"]] = ("+RA" if heavy
+                                    else f"RA/{visv:g}SM")
+        if rmk and "LTG" in rmk:
+            m = _re.search(r"((?:OCNL |FRQ |CONS )?LTG\S*"
+                           r"(?: DSNT)?)", rmk)
+            dest_ltg[r["icao"]] = (m.group(1) if m else "LTG")
+
+    dest_lifr = {}
     for r in metar_all:
         toks = []
+        lifr_here = False
         if r.get("ts_now"):
             toks.append("TS")
         if r.get("lifr"):
+            lifr_here = True
             if r.get("vis") is not None and r["vis"] < 1:
                 toks.append(f"{r['vis']:g}SM")
             if (r.get("cig") is not None and not r.get("cig_unl")
@@ -1311,6 +1350,8 @@ if run_button:
             toks.append(f"G{int(r['gst'])}")
         if toks:
             dest_warn[r["icao"]] = "/".join(toks)
+            if lifr_here:
+                dest_lifr[r["icao"]] = True
 
     # Layout: TAF alerts beside the map; METARs centered below
     board_rows = build_status_board(results, metar_rows)
@@ -1474,6 +1515,16 @@ if run_button:
                     bounds=[-126.0, 23.0, -65.0, 50.0],
                     opacity=0.6,
                 ))
+        # Live positions: refetch the fleet on each heartbeat
+        # (90s cache; the 4-lane sweep runs inside the fragment
+        # when it expires, so aircraft advance every beat)
+        _fb = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+        try:
+            _lres = cached_fleet(_fb)
+            if _lres is not None:
+                fleet = _lres[0]
+        except Exception:
+            pass
         if fleet:
             fleet_disp = []
             gnd_disp = []
@@ -1486,12 +1537,16 @@ if run_button:
                     tip += f" | -> {dest}"
                 if warn:
                     tip += f" WARNING {warn}"
-                # ORANGE: aircraft within ~20 min of destination
-                # AND the TAF line valid at that arrival carries
-                # thunderstorms. Red (current METAR) outranks.
-                ts_arrival = False
-                _wins = dest_ts_windows.get(dest)
-                if _wins and not warn and dest in coords:
+                # Near-arrival tiers (within ~20 min of the
+                # field, groundspeed-derived):
+                #  ORANGE - lightning in destination remarks
+                #  GREEN  - heavy rain, or rain with vis <= 3sm
+                # Purple/red (LIFR / TS-G35) outrank both.
+                ltg_arr = False
+                rain_arr = False
+                if (not warn and dest in coords
+                        and (dest in dest_ltg
+                             or dest in dest_rain)):
                     import math as _m
                     _gs = d.get("gs") or 0
                     if _gs and _gs > 60:
@@ -1504,18 +1559,16 @@ if run_button:
                             + _m.cos(_m.radians(la1))
                             * _m.cos(_m.radians(la2))
                             * _m.cos(_m.radians(lo2 - lo1)))))
-                        _eta_min = _dnm / _gs * 60 + 6
-                        if _eta_min <= 20:
-                            eta = (datetime.now(timezone.utc)
-                                   + timedelta(minutes=_eta_min))
-                            pad = timedelta(minutes=15)
-                            for _ws, _we in _wins:
-                                if _ws - pad <= eta <= _we + pad:
-                                    ts_arrival = True
-                                    tip += (" | ARRIVING INTO "
-                                            "TS TAF ~"
-                                            f"{eta:%H:%M}Z")
-                                    break
+                        if _dnm / _gs * 60 + 6 <= 20:
+                            if dest in dest_ltg:
+                                ltg_arr = True
+                                tip += (" | ARRIVING: "
+                                        + dest_ltg[dest]
+                                        + " in remarks")
+                            elif dest in dest_rain:
+                                rain_arr = True
+                                tip += (" | ARRIVING: "
+                                        + dest_rain[dest])
                 _alt = d.get("alt")
                 _gsv = d.get("gs") or 0
                 _ground = ((_alt is None or _alt < 1500)
@@ -1525,14 +1578,21 @@ if run_button:
                     "cs": d.get("callsign", ""),
                     "tip": tip,
                     "angle": d.get("angle", 0),
-                    "icon": (_AC_ICON_RED if warn
-                             else _AC_ICON_ORG if ts_arrival
+                    "icon": (_AC_ICON_PUR
+                             if dest_lifr.get(dest)
+                             else _AC_ICON_RED if warn
+                             else _AC_ICON_ORG if ltg_arr
+                             else _AC_ICON_GRN if rain_arr
                              else _AC_ICON),
-                    "lcolor": ([224, 26, 26, 255] if warn
+                    "lcolor": ([160, 32, 240, 255]
+                               if dest_lifr.get(dest)
+                               else [224, 26, 26, 255] if warn
                                else [238, 119, 0, 255]
-                               if ts_arrival
+                               if ltg_arr
+                               else [14, 138, 62, 255]
+                               if rain_arr
                                else [0, 90, 220, 255]),
-                }, bool(warn), ts_arrival, _ground,
+                }, bool(warn), (ltg_arr or rain_arr), _ground,
                     _alt or 0))
             # Hub-cluster thinning: within 12nm of any JBU
             # airport, only the 2 highest-priority aircraft stay
@@ -1610,7 +1670,8 @@ if run_button:
             map_style="light",
             tooltip={"html": "<b>{tip}</b>"},
         )
-        _rad = " Map auto-refreshes every 2 min."
+        _rad = (" Map auto-refreshes every 2 min; aircraft "
+                "positions update each refresh.")
         if radar_on:
             if radar_mode == "MRMS hi-res":
                 _rad = (" Radar: MRMS 1km merged reflectivity "
