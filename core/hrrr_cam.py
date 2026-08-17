@@ -151,6 +151,76 @@ MODELS = {
                  "product only for now (probabilities need a "
                  "percent render path)"),
     },
+    "refs_pmmn": {
+        "label": "REFS PMMN",
+        "mechanism": "idx",
+        # RRFS Ensemble (HREF successor): control + 6 members,
+        # ensemble MEAN product. Pre-implementation feed live
+        # since ~June 2026 per SCN 26-48 at /com/refs/para/;
+        # ops bucket mirrors the SCN layout. Exact file spelling
+        # unconfirmed - candidates cover the plausible shapes
+        # and the probe reports verdicts if all miss.
+        "file": "refs.t{cc:02d}z.conus.pmmn.f{ff:02d}.grib2",
+        "dir": "/refs.{ymd}",
+        "idx": ("https://noaa-rrfs-ops-pds.s3.amazonaws.com/"
+                "refs.{ymd}/{cc:02d}/ensprod/refs.t{cc:02d}z."
+                "conus.pmmn.f{ff:02d}.grib2.idx"),
+        "idx_candidates": [
+            ("https://noaa-rrfs-ops-pds.s3.amazonaws.com/"
+             "refs.{ymd}/{cc:02d}/ensprod/refs.t{cc:02d}z."
+             "conus.pmmn.f{ff:02d}.grib2.idx"),
+            ("https://noaa-rrfs-ops-pds.s3.amazonaws.com/"
+             "refs.{ymd}/{cc:02d}/refs.t{cc:02d}z."
+             "conus.pmmn.f{ff:02d}.grib2.idx"),
+            ("https://nomads.ncep.noaa.gov/pub/data/nccf/com/"
+             "refs/para/refs.{ymd}/{cc:02d}/ensprod/"
+             "refs.t{cc:02d}z.conus.pmmn.f{ff:02d}.grib2.idx"),
+            ("https://nomads.ncep.noaa.gov/pub/data/nccf/com/"
+             "refs/para/refs.{ymd}/{cc:02d}/"
+             "refs.t{cc:02d}z.conus.pmmn.f{ff:02d}.grib2.idx"),
+        ],
+        "cycles": [0, 6, 12, 18],
+        "probe_back": 31,
+        "max_fhr": 60,
+        "products": {"REFC"},
+        "note": ("HREF successor, pre-implementation; pmmn product (probabilities need a "
+                 "percent render path)"),
+    },
+    "refs_lpmm": {
+        "label": "REFS LPMM",
+        "mechanism": "idx",
+        # RRFS Ensemble (HREF successor): control + 6 members,
+        # ensemble MEAN product. Pre-implementation feed live
+        # since ~June 2026 per SCN 26-48 at /com/refs/para/;
+        # ops bucket mirrors the SCN layout. Exact file spelling
+        # unconfirmed - candidates cover the plausible shapes
+        # and the probe reports verdicts if all miss.
+        "file": "refs.t{cc:02d}z.conus.lpmm.f{ff:02d}.grib2",
+        "dir": "/refs.{ymd}",
+        "idx": ("https://noaa-rrfs-ops-pds.s3.amazonaws.com/"
+                "refs.{ymd}/{cc:02d}/ensprod/refs.t{cc:02d}z."
+                "conus.lpmm.f{ff:02d}.grib2.idx"),
+        "idx_candidates": [
+            ("https://noaa-rrfs-ops-pds.s3.amazonaws.com/"
+             "refs.{ymd}/{cc:02d}/ensprod/refs.t{cc:02d}z."
+             "conus.lpmm.f{ff:02d}.grib2.idx"),
+            ("https://noaa-rrfs-ops-pds.s3.amazonaws.com/"
+             "refs.{ymd}/{cc:02d}/refs.t{cc:02d}z."
+             "conus.lpmm.f{ff:02d}.grib2.idx"),
+            ("https://nomads.ncep.noaa.gov/pub/data/nccf/com/"
+             "refs/para/refs.{ymd}/{cc:02d}/ensprod/"
+             "refs.t{cc:02d}z.conus.lpmm.f{ff:02d}.grib2.idx"),
+            ("https://nomads.ncep.noaa.gov/pub/data/nccf/com/"
+             "refs/para/refs.{ymd}/{cc:02d}/"
+             "refs.t{cc:02d}z.conus.lpmm.f{ff:02d}.grib2.idx"),
+        ],
+        "cycles": [0, 6, 12, 18],
+        "probe_back": 31,
+        "max_fhr": 60,
+        "products": {"REFC"},
+        "note": ("HREF successor, pre-implementation; lpmm product (probabilities need a "
+                 "percent render path)"),
+    },
     "nam_nest": {
         "label": "NAM 3km Nest",
         "mechanism": "idx",
