@@ -350,7 +350,7 @@ with st.sidebar:
     )
     if smooth:
         fhr_lo, fhr_hi = st.slider(
-            "Preload hours", 0, 84, (0, 24),
+            "Preload hours", 0, 84, (0, 84),
             help="All hours in this range are fetched upfront. "
              "Full 84-hour spans allowed; very deep 2x2 "
              "loads (300+ frames) can tax the browser - "
