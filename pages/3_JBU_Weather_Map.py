@@ -47,6 +47,51 @@ CRITICAL_VIS_SM = 1.0
 CRITICAL_CIG_FT = 400
 
 
+
+# ---------------------------------------------------------------------------
+# New York Class B shelves
+# ---------------------------------------------------------------------------
+# NOTE ON WHAT THIS IS: FAA Class B, NOT N90. The TRACON's delegated
+# airspace is much larger (Islip sits outside Class B entirely, and
+# the arrival/departure gates - CAMRN, MERIT, WAVEY - all fall well
+# outside it, because gates sit at the TRACON boundary, not the
+# Class B edge). Class B is the protected core: 58 nm E-W by 49 nm
+# N-S. Labelled as Class B everywhere in the UI so nobody reads it
+# as a TRACON boundary. Swap in real N90 geometry if it ever turns
+# up; the fix symbology does not depend on this layer.
+# Vintage matters too: this is a static snapshot of a third-party
+# FAA mirror, not a live feed. Class B amendments are years apart,
+# so staleness is low-risk, but the caption states the date.
+# pathlib is imported further down as _Path; keep this self-contained
+# so the helper does not depend on import order.
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def ny_class_b():
+    """16 shelf rings, outlines only. Returns (rows, meta, error).
+
+    Drawn as separate outlined rings rather than a merged union:
+    a true union needs shapely, which is not in requirements, and
+    the stacked rings render as the familiar wedding-cake anyway.
+    """
+    try:
+        import json as _json
+        from pathlib import Path as _PP
+        _p = (_PP(__file__).resolve().parent.parent
+              / "static" / "ny_class_b.json")
+        blob = _json.loads(_p.read_text())
+        rows = []
+        for a in blob.get("areas", []):
+            rows.append({
+                "polygon": a["polygon"],
+                "tip": (f"NY Class B {a['name']} &mdash; "
+                        f"{a['low']} to {a['high']} ft"),
+            })
+        return rows, blob.get("extracted", "?"), None
+    except Exception as exc:
+        return [], "?", f"{type(exc).__name__}: {exc}"
+
+
 # ---------------------------------------------------------------------------
 # Terminal-style HTML table builders (st.dataframe ignores page CSS)
 # ---------------------------------------------------------------------------
@@ -1531,7 +1576,27 @@ if run_button:
         show_cs = st.checkbox(
             "Show flight numbers", value=True, key="show_cs_f",
         )
+        classb_on = st.checkbox(
+            "NY Class B outline", value=False, key="classb_f",
+            help="FAA Class B shelves for the New York area - the "
+                 "protected core, NOT the N90 TRACON boundary "
+                 "(the TRACON is considerably larger).",
+        )
         layers = []
+        if classb_on:
+            _cb_rows, _cb_vintage, _cb_err = ny_class_b()
+            if _cb_err:
+                st.warning(f"Class B outline unavailable - {_cb_err}")
+            elif _cb_rows:
+                layers.append(pdk.Layer(
+                    "PolygonLayer", data=_cb_rows,
+                    get_polygon="polygon",
+                    filled=False, stroked=True,
+                    get_line_color=[0, 90, 200, 200],
+                    line_width_min_pixels=1,
+                    get_line_width=1,
+                    pickable=True,
+                ))
         _mrms_ts = None
         if radar_on:
             _b = datetime.now(timezone.utc)
@@ -1736,6 +1801,10 @@ if run_button:
         )
         _rad = (" Map auto-refreshes every 2 min; aircraft "
                 "positions update each refresh.")
+        if classb_on:
+            _rad += (f" Blue outline: FAA New York CLASS B shelves "
+                     f"(snapshot {_cb_vintage}) - not the N90 "
+                     f"TRACON boundary.")
         if radar_on:
             if radar_mode == "MRMS hi-res":
                 _rad = (" Radar: MRMS 1km merged reflectivity "
