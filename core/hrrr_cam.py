@@ -55,6 +55,13 @@ PRODUCT_LABELS = {
     "VIS": "Visibility (SM)",
     "CEIL": "Ceiling (hundreds ft)",
     "GUST": "10 m Wind Gust (kt)",
+    "PROB_REFC40": "P(Composite Refl >= 40 dBZ)  %",
+    "PROB_CIG500": "P(Ceiling < 500 ft)  %",
+    "PROB_CIG1000": "P(Ceiling < 1000 ft)  %",
+    "PROB_CIG2000": "P(Ceiling < 2000 ft)  %",
+    "PROB_VIS05": "P(Visibility < 1/2 sm)  %",
+    "PROB_VIS1": "P(Visibility < 1 sm)  %",
+    "PROB_VIS3": "P(Visibility < 3 sm)  %",
 }
 
 # For idx-based fetching: (grib var name, level substring to match)
@@ -856,7 +863,7 @@ def render_field(
 
     ax.set_title(title, fontsize=10)
     plt.colorbar(mesh, ax=ax, pad=0.02, shrink=0.85,
-                 label=PRODUCT_LABELS[product])
+                 label=PRODUCT_LABELS.get(product, product))
     # NOTE: no bbox_inches="tight" - crops the GeoAxes (see core.radar).
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=100)
