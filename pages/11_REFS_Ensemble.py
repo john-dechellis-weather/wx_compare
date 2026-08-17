@@ -227,8 +227,13 @@ else:
     st.info(f"**{icao}** | {prod_label}")
 
     span = min(fhr_hi - fhr_lo, 24)
+    _lo = MODELS[model].get("min_fhr", 0)
     hours = [h for h in range(fhr_lo, fhr_lo + span + 1)
-             if h <= MODELS[model]["max_fhr"]]
+             if _lo <= h <= MODELS[model]["max_fhr"]]
+    if not hours:
+        st.warning(f"{MODELS[model]['label']} starts at "
+                   f"f{_lo:02d} - raise the hour range.")
+        st.stop()
 
     cycle_iso = cached_refs_cycle(model, hours[-1], bucket10)
     if cycle_iso is None:
@@ -277,6 +282,14 @@ else:
     if not frames[model]:
         for _m, _e in _errs.items():
             st.warning(f"{MODELS[_m]['label']}: {_e}")
+        _pd = MODELS[model].get("_probe_diag") or {}
+        _ir = MODELS[model].get("_idx_resolved")
+        if _ir or _pd:
+            st.caption(
+                "resolved template: " + (_ir or "none")
+                + ((" | probes: " + "; ".join(
+                    list(_pd.values())[:4])) if _pd else "")
+            )
         st.error("No REFS frames - see verdicts above.")
         st.stop()
 
