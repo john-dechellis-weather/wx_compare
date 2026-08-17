@@ -188,6 +188,8 @@ MODELS = {
         ],
         "cycles": [0, 6, 12, 18],
         "probe_back": 31,
+        # Probability fields are window statistics - no f00
+        "min_fhr": 1,
         "max_fhr": 60,
         "products": {
             "PROB_REFC40", "PROB_CIG500", "PROB_CIG1000",
