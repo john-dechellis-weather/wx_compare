@@ -88,20 +88,18 @@ MODELS = {
         "note": "",
     },
     "rrfs": {
-        "label": "RRFS 3km",
+        "label": "RRFS",
         "mechanism": "idx",
-        "file": "rrfs.t{cc:02d}z.prslev.3km.f{ff:03d}.conus.grib2",
+        # CONUS surface/storm diagnostics (REFD/REFC/VIS/CEIL/
+        # GUST) live in the 2dfld family - prslev is pure
+        # upper-air (verified by inventory 8/17). Grid spelling
+        # (3km vs 2p5km) probed both ways.
+        "file": "rrfs.t{cc:02d}z.2dfld.3km.f{ff:03d}.conus.grib2",
         "dir": "/rrfs.{ymd}",
-        # CONUS lives in the prslev.3km family (user-verified
-        # filename); alternates probed as fallbacks in case the
-        # bucket layout shifts during pre-ops
         "idx": ("https://noaa-rrfs-ops-pds.s3.amazonaws.com/"
-                "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev."
+                "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.2dfld."
                 "3km.f{ff:03d}.conus.grib2.idx"),
         "idx_candidates": [
-            ("https://noaa-rrfs-ops-pds.s3.amazonaws.com/"
-             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev."
-             "3km.f{ff:03d}.conus.grib2.idx"),
             ("https://noaa-rrfs-ops-pds.s3.amazonaws.com/"
              "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.2dfld."
              "3km.f{ff:03d}.conus.grib2.idx"),
@@ -110,9 +108,6 @@ MODELS = {
              "2p5km.f{ff:03d}.conus.grib2.idx"),
         ],
         "cycles": [0, 3, 6, 9, 12, 15, 18, 21],
-        # Pre-ops posting lags hours behind the clock and recent
-        # cycles upload hour-by-hour; walk a full day-plus back
-        # so a mature cycle with the requested hour is reachable
         "probe_back": 31,
         "max_fhr": 84,
         "products": {"REFD", "REFC", "RETOP", "VIS", "CEIL",
