@@ -68,7 +68,10 @@ def fetch_tafs(icaos: list[str], timeout: int = 30) -> dict[str, str]:
 class VisAlert:
     icao: str
     min_vis_sm: float          # lowest visibility in the window
-    worst_period_label: str    # e.g. "TEMPO 04-06Z"
+    worst_period_label: str
+    # (start_iso, end_iso) of every period with vis < 2 sm (fixed
+    # IFR criterion, independent of the slider)
+    windows: tuple = ()    # e.g. "TEMPO 04-06Z"
 
 @dataclass
 class CeilingAlert:
@@ -188,6 +191,8 @@ def _analyze_one(
     first_tsra_code: Optional[str] = None
     first_tsra_label = ""
     tsra_windows: list = []
+    vis_ifr_windows: list = []
+    cig_ifr_windows: list = []
     max_wind: Optional[int] = None
     max_wind_str = ""
     max_wind_label = ""
@@ -205,6 +210,9 @@ def _analyze_one(
 
         # --- Visibility ---
         vis_sm = _period_visibility_sm(period)
+        if vis_sm is not None and vis_sm < 2:
+            vis_ifr_windows.append(
+                (p_start.isoformat(), p_end.isoformat()))
         if vis_sm is not None and vis_sm < vis_threshold_sm:
             if min_vis is None or vis_sm < min_vis:
                 min_vis = vis_sm
@@ -212,6 +220,9 @@ def _analyze_one(
 
         # --- Ceiling ---
         ceil_ft = _period_ceiling_ft(period)
+        if ceil_ft is not None and ceil_ft < 1000:
+            cig_ifr_windows.append(
+                (p_start.isoformat(), p_end.isoformat()))
         if ceil_ft is not None and ceil_ft < ceiling_threshold_ft:
             if min_ceiling is None or ceil_ft < min_ceiling:
                 min_ceiling = ceil_ft
@@ -240,12 +251,14 @@ def _analyze_one(
             icao=icao,
             min_vis_sm=min_vis,
             worst_period_label=min_vis_label,
+            windows=tuple(vis_ifr_windows),
         ))
     if min_ceiling is not None:
         results.ceiling_alerts.append(CeilingAlert(
             icao=icao,
             min_ceiling_ft=min_ceiling,
             worst_period_label=min_ceiling_label,
+            windows=tuple(cig_ifr_windows),
         ))
     if max_wind is not None:
         results.wind_alerts.append(WindAlert(
