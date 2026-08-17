@@ -44,10 +44,11 @@ CONUS_KEY = "CONUS"
 
 
 def _job_geom(key: str):
-    """(hub_list, coords_map, zoom) for a warm job."""
-    if "@" in key:
-        return list(HUBS), dict(HUBS), WARM_ZOOM
-    return [CONUS_KEY], {CONUS_KEY: CONUS_CENTER}, CONUS_ZOOM
+    """(hub_list, coords_map, zoom) for a warm job. Hybrid
+    verdict 8/17: hub-native frames are ~3x sharper than any
+    browser-tenable CONUS frame, so ALL jobs warm hub crops;
+    CONUS is an explicit render mode (never warmed)."""
+    return list(HUBS), dict(HUBS), WARM_ZOOM
 # Bump when render styling changes so prewarmed frames rebuild
 # (v2: 10 nm range ring; v3: fix hub-center leak - every frame
 # had rendered centered on the LAST hub in the dict, Boston,
