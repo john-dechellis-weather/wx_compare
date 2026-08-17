@@ -78,12 +78,23 @@ def tio_ir_mosaic(z, x0, x1, y0, y1, key, bucket):
     of with time. Stitching here keeps the key on Render and makes
     the call count deterministic.
 
-    Returns a URL, NOT a data URI. deck.gl's JSON layer runs string
-    props through a JS expression parser, and a "data:image/png;
-    base64,..." value dies on the colon at character 4 ("Unexpected
-    ':' at character 4" - jsep's error, seen live 8/17). An ordinary
-    URL path is the shape the old GIBS layer used and it survives
-    the parser. It also keeps ~400 KB of base64 out of every rerun.
+    Returns an ABSOLUTE https URL. This is not cosmetic. pydeck
+    wraps BitmapLayer's image prop in pydeck.types.Image, whose
+    __repr__ passes URL-looking strings straight through but treats
+    anything else as a LOCAL FILE PATH - it opens it and inlines it
+    as base64. Both failures on 8/17 trace to that one behaviour:
+      - a "data:image/png;base64,..." value -> deck.gl's JS
+        expression parser dies on the colon ("Unexpected ':' at
+        character 4", jsep).
+      - a root-relative "/app/static/x.png" -> pydeck reads it as
+        a filesystem path and raises FileNotFoundError, because
+        /app does not exist (the app lives in
+        /opt/render/project/src).
+    A correct local path is NOT a fix either: pydeck would base64
+    it and land back on the jsep error. Only an absolute URL is
+    passed through untouched - which is why the old GIBS layer
+    worked. Keeping it a URL also keeps ~400 KB of base64 out of
+    every rerun payload.
 
     Returns (url_or_None, diag). Never raises - a dead mosaic
     reports why instead of taking the map down with it.
@@ -144,7 +155,17 @@ def tio_ir_mosaic(z, x0, x1, y0, y1, key, bucket):
                 pass
         name = f"ir_{bucket}.png"
         canvas.save(sdir / name, format="PNG")
-        diag["url"] = f"/app/static/{name}"
+        # Render publishes RENDER_EXTERNAL_URL automatically;
+        # PUBLIC_BASE_URL is the manual override for any other host.
+        base = (_os.environ.get("RENDER_EXTERNAL_URL")
+                or _os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
+        if not base:
+            diag["error"] = (
+                "No RENDER_EXTERNAL_URL / PUBLIC_BASE_URL - pydeck "
+                "needs an absolute https URL for the image prop "
+                "(a relative path is read as a local file).")
+            return None, diag
+        diag["url"] = f"{base}/app/static/{name}"
         return diag["url"], diag
     except Exception as exc:
         diag["error"] = f"{type(exc).__name__}: {exc}"
