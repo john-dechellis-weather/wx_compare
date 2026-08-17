@@ -703,7 +703,10 @@ if active:
         else:
             html, hgt = build_scrub_html(
                 frames, hours, GRID_ORDER,
-                single=bool(_single_model, home=(clat, clon, view_zoom), conus=(rlat, rlon, rzoom), axcal=st.session_state.get('_axcal')),
+                single=bool(_single_model),
+                home=(clat, clon, view_zoom),
+                conus=(rlat, rlon, rzoom),
+                axcal=st.session_state.get("_axcal"),
             )
             _sc = st.session_state.get("panel_scale_v", 85)
             if _sc >= 100:
