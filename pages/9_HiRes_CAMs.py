@@ -721,8 +721,13 @@ if active:
             html, hgt = build_scrub_html(
                 frames, hours, GRID_ORDER,
                 single=bool(_single_model),
-                home=(clat, clon, 3.0 if conus_view
-                      else zoom),
+                # home=None -> HOME is null in the JS, so the
+                # panel opens at scale 1 with the ENTIRE
+                # rendered frame visible, and dblclick returns
+                # there. The rendered frame is now the wide
+                # view (rzoom), so "fully zoomed out" is the
+                # default and the wheel goes IN from there.
+                home=None,
                 conus=(rlat, rlon, rzoom),
                 axcal=st.session_state.get("_axcal"),
             )
@@ -842,7 +847,7 @@ else:
         _hla2, _hlo2 = WARM_HUBS[_open_hub]
         _html, _hgt = build_scrub_html(
             _warm_frames, _axis, _OPEN_ORDER,
-            home=(_hla2, _hlo2, WARM_ZOOM),
+            home=None,   # open on the whole ±5 deg frame
             conus=(_hla2, _hlo2, WARM_ZOOM * _RF),
             axcal=st.session_state.get("_axcal"),
         )
