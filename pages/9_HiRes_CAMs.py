@@ -323,7 +323,10 @@ def build_scrub_html(frames: dict, hour_axis: list,
               * (((_cla + _cz) - _hla) / (2.0 * _cz)))
         s0 = (_cal["r"] - _cal["l"]) * _cz / max(_hw, 0.5)
         _homejs = "{fx:%.4f,fy:%.4f,s:%.2f}" % (fx, fy, s0)
-    html += "<script>const HOME=" + _homejs + ";</script>"
+    # Plain statement into the ALREADY-OPEN main script - a
+    # nested <script> tag's closer terminates the outer script
+    # early and dumps the rest as page text (observed live)
+    html += "const HOME=" + _homejs + ";"
     if True:
         # Wheel zoom (cursor-anchored) + drag pan on every
         # panel; transform persists across frame swaps because
