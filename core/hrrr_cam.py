@@ -871,7 +871,10 @@ def render_field(
                  label=PRODUCT_LABELS.get(product, product))
     # NOTE: no bbox_inches="tight" - crops the GeoAxes (see core.radar).
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=100)
+    # Wide (CONUS-class) renders carry the pixels for deep
+    # digital zoom-in; hub-scale renders stay light
+    fig.savefig(buf, format="png",
+                dpi=240 if zoom_deg > 10 else 100)
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()

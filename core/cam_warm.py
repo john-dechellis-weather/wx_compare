@@ -34,6 +34,20 @@ HUBS = {
     "KBOS": (42.3629, -71.0064),
 }
 WARM_ZOOM = 2.5
+# Design A: deterministic CAM jobs warm ONE CONUS frame set per
+# model-hour (serves every hub via client-side transform) - the
+# hub dimension collapses, 5x fewer frames at higher dpi. REFS
+# jobs stay hub-cropped at WARM_ZOOM.
+CONUS_CENTER = (39.5, -97.5)
+CONUS_ZOOM = 28.0
+CONUS_KEY = "CONUS"
+
+
+def _job_geom(key: str):
+    """(hub_list, coords_map, zoom) for a warm job."""
+    if "@" in key:
+        return list(HUBS), dict(HUBS), WARM_ZOOM
+    return [CONUS_KEY], {CONUS_KEY: CONUS_CENTER}, CONUS_ZOOM
 # Bump when render styling changes so prewarmed frames rebuild
 # (v2: 10 nm range ring; v3: fix hub-center leak - every frame
 # had rendered centered on the LAST hub in the dict, Boston,
@@ -130,7 +144,8 @@ def warm_get(cache_root: Path, model: str, icao: str,
     Returns (png_bytes, cycle_iso) or None."""
     man = _read_manifest(cache_root, model)
     cycle_iso = man.get("cycle")
-    if not cycle_iso or icao.upper() not in HUBS:
+    if not cycle_iso or (icao.upper() not in HUBS
+                         and icao.upper() != CONUS_KEY):
         return None
     if fhr not in warm_hours(model):
         return None
@@ -159,16 +174,17 @@ def warm_report(cache_root: Path) -> list:
         max_h = min(max(mh), MODELS[_mm]["max_fhr"])
         _lo2 = MODELS[_mm].get("min_fhr", 0)
         hours = [h for h in mh if _lo2 <= h <= max_h]
+        _gi, _gc, _gz = _job_geom(m)
         have = 0
         if man.get("cycle"):
             have = sum(
-                1 for icao in HUBS for h in hours
+                1 for icao in _gi for h in hours
                 if _frame_path(cache_root, m, man["cycle"],
                                icao, h).exists()
             )
         out.append(
             f"{m}: cycle={cyc} style={style} "
-            f"frames={have}/{len(HUBS) * len(hours)}"
+            f"frames={have}/{len(_gi) * len(hours)}"
         )
     return out
 
@@ -202,9 +218,10 @@ def _warm_model(cache_root: Path, key: str, log) -> None:
     # "complete" flag must not skip a newly added hub (KBOS once
     # sat cold for hours waiting on the HRW pair's next 12-hourly
     # cycle because of exactly that).
+    _icaos, _coords, _zoom = _job_geom(key)
     missing = [
         (icao, h)
-        for icao in HUBS
+        for icao in _icaos
         for h in hours
         if not _frame_path(cache_root, key, cycle_iso,
                            icao, h).exists()
@@ -218,25 +235,24 @@ def _warm_model(cache_root: Path, key: str, log) -> None:
     same_cycle = (man.get("cycle") == cycle_iso
                   and man.get("style") == WARM_STYLE)
     build = missing if same_cycle else [
-        (icao, h) for icao in HUBS for h in hours
+        (icao, h) for icao in _icaos for h in hours
     ]
     log(f"warming {key} cycle {cycle_iso} "
         f"({len(build)} frames{' - fill-in' if same_cycle else ''})")
-    coords = dict(HUBS)
     tasks = []
     for icao, h in build:
-        lat, lon = coords[icao]
+        lat, lon = _coords[icao]
         tasks.append({
             "key": (icao, h),
             "model": model, "product": w_product,
             "cycle": cyc, "fhr": h,
-            "lat": lat, "lon": lon, "zoom_deg": WARM_ZOOM,
+            "lat": lat, "lon": lon, "zoom_deg": _zoom,
         })
     data = parallel_fetch_decode(tasks, max_workers=2)
 
     n_ok = 0
     for icao, h in build:
-            _hla, _hlo = HUBS[icao]
+            _hla, _hlo = _coords[icao]
             res = data.get((icao, h))
             if isinstance(res, Exception) or res is None:
                 continue
@@ -249,7 +265,7 @@ def _warm_model(cache_root: Path, key: str, log) -> None:
             try:
                 png = render_field(
                     w_product, vals, lats, lons,
-                    _hla, _hlo, WARM_ZOOM, title,
+                    _hla, _hlo, _zoom, title,
                 )
             except Exception:
                 continue
