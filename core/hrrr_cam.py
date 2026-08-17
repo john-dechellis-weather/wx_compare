@@ -62,6 +62,14 @@ PRODUCT_LABELS = {
 # alternatives, tried in order - different products spell the same
 # field differently (e.g. hourly-max 1 km reflectivity is MAXREF in
 # NCEP indexes; NBM may use either spelling).
+# Exceedance-probability products: idx lines carry a threshold
+# qualifier after the fcst column, e.g.
+#   "n:off:d=...:REFC:entire atmosphere:24 hour fcst:prob >40:"
+# Each entry: (VAR, [required substrings anywhere in the line]).
+PROB_DEFS = {
+    "PROB_REFC40": ("REFC", ["prob", ">40"]),
+}
+
 IDX_MATCHERS = {
     "REFD": [("REFD", "1000 m above ground"),
              ("MAXREF", "1000 m above ground"),
@@ -141,6 +149,34 @@ MODELS = {
         "probe_back": 31,
         "max_fhr": 60,
         "products": {"REFC"},
+        "note": "HREF successor (SCN 26-48), pre-implementation",
+    },
+    "refs_prob": {
+        "label": "REFS prob",
+        "mechanism": "idx",
+        # SCN 26-48 verbatim template:
+        # refs.YYYYMMDD/CC/ensprod/
+        #   refs.tCCz.${type}.fFF.${dom}.grib2
+        # (type BEFORE hour, domain LAST - inverse of HREF)
+        "file": "refs.t{cc:02d}z.prob.f{ff:02d}.conus.grib2",
+        "dir": "/refs.{ymd}",
+        "idx": ("https://nomads.ncep.noaa.gov/pub/data/nccf/"
+                "com/refs/para/refs.{ymd}/{cc:02d}/ensprod/"
+                "refs.t{cc:02d}z.prob.f{ff:02d}.conus"
+                ".grib2.idx"),
+        "idx_candidates": [
+            ("https://nomads.ncep.noaa.gov/pub/data/nccf/"
+             "com/refs/para/refs.{ymd}/{cc:02d}/ensprod/"
+             "refs.t{cc:02d}z.prob.f{ff:02d}.conus"
+             ".grib2.idx"),
+            ("https://noaa-rrfs-ops-pds.s3.amazonaws.com/"
+             "refs.{ymd}/{cc:02d}/ensprod/refs.t{cc:02d}z."
+             "mean.f{ff:02d}.conus.grib2.idx"),
+        ],
+        "cycles": [0, 6, 12, 18],
+        "probe_back": 31,
+        "max_fhr": 60,
+        "products": {"PROB_REFC40"},
         "note": "HREF successor (SCN 26-48), pre-implementation",
     },
     "refs_pmmn": {
@@ -446,9 +482,33 @@ def _fetch_field_idx(cfg: dict, product: str, cycle, fhr: int) -> bytes:
     r = requests.get(idx_url, headers=_HEADERS, timeout=30)
     r.raise_for_status()
 
-    matchers = IDX_MATCHERS[product]
     lines = r.text.splitlines()
     start = end = None
+    if product in PROB_DEFS:
+        var_name, subs = PROB_DEFS[product]
+        for i, line in enumerate(lines):
+            parts = line.split(":")
+            if len(parts) < 5 or parts[3] != var_name:
+                continue
+            low = line.lower()
+            if all(s in low for s in subs):
+                start = int(parts[1])
+                for nxt in lines[i + 1:]:
+                    p2 = nxt.split(":")
+                    if len(p2) >= 2:
+                        end = int(p2[1]) - 1
+                        break
+                break
+        if start is None:
+            have = [l for l in lines
+                    if f":{var_name}:" in l][:8]
+            raise RuntimeError(
+                f"{cfg['label']}: no {product} line. "
+                f"{var_name} lines present: "
+                + " || ".join(have))
+        matchers = []
+    else:
+        matchers = IDX_MATCHERS[product]
     for var_name, lev_sub in matchers:
         for i, line in enumerate(lines):
             # "n:offset:d=YYYYMMDDHH:VAR:LEVEL:fcst:..."
@@ -615,7 +675,16 @@ def render_field(
 
     data = np.ma.masked_invalid(vals)
 
-    if product in ("REFC", "REFD"):
+    if product.startswith("PROB"):
+        from matplotlib.colors import BoundaryNorm, ListedColormap
+        bounds = [5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+        colors = ["#d1e9f7", "#8fcbe8", "#54a6d6", "#4bb84b",
+                  "#a4d64b", "#f5e642", "#f5a742", "#ec5f27",
+                  "#c81e1e", "#8b0f5e"]
+        cmap = ListedColormap(colors)
+        norm = BoundaryNorm(bounds, cmap.N)
+        data = np.ma.masked_less(data, 5)
+    elif product in ("REFC", "REFD"):
         from metpy.plots import colortables
         norm, cmap = colortables.get_with_steps("NWSReflectivity", 5, 5)
         # Standard CAM convention: mask < 5 dBZ so clear air stays clean
