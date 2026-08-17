@@ -189,7 +189,8 @@ with st.sidebar:
     st.header("Hours")
     fhr_lo, fhr_hi = st.slider(
         "Preload hours", 0, 60, (0, 24),
-        help="REFS runs 00/06/12/18Z to 60h. Span capped at 24.",
+        help="REFS runs 00/06/12/18Z to 60h. Full-run spans "
+             "allowed; warmed hub products load instantly.",
     )
     zoom = st.slider("Zoom (degrees)", 1.0, 6.0, 2.5, 0.5)
 
@@ -231,7 +232,7 @@ else:
 
     st.info(f"**{icao}** | {prod_label}")
 
-    span = min(fhr_hi - fhr_lo, 24)
+    span = min(fhr_hi - fhr_lo, 60)
     _lo = MODELS[model].get("min_fhr", 0)
     hours = [h for h in range(fhr_lo, fhr_lo + span + 1)
              if _lo <= h <= MODELS[model]["max_fhr"]]

@@ -352,7 +352,9 @@ with st.sidebar:
         fhr_lo, fhr_hi = st.slider(
             "Preload hours", 0, 84, (0, 24),
             help="All hours in this range are fetched upfront. "
-             "Span capped at 24 hours to keep the page light.",
+             "Full 84-hour spans allowed; very deep 2x2 "
+             "loads (300+ frames) can tax the browser - "
+             "single-model views stay light.",
         )
     else:
         fhr_all = st.slider(
@@ -478,7 +480,7 @@ if active:
                         "hiresw_fv3"])
 
     if smooth:
-        span = min(fhr_hi - fhr_lo, 24)
+        span = min(fhr_hi - fhr_lo, 84)
         hours = list(range(fhr_lo, fhr_lo + span + 1))
         active_models = [
             m for m in GRID_ORDER
