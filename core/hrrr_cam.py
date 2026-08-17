@@ -87,6 +87,35 @@ MODELS = {
         "products": {"REFD", "REFC", "RETOP", "VIS", "CEIL", "GUST"},
         "note": "",
     },
+    "rrfs": {
+        "label": "RRFS 3km",
+        "mechanism": "idx",
+        "file": "rrfs.t{cc:02d}z.prslev.3km.f{ff:03d}.conus.grib2",
+        "dir": "/rrfs.{ymd}",
+        # CONUS lives in the prslev.3km family (user-verified
+        # filename); alternates probed as fallbacks in case the
+        # bucket layout shifts during pre-ops
+        "idx": ("https://noaa-rrfs-ops-pds.s3.amazonaws.com/"
+                "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev."
+                "3km.f{ff:03d}.conus.grib2.idx"),
+        "idx_candidates": [
+            ("https://noaa-rrfs-ops-pds.s3.amazonaws.com/"
+             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.prslev."
+             "3km.f{ff:03d}.conus.grib2.idx"),
+            ("https://noaa-rrfs-ops-pds.s3.amazonaws.com/"
+             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.2dfld."
+             "3km.f{ff:03d}.conus.grib2.idx"),
+            ("https://noaa-rrfs-ops-pds.s3.amazonaws.com/"
+             "rrfs.{ymd}/{cc:02d}/rrfs.t{cc:02d}z.2dfld."
+             "2p5km.f{ff:03d}.conus.grib2.idx"),
+        ],
+        "cycles": [0, 3, 6, 9, 12, 15, 18, 21],
+        "max_fhr": 84,
+        "products": {"REFD", "REFC", "RETOP", "VIS", "CEIL",
+                     "GUST"},
+        "note": ("pre-operational prototype; availability "
+                 "follows the experimental schedule"),
+    },
     "nam_nest": {
         "label": "NAM 3km Nest",
         "mechanism": "idx",
