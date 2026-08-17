@@ -296,7 +296,63 @@ def _wind_max_kt(wind_str: str):
     return max(nums) if nums else None
 
 
+def _fmt_windows(wins_iso):
+    """First-start..last-end of a set of (start_iso, end_iso)
+    windows as compact 'HH-HHZ'."""
+    from datetime import datetime as _dt
+    ds = []
+    for s, e in wins_iso:
+        try:
+            ds.append((_dt.fromisoformat(s),
+                       _dt.fromisoformat(e)))
+        except Exception:
+            continue
+    if not ds:
+        return ""
+    lo = min(d[0] for d in ds)
+    hi = max(d[1] for d in ds)
+    return f"{lo:%H}-{hi:%H}Z"
+
+
+def _timing_for(results):
+    """{icao: compact timing string} for the board column:
+    TS window (with TEMPO/PROB tag when the label carries one)
+    plus the IFR span from first to last IFR-criteria mention."""
+    out = {}
+    ts_map = {a.icao: a for a in results.tsra_alerts}
+    ifr_map = {}
+    for a in results.vis_alerts:
+        ifr_map.setdefault(a.icao, []).extend(
+            getattr(a, "windows", ()))
+    for a in results.ceiling_alerts:
+        ifr_map.setdefault(a.icao, []).extend(
+            getattr(a, "windows", ()))
+    icaos = set(ts_map) | set(ifr_map)
+    for ic in icaos:
+        parts = []
+        a = ts_map.get(ic)
+        if a is not None:
+            rng = _fmt_windows(getattr(a, "windows", ()))
+            if rng:
+                tag = ""
+                lbl = (a.period_label or "").upper()
+                for w in ("TEMPO", "PROB30", "PROB40", "BECMG"):
+                    if w in lbl:
+                        tag = f" {w}"
+                        break
+                parts.append(f"TS {rng}{tag}")
+        wins = ifr_map.get(ic)
+        if wins:
+            rng = _fmt_windows(wins)
+            if rng:
+                parts.append(f"IFR {rng}")
+        if parts:
+            out[ic] = "; ".join(parts)
+    return out
+
+
 def build_status_board(results, metar_rows):
+    timing = _timing_for(results)
     """One aggregated row per alerting airport with severity rank
     (0 magenta / 1 red / 2 yellow-orange) and the driving-condition
     chip."""
@@ -361,7 +417,8 @@ def build_status_board(results, metar_rows):
         rank, chip, color, period = cands[0]
         all_txt = "/".join(c[1] for c in cands)
         rows.append((rank, icao, chip, color, period, e, all_txt,
-                     cands))
+                     cands,
+                     timing.get(icao, "")))
     rows.sort(key=lambda r: (r[0], r[1]))
     return rows
 
@@ -680,15 +737,18 @@ def render_status_board(rows) -> str:
         )
 
     header_row = ("<tr>" + cell("ICAO", header=True)
-                  + cell("ALERTS", header=True) + "</tr>")
+                  + cell("ALERTS", header=True)
+                  + cell("WHEN", header=True) + "</tr>")
     body = []
-    for rank, icao, chip, color, period, e, all_txt, _c in rows:
+    for (rank, icao, chip, color, period, e, all_txt, _c,
+         when) in rows:
         fg = _TEXT_COLOR.get(color, color)
         hot = color in (_RED, _MAGENTA)
         body.append(
             "<tr>"
             + cell(icao, bold=True)
             + cell(all_txt, fg=fg, bold=hot)
+            + cell(when, fg="#444444")
             + "</tr>"
         )
     return (
