@@ -916,6 +916,7 @@ def cached_station_coords(icaos_tuple: tuple):
 # are stable per-callsign within a day, so each fleet cycle only
 # fetches callsigns it hasn't seen; misses negative-cache for an
 # hour so unknowns aren't hammered.
+import threading as _threading_rc
 _route_cache: dict = {}     # cs -> (dest_icao_or_"", expiry_ts)
 # v2 schema: {cs: {"d": icao, "oll": [lat,lon], "dll": [lat,lon],
 # "exp": ts}}. Renamed from route_cache.json so v1 entries (which
@@ -1019,6 +1020,82 @@ def _save_route_cache():
         _ROUTE_CACHE_PATH.write_text(_json_rc.dumps(keep))
     except Exception:
         pass
+
+
+# Route resolution runs OFF the render path. Measured 8/17: the
+# adsbdb lookups were sequential inside cached_fleet - up to 70
+# callsigns x (latency + 0.05s sleep) = 18-38s that the map sat
+# waiting on, every cold start and again whenever the 90s cache
+# expired with new callsigns airborne. The tile sweep itself is
+# only ~3s.
+#
+# Destinations only drive the hazard COLOUR, never aircraft
+# position, so they do not belong on the critical path. The
+# renderer now reads whatever routes are already cached and
+# returns immediately; a daemon thread fills the rest in parallel
+# and the colours appear on the next 120s beat.
+_route_lock = _threading_rc.Lock()
+_route_busy = {"on": False}
+
+
+def _resolve_routes_bg(callsigns):
+    """Fetch missing routes in the background. Never blocks a
+    render; never raises into one."""
+    def _work():
+        import time as _t
+        import requests as _r
+        from concurrent.futures import ThreadPoolExecutor
+        HDRS = {"User-Agent": "bluemet.org ops dashboard"}
+        now_ts = _t.time()
+
+        def _one(cs):
+            try:
+                r = _r.get(f"https://api.adsbdb.com/v0/callsign/{cs}",
+                           headers=HDRS, timeout=5)
+            except Exception:
+                return cs, None
+            d_icao = ""
+            oll = dll = None
+            if r.status_code == 200:
+                try:
+                    fr = (r.json().get("response") or {})
+                    if isinstance(fr, dict):
+                        fr = fr.get("flightroute") or {}
+                        de = fr.get("destination") or {}
+                        d_icao = (de.get("icao_code") or "").upper()
+                        if de.get("latitude") is not None:
+                            dll = [float(de["latitude"]),
+                                   float(de["longitude"])]
+                        og = fr.get("origin") or {}
+                        if og.get("latitude") is not None:
+                            oll = [float(og["latitude"]),
+                                   float(og["longitude"])]
+                except Exception:
+                    pass
+            return cs, {"d": d_icao, "oll": oll, "dll": dll,
+                        "exp": now_ts + (6 * 3600 if d_icao else 3600)}
+        try:
+            # 8 workers: adsbdb is a lookup API, not the rate-limited
+            # position feeds, so it tolerates modest concurrency.
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                for cs, rec in ex.map(_one, callsigns[:120]):
+                    if rec is not None:
+                        _route_cache[cs] = rec
+            _save_route_cache()
+        except Exception:
+            pass
+        finally:
+            with _route_lock:
+                _route_busy["on"] = False
+
+    with _route_lock:
+        if _route_busy["on"] or not callsigns:
+            return
+        _route_busy["on"] = True
+    t = _threading_rc.Thread(target=_work, daemon=True)
+    t.start()
+
+
 
 
 _FLEET_TILES = [
@@ -1146,7 +1223,9 @@ def cached_fleet(bucket: str):
     for h in hosts:
         if len(empties[h]) >= 3:
             other = hosts[1] if h == hosts[0] else hosts[0]
-            for tile in empties[h]:
+            for tile in empties[h][:6]:   # bounded: a fully
+                # defective host used to add 17 serial retries
+                # (~11s) to every cold start
                 _time.sleep(0.25)
                 res, err = _call(other, tile)
                 if res is not None and err != "EMPTY200":
@@ -1156,7 +1235,7 @@ def cached_fleet(bucket: str):
     fails = []
     for h in hosts:
         other = hosts[1] if h == hosts[0] else hosts[0]
-        for tile, err1 in leftovers[h]:
+        for tile, err1 in leftovers[h][:6]:
             _time.sleep(0.25)
             res, err2 = _call(other, tile)
             if res is None:
@@ -1184,47 +1263,9 @@ def cached_fleet(bucket: str):
     new_cs = [cs for cs in seen
               if cs not in _route_cache
               or _route_cache[cs].get("exp", 0) < now_ts]
-    fetched = hits = 0
-    for cs in new_cs[:70]:      # cap per cycle; converges fast
-        try:
-            r = _rq.get(
-                f"https://api.adsbdb.com/v0/callsign/{cs}",
-                headers=HDRS, timeout=5,
-            )
-        except Exception as e:
-            rs_diag.append(f"{cs}: {type(e).__name__}"[:80])
-            break               # host trouble: stop this cycle
-        fetched += 1
-        d_icao = ""
-        _oll = _dll = None
-        if r.status_code == 200:
-            try:
-                fr = (r.json().get("response") or {})
-                if isinstance(fr, dict):
-                    fr = fr.get("flightroute") or {}
-                    dest = fr.get("destination") or {}
-                    d_icao = (dest.get("icao_code") or "").upper()
-                    # Origin coords are the whole point of v2: they
-                    # give a route LINE to test the aircraft against.
-                    if dest.get("latitude") is not None:
-                        _dll = [float(dest["latitude"]),
-                                float(dest["longitude"])]
-                    orig = fr.get("origin") or {}
-                    if orig.get("latitude") is not None:
-                        _oll = [float(orig["latitude"]),
-                                float(orig["longitude"])]
-            except Exception:
-                pass
-        if d_icao:
-            _route_cache[cs] = {"d": d_icao, "oll": _oll, "dll": _dll,
-                                "exp": now_ts + 6 * 3600}
-            hits += 1
-        else:
-            _route_cache[cs] = {"d": "", "oll": None, "dll": None,
-                                "exp": now_ts + 3600}
-        _time.sleep(0.05)
-    if fetched:
-        _save_route_cache()
+    # Non-blocking: read what is cached, kick the rest to a
+    # background thread, return now.
+    _resolve_routes_bg(new_cs)
     _suppressed = []
     for cs in seen:
         cached = _route_cache.get(cs) or {}
@@ -1247,11 +1288,10 @@ def cached_fleet(bucket: str):
             + (f" (+{len(_suppressed) - 8} more)"
                if len(_suppressed) > 8 else ""))
     rs_diag.append(
-        f"adsbdb: {fetched} fetched this cycle ({hits} routed), "
-        f"{max(0, len(new_cs) - fetched)} still pending, "
+        f"adsbdb: {len(new_cs)} routes resolving in background, "
         f"cache holds "
         f"{sum(1 for v in _route_cache.values() if v.get('d'))} "
-        f"routes"
+        f"routes (destinations appear on the next beat)"
     )
 
     out = []
