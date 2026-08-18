@@ -127,7 +127,14 @@ GRID_WORKERS = int(os.environ.get("L2_WORKERS", "2"))
 CC_MIN = float(os.environ.get("L2_CC_MIN", "0.80"))
 # Contiguous regions smaller than this are dropped as speckle.
 SPECKLE = int(os.environ.get("L2_SPECKLE", "10"))
-DBZ_MIN = float(os.environ.get("L2_DBZ_MIN", "5"))
+# Floor for BOTH the QC gate filter and the colour ramp — one knob, so
+# what is gridded is what is shown. 15 dBZ is the operationally
+# meaningful threshold for a terminal area: below it is drizzle,
+# insects, chaff and ground return, which is also most of what the
+# speckle was. Raising this floor does more for legibility than
+# despeckle alone, and it makes the grid sparser and cheaper.
+# Lower L2_DBZ_MIN to 5 to bring weak echo back.
+DBZ_MIN = float(os.environ.get("L2_DBZ_MIN", "15"))
 
 _BUCKET = "noaa-nexrad-level2"
 
