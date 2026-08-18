@@ -68,12 +68,24 @@ with c4:
     res_m = st.selectbox("Grid", [250, 500], index=0,
                          format_func=lambda v: f"{v} m")
 
-half_km = st.slider(
-    "Box half-width (km)", 60, 250, 120, 10,
-    help="Level II range is ~230 km. Beyond ~96 km the 0.5 deg beam "
-         "is wider than the MRMS grid spacing, so the resolution "
-         "advantage is gone.",
-)
+# Region defaults, overridable. The box is centred on the REGION,
+# not on whichever radar loaded first — a KMLB-centred MCO box put
+# its west edge on Leesburg and clipped the storms.
+_clat, _clon, _hx, _hy = L2.REGION_VIEW.get(
+    region, (None, None, 200, 200))
+b1, b2, b3 = st.columns([1, 1, 2])
+with b1:
+    half_x = st.number_input("Half-width E-W (km)", 60, 500, _hx, 10)
+with b2:
+    half_y = st.number_input("Half-width N-S (km)", 60, 500, _hy, 10)
+with b3:
+    st.caption(
+        f"Centre {_clat:.2f}, {_clon:.2f}. Level II range is ~230 km "
+        f"and beyond ~96 km the 0.5 deg beam is wider than the MRMS "
+        f"grid, so extra width past that buys coverage, not "
+        f"resolution."
+        if _clat is not None else "No region centre; using first radar."
+    )
 
 run = st.button("Build mosaic", type="primary")
 
@@ -105,10 +117,15 @@ if run:
     L2.TILTS = int(tilts)
     L2.LEVELS = int(levels)
     L2.RES_M = float(res_m)
-    L2.HALF_M = float(half_km) * 1000.0
-
-    prog = st.progress(0.0, "Fetching volumes from S3...")
+    L2.HALF_X_M = float(half_x) * 1000.0
+    L2.HALF_Y_M = float(half_y) * 1000.0
     diag = {}
+    if _clat is not None:
+        L2.GRID_CENTER = (_clat, _clon)
+        diag["center"] = [_clat, _clon]
+        diag["center_fixed"] = True
+
+    prog = st.progress(0.0, "Fetching volumes...")
     t0 = time.time()
     try:
         comp, diag = L2.build_mosaic(sites=sites, diag=diag)
