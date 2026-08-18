@@ -49,6 +49,62 @@ CRITICAL_CIG_FT = 400
 
 
 # ---------------------------------------------------------------------------
+# N90 coordination fixes + approximate boundary
+# ---------------------------------------------------------------------------
+# PROVENANCE, because this one matters. The fix NAMES and which
+# facility each borders come from the vice ATC simulator's ZNY
+# adaptation (facility_adaptations.coordination_fixes) - community
+# built from N90 facility documents, not an FAA feed. The
+# COORDINATES are real: RNAV waypoints from the FAA NASR waypoint
+# file, VOR/DMEs from the OurAirports navaid database. 31 of 32
+# resolved; BELIT did not and is listed in the asset.
+#
+# The "boundary" is a CONVEX HULL of those fixes - where N90 meets
+# its neighbours, which is an approximation and NOT the delegated
+# TRACON boundary. It is labelled that way everywhere in the UI.
+# It does pass the checks the earlier hand-made polygon failed:
+# ~10,400 nm^2 (a 50 nm circle is 7,854), and all seven N90
+# airports fall inside, Islip included - which Class B does not
+# manage. Being a hull it cannot show concavities, so it will
+# overstate the airspace in the notches.
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def n90_data():
+    """(fixes, hull_rows, meta, error) for the N90 layer."""
+    try:
+        import json as _json
+        from pathlib import Path as _PP
+        blob = _json.loads(
+            (_PP(__file__).resolve().parent.parent
+             / "static" / "n90_fixes.json").read_text())
+        fixes = []
+        for f in blob.get("fixes", []):
+            # Fixes handed off from an en route centre are the
+            # arrival/departure gates; colour by bordering facility
+            # so the four sides of the operation read at a glance.
+            col = {"ZNY": [230, 120, 30], "PHL": [200, 60, 160],
+                   "ZBW": [40, 150, 190], "ZDC": [90, 170, 70]
+                   }.get(f.get("from"), [140, 140, 140])
+            fixes.append({
+                "name": f["name"], "lat": f["lat"], "lon": f["lon"],
+                "color": col,
+                "tip": (f"{f['name']} &mdash; N90 coordination fix "
+                        f"from {f.get('from', '?')} "
+                        f"({f.get('dist_nm', '?')} nm)"),
+            })
+        hull = blob.get("hull") or []
+        rows = ([{"polygon": hull,
+                  "tip": "N90 approximate extent (hull of "
+                         "coordination fixes) &mdash; NOT the "
+                         "delegated TRACON boundary"}]
+                if len(hull) > 3 else [])
+        return fixes, rows, blob.get("extracted", "?"), None
+    except Exception as exc:
+        return [], [], "?", f"{type(exc).__name__}: {exc}"
+
+
+# ---------------------------------------------------------------------------
 # New York Class B shelves
 # ---------------------------------------------------------------------------
 # NOTE ON WHAT THIS IS: FAA Class B, NOT N90. The TRACON's delegated
@@ -1687,6 +1743,13 @@ if run_button:
         show_cs = st.checkbox(
             "Show flight numbers", value=True, key="show_cs_f",
         )
+        n90_on = st.checkbox(
+            "N90 fixes + extent", value=False, key="n90_f",
+            help="New York TRACON arrival/departure coordination "
+                 "fixes, coloured by bordering facility. The "
+                 "outline is a hull of those fixes - an "
+                 "approximation, not the delegated boundary.",
+        )
         classb_on = st.checkbox(
             "NY Class B outline", value=False, key="classb_f",
             help="FAA Class B shelves for the New York area - the "
@@ -1694,6 +1757,40 @@ if run_button:
                  "(the TRACON is considerably larger).",
         )
         layers = []
+        if n90_on:
+            _n_fx, _n_hull, _n_vintage, _n_err = n90_data()
+            if _n_err:
+                st.warning(f"N90 layer unavailable - {_n_err}")
+            else:
+                if _n_hull:
+                    layers.append(pdk.Layer(
+                        "PolygonLayer", data=_n_hull,
+                        get_polygon="polygon",
+                        filled=False, stroked=True,
+                        get_line_color=[230, 120, 30, 130],
+                        line_width_min_pixels=1,
+                        get_line_width=1, pickable=True,
+                    ))
+                if _n_fx:
+                    # Triangles via IconLayer would need an atlas;
+                    # a TextLayer glyph scales cleanly and needs no
+                    # asset. Chart convention for a reporting point
+                    # is a triangle.
+                    layers.append(pdk.Layer(
+                        "TextLayer", data=_n_fx,
+                        get_position="[lon, lat]",
+                        get_text='"▲"',
+                        get_size=13, get_color="color",
+                        pickable=True,
+                    ))
+                    layers.append(pdk.Layer(
+                        "TextLayer", data=_n_fx,
+                        get_position="[lon, lat]",
+                        get_text="name",
+                        get_size=10, get_color=[70, 70, 70],
+                        get_text_anchor='"start"',
+                        get_pixel_offset=[7, -7],
+                    ))
         if classb_on:
             _cb_rows, _cb_vintage, _cb_err = ny_class_b()
             if _cb_err:
@@ -1928,6 +2025,13 @@ if run_button:
         )
         _rad = (" Map auto-refreshes every 2 min; aircraft "
                 "positions update each refresh.")
+        if n90_on:
+            _rad += (f" Triangles: N90 coordination fixes, coloured "
+                     f"by bordering facility (ZNY orange, PHL "
+                     f"magenta, ZBW blue, ZDC green); the orange "
+                     f"outline is an APPROXIMATE extent (hull of "
+                     f"those fixes), not the delegated N90 "
+                     f"boundary.")
         if classb_on:
             _rad += (f" Blue outline: FAA New York CLASS B shelves "
                      f"(snapshot {_cb_vintage}) - not the N90 "
