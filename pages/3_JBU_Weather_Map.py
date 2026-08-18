@@ -1846,9 +1846,14 @@ if run_button:
                         "PolygonLayer", data=_n_hull,
                         get_polygon="polygon",
                         filled=False, stroked=True,
-                        get_line_color=[230, 120, 30, 130],
-                        line_width_min_pixels=1,
-                        get_line_width=1, pickable=True,
+                        # 5x heavier than the Class B outline so the
+                        # approximate N90 extent reads as a boundary
+                        # at CONUS zoom rather than a hairline. Alpha
+                        # raised too - a thick line at 130 alpha
+                        # looked washed out against the light basemap.
+                        get_line_color=[230, 120, 30, 190],
+                        line_width_min_pixels=5,
+                        get_line_width=5, pickable=True,
                     ))
                 if _n_fx:
                     # Triangles via IconLayer would need an atlas;
@@ -1869,6 +1874,14 @@ if run_button:
                         get_size=10, get_color="tcolor",
                         get_text_anchor='"start"',
                         get_pixel_offset=[7, -7],
+                        # Black plate behind each fix name. Fix
+                        # labels sit on top of radar fill, coastline
+                        # and station dots, where blue-on-green was
+                        # unreadable; a solid backing makes them
+                        # legible regardless of what is underneath.
+                        background=True,
+                        get_background_color=[0, 0, 0, 215],
+                        background_padding=[4, 2, 4, 2],
                     ))
         if classb_on:
             _cb_rows, _cb_vintage, _cb_err = ny_class_b()
