@@ -66,6 +66,7 @@ REGIONS = {
     "ATL / Atlanta": ["KFFC", "KJGX", "KBMX", "KGSP"],
     "FLL-MIA / South Florida": ["KAMX", "KBYX", "KMLB", "KTBW"],
     "BOS / New England": ["KBOX", "KENX", "KGYX", "KOKX"],
+    "MSP / Minneapolis": ["KMPX", "KARX", "KFSD", "KDLH"],
 }
 SITE_NOTES = {
     "KOKX": "Upton NY — inside the N90 terminal area, primary source",
@@ -76,6 +77,10 @@ SITE_NOTES = {
     "KJGX": "Robins AFB GA — southeast",
     "KBMX": "Birmingham AL — west",
     "KGSP": "Greer SC — northeast",
+    "KMPX": "Chanhassen MN — the Minneapolis radar",
+    "KARX": "La Crosse WI — southeast",
+    "KFSD": "Sioux Falls SD — southwest",
+    "KDLH": "Duluth MN — northeast",
 }
 # Back-compat for anything importing the old name.
 N90_SITES = {s: (None, None, SITE_NOTES.get(s, "")) 
@@ -122,39 +127,59 @@ _BUCKET = "noaa-nexrad-level2"
 # ---------------------------------------------------------------------------
 # Fetch
 # ---------------------------------------------------------------------------
-def latest_key(site: str, fs, within_min: int = 20):
+def latest_key(site: str, fs, diag=None, within_min: int = None):
     """Newest Level II volume key for `site`, or None.
 
-    Walks today's prefix and yesterday's if we are near 00Z. Volume
-    filenames end _Vxx; MDM sidecar files must be skipped or the
-    reader chokes.
+    Every failure mode reports itself. The first version swallowed
+    listing exceptions in a bare `except: continue`, so a permissions
+    error, a wrong prefix and an empty bucket all surfaced
+    identically as "no recent volume" — which tells you nothing.
+    Now the diagnostic distinguishes: listing error vs no keys vs
+    keys present but stale, and names the newest file and its age.
     """
+    from datetime import datetime, timedelta, timezone
+
+    within = int(within_min if within_min is not None
+                 else os.environ.get("L2_WITHIN_MIN", "45"))
     now = datetime.now(timezone.utc)
-    for day in (now, now - timedelta(hours=6)):
-        pre = (f"{_BUCKET}/{day:%Y}/{day:%m}/{day:%d}/{site}/")
+    notes = []
+    # s3fs caches directory listings; a stale cache on a prefix that
+    # is written to continuously will hide brand-new volumes.
+    try:
+        fs.invalidate_cache()
+    except Exception:
+        pass
+    for day in (now, now - timedelta(days=1)):
+        pre = f"{_BUCKET}/{day:%Y}/{day:%m}/{day:%d}/{site}/"
         try:
             keys = fs.ls(pre, detail=False)
-        except Exception:
+        except Exception as exc:
+            notes.append(f"{pre} -> {type(exc).__name__}: {exc}")
             continue
         vols = [k for k in keys
                 if "_V" in k.rsplit("/", 1)[-1]
                 and not k.endswith("_MDM")]
         if not vols:
+            notes.append(f"{pre} -> {len(keys)} keys, 0 volumes")
             continue
         vols.sort()
         newest = vols[-1]
-        # Filename carries the scan start: SITEYYYYMMDD_HHMMSS_Vxx
+        fn = newest.rsplit("/", 1)[-1]
         try:
-            stamp = newest.rsplit("/", 1)[-1][4:19]
-            t = datetime.strptime(stamp, "%Y%m%d_%H%M%S").replace(
+            t = datetime.strptime(fn[4:19], "%Y%m%d_%H%M%S").replace(
                 tzinfo=timezone.utc)
-            if (now - t) > timedelta(minutes=within_min):
-                continue
-            return newest, t
-        except Exception:
-            return newest, None
-    return None, None
-
+        except Exception as exc:
+            notes.append(f"{fn} -> unparseable stamp ({exc})")
+            return newest, None, notes
+        age = (now - t).total_seconds() / 60.0
+        if age > within:
+            notes.append(
+                f"{pre} -> {len(vols)} volumes, newest {fn} is "
+                f"{age:.0f} min old (limit {within})")
+            continue
+        notes.append(f"{fn} | {age:.1f} min old | {len(vols)} today")
+        return newest, t, notes
+    return None, None, notes
 
 def load_site(site: str, fs, diag: dict):
     """Read one volume, trimmed to the lowest TILTS sweeps.
@@ -164,9 +189,9 @@ def load_site(site: str, fs, diag: dict):
     """
     import pyart
 
-    key, t = latest_key(site, fs)
+    key, t, notes = latest_key(site, fs, diag)
     if key is None:
-        diag["sites"][site] = "no recent volume"
+        diag["sites"][site] = "; ".join(notes) or "no keys returned"
         return None, None
     t0 = time.time()
     with fs.open(key, "rb") as fh:
@@ -175,7 +200,7 @@ def load_site(site: str, fs, diag: dict):
     n = min(TILTS, radar.nsweeps)
     radar = radar.extract_sweeps(list(range(n)))
     diag["sites"][site] = (
-        f"{key.rsplit('/', 1)[-1]} | {n} tilts | "
+        f"{notes[-1] if notes else ''} | {n} tilts | "
         f"{radar.nrays * radar.ngates / 1e6:.1f}M gates | "
         f"{time.time() - t0:.1f}s")
     return radar, t
