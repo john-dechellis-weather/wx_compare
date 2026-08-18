@@ -49,6 +49,38 @@ CRITICAL_CIG_FT = 400
 
 
 # ---------------------------------------------------------------------------
+# ARTCC high-altitude boundaries
+# ---------------------------------------------------------------------------
+# From the FAA Airspace_Boundary dataset, LOCAL_TYPE == ARTCC_H (the
+# high sectors). Simplified offline with Ramer-Douglas-Peucker at
+# 0.01 deg - sub-pixel at CONUS zoom and still clean to about zoom
+# 6 - which cut 18,827 vertices to 789 and the payload to ~15 KB.
+# Simplifying here rather than in the app keeps shapely out of
+# requirements. Anchorage (ZAN) is omitted: its rings cross the
+# antimeridian and smear horizontally across a Mercator map.
+# NOTE: these are HIGH sectors. The low-altitude boundaries
+# (ARTCC_L) differ, sometimes materially - do not read one as the
+# other.
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def artcc_high():
+    """20 CONUS centers as outlines. Returns (rows, vintage, error)."""
+    try:
+        import json as _json
+        from pathlib import Path as _PP
+        _p = (_PP(__file__).resolve().parent.parent
+              / "static" / "artcc_high.json")
+        blob = _json.loads(_p.read_text())
+        rows = [{"polygon": c["polygon"],
+                 "tip": f"{c['ident']} &mdash; {c['name']} Center (high)"}
+                for c in blob.get("centers", [])]
+        return rows, blob.get("extracted", "?"), None
+    except Exception as exc:
+        return [], "?", f"{type(exc).__name__}: {exc}"
+
+
+# ---------------------------------------------------------------------------
 # New York Class B shelves
 # ---------------------------------------------------------------------------
 # NOTE ON WHAT THIS IS: FAA Class B, NOT N90. The TRACON's delegated
@@ -852,14 +884,96 @@ def cached_station_coords(icaos_tuple: tuple):
 # fetches callsigns it hasn't seen; misses negative-cache for an
 # hour so unknowns aren't hammered.
 _route_cache: dict = {}     # cs -> (dest_icao_or_"", expiry_ts)
-_ROUTE_CACHE_PATH = _MAP_CACHE_ROOT / "route_cache.json"
+# v2 schema: {cs: {"d": icao, "oll": [lat,lon], "dll": [lat,lon],
+# "exp": ts}}. Renamed from route_cache.json so v1 entries (which
+# carried no origin) are simply ignored rather than mis-parsed.
+_ROUTE_CACHE_PATH = _MAP_CACHE_ROOT / "route_cache_v2.json"
 try:
     import json as _json_rc
     for _k, _v in _json_rc.loads(
             _ROUTE_CACHE_PATH.read_text()).items():
-        _route_cache[_k] = (_v[0], float(_v[1]))
+        if isinstance(_v, dict):
+            _route_cache[_k] = _v
 except Exception:
     pass
+
+
+def _route_plausible(alat, alon, trk, oll, dll):
+    """Is this aircraft actually flying the route adsbdb claims?
+
+    adsbdb returns the SCHEDULED route for a callsign from
+    historical data, not today's flight. Observed 8/17: JBU759
+    came back BOS-PHL while the aircraft was en route to Florida.
+    That is not a cosmetic error - destination drives the red
+    thunderstorm flag, so a wrong route plus a real hazard renders
+    a confident, wrong warning on an ops display.
+
+    Two independent checks against the claimed origin-destination
+    great circle:
+      * cross-track distance - how far off the route line the
+        aircraft sits. Generous (120 nm) so reroutes, weather
+        deviations and vectoring do not trip it.
+      * along-track fraction - >1.25 means well past the claimed
+        destination and still going.
+    Falls back to bearing-vs-track when origin is unknown.
+
+    Returns (ok, reason). Deliberately fails OPEN on bad input:
+    a missing coordinate should not silently strip destinations
+    from the whole fleet.
+    """
+    import math as _m
+    R = 3440.065  # nm
+
+    def _rad(d):
+        return _m.radians(d)
+
+    def _bearing(la1, lo1, la2, lo2):
+        y = _m.sin(_rad(lo2 - lo1)) * _m.cos(_rad(la2))
+        x = (_m.cos(_rad(la1)) * _m.sin(_rad(la2))
+             - _m.sin(_rad(la1)) * _m.cos(_rad(la2))
+             * _m.cos(_rad(lo2 - lo1)))
+        return (_m.degrees(_m.atan2(y, x)) + 360.0) % 360.0
+
+    def _dist(la1, lo1, la2, lo2):
+        p1, p2 = _rad(la1), _rad(la2)
+        dp, dl = _rad(la2 - la1), _rad(lo2 - lo1)
+        a = (_m.sin(dp / 2) ** 2
+             + _m.cos(p1) * _m.cos(p2) * _m.sin(dl / 2) ** 2)
+        return 2 * R * _m.asin(min(1.0, _m.sqrt(a)))
+
+    try:
+        if not dll:
+            return True, ""
+        dla, dlo = float(dll[0]), float(dll[1])
+        d_to_dest = _dist(alat, alon, dla, dlo)
+        if d_to_dest < 150:
+            return True, ""      # close in: vectors dominate
+        if oll:
+            ola, olo = float(oll[0]), float(oll[1])
+            d12 = _dist(ola, olo, dla, dlo)
+            if d12 < 50:
+                return True, ""
+            d13 = _dist(ola, olo, alat, alon)
+            t13 = _rad(_bearing(ola, olo, alat, alon))
+            t12 = _rad(_bearing(ola, olo, dla, dlo))
+            xtd = _m.asin(_m.sin(d13 / R) * _m.sin(t13 - t12)) * R
+            if abs(xtd) > 120:
+                return False, f"{abs(xtd):.0f} nm off route line"
+            catd = _m.cos(d13 / R) / max(1e-9, _m.cos(xtd / R))
+            atd = _m.acos(max(-1.0, min(1.0, catd))) * R
+            if atd / d12 > 1.25:
+                return False, "past claimed destination"
+            return True, ""
+        # no origin: fall back to heading sanity
+        if trk is None:
+            return True, ""
+        brg = _bearing(alat, alon, dla, dlo)
+        diff = abs((brg - float(trk) + 180.0) % 360.0 - 180.0)
+        if diff > 90:
+            return False, f"track {diff:.0f}deg off bearing"
+        return True, ""
+    except Exception:
+        return True, ""          # fail open
 
 
 def _save_route_cache():
@@ -868,7 +982,7 @@ def _save_route_cache():
         import time as _t_rc
         now = _t_rc.time()
         keep = {k: v for k, v in _route_cache.items()
-                if v[1] > now}
+                if v.get("exp", 0) > now}
         _ROUTE_CACHE_PATH.write_text(_json_rc.dumps(keep))
     except Exception:
         pass
@@ -1036,7 +1150,7 @@ def cached_fleet(bucket: str):
     now_ts = _time.time()
     new_cs = [cs for cs in seen
               if cs not in _route_cache
-              or _route_cache[cs][1] < now_ts]
+              or _route_cache[cs].get("exp", 0) < now_ts]
     fetched = hits = 0
     for cs in new_cs[:70]:      # cap per cycle; converges fast
         try:
@@ -1049,6 +1163,7 @@ def cached_fleet(bucket: str):
             break               # host trouble: stop this cycle
         fetched += 1
         d_icao = ""
+        _oll = _dll = None
         if r.status_code == 200:
             try:
                 fr = (r.json().get("response") or {})
@@ -1056,20 +1171,48 @@ def cached_fleet(bucket: str):
                     fr = fr.get("flightroute") or {}
                     dest = fr.get("destination") or {}
                     d_icao = (dest.get("icao_code") or "").upper()
+                    # Origin coords are the whole point of v2: they
+                    # give a route LINE to test the aircraft against.
+                    if dest.get("latitude") is not None:
+                        _dll = [float(dest["latitude"]),
+                                float(dest["longitude"])]
+                    orig = fr.get("origin") or {}
+                    if orig.get("latitude") is not None:
+                        _oll = [float(orig["latitude"]),
+                                float(orig["longitude"])]
             except Exception:
                 pass
         if d_icao:
-            _route_cache[cs] = (d_icao, now_ts + 6 * 3600)
+            _route_cache[cs] = {"d": d_icao, "oll": _oll, "dll": _dll,
+                                "exp": now_ts + 6 * 3600}
             hits += 1
         else:
-            _route_cache[cs] = ("", now_ts + 3600)
+            _route_cache[cs] = {"d": "", "oll": None, "dll": None,
+                                "exp": now_ts + 3600}
         _time.sleep(0.05)
     if fetched:
         _save_route_cache()
+    _suppressed = []
     for cs in seen:
-        cached = _route_cache.get(cs)
-        if cached and cached[0]:
-            dests[cs] = cached[0]
+        cached = _route_cache.get(cs) or {}
+        if not cached.get("d"):
+            continue
+        _la, _lo, _alt, _trk = seen[cs]
+        ok, why = _route_plausible(_la, _lo, _trk,
+                                   cached.get("oll"),
+                                   cached.get("dll"))
+        if ok:
+            dests[cs] = cached["d"]
+        else:
+            # Drop the destination entirely rather than colour on
+            # it. No flag beats a confidently wrong flag.
+            _suppressed.append(f"{cs}->{cached['d']} ({why})")
+    if _suppressed:
+        rs_diag.append(
+            "route sanity: dropped "
+            + "; ".join(_suppressed[:8])
+            + (f" (+{len(_suppressed) - 8} more)"
+               if len(_suppressed) > 8 else ""))
     rs_diag.append(
         f"adsbdb: {fetched} fetched this cycle ({hits} routed), "
         f"{max(0, len(new_cs) - fetched)} still pending, "
@@ -1576,6 +1719,12 @@ if run_button:
         show_cs = st.checkbox(
             "Show flight numbers", value=True, key="show_cs_f",
         )
+        artcc_on = st.checkbox(
+            "ARTCC boundaries (high)", value=False, key="artcc_f",
+            help="FAA high-altitude center boundaries, 20 CONUS "
+                 "ARTCCs. High sectors only - the low-altitude "
+                 "boundaries differ.",
+        )
         classb_on = st.checkbox(
             "NY Class B outline", value=False, key="classb_f",
             help="FAA Class B shelves for the New York area - the "
@@ -1583,6 +1732,23 @@ if run_button:
                  "(the TRACON is considerably larger).",
         )
         layers = []
+        if artcc_on:
+            _ar_rows, _ar_vintage, _ar_err = artcc_high()
+            if _ar_err:
+                st.warning(f"ARTCC boundaries unavailable - {_ar_err}")
+            elif _ar_rows:
+                # Appended first so it sits UNDER radar, Class B and
+                # the aircraft icons - it is a reference grid, not a
+                # foreground layer.
+                layers.append(pdk.Layer(
+                    "PolygonLayer", data=_ar_rows,
+                    get_polygon="polygon",
+                    filled=False, stroked=True,
+                    get_line_color=[150, 150, 150, 170],
+                    line_width_min_pixels=1,
+                    get_line_width=1,
+                    pickable=True,
+                ))
         if classb_on:
             _cb_rows, _cb_vintage, _cb_err = ny_class_b()
             if _cb_err:
@@ -1801,6 +1967,9 @@ if run_button:
         )
         _rad = (" Map auto-refreshes every 2 min; aircraft "
                 "positions update each refresh.")
+        if artcc_on:
+            _rad += (f" Grey outlines: FAA ARTCC high-sector "
+                     f"boundaries (snapshot {_ar_vintage}).")
         if classb_on:
             _rad += (f" Blue outline: FAA New York CLASS B shelves "
                      f"(snapshot {_cb_vintage}) - not the N90 "
