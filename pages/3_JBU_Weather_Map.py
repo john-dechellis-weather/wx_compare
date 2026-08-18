@@ -80,18 +80,27 @@ def n90_data():
              / "static" / "n90_fixes.json").read_text())
         fixes = []
         for f in blob.get("fixes", []):
-            # Fixes handed off from an en route centre are the
-            # arrival/departure gates; colour by bordering facility
-            # so the four sides of the operation read at a glance.
-            col = {"ZNY": [230, 120, 30], "PHL": [200, 60, 160],
-                   "ZBW": [40, 150, 190], "ZDC": [90, 170, 70]
-                   }.get(f.get("from"), [140, 140, 140])
+            # BLUE = arrival/departure gate, PURPLE = everything
+            # else. The split is data-driven, not a guess: gates
+            # come from the adaptation's airspace_awareness entries
+            # (MERIT, GREKI, BETTE, DIXIE, SHIPP, WAVEY, HAPIE,
+            # COATE, NEION, GAYEL, PARKE, BIGGY, ELIOT ...), which
+            # is a DIFFERENT list from coordination_fixes. Seven
+            # fixes appear in both and count as gates.
+            gate = f.get("role") == "gate"
+            col = [30, 90, 220] if gate else [140, 60, 190]
+            # Key is "tcolor", not "color": the per-datum accessor
+            # that demonstrably works in this file is the callsign
+            # layer's "lcolor", and a plain "color" key did not
+            # take. Same convention, same result.
             fixes.append({
                 "name": f["name"], "lat": f["lat"], "lon": f["lon"],
-                "color": col,
-                "tip": (f"{f['name']} &mdash; N90 coordination fix "
-                        f"from {f.get('from', '?')} "
-                        f"({f.get('dist_nm', '?')} nm)"),
+                "tcolor": col,
+                "tip": (f"{f['name']} &mdash; "
+                        + ("arrival/departure gate"
+                           if gate else "coordination fix")
+                        + (f", from {f['from']}" if f.get("from") else "")
+                        + f" ({f.get('dist_nm', '?')} nm)"),
             })
         hull = blob.get("hull") or []
         rows = ([{"polygon": hull,
@@ -1241,7 +1250,8 @@ def cached_fleet(bucket: str):
         f"adsbdb: {fetched} fetched this cycle ({hits} routed), "
         f"{max(0, len(new_cs) - fetched)} still pending, "
         f"cache holds "
-        f"{sum(1 for v in _route_cache.values() if v[0])} routes"
+        f"{sum(1 for v in _route_cache.values() if v.get('d'))} "
+        f"routes"
     )
 
     out = []
@@ -1745,10 +1755,10 @@ if run_button:
         )
         n90_on = st.checkbox(
             "N90 fixes + extent", value=False, key="n90_f",
-            help="New York TRACON arrival/departure coordination "
-                 "fixes, coloured by bordering facility. The "
-                 "outline is a hull of those fixes - an "
-                 "approximation, not the delegated boundary.",
+            help="Blue = arrival/departure gates, purple = other "
+                 "coordination fixes. The outline is a hull of "
+                 "those fixes - an approximation, not the "
+                 "delegated boundary.",
         )
         classb_on = st.checkbox(
             "NY Class B outline", value=False, key="classb_f",
@@ -1780,14 +1790,14 @@ if run_button:
                         "TextLayer", data=_n_fx,
                         get_position="[lon, lat]",
                         get_text='"▲"',
-                        get_size=13, get_color="color",
+                        get_size=13, get_color="tcolor",
                         pickable=True,
                     ))
                     layers.append(pdk.Layer(
                         "TextLayer", data=_n_fx,
                         get_position="[lon, lat]",
                         get_text="name",
-                        get_size=10, get_color=[70, 70, 70],
+                        get_size=10, get_color="tcolor",
                         get_text_anchor='"start"',
                         get_pixel_offset=[7, -7],
                     ))
@@ -2026,12 +2036,11 @@ if run_button:
         _rad = (" Map auto-refreshes every 2 min; aircraft "
                 "positions update each refresh.")
         if n90_on:
-            _rad += (f" Triangles: N90 coordination fixes, coloured "
-                     f"by bordering facility (ZNY orange, PHL "
-                     f"magenta, ZBW blue, ZDC green); the orange "
-                     f"outline is an APPROXIMATE extent (hull of "
-                     f"those fixes), not the delegated N90 "
-                     f"boundary.")
+            _rad += (" Triangles: N90 fixes - BLUE = arrival/"
+                     "departure gate, PURPLE = other coordination "
+                     "fix. The outline is an APPROXIMATE extent "
+                     "(hull of those fixes), not the delegated N90 "
+                     "boundary.")
         if classb_on:
             _rad += (f" Blue outline: FAA New York CLASS B shelves "
                      f"(snapshot {_cb_vintage}) - not the N90 "
