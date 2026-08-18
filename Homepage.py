@@ -97,6 +97,10 @@ PAGES = {
         st.Page("pages/8_JBU_Flight_Tracker.py",
                 title="JBU Flight Tracker"),
     ],
+    "Experimental": [
+        st.Page("pages/12_L2_Radar_Lab.py",
+                title="L2 Radar Lab"),
+    ],
     "Archive Flight Conditions": [
         st.Page("pages/5_Archive_Satellite_Position.py",
                 title="Archive Satellite"),
