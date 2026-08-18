@@ -186,6 +186,31 @@ SMOOTH_SIGMA = float(os.environ.get("L2_SMOOTH_SIGMA", "1.0"))
 # Range scale for blend weights. Default is the 52 nm crossover
 # where beam spreading makes L2 coarser than MRMS = 96 km.
 BLEND_M = float(os.environ.get("L2_BLEND_M", "96000"))
+# Vertical proximity scale. Range weighting alone cannot tell that two
+# sites equidistant from a cell may be sampling completely different
+# altitudes — at a 1500 m grid level a 0.5 deg beam is 1300 m below it
+# at 20 km and 1100 m above it at 150 km. This term prefers the site
+# whose beam actually passes through the level being gridded.
+BLEND_VERT_M = float(os.environ.get("L2_BLEND_VERT_M", "1500"))
+# Time scale. Volumes are not synchronised: at 40 kt a 3-minute
+# offset displaces a cell 2 nm, so an older scan should carry less
+# weight. Set 0 to disable.
+BLEND_TIME_S = float(os.environ.get("L2_BLEND_TIME_S", "300"))
+# Winner-take-most exponent on the combined weight. Measured 8/18
+# with a 30 dBZ site west and a 45 dBZ site east: at 1.0 the value
+# 90 km INTO the western site's territory was already pulled to
+# 34 dBZ by the far site; at 2.0 it reads 30.4 and at 6.0 it is a
+# clean 30.0, while the midpoint stays ~42 either way. So this
+# controls how fast the blend hands over — 1.0 lets a distant site
+# contaminate a near one, higher values keep each area honest while
+# still crossing over smoothly in the middle.
+#
+# It does NOT fix time-offset smearing. Tested directly: a cell seen
+# 3 min apart by two sites spans 19 km instead of 16 at every
+# sharpness value, because a weighted mean gives a value wherever
+# EITHER site has data, so the footprint is always the union. Only
+# advection correction fixes that.
+BLEND_SHARPNESS = float(os.environ.get("L2_BLEND_SHARPNESS", "2.0"))
 # Floor for BOTH the QC gate filter and the colour ramp — one knob, so
 # what is gridded is what is shown. 15 dBZ is the operationally
 # meaningful threshold for a terminal area: below it is drizzle,
@@ -388,49 +413,78 @@ def _grid_one(radar, diag=None, site=None):
                  float(radar.longitude["data"][0]))
 
 
-def _site_weight(rlat, rlon, shape):
-    """Per-cell confidence in one radar, from horizontal range.
+def _site_weight(rlat, rlon, shape, tilt_deg=0.5, age_s=0.0):
+    """Per-cell confidence in one radar. Three independent terms.
 
     Replaces the v1 element-wise max, which treated a gate 10 nm from
     KOKX at 600 ft as equal to one 90 nm from KENX sampling 11,000 ft
-    through the same column. That produced hard seams wherever a
-    site's coverage ended — clearly visible in the first four-site
-    synthetic mosaic.
+    through the same column, and produced hard seams wherever a
+    site's coverage ended.
 
-    Weight is a Gaussian in range, w = exp(-(d/D0)^2), with D0
-    defaulting to the 52 nm crossover where 0.5 deg beam spreading
-    makes Level II coarser than MRMS. That is not an arbitrary
-    constant: it is the distance at which this data stops being
-    better than the alternative, so it is the right place for a
-    site's vote to fall away.
+    RANGE   exp(-(d/D0)^2), D0 = the 52 nm crossover where 0.5 deg
+            beam spreading makes Level II coarser than MRMS. Not an
+            arbitrary constant: it is where this data stops being
+            better than the alternative, so it is the right place
+            for a site's vote to fall away.
 
-    Height weighting is deliberately folded into range rather than
-    computed separately. For a fixed elevation angle, sampling height
-    and range are monotonically related (0.5 deg gives 600 ft at
-    10 nm, 4,300 ft at 50 nm), so a range term already penalises
-    high-sampling cells. True per-gate height weighting needs the
-    height field, which gridding discards.
+    VERTICAL exp(-((z - h_beam(d))/H0)^2). h_beam is where the
+            lowest tilt actually is at that range, under 4/3-earth
+            refraction. This is the term range weighting cannot
+            supply — two sites the same distance away can be looking
+            at totally different heights.
+
+    TIME    exp(-(age/T0)^2), age measured from the newest volume in
+            the mosaic. At 40 kt a 3-minute offset is 2 nm of
+            displacement, so a stale site should not win ties.
+
+    The product is then raised to BLEND_SHARPNESS. At 1.0 this is a
+    plain weighted mean; higher values approach nearest-site-wins,
+    which trades smooth transitions for less smearing of fast cells.
     """
     import math
 
     import numpy as np
 
     lat0, lon0 = GRID_CENTER
-    # Equirectangular offset of the radar from the grid origin. Py-ART
-    # grids in azimuthal-equidistant; over a few hundred km the
-    # difference is sub-kilometre, which is far below what matters for
-    # a smoothly varying weight.
+    # Equirectangular offset of the radar from the grid origin.
+    # Py-ART grids in azimuthal-equidistant; over a few hundred km
+    # the difference is sub-kilometre, far below what matters for a
+    # smoothly varying weight.
     rx = (rlon - lon0) * 111320.0 * math.cos(math.radians(lat0))
     ry = (rlat - lat0) * 111320.0
-    ny, nx = shape[-2], shape[-1]
+    nz, ny, nx = shape
     ax = np.linspace(-HALF_X_M, HALF_X_M, nx, dtype="float32")
     ay = np.linspace(-HALF_Y_M, HALF_Y_M, ny, dtype="float32")
     d2 = ((ax - rx) ** 2)[None, :] + ((ay - ry) ** 2)[:, None]
-    d0 = BLEND_M
-    return np.exp(-d2 / (d0 * d0)).astype("float32")
+    w = np.exp(-d2 / (BLEND_M * BLEND_M)).astype("float32")
+
+    if BLEND_TIME_S > 0 and age_s:
+        w *= float(math.exp(-(age_s / BLEND_TIME_S) ** 2))
+
+    if BLEND_VERT_M > 0:
+        # Beam height at each cell's range, 4/3 earth.
+        d = np.sqrt(d2, dtype="float32")
+        bh = (d * math.sin(math.radians(tilt_deg))
+              + d * d / (2.0 * 1.333 * 6371000.0)).astype("float32")
+        zs = np.linspace(
+            BASE_M,
+            TOP_M if TOP_M else BASE_M + 1000.0 * max(nz - 1, 1),
+            nz, dtype="float32")
+        out = np.empty(shape, dtype="float32")
+        for k, z in enumerate(zs):
+            out[k] = w * np.exp(
+                -((z - bh) / BLEND_VERT_M) ** 2).astype("float32")
+        w3 = out
+    else:
+        w3 = np.broadcast_to(w, shape).astype("float32")
+
+    if BLEND_SHARPNESS != 1.0:
+        w3 = np.power(w3, BLEND_SHARPNESS, dtype="float32")
+    return w3
 
 
-def _accumulate(num, den, arr, rlat, rlon):
+def _accumulate(num, den, arr, rlat, rlon, tilt_deg=0.5,
+                age_s=0.0):
     """Fold one site into weighted sums, in LINEAR Z not dBZ.
 
     dBZ is logarithmic, so averaging it is not averaging power — a
@@ -440,13 +494,12 @@ def _accumulate(num, den, arr, rlat, rlon):
     """
     import numpy as np
 
-    w2d = _site_weight(rlat, rlon, arr.shape)
     ok = np.isfinite(arr)
     if not ok.any():
         return num, den
+    w = _site_weight(rlat, rlon, arr.shape, tilt_deg, age_s) * ok
     z = np.zeros_like(arr)
     np.power(10.0, arr / 10.0, out=z, where=ok)
-    w = np.broadcast_to(w2d, arr.shape) * ok
     if num is None:
         num = np.zeros_like(arr)
         den = np.zeros_like(arr)
@@ -489,6 +542,12 @@ def build_mosaic(sites=None, diag=None):
     t_all = time.time()
     fs = None   # volume access lives in load_site
     num = den = None       # weighted-sum accumulators, linear Z
+    # Gridded fields are held until every site is in, because the
+    # TIME weight is measured against the NEWEST volume and that is
+    # not known until the last site has loaded. Each staged field is
+    # ~31 MB; the radar volumes themselves are still freed as we go,
+    # which is what actually drives peak memory.
+    staged = []
     times = []
 
     from concurrent.futures import ThreadPoolExecutor
@@ -519,17 +578,31 @@ def build_mosaic(sites=None, diag=None):
                     t = pyart.util.datetime_from_radar(radar)
                 except Exception:
                     t = None
+                _tilt = 0.5
+                try:
+                    _tilt = float(radar.fixed_angle["data"][0])
+                except Exception:
+                    pass
                 arr, (rla, rlo) = _grid_one(radar, diag, site)
-                num, den = _accumulate(num, den, arr, rla, rlo)
+                staged.append((arr, rla, rlo, _tilt, t))
                 if t:
                     times.append(t)
-                del arr
             except Exception as exc:
                 diag["sites"][site] = (
                     f"grid failed — {type(exc).__name__}: {exc}")
             finally:
                 del radar
                 gc.collect()
+
+    if staged:
+        newest = max((x[4] for x in staged if x[4]), default=None)
+        for arr, rla, rlo, tilt, t in staged:
+            age = ((newest - t).total_seconds()
+                   if (newest and t) else 0.0)
+            num, den = _accumulate(num, den, arr, rla, rlo, tilt, age)
+            del arr
+        staged.clear()
+        gc.collect()
 
     if num is None:
         diag["error"] = "no sites produced a grid"
@@ -542,7 +615,10 @@ def build_mosaic(sites=None, diag=None):
     comp = np.nanmax(blended, axis=0)
     del blended
     gc.collect()
-    diag["blend"] = (f"range-weighted D0={BLEND_M / 1000:.0f} km | "
+    diag["blend"] = (f"range D0={BLEND_M / 1000:.0f} km, "
+                     f"vert {BLEND_VERT_M:.0f} m, "
+                     f"time {BLEND_TIME_S:.0f} s, "
+                     f"sharpness {BLEND_SHARPNESS:g} | "
                      f"grid {WEIGHT_FN} roi>={MIN_RADIUS_M:.0f} m | "
                      f"floor {DBZ_MIN:.0f} dBZ")
     if times:
