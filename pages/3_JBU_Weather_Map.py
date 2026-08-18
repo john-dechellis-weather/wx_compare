@@ -49,38 +49,6 @@ CRITICAL_CIG_FT = 400
 
 
 # ---------------------------------------------------------------------------
-# ARTCC high-altitude boundaries
-# ---------------------------------------------------------------------------
-# From the FAA Airspace_Boundary dataset, LOCAL_TYPE == ARTCC_H (the
-# high sectors). Simplified offline with Ramer-Douglas-Peucker at
-# 0.01 deg - sub-pixel at CONUS zoom and still clean to about zoom
-# 6 - which cut 18,827 vertices to 789 and the payload to ~15 KB.
-# Simplifying here rather than in the app keeps shapely out of
-# requirements. Anchorage (ZAN) is omitted: its rings cross the
-# antimeridian and smear horizontally across a Mercator map.
-# NOTE: these are HIGH sectors. The low-altitude boundaries
-# (ARTCC_L) differ, sometimes materially - do not read one as the
-# other.
-
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def artcc_high():
-    """20 CONUS centers as outlines. Returns (rows, vintage, error)."""
-    try:
-        import json as _json
-        from pathlib import Path as _PP
-        _p = (_PP(__file__).resolve().parent.parent
-              / "static" / "artcc_high.json")
-        blob = _json.loads(_p.read_text())
-        rows = [{"polygon": c["polygon"],
-                 "tip": f"{c['ident']} &mdash; {c['name']} Center (high)"}
-                for c in blob.get("centers", [])]
-        return rows, blob.get("extracted", "?"), None
-    except Exception as exc:
-        return [], "?", f"{type(exc).__name__}: {exc}"
-
-
-# ---------------------------------------------------------------------------
 # New York Class B shelves
 # ---------------------------------------------------------------------------
 # NOTE ON WHAT THIS IS: FAA Class B, NOT N90. The TRACON's delegated
@@ -1719,12 +1687,6 @@ if run_button:
         show_cs = st.checkbox(
             "Show flight numbers", value=True, key="show_cs_f",
         )
-        artcc_on = st.checkbox(
-            "ARTCC boundaries (high)", value=False, key="artcc_f",
-            help="FAA high-altitude center boundaries, 20 CONUS "
-                 "ARTCCs. High sectors only - the low-altitude "
-                 "boundaries differ.",
-        )
         classb_on = st.checkbox(
             "NY Class B outline", value=False, key="classb_f",
             help="FAA Class B shelves for the New York area - the "
@@ -1732,23 +1694,6 @@ if run_button:
                  "(the TRACON is considerably larger).",
         )
         layers = []
-        if artcc_on:
-            _ar_rows, _ar_vintage, _ar_err = artcc_high()
-            if _ar_err:
-                st.warning(f"ARTCC boundaries unavailable - {_ar_err}")
-            elif _ar_rows:
-                # Appended first so it sits UNDER radar, Class B and
-                # the aircraft icons - it is a reference grid, not a
-                # foreground layer.
-                layers.append(pdk.Layer(
-                    "PolygonLayer", data=_ar_rows,
-                    get_polygon="polygon",
-                    filled=False, stroked=True,
-                    get_line_color=[150, 150, 150, 170],
-                    line_width_min_pixels=1,
-                    get_line_width=1,
-                    pickable=True,
-                ))
         if classb_on:
             _cb_rows, _cb_vintage, _cb_err = ny_class_b()
             if _cb_err:
@@ -1815,12 +1760,28 @@ if run_button:
         # (90s cache; the 4-lane sweep runs inside the fragment
         # when it expires, so aircraft advance every beat)
         _fb = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+        # fleet MUST be bound before the try. It was not, so any
+        # exception inside cached_fleet was swallowed by a bare
+        # except and surfaced three lines down as
+        # "UnboundLocalError: fleet" - which names the symptom and
+        # hides the cause. Seen live 8/17.
+        fleet = []
+        _fleet_err = _fleet_tb = None
         try:
             _lres = cached_fleet(_fb)
             if _lres is not None:
                 fleet = _lres[0]
-        except Exception:
-            pass
+        except Exception as _fe:
+            import traceback as _tb_f
+            _fleet_err = f"{type(_fe).__name__}: {_fe}"
+            _fleet_tb = _tb_f.format_exc()
+        if _fleet_err:
+            st.warning(
+                f"Fleet positions unavailable - {_fleet_err}. "
+                "Map still shows stations, radar and airspace."
+            )
+            with st.expander("Fleet fetch traceback"):
+                st.code(_fleet_tb or "", language="text")
         if fleet:
             fleet_disp = []
             gnd_disp = []
@@ -1967,9 +1928,6 @@ if run_button:
         )
         _rad = (" Map auto-refreshes every 2 min; aircraft "
                 "positions update each refresh.")
-        if artcc_on:
-            _rad += (f" Grey outlines: FAA ARTCC high-sector "
-                     f"boundaries (snapshot {_ar_vintage}).")
         if classb_on:
             _rad += (f" Blue outline: FAA New York CLASS B shelves "
                      f"(snapshot {_cb_vintage}) - not the N90 "
