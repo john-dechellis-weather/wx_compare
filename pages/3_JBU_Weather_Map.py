@@ -722,9 +722,11 @@ def _legend_html() -> str:
                "TS in TAF and METAR")
     )
     return (
+        # width:100% + box-sizing so the MAP KEY and the alert
+        # table above it are the same width in the left column
         '<div style="background:#FFFFFF; border:1px solid #000; '
-        'padding:6px 10px; margin-top:26px; width:auto; '
-        'display:inline-block;">'
+        'padding:6px 10px; margin-top:26px; width:100%; '
+        'box-sizing:border-box; display:block;">'
         '<div style="color:#000; -webkit-text-fill-color:#000; '
         f"font-family:{_FONT}; "
         "font-size:clamp(10px, 0.85vw, 13px); "
@@ -858,24 +860,39 @@ def render_status_board(rows) -> str:
         )
 
     header_row = ("<tr>" + cell("ICAO", header=True)
-                  + cell("ALERTS", header=True)
+                  + cell("ALERT 1", header=True)
+                  + cell("ALERT 2", header=True)
                   + cell("WHEN", header=True) + "</tr>")
     body = []
     for (rank, icao, chip, color, period, e, all_txt, _c,
          when) in rows:
-        fg = _TEXT_COLOR.get(color, color)
-        hot = color in (_RED, _MAGENTA)
+        # Split off the real candidate list rather than chopping
+        # the joined string: each alert keeps its OWN severity
+        # colour that way. _c is sorted worst-first, so Alert 1 is
+        # always the driving hazard. Anything past the second is
+        # folded into Alert 2 so nothing is silently dropped.
+        _cands = list(_c or [])
+        _a1 = _cands[0] if _cands else None
+        _rest = _cands[1:]
+        _a1_txt = _a1[1] if _a1 else all_txt
+        _a1_col = _TEXT_COLOR.get(_a1[2], _a1[2]) if _a1 else color
+        _a1_hot = bool(_a1) and _a1[2] in (_RED, _MAGENTA)
+        _a2_txt = "/".join(c[1] for c in _rest)
+        _a2_col = (_TEXT_COLOR.get(_rest[0][2], _rest[0][2])
+                   if _rest else "#444444")
+        _a2_hot = bool(_rest) and _rest[0][2] in (_RED, _MAGENTA)
         body.append(
             "<tr>"
             + cell(icao, bold=True)
-            + cell(all_txt, fg=fg, bold=hot)
+            + cell(_a1_txt, fg=_a1_col, bold=_a1_hot)
+            + cell(_a2_txt or "&mdash;", fg=_a2_col, bold=_a2_hot)
             + cell(when, fg="#444444")
             + "</tr>"
         )
     return (
         f'<table style="border-collapse:collapse; '
         f'background-color:#FFFFFF; border:2px solid {_WHITE}; '
-        f'width:auto;">'
+        f'width:100%;">'
         f"{header_row}{''.join(body)}</table>"
     )
 
@@ -1784,28 +1801,40 @@ if run_button:
     @st.fragment(run_every="120s")
     def _map_fragment():
         import pydeck as pdk
-        radar_mode = st.radio(
-            "Radar overlay",
-            ["MRMS hi-res", "Echo tops", "Off"],
-            index=2, horizontal=True, key="radar_mode_f",
-        )
+        # One control row so the map starts higher. The radio's
+        # label is collapsed: with a label it renders a line above
+        # itself and the checkboxes no longer sit on the same
+        # baseline. Its three options are self-describing.
+        _ctl = st.columns([2.4, 1.15, 1.15, 1.2], gap="small")
+        with _ctl[0]:
+            radar_mode = st.radio(
+                "Radar overlay",
+                ["MRMS hi-res", "Echo tops", "Off"],
+                index=2, horizontal=True, key="radar_mode_f",
+                label_visibility="collapsed",
+                help="Radar overlay source.",
+            )
         radar_on = radar_mode != "Off"
-        show_cs = st.checkbox(
-            "Show flight numbers", value=True, key="show_cs_f",
-        )
-        n90_on = st.checkbox(
-            "N90 fixes + extent", value=False, key="n90_f",
-            help="Blue = arrival/departure gates, purple = other "
-                 "coordination fixes. The outline is a hull of "
-                 "those fixes - an approximation, not the "
-                 "delegated boundary.",
-        )
-        classb_on = st.checkbox(
-            "NY Class B outline", value=False, key="classb_f",
-            help="FAA Class B shelves for the New York area - the "
-                 "protected core, NOT the N90 TRACON boundary "
-                 "(the TRACON is considerably larger).",
-        )
+        with _ctl[1]:
+            show_cs = st.checkbox(
+                "Flight numbers", value=True, key="show_cs_f",
+            )
+        with _ctl[2]:
+            n90_on = st.checkbox(
+                "N90 fixes", value=False, key="n90_f",
+                help="Blue = arrival/departure gates, purple = "
+                     "other coordination fixes. The outline is a "
+                     "hull of those fixes - an approximation, not "
+                     "the delegated boundary.",
+            )
+        with _ctl[3]:
+            classb_on = st.checkbox(
+                "NY Class B", value=False, key="classb_f",
+                help="FAA Class B shelves for the New York area - "
+                     "the protected core, NOT the N90 TRACON "
+                     "boundary (the TRACON is considerably "
+                     "larger).",
+            )
         layers = []
         if n90_on:
             _n_fx, _n_hull, _n_vintage, _n_err = n90_data()
