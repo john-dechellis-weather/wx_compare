@@ -160,6 +160,29 @@ GRID_WORKERS = int(os.environ.get("L2_WORKERS", "2"))
 CC_MIN = float(os.environ.get("L2_CC_MIN", "0.80"))
 # Contiguous regions smaller than this are dropped as speckle.
 SPECKLE = int(os.environ.get("L2_SPECKLE", "10"))
+# Gridding weight. "nearest" gives each gate a wedge of cells, so past
+# ~20 nm — where the 0.5 deg beam is wider than a 250 m cell — one
+# sample paints a visible block and echo edges come out stair-stepped.
+# Barnes2 weights several gates into every cell and dissolves that.
+# Measured 8/18 on a realistic volume: Barnes2 costs ~20% more wall
+# time than nearest (11.5 s vs 9.4 s) with identical peak memory —
+# far cheaper than expected.
+WEIGHT_FN = os.environ.get("L2_WEIGHT", "Barnes2")
+# Radius-of-influence floor. This is the smoothing/peak trade: a
+# planted 58 dBZ core survived intact at 500 and 1000 m but lost
+# 2.6 dB at 2000 m. 1000 m smooths the blocks without eating cores.
+MIN_RADIUS_M = float(os.environ.get("L2_MIN_RADIUS_M", "1000"))
+# Render-time smoothing, in grid cells. Applied to the finished
+# composite rather than by widening the gridding ROI, because the two
+# have very different costs: measured 8/18 on a varying field
+# quantised into gate-sized blocks, sigma=1.0 cut visible edges (
+# neighbour steps >0.5 dB) from 4.6% of pairs to 0.1% with ZERO peak
+# loss on a planted 58 dBZ core, while getting the same smoothing
+# from the grid ROI (2000 m) cost 2.6 dB of that core. Above sigma=2
+# peaks start to go (3.7 dB at sigma=3), so 1.0 is the sweet spot.
+# At 250 m cells that is a 250 m smoothing length — well below the
+# beam width it is hiding.
+SMOOTH_SIGMA = float(os.environ.get("L2_SMOOTH_SIGMA", "1.0"))
 # Range scale for blend weights. Default is the 52 nm crossover
 # where beam spreading makes L2 coarser than MRMS = 96 km.
 BLEND_M = float(os.environ.get("L2_BLEND_M", "96000"))
@@ -169,8 +192,12 @@ BLEND_M = float(os.environ.get("L2_BLEND_M", "96000"))
 # insects, chaff and ground return, which is also most of what the
 # speckle was. Raising this floor does more for legibility than
 # despeckle alone, and it makes the grid sparser and cheaper.
-# Lower L2_DBZ_MIN to 5 to bring weak echo back.
-DBZ_MIN = float(os.environ.get("L2_DBZ_MIN", "15"))
+# 10 rather than 15: at 15 the light stratiform that MRMS draws pale
+# blue vanished entirely — comparing a KMLB/KTBW mosaic against an
+# MRMS blend, a whole swath from Tampa northeast past Orlando was
+# missing. Despeckle handles the clutter that motivated the higher
+# floor. Lower to 5 for even weaker echo.
+DBZ_MIN = float(os.environ.get("L2_DBZ_MIN", "10"))
 
 _BUCKET = "noaa-nexrad-level2"
 
@@ -349,8 +376,8 @@ def _grid_one(radar, diag=None, site=None):
                       BASE_M + 1000.0 * max(LEVELS - 1, 1)),
                      (-HALF_Y_M, HALF_Y_M), (-HALF_X_M, HALF_X_M)),
         fields=["reflectivity"],
-        weighting_function="nearest",
-        min_radius=RES_M,
+        weighting_function=WEIGHT_FN,
+        min_radius=MIN_RADIUS_M,
         gatefilters=(gatefilter(radar, diag, site),),
         grid_origin=GRID_CENTER,
     )
@@ -515,7 +542,9 @@ def build_mosaic(sites=None, diag=None):
     comp = np.nanmax(blended, axis=0)
     del blended
     gc.collect()
-    diag["blend"] = f"range-weighted, D0={BLEND_M / 1000:.0f} km"
+    diag["blend"] = (f"range-weighted D0={BLEND_M / 1000:.0f} km | "
+                     f"grid {WEIGHT_FN} roi>={MIN_RADIUS_M:.0f} m | "
+                     f"floor {DBZ_MIN:.0f} dBZ")
     if times:
         # Scan times differ between sites; a 40 kt storm moves ~2 nm
         # in 4 min, so the spread is the mosaic's real time error.
@@ -532,12 +561,41 @@ def build_mosaic(sites=None, diag=None):
 # ---------------------------------------------------------------------------
 # Render
 # ---------------------------------------------------------------------------
+def _nan_smooth(a, sigma):
+    """Gaussian smooth that ignores NaN instead of spreading it.
+
+    A plain gaussian_filter treats NaN as poison — one missing cell
+    contaminates its whole neighbourhood and the echo edge dissolves.
+    Normalised convolution smooths the data and the valid-mask
+    separately then divides, so edges stay put and only real values
+    contribute.
+    """
+    import numpy as np
+    from scipy.ndimage import gaussian_filter
+
+    if sigma <= 0:
+        return a
+    m = np.isfinite(a).astype("float32")
+    d = np.where(np.isfinite(a), a, 0.0).astype("float32")
+    ds = gaussian_filter(d, sigma, mode="nearest")
+    ms = gaussian_filter(m, sigma, mode="nearest")
+    out = np.full_like(a, np.nan)
+    good = ms > 1e-3
+    out[good] = ds[good] / ms[good]
+    # Do not invent echo where there was none: drop cells that only
+    # got a value because a neighbour bled into them.
+    out[(~np.isfinite(a)) & (ms < 0.5)] = np.nan
+    return out
+
+
 def render_png(comp, path, diag=None):
     """Filled-contour render — the smoothing half of the problem.
 
-    A discrete-class raster (what the ArcGIS export returns) gives
-    hard pixel edges. Filled contours at 2.5 dBZ steps produce the
-    continuous look, the same technique as the CAM renderer.
+    Three things together make this look continuous rather than
+    pixelated: Barnes2 gridding, a light Gaussian on the finished
+    field, and fine contour steps. A discrete-class raster (what an
+    ArcGIS export returns) gives hard pixel edges; 1 dBZ filled
+    contours over a smoothed field do not.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -545,25 +603,30 @@ def render_png(comp, path, diag=None):
     import numpy as np
     from matplotlib.colors import BoundaryNorm, ListedColormap
 
-    lev = np.arange(DBZ_MIN, 80.001, 2.5)
+    comp = _nan_smooth(comp, SMOOTH_SIGMA)
+    # 1.0 dBZ steps, not 2.5: at 2.5 the bands themselves are visible
+    # as contour terracing on a smooth gradient.
+    lev = np.arange(DBZ_MIN, 80.001, 1.0)
     cols = plt.get_cmap("gist_ncar")(np.linspace(0.08, 0.95, len(lev) - 1))
     cmap = ListedColormap(cols)
     cmap.set_bad(alpha=0.0)
     norm = BoundaryNorm(lev, cmap.N)
 
-    n = comp.shape[0]
-    fig = plt.figure(figsize=(n / 200.0, n / 200.0), dpi=200)
+    ny, nx = comp.shape
+    fig = plt.figure(figsize=(nx / 200.0, ny / 200.0), dpi=200)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_axis_off()
     ax.contourf(np.ma.masked_invalid(comp), levels=lev,
                 cmap=cmap, norm=norm, extend="max", antialiased=True)
-    ax.set_xlim(0, n - 1)
-    ax.set_ylim(0, n - 1)
+    ax.set_xlim(0, nx - 1)
+    ax.set_ylim(0, ny - 1)
     fig.savefig(path, format="png", transparent=True,
                 bbox_inches=None, pad_inches=0)
     plt.close(fig)
     if diag is not None:
         diag["png_bytes"] = os.path.getsize(path)
+        diag["render"] = (f"smooth sigma={SMOOTH_SIGMA}, "
+                          f"{len(lev) - 1} contour bands")
     return path
 
 
