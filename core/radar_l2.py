@@ -127,83 +127,106 @@ _BUCKET = "noaa-nexrad-level2"
 # ---------------------------------------------------------------------------
 # Fetch
 # ---------------------------------------------------------------------------
-def latest_key(site: str, fs, diag=None, within_min: int = None):
-    """Newest Level II volume key for `site`, or None.
+# ---------------------------------------------------------------------------
+# Volume access — REUSES the existing modules, does not re-solve this
+# ---------------------------------------------------------------------------
+# Two earlier attempts here fetched from noaa-nexrad-level2 directly and
+# both got "Access Denied". core/radar.py already documented why, last
+# week: "AWS public bucket XML listing - tried first, currently denies
+# anonymous listing". That bucket does not serve anonymous listings any
+# more, and no amount of switching between s3fs and plain HTTPS changes
+# it. The repo already had the answer.
+#
+# So this module fetches nothing of its own. Two proven paths, in order:
+#
+#   1. core.radar_l2rt — the unidata-nexrad-level2-chunks feed, which
+#      receives chunks WHILE the antenna scans. A usable 0.5 deg sweep
+#      ~1 min into the volume instead of after the full 4-6 min scan.
+#      Returns a PARTIAL volume: expect fewer sweeps than a complete
+#      one, which is why tilt selection below clamps to what arrived
+#      rather than assuming TILTS are present.
+#   2. core.radar._find_scans / _download_volume — the AWS -> GCS ->
+#      UCAR THREDDS chain, for a complete volume when the chunk feed
+#      is unavailable. Slower and staler, but whole.
+#
+# Diagnostics record which path served each site, so a mosaic can be
+# read as "3 sites live, 1 site archive" rather than looking uniform.
 
-    Every failure mode reports itself. The first version swallowed
-    listing exceptions in a bare `except: continue`, so a permissions
-    error, a wrong prefix and an empty bucket all surfaced
-    identically as "no recent volume" — which tells you nothing.
-    Now the diagnostic distinguishes: listing error vs no keys vs
-    keys present but stale, and names the newest file and its age.
+
+def _read_volume_bytes(raw: bytes):
+    """Bytes -> pyart Radar. Tolerates a truncated chunk stream.
+
+    radar_l2rt hands back a deliberately truncated Archive II stream
+    (first N chunks, mid-scan). metpy's Level2File is lenient about
+    that; pyart may not be, so a failure here is expected sometimes
+    and is a fallback trigger, not a bug.
     """
-    from datetime import datetime, timedelta, timezone
+    import pyart
 
-    within = int(within_min if within_min is not None
-                 else os.environ.get("L2_WITHIN_MIN", "45"))
-    now = datetime.now(timezone.utc)
-    notes = []
-    # s3fs caches directory listings; a stale cache on a prefix that
-    # is written to continuously will hide brand-new volumes.
-    try:
-        fs.invalidate_cache()
-    except Exception:
-        pass
-    for day in (now, now - timedelta(days=1)):
-        pre = f"{_BUCKET}/{day:%Y}/{day:%m}/{day:%d}/{site}/"
-        try:
-            keys = fs.ls(pre, detail=False)
-        except Exception as exc:
-            notes.append(f"{pre} -> {type(exc).__name__}: {exc}")
-            continue
-        vols = [k for k in keys
-                if "_V" in k.rsplit("/", 1)[-1]
-                and not k.endswith("_MDM")]
-        if not vols:
-            notes.append(f"{pre} -> {len(keys)} keys, 0 volumes")
-            continue
-        vols.sort()
-        newest = vols[-1]
-        fn = newest.rsplit("/", 1)[-1]
-        try:
-            t = datetime.strptime(fn[4:19], "%Y%m%d_%H%M%S").replace(
-                tzinfo=timezone.utc)
-        except Exception as exc:
-            notes.append(f"{fn} -> unparseable stamp ({exc})")
-            return newest, None, notes
-        age = (now - t).total_seconds() / 60.0
-        if age > within:
-            notes.append(
-                f"{pre} -> {len(vols)} volumes, newest {fn} is "
-                f"{age:.0f} min old (limit {within})")
-            continue
-        notes.append(f"{fn} | {age:.1f} min old | {len(vols)} today")
-        return newest, t, notes
-    return None, None, notes
+    return pyart.io.read_nexrad_archive(io.BytesIO(raw))
+
 
 def load_site(site: str, fs, diag: dict):
-    """Read one volume, trimmed to the lowest TILTS sweeps.
+    """Fetch one volume, trimmed to the lowest available sweeps.
 
     Trimming happens at read time via `extract_sweeps` because the
     full 14-tilt volume is what pushes peak memory past 2 GB.
     """
-    import pyart
-
-    key, t, notes = latest_key(site, fs, diag)
-    if key is None:
-        diag["sites"][site] = "; ".join(notes) or "no keys returned"
-        return None, None
     t0 = time.time()
-    with fs.open(key, "rb") as fh:
-        buf = io.BytesIO(fh.read())
-    radar = pyart.io.read_nexrad_archive(buf)
-    n = min(TILTS, radar.nsweeps)
-    radar = radar.extract_sweeps(list(range(n)))
+    radar = None
+    src = ""
+    notes = []
+
+    # --- path 1: live chunk feed -------------------------------------
+    try:
+        from core import radar_l2rt
+
+        raw, info = radar_l2rt.fetch_live_volume_bytes(site)
+        radar = _read_volume_bytes(raw)
+        src = (f"chunk feed vol {info.get('volume')} "
+               f"{info.get('n_used')}/{info.get('n_chunks')} chunks, "
+               f"{info.get('age_s')}s old")
+    except Exception as exc:
+        notes.append(f"chunk feed: {type(exc).__name__}: {exc}")
+
+    # --- path 2: complete volume via the AWS/GCS/THREDDS chain -------
+    if radar is None:
+        try:
+            import tempfile
+            from datetime import datetime, timedelta, timezone
+
+            from core import radar as _r
+
+            now = datetime.now(timezone.utc)
+            scans = _r._find_scans(site, now - timedelta(minutes=90), now)
+            if not scans:
+                raise RuntimeError("no scans in the last 90 min")
+            scan = sorted(scans, key=lambda s_: s_.scan_time)[-1]
+            with tempfile.TemporaryDirectory() as td:
+                path = _r._download_volume(scan, f"{td}/{scan.filename}")
+                with open(path, "rb") as fh:
+                    radar = _read_volume_bytes(fh.read())
+            age = (now - scan.scan_time).total_seconds() / 60.0
+            src = f"archive {scan.filename} ({age:.0f} min old)"
+        except Exception as exc:
+            notes.append(f"archive: {type(exc).__name__}: {exc}")
+
+    if radar is None:
+        diag["sites"][site] = " | ".join(notes) or "no volume"
+        return None, None
+
+    # Clamp to what actually arrived — a partial volume may hold far
+    # fewer sweeps than TILTS.
+    have = radar.nsweeps
+    n = min(TILTS, have)
+    if n < have:
+        radar = radar.extract_sweeps(list(range(n)))
     diag["sites"][site] = (
-        f"{notes[-1] if notes else ''} | {n} tilts | "
+        f"{src} | {n}/{have} tilts | "
         f"{radar.nrays * radar.ngates / 1e6:.1f}M gates | "
-        f"{time.time() - t0:.1f}s")
-    return radar, t
+        f"{time.time() - t0:.1f}s"
+        + (f" | {'; '.join(notes)}" if notes else ""))
+    return radar, None
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +301,6 @@ def build_mosaic(sites=None, diag=None):
     is never more than one volume plus the accumulator.
     """
     import numpy as np
-    import s3fs
 
     global GRID_CENTER
     sites = sites or REGIONS["N90 / New York"]
@@ -287,7 +309,7 @@ def build_mosaic(sites=None, diag=None):
     diag["config"] = (f"{TILTS} tilts, {LEVELS} levels, {RES_M:.0f} m, "
                       f"+-{HALF_M / 1000:.0f} km")
     t_all = time.time()
-    fs = s3fs.S3FileSystem(anon=True)
+    fs = None   # volume access lives in load_site
     acc = None
     times = []
 
@@ -309,6 +331,14 @@ def build_mosaic(sites=None, diag=None):
                     GRID_CENTER = (float(radar.latitude["data"][0]),
                                    float(radar.longitude["data"][0]))
                     diag["center"] = [round(v, 4) for v in GRID_CENTER]
+                # Scan time comes from the volume itself rather than a
+                # filename, so it is right for both the chunk feed and
+                # the archive path.
+                try:
+                    import pyart
+                    t = pyart.util.datetime_from_radar(radar)
+                except Exception:
+                    t = None
                 arr = _grid_one(radar)
                 acc = _merge(acc, arr)
                 if t:
