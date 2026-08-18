@@ -11,7 +11,13 @@ Opens at a 300 nm radius on the N90 centroid, which reaches DCA to
 BUF to PWM.
 
 BUILT NOW: navigation fixes with role colouring, approximate N90
-extent, Class B shelves, ARTCC boundaries, reference airports.
+extent, Class B shelves, ARTCC boundaries, reference airports, and
+an optional KOKX Level II radar loop.
+
+The radar is opt-in and manual for a reason: every frame is a full
+fetch, QC, grid and render at ~10 s, so a 24-frame loop is four
+minutes of work. Frames are keyed by volume filename and cached on
+disk, so a second build only renders scans it has not seen.
 
 DELIBERATELY NOT BUILT YET, and why — each needs a source decision
 before any code is worth writing:
@@ -72,6 +78,72 @@ AIRPORTS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# JetBlue traffic in the terminal area
+# ---------------------------------------------------------------------------
+# A single bounded point query rather than page 3's 17-tile CONUS
+# sweep: 40 nm is one small circle, so one call covers it. That also
+# keeps this page independent of page 3 — nothing is imported across
+# pages, so a change to the fleet map cannot break the airspace map.
+# Same two hosts and the same User-Agent as page 3, so we stay one
+# well-behaved client rather than two.
+TRAFFIC_RADIUS_NM = 40
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def jbu_traffic(bucket: str, radius_nm: int):
+    """JetBlue aircraft within radius_nm of the N90 centre.
+
+    Returns (rows, note). Never raises: the airspace layers must
+    still draw if the feed is down.
+    """
+    import requests
+
+    hdrs = {"User-Agent": "bluemet.org ops dashboard"}
+    la, lo = N90_CENTER
+    urls = [
+        f"https://api.adsb.lol/v2/point/{la:.2f}/{lo:.2f}/{radius_nm}",
+        f"https://opendata.adsb.fi/api/v2/lat/{la:.2f}/lon/"
+        f"{lo:.2f}/dist/{radius_nm}",
+    ]
+    last = "no hosts tried"
+    for u in urls:
+        try:
+            r = requests.get(u, headers=hdrs, timeout=6)
+        except Exception as exc:
+            last = f"{type(exc).__name__}: {exc}"
+            continue
+        if r.status_code != 200:
+            last = f"HTTP {r.status_code}"
+            continue
+        try:
+            ac = (r.json() or {}).get("ac") or []
+        except Exception as exc:
+            last = f"bad JSON: {exc}"
+            continue
+        rows = []
+        for p in ac:
+            cs = (p.get("flight") or "").strip().upper()
+            if not cs.startswith("JBU"):
+                continue
+            try:
+                alat, alon = float(p["lat"]), float(p["lon"])
+            except Exception:
+                continue
+            alt = p.get("alt_baro")
+            alt = None if alt in ("ground", None) else alt
+            rows.append({
+                "lat": alat, "lon": alon,
+                "cs": cs.replace("JBU", "B6"),
+                "trk": float(p.get("track") or 0.0),
+                "tip": (f"{cs} &mdash; "
+                        f"{'on ground' if alt is None else f'{alt:,} ft'}"
+                        f", {p.get('gs') or 0:.0f} kt"),
+            })
+        return rows, f"{len(rows)} JetBlue of {len(ac)} aircraft"
+    return [], last
+
+
 def _json(name):
     """Load a static asset. Returns (data, error) — never raises into
     the page, because one missing asset should not take the map down."""
@@ -95,11 +167,19 @@ def load_airspace():
         # WHITE coordination fix. Data-driven: vice lists gates under
         # airspace_awareness and boundary crossings under
         # coordination_fixes; fixes in both work traffic both ways.
+        # Two colour sets. The triangle keeps the bright role colour
+        # so it reads against the basemap; the LABEL uses a darkened
+        # version, because a light plate needs dark text. Bright
+        # green or white on light grey is unreadable, so switching
+        # the plate without darkening the text would have traded one
+        # legibility problem for another.
         col = {"dep": [40, 190, 70], "both": [250, 210, 40]}
+        tcol = {"dep": [16, 96, 40], "both": [128, 88, 0]}
         lbl = {"dep": "departure gate", "both": "arrival + departure"}
         out["fixes"] = [{
             "name": f["name"], "lat": f["lat"], "lon": f["lon"],
             "tcolor": col.get(f.get("role"), [255, 255, 255]),
+            "lcolor": tcol.get(f.get("role"), [45, 45, 45]),
             "tip": (f"{f['name']} &mdash; "
                     + lbl.get(f.get("role"), "coordination fix")
                     + (f", from {f['from']}" if f.get("from") else "")
@@ -156,9 +236,96 @@ with c[3]:
     show_ar = st.checkbox("ARTCC", value=False)
 with c[4]:
     show_ap = st.checkbox("Airports", value=True)
+    show_ac = st.checkbox("JBU traffic", value=True,
+                          help=f"JetBlue aircraft within "
+                               f"{TRAFFIC_RADIUS_NM} nm of the N90 "
+                               f"centre. Refreshes every 60 s.")
 with c[5]:
     radius_nm = st.select_slider(
         "Initial radius (nm)", [100, 150, 200, 300, 400], value=300)
+
+# ---------------------------------------------------------------------------
+# Radar (opt-in)
+# ---------------------------------------------------------------------------
+st.divider()
+r1, r2, r3, r4 = st.columns([1, 2, 2, 2])
+with r1:
+    radar_on = st.checkbox("Radar", value=False,
+                           help="KOKX Level II. Off by default — a "
+                                "loop build is minutes of work.")
+product = "Composite (all reflectivity levels)"
+n_frames = 6
+if radar_on:
+    with r2:
+        product = st.selectbox(
+            "Product",
+            ["Composite (all reflectivity levels)",
+             "Base reflectivity (0.5 deg)"],
+            help="Composite maxes every gridded level. Base is the "
+                 "lowest sweep only, projected as a plan view.",
+        )
+    with r3:
+        n_frames = st.slider("Frames", 1, 24, 6,
+                             help="~10 s per NEW frame. Cached "
+                                  "frames are free, so growing an "
+                                  "existing loop is cheap.")
+    with r4:
+        st.write("")
+        build = st.button("Build radar loop", type="primary")
+else:
+    build = False
+
+_L2_TAG = "cmax" if product.startswith("Composite") else "base"
+
+if build:
+    try:
+        from core import radar_l2 as L2
+
+        # Composite: several levels, max over them. Base: ONE deep
+        # level so the 0.5 deg sweep lands in it whole — a thin
+        # level would intersect the climbing beam only in a narrow
+        # range ring rather than giving a plan view.
+        if _L2_TAG == "cmax":
+            L2.TILTS, L2.LEVELS, L2.TOP_M, L2.BASE_M = 6, 5, None, 500.0
+        else:
+            L2.TILTS, L2.LEVELS, L2.TOP_M, L2.BASE_M = 1, 1, 6000.0, 0.0
+        L2.RES_M = 250.0
+        L2.HALF_X_M = L2.HALF_Y_M = 230000.0
+        L2.GRID_CENTER = (40.8656, -72.8639)      # KOKX
+        bar = st.progress(0.0, "Starting...")
+        diag = {}
+        frames, diag = L2.build_loop(
+            "KOKX", int(n_frames), _STATIC, tag=_L2_TAG,
+            progress=lambda f, m: bar.progress(min(f, 1.0), m),
+            diag=diag)
+        bar.empty()
+        st.session_state["_n90_radar"] = {
+            "frames": frames, "diag": diag,
+            "bounds": list(L2.bounds()), "tag": _L2_TAG,
+            "product": product,
+        }
+        if not frames:
+            st.error(f"No frames built — {diag.get('error', 'unknown')}")
+    except Exception as exc:
+        import traceback
+        st.error(f"Radar build failed — {type(exc).__name__}: {exc}")
+        st.code(traceback.format_exc(), language="text")
+
+_rs = st.session_state.get("_n90_radar") if radar_on else None
+_frame_url = None
+if _rs and _rs.get("frames"):
+    fr = _rs["frames"]
+    idx = st.slider("Frame", 1, len(fr), len(fr),
+                    help="Oldest to newest.") - 1 if len(fr) > 1 else 0
+    base = (os.environ.get("RENDER_EXTERNAL_URL")
+            or os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
+    if base:
+        _frame_url = f"{base}/app/static/{fr[idx]['name']}"
+        st.caption(f"{_rs['product']} — frame {idx + 1} of {len(fr)}, "
+                   f"valid {fr[idx]['valid']}")
+    else:
+        st.warning("RENDER_EXTERNAL_URL not set — cannot build an "
+                   "absolute URL for the radar layer.")
 
 import math
 
@@ -174,6 +341,13 @@ def _zoom_for(radius_nm, px=1400.0):
 
 
 layers = []
+
+# Radar goes down first so fixes, airports and boundaries stay legible
+# on top of it.
+if _frame_url:
+    layers.append(pdk.Layer(
+        "BitmapLayer", data=None, image=_frame_url,
+        bounds=_rs["bounds"], opacity=0.8))
 
 # Order matters: ARTCC underneath as a reference grid, then Class B,
 # then the N90 extent, then fixes and airports on top.
@@ -210,6 +384,24 @@ if show_ap:
         get_text_anchor='"start"', get_pixel_offset=[8, 8],
         background=True, get_background_color=[255, 255, 255, 210],
         background_padding=[3, 1, 3, 1]))
+if show_ac:
+    from datetime import datetime, timezone
+    _tb = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+    _ac, _acnote = jbu_traffic(_tb, TRAFFIC_RADIUS_NM)
+    if _ac:
+        layers.append(pdk.Layer(
+            "ScatterplotLayer", data=_ac, get_position="[lon, lat]",
+            get_fill_color=[0, 60, 160, 230], get_radius=110,
+            radius_units='"pixels"', radius_min_pixels=4,
+            radius_max_pixels=9, pickable=True))
+        layers.append(pdk.Layer(
+            "TextLayer", data=_ac, get_position="[lon, lat]",
+            get_text="cs", get_size=10, get_color=[0, 40, 120],
+            get_text_anchor='"start"', get_pixel_offset=[9, -9],
+            background=True,
+            get_background_color=[255, 255, 255, 225],
+            background_padding=[3, 1, 3, 1]))
+
 if show_fix and data.get("fixes"):
     layers.append(pdk.Layer(
         "TextLayer", data=data["fixes"], get_position="[lon, lat]",
@@ -217,9 +409,9 @@ if show_fix and data.get("fixes"):
         pickable=True))
     layers.append(pdk.Layer(
         "TextLayer", data=data["fixes"], get_position="[lon, lat]",
-        get_text="name", get_size=10, get_color="tcolor",
+        get_text="name", get_size=10, get_color="lcolor",
         get_text_anchor='"start"', get_pixel_offset=[7, -7],
-        background=True, get_background_color=[0, 0, 0, 215],
+        background=True, get_background_color=[228, 228, 230, 235],
         background_padding=[4, 2, 4, 2]))
 
 st.pydeck_chart(pdk.Deck(
@@ -238,7 +430,13 @@ st.caption(
     "that geometry is not published in FAA open GIS. Blue: FAA New "
     "York Class B shelves. Grey: ARTCC high-sector boundaries. "
     f"Fix data extracted {data.get('fix_vintage', '?')}."
+    + (f" Blue dots: {_acnote} within {TRAFFIC_RADIUS_NM} nm."
+       if show_ac else "")
 )
+
+if _rs and _rs.get("diag"):
+    with st.expander("Radar diagnostics"):
+        st.json(_rs["diag"])
 
 with st.expander("Planned additions"):
     st.markdown(
