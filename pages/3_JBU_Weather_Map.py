@@ -87,8 +87,16 @@ def n90_data():
             # COATE, NEION, GAYEL, PARKE, BIGGY, ELIOT ...), which
             # is a DIFFERENT list from coordination_fixes. Seven
             # fixes appear in both and count as gates.
-            gate = f.get("role") == "gate"
-            col = [30, 90, 220] if gate else [140, 60, 190]
+            # GREEN  departure gate  (airspace_awareness only)
+            # YELLOW arrival AND departure (in both source lists)
+            # WHITE  coordination fix only (not a gate)
+            # The split is data-driven: vice lists gates under
+            # airspace_awareness and boundary-crossing points under
+            # coordination_fixes, and the seven fixes appearing in
+            # both are the ones that work traffic in both directions.
+            role = f.get("role")
+            col = {"dep": [40, 190, 70],
+                   "both": [250, 210, 40]}.get(role, [255, 255, 255])
             # Key is "tcolor", not "color": the per-datum accessor
             # that demonstrably works in this file is the callsign
             # layer's "lcolor", and a plain "color" key did not
@@ -97,8 +105,9 @@ def n90_data():
                 "name": f["name"], "lat": f["lat"], "lon": f["lon"],
                 "tcolor": col,
                 "tip": (f"{f['name']} &mdash; "
-                        + ("arrival/departure gate"
-                           if gate else "coordination fix")
+                        + {"dep": "departure gate",
+                           "both": "arrival + departure"}.get(
+                               role, "coordination fix")
                         + (f", from {f['from']}" if f.get("from") else "")
                         + f" ({f.get('dist_nm', '?')} nm)"),
             })
@@ -2118,11 +2127,11 @@ if run_button:
         _rad = (" Map auto-refreshes every 2 min; aircraft "
                 "positions update each refresh.")
         if n90_on:
-            _rad += (" Triangles: N90 fixes - BLUE = arrival/"
-                     "departure gate, PURPLE = other coordination "
-                     "fix. The outline is an APPROXIMATE extent "
-                     "(hull of those fixes), not the delegated N90 "
-                     "boundary.")
+            _rad += (" Triangles: N90 fixes - GREEN = departure "
+                     "gate, YELLOW = arrival + departure, WHITE = "
+                     "coordination fix. The outline is an "
+                     "APPROXIMATE extent (hull of those fixes), not "
+                     "the delegated N90 boundary.")
         if classb_on:
             _rad += (f" Blue outline: FAA New York CLASS B shelves "
                      f"(snapshot {_cb_vintage}) - not the N90 "
