@@ -638,3 +638,115 @@ def bounds():
     dlat = HALF_Y_M / 111320.0
     dlon = HALF_X_M / (111320.0 * math.cos(math.radians(lat0)))
     return (lon0 - dlon, lat0 - dlat, lon0 + dlon, lat0 + dlat)
+
+# ---------------------------------------------------------------------------
+# Frame loops
+# ---------------------------------------------------------------------------
+# A loop is expensive: every frame is a full fetch + QC + grid + render,
+# ~10 s each, so 24 frames is four minutes. Two things make that
+# tolerable. Frames are keyed by the VOLUME FILENAME, so a rebuild
+# only renders scans it has not seen — asking for 24 frames a second
+# time costs one new frame, not twenty-four. And the loop is driven
+# by the archive chain rather than the chunk feed, because the chunk
+# feed only ever holds the volume currently being scanned.
+
+
+def recent_scans(site, n, lookback_min=240):
+    """The n most recent complete volumes, oldest first."""
+    from datetime import datetime, timedelta, timezone
+
+    from core import radar as _r
+
+    now = datetime.now(timezone.utc)
+    scans = _r._find_scans(site, now - timedelta(minutes=lookback_min),
+                           now)
+    if not scans:
+        return []
+    return sorted(scans, key=lambda x: x.scan_time)[-n:]
+
+
+def render_scan(site, scan, outdir, tag, diag=None):
+    """One frame. Returns (filename, note). Skips work if it exists."""
+    import tempfile
+
+    from pathlib import Path as _PP
+
+    diag = diag if diag is not None else {}
+    name = f"l2loop_{tag}_{scan.filename}.png"
+    dest = _PP(outdir) / name
+    if dest.exists():
+        return name, "cached"
+    from core import radar as _r
+
+    global GRID_CENTER
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            path = _r._download_volume(scan, f"{td}/{scan.filename}")
+            with open(path, "rb") as fh:
+                radar = _read_volume_bytes(fh.read())
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    try:
+        have = radar.nsweeps
+        k = min(TILTS, have)
+        if k < have:
+            radar = radar.extract_sweeps(list(range(k)))
+        gf_diag = {}
+        arr, (rla, rlo) = _grid_one(radar, gf_diag, site)
+        num, den = _accumulate(None, None, arr, rla, rlo)
+        del arr
+        import numpy as np
+
+        comp = np.nanmax(_finalize(num, den), axis=0)
+        del num, den
+        render_png(comp, dest, diag)
+        del comp
+        return name, f"{k}/{have} tilts"
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    finally:
+        del radar
+        gc.collect()
+
+
+def build_loop(site, n_frames, outdir, tag="cmax", progress=None,
+               diag=None):
+    """Render up to n_frames volumes. Returns (frames, diag).
+
+    frames is oldest-first: [{"name", "valid"}]. Old frames for this
+    tag are pruned to twice the requested depth so the disk does not
+    grow without bound.
+    """
+    from pathlib import Path as _PP
+
+    diag = diag if diag is not None else {}
+    diag.setdefault("frames", {})
+    scans = recent_scans(site, n_frames)
+    if not scans:
+        diag["error"] = f"no {site} volumes in the last 4 h"
+        return [], diag
+    out = _PP(outdir)
+    out.mkdir(parents=True, exist_ok=True)
+    frames = []
+    for i, sc in enumerate(scans, 1):
+        if progress:
+            progress(i / len(scans),
+                     f"frame {i}/{len(scans)} — {sc.filename}")
+        name, note = render_scan(site, sc, out, tag, diag)
+        diag["frames"][sc.filename] = note
+        if name:
+            frames.append({
+                "name": name,
+                "valid": sc.scan_time.strftime("%H:%M:%SZ"),
+            })
+    keep = {f["name"] for f in frames}
+    for old in sorted(out.glob(f"l2loop_{tag}_*.png")):
+        if old.name not in keep and len(list(
+                out.glob(f"l2loop_{tag}_*.png"))) > 2 * n_frames:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+    diag["n_frames"] = len(frames)
+    return frames, diag
+
