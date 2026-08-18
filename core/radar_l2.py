@@ -147,6 +147,15 @@ HALF_Y_M = float(os.environ.get("L2_HALF_Y_M", "200000"))
 # Back-compat alias; setting HALF_M sets both axes.
 HALF_M = HALF_X_M
 BASE_M = float(os.environ.get("L2_BASE_M", "500"))
+# Optional explicit grid top. Without it the vertical span is derived
+# from LEVELS (1 km apart), which is right for a multi-tilt composite
+# but wrong for a SINGLE sweep: the 0.5 deg beam climbs from 180 m at
+# 10 nm to ~5,100 m at 125 nm, so a thin layer intersects it only in a
+# narrow range ring. For a base-reflectivity plan view set LEVELS=1
+# and TOP_M above the beam at max range, and every gate lands in the
+# one level.
+TOP_M = os.environ.get("L2_TOP_M")
+TOP_M = float(TOP_M) if TOP_M else None
 GRID_WORKERS = int(os.environ.get("L2_WORKERS", "2"))
 CC_MIN = float(os.environ.get("L2_CC_MIN", "0.80"))
 # Contiguous regions smaller than this are dropped as speckle.
@@ -335,7 +344,9 @@ def _grid_one(radar, diag=None, site=None):
     g = pyart.map.grid_from_radars(
         (radar,),
         grid_shape=(LEVELS, ny, nx),
-        grid_limits=((BASE_M, BASE_M + 1000.0 * max(LEVELS - 1, 1)),
+        grid_limits=((BASE_M,
+                      TOP_M if TOP_M else
+                      BASE_M + 1000.0 * max(LEVELS - 1, 1)),
                      (-HALF_Y_M, HALF_Y_M), (-HALF_X_M, HALF_X_M)),
         fields=["reflectivity"],
         weighting_function="nearest",
