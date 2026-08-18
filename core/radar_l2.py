@@ -127,6 +127,9 @@ GRID_WORKERS = int(os.environ.get("L2_WORKERS", "2"))
 CC_MIN = float(os.environ.get("L2_CC_MIN", "0.80"))
 # Contiguous regions smaller than this are dropped as speckle.
 SPECKLE = int(os.environ.get("L2_SPECKLE", "10"))
+# Range scale for blend weights. Default is the 52 nm crossover
+# where beam spreading makes L2 coarser than MRMS = 96 km.
+BLEND_M = float(os.environ.get("L2_BLEND_M", "96000"))
 # Floor for BOTH the QC gate filter and the colour ramp — one knob, so
 # what is gridded is what is shown. 15 dBZ is the operationally
 # meaningful threshold for a terminal area: below it is drizzle,
@@ -318,22 +321,87 @@ def _grid_one(radar, diag=None, site=None):
     arr = np.ma.filled(
         g.fields["reflectivity"]["data"], np.nan).astype("float32")
     del g
-    return arr
+    return arr, (float(radar.latitude["data"][0]),
+                 float(radar.longitude["data"][0]))
 
 
-def _merge(acc, arr):
-    """v1: element-wise max.
+def _site_weight(rlat, rlon, shape):
+    """Per-cell confidence in one radar, from horizontal range.
 
-    Deliberately crude. The right merge weights each site by range and
-    beam height — a gate 10 nm from KOKX at 600 ft AGL should dominate
-    one 90 nm from KENX sampling 11,000 ft through the same column,
-    and max-merge treats them as equals. Replacing this function is
-    the single highest-value improvement to the mosaic; everything
-    else in the pipeline stays as-is.
+    Replaces the v1 element-wise max, which treated a gate 10 nm from
+    KOKX at 600 ft as equal to one 90 nm from KENX sampling 11,000 ft
+    through the same column. That produced hard seams wherever a
+    site's coverage ended — clearly visible in the first four-site
+    synthetic mosaic.
+
+    Weight is a Gaussian in range, w = exp(-(d/D0)^2), with D0
+    defaulting to the 52 nm crossover where 0.5 deg beam spreading
+    makes Level II coarser than MRMS. That is not an arbitrary
+    constant: it is the distance at which this data stops being
+    better than the alternative, so it is the right place for a
+    site's vote to fall away.
+
+    Height weighting is deliberately folded into range rather than
+    computed separately. For a fixed elevation angle, sampling height
+    and range are monotonically related (0.5 deg gives 600 ft at
+    10 nm, 4,300 ft at 50 nm), so a range term already penalises
+    high-sampling cells. True per-gate height weighting needs the
+    height field, which gridding discards.
+    """
+    import math
+
+    import numpy as np
+
+    lat0, lon0 = GRID_CENTER
+    # Equirectangular offset of the radar from the grid origin. Py-ART
+    # grids in azimuthal-equidistant; over a few hundred km the
+    # difference is sub-kilometre, which is far below what matters for
+    # a smoothly varying weight.
+    rx = (rlon - lon0) * 111320.0 * math.cos(math.radians(lat0))
+    ry = (rlat - lat0) * 111320.0
+    n = shape[-1]
+    ax = np.linspace(-HALF_M, HALF_M, n, dtype="float32")
+    d2 = ((ax - rx) ** 2)[None, :] + ((ax - ry) ** 2)[:, None]
+    d0 = BLEND_M
+    return np.exp(-d2 / (d0 * d0)).astype("float32")
+
+
+def _accumulate(num, den, arr, rlat, rlon):
+    """Fold one site into weighted sums, in LINEAR Z not dBZ.
+
+    dBZ is logarithmic, so averaging it is not averaging power — a
+    30 and a 40 dBZ sample average to 35 dBZ in log space but to
+    37.4 in linear, and the linear answer is the physical one.
+    Convert, accumulate weighted, convert back at the end.
     """
     import numpy as np
 
-    return arr if acc is None else np.fmax(acc, arr)
+    w2d = _site_weight(rlat, rlon, arr.shape)
+    ok = np.isfinite(arr)
+    if not ok.any():
+        return num, den
+    z = np.zeros_like(arr)
+    np.power(10.0, arr / 10.0, out=z, where=ok)
+    w = np.broadcast_to(w2d, arr.shape) * ok
+    if num is None:
+        num = np.zeros_like(arr)
+        den = np.zeros_like(arr)
+    num += (z * w).astype("float32")
+    den += w.astype("float32")
+    return num, den
+
+
+def _finalize(num, den):
+    """Weighted mean back to dBZ; NaN where no site voted."""
+    import numpy as np
+
+    out = np.full(num.shape, np.nan, dtype="float32")
+    good = den > 0
+    np.divide(num, den, out=out, where=good)
+    np.log10(out, out=out, where=good & (out > 0))
+    out *= 10.0
+    out[~good] = np.nan
+    return out
 
 
 def build_mosaic(sites=None, diag=None):
@@ -355,7 +423,7 @@ def build_mosaic(sites=None, diag=None):
                       f"+-{HALF_M / 1000:.0f} km")
     t_all = time.time()
     fs = None   # volume access lives in load_site
-    acc = None
+    num = den = None       # weighted-sum accumulators, linear Z
     times = []
 
     from concurrent.futures import ThreadPoolExecutor
@@ -372,7 +440,7 @@ def build_mosaic(sites=None, diag=None):
             try:
                 # Centre on the first volume we successfully read, so
                 # the box follows the region rather than a constant.
-                if acc is None:
+                if num is None:
                     GRID_CENTER = (float(radar.latitude["data"][0]),
                                    float(radar.longitude["data"][0]))
                     diag["center"] = [round(v, 4) for v in GRID_CENTER]
@@ -384,8 +452,8 @@ def build_mosaic(sites=None, diag=None):
                     t = pyart.util.datetime_from_radar(radar)
                 except Exception:
                     t = None
-                arr = _grid_one(radar, diag, site)
-                acc = _merge(acc, arr)
+                arr, (rla, rlo) = _grid_one(radar, diag, site)
+                num, den = _accumulate(num, den, arr, rla, rlo)
                 if t:
                     times.append(t)
                 del arr
@@ -396,13 +464,18 @@ def build_mosaic(sites=None, diag=None):
                 del radar
                 gc.collect()
 
-    if acc is None:
+    if num is None:
         diag["error"] = "no sites produced a grid"
         return None, diag
 
-    comp = np.nanmax(acc, axis=0)
-    del acc
+    # Column max AFTER blending, so each level is a properly weighted
+    # multi-radar estimate before the vertical max is taken.
+    blended = _finalize(num, den)
+    del num, den
+    comp = np.nanmax(blended, axis=0)
+    del blended
     gc.collect()
+    diag["blend"] = f"range-weighted, D0={BLEND_M / 1000:.0f} km"
     if times:
         # Scan times differ between sites; a 40 kt storm moves ~2 nm
         # in 4 min, so the spread is the mosaic's real time error.
