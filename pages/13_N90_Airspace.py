@@ -78,6 +78,39 @@ AIRPORTS = {
 }
 
 
+# The exact A320 icon page 3 uses — same path data, same #005ADC
+# blue, same 64x64 centre anchor. Copied rather than imported because
+# page filenames start with digits and are not importable as modules;
+# if this ever diverges from page 3 the two maps will disagree about
+# what a JetBlue aircraft looks like, so keep them in step.
+def _a320_icon_uri(fill="#005ADC"):
+    import urllib.parse
+    body = ("M0,-10 L0.35,-9.6 L0.55,-8.8 L0.6,-6 L0.6,-1.6 "
+            "L9.2,3.2 L9.6,3.4 L9.6,4 L9.1,4.1 L2.6,3.3 "
+            "L0.6,3.1 L0.6,6.4 L3.3,8.2 L3.3,9 L0.5,8.5 "
+            "L0.45,9.4 L0,9.7 L-0.45,9.4 L-0.5,8.5 L-3.3,9 "
+            "L-3.3,8.2 L-0.6,6.4 L-0.6,3.1 L-2.6,3.3 "
+            "L-9.1,4.1 L-9.6,4 L-9.6,3.4 L-9.2,3.2 L-0.6,-1.6 "
+            "L-0.6,-6 L-0.55,-8.8 L-0.35,-9.6 Z")
+    eng_r = ("M2.6,-0.9 L3.35,-0.9 L3.45,-0.4 L3.45,1.6 "
+             "L3.3,1.9 L2.75,1.9 L2.6,1.5 Z")
+    eng_l = ("M-2.6,-0.9 L-3.35,-0.9 L-3.45,-0.4 L-3.45,1.6 "
+             "L-3.3,1.9 L-2.75,1.9 L-2.6,1.5 Z")
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="64" '
+        'height="64" viewBox="-11 -11 22 22">'
+        f'<g fill="{fill}" stroke="#FFFFFF" stroke-width="0.5">'
+        f'<path d="{body}"/><path d="{eng_r}"/>'
+        f'<path d="{eng_l}"/></g></svg>'
+    )
+    return ("data:image/svg+xml;charset=utf-8,"
+            + urllib.parse.quote(svg))
+
+
+_AC_ICON = {"url": _a320_icon_uri(), "width": 64, "height": 64,
+            "anchorX": 32, "anchorY": 32, "mask": False}
+
+
 # ---------------------------------------------------------------------------
 # JetBlue traffic in the terminal area
 # ---------------------------------------------------------------------------
@@ -135,7 +168,11 @@ def jbu_traffic(bucket: str, radius_nm: int):
             rows.append({
                 "lat": alat, "lon": alon,
                 "cs": cs.replace("JBU", "B6"),
-                "trk": float(p.get("track") or 0.0),
+                "icon": _AC_ICON,
+                # deck.gl IconLayer angle is CCW; heading is CW from
+                # north, so it has to be flipped — same convention
+                # page 3 uses.
+                "angle": (360.0 - float(p.get("track") or 0.0)) % 360.0,
                 "tip": (f"{cs} &mdash; "
                         f"{'on ground' if alt is None else f'{alt:,} ft'}"
                         f", {p.get('gs') or 0:.0f} kt"),
@@ -390,10 +427,9 @@ if show_ac:
     _ac, _acnote = jbu_traffic(_tb, TRAFFIC_RADIUS_NM)
     if _ac:
         layers.append(pdk.Layer(
-            "ScatterplotLayer", data=_ac, get_position="[lon, lat]",
-            get_fill_color=[0, 60, 160, 230], get_radius=110,
-            radius_units='"pixels"', radius_min_pixels=4,
-            radius_max_pixels=9, pickable=True))
+            "IconLayer", data=_ac, get_position="[lon, lat]",
+            get_icon="icon", get_size=24, size_min_pixels=14,
+            size_max_pixels=34, get_angle="angle", pickable=True))
         layers.append(pdk.Layer(
             "TextLayer", data=_ac, get_position="[lon, lat]",
             get_text="cs", get_size=10, get_color=[0, 40, 120],
