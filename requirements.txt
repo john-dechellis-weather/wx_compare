@@ -19,3 +19,7 @@ siphon>=0.9
 nexradaws>=2.0
 cfgrib
 eccodes
+# Level II multi-radar mosaic (pages/12_L2_Radar_Lab.py).
+# Pulls s3fs, xradar, pint, pooch; cartopy/netCDF4/scipy/xarray
+# were already here so the added footprint is ~43 MB.
+arm_pyart>=2.0
