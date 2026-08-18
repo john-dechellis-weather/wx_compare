@@ -83,7 +83,8 @@ AIRPORTS = {
 # page filenames start with digits and are not importable as modules;
 # if this ever diverges from page 3 the two maps will disagree about
 # what a JetBlue aircraft looks like, so keep them in step.
-def _a320_icon_uri(fill="#005ADC", stroke="#FFFFFF"):
+def _a320_icon_uri(fill="#005ADC", stroke="#FFFFFF",
+                   stroke_w=0.5):
     import urllib.parse
     body = ("M0,-10 L0.35,-9.6 L0.55,-8.8 L0.6,-6 L0.6,-1.6 "
             "L9.2,3.2 L9.6,3.4 L9.6,4 L9.1,4.1 L2.6,3.3 "
@@ -99,7 +100,7 @@ def _a320_icon_uri(fill="#005ADC", stroke="#FFFFFF"):
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" width="64" '
         'height="64" viewBox="-11 -11 22 22">'
-        f'<g fill="{fill}" stroke="#FFFFFF" stroke-width="0.5">'
+        f'<g fill="{fill}" stroke="{stroke}" stroke-width="{stroke_w}">'
         f'<path d="{body}"/><path d="{eng_r}"/>'
         f'<path d="{eng_l}"/></g></svg>'
     )
@@ -109,11 +110,13 @@ def _a320_icon_uri(fill="#005ADC", stroke="#FFFFFF"):
 
 _AC_ICON = {"url": _a320_icon_uri(), "width": 64, "height": 64,
             "anchorX": 32, "anchorY": 32, "mask": False}
-# Everyone else: white body, black outline. On a dark scope the black
-# stroke is what separates the silhouette from the background, and it
-# keeps non-JetBlue traffic clearly subordinate to the blue fleet
-# without making it hard to see.
-_AC_ICON_OTHER = {"url": _a320_icon_uri("#FFFFFF", "#000000"),
+# Everyone else: OUTLINE ONLY — fill="none", black stroke. The
+# silhouette shape and heading still read, but an unfilled symbol
+# stays visually subordinate to the solid blue fleet and lets the
+# basemap show through, which matters when a few hundred aircraft
+# are in the box. stroke_w is in viewBox units: the box is 22 units
+# rendered at 64 px, so 0.9 units is about 2.6 px on screen.
+_AC_ICON_OTHER = {"url": _a320_icon_uri("none", "#000000", 0.9),
                   "width": 64, "height": 64, "anchorX": 32,
                   "anchorY": 32, "mask": False}
 
@@ -218,18 +221,18 @@ def load_airspace():
         # green or white on light grey is unreadable, so switching
         # the plate without darkening the text would have traded one
         # legibility problem for another.
-        # STARS-scope palette on a dark basemap. Green is a shade
-        # lighter than scope spring-green so it stays readable at
-        # 6 pt label size — pure #00FF7F vibrates against black.
-        # Amber marks the rare arrival+departure class; grey-blue
-        # keeps plain coordination fixes subordinate.
-        col = {"dep": [102, 255, 166], "both": [255, 179, 0]}
-        tcol = {"dep": [102, 255, 166], "both": [255, 179, 0]}
+        # Triangles keep their bright role colours; labels use
+        # darkened versions on a light plate, because bright green or
+        # amber on near-white is unreadable (1.9 and 1.2 contrast).
+        # The third class was WHITE, which disappeared entirely on a
+        # light basemap — it is now dark slate, so all three read.
+        col = {"dep": [40, 190, 70], "both": [250, 210, 40]}
+        tcol = {"dep": [16, 96, 40], "both": [128, 88, 0]}
         lbl = {"dep": "departure gate", "both": "arrival + departure"}
         out["fixes"] = [{
             "name": f["name"], "lat": f["lat"], "lon": f["lon"],
-            "tcolor": col.get(f.get("role"), [159, 179, 184]),
-            "lcolor": tcol.get(f.get("role"), [159, 179, 184]),
+            "tcolor": col.get(f.get("role"), [70, 84, 90]),
+            "lcolor": tcol.get(f.get("role"), [38, 48, 52]),
             "tip": (f"{f['name']} &mdash; "
                     + lbl.get(f.get("role"), "coordination fix")
                     + (f", from {f['from']}" if f.get("from") else "")
@@ -289,9 +292,9 @@ with c[4]:
     show_ac = st.checkbox("Traffic", value=True,
                           help=f"All aircraft within "
                                f"{TRAFFIC_RADIUS_NM} nm of the N90 "
-                               f"centre. JetBlue in blue with flight "
-                               f"numbers; everyone else white with a "
-                               f"black outline, tooltip only. "
+                               f"centre. JetBlue solid blue with "
+                               f"flight numbers; everyone else a "
+                               f"black outline only, tooltip only. "
                                f"Refreshes every 60 s.")
 with c[5]:
     radius_nm = st.select_slider(
@@ -407,22 +410,24 @@ if _frame_url:
 if show_ar and data.get("artcc"):
     layers.append(pdk.Layer(
         "PolygonLayer", data=data["artcc"], get_polygon="polygon",
-        filled=False, stroked=True, get_line_color=[120, 136, 142, 175],
+        filled=False, stroked=True, get_line_color=[110, 122, 128, 185],
         line_width_min_pixels=1, get_line_width=1, pickable=True))
 if show_cb and data.get("classb"):
     layers.append(pdk.Layer(
         "PolygonLayer", data=data["classb"], get_polygon="polygon",
-        filled=False, stroked=True, get_line_color=[90, 160, 255, 205],
+        filled=False, stroked=True, get_line_color=[0, 90, 200, 200],
         line_width_min_pixels=1, get_line_width=1, pickable=True))
 if show_hull and data.get("hull"):
     layers.append(pdk.Layer(
         "PolygonLayer", data=data["hull"], get_polygon="polygon",
-        filled=False, stroked=True, get_line_color=[86, 168, 122, 225],
+        filled=False, stroked=True, get_line_color=[230, 120, 30, 190],
         line_width_min_pixels=5, get_line_width=5, pickable=True))
 if show_ap:
     rows = [{"lon": lo, "lat": la, "name": ic[1:],
-             "acolor": {"core": [255, 92, 92], "sat": [255, 168, 80]}
-                       .get(k, [150, 165, 172]),
+             # The third tier used to be mid-grey and washed out
+             # against the basemap; darkened so it reads.
+             "acolor": {"core": [200, 24, 24], "sat": [190, 100, 20]}
+                       .get(k, [72, 84, 90]),
              "asize": {"core": 90, "sat": 60}.get(k, 40),
              "tip": ic}
             for ic, (la, lo, k) in AIRPORTS.items()]
@@ -433,9 +438,9 @@ if show_ap:
         radius_max_pixels=7, pickable=True))
     layers.append(pdk.Layer(
         "TextLayer", data=rows, get_position="[lon, lat]",
-        get_text="name", get_size=11, get_color=[226, 232, 234],
+        get_text="name", get_size=11, get_color=[26, 32, 36],
         get_text_anchor='"start"', get_pixel_offset=[8, 8],
-        background=True, get_background_color=[8, 16, 18, 210],
+        background=True, get_background_color=[255, 255, 255, 225],
         background_padding=[3, 1, 3, 1]))
 if show_ac:
     from datetime import datetime, timezone
@@ -457,10 +462,10 @@ if show_ac:
             size_max_pixels=34, get_angle="angle", pickable=True))
         layers.append(pdk.Layer(
             "TextLayer", data=_ac, get_position="[lon, lat]",
-            get_text="cs", get_size=10, get_color=[150, 200, 255],
+            get_text="cs", get_size=10, get_color=[0, 40, 120],
             get_text_anchor='"start"', get_pixel_offset=[9, -9],
             background=True,
-            get_background_color=[11, 20, 22, 225],
+            get_background_color=[255, 255, 255, 228],
             background_padding=[3, 1, 3, 1]))
 
 if show_fix and data.get("fixes"):
@@ -472,7 +477,7 @@ if show_fix and data.get("fixes"):
         "TextLayer", data=data["fixes"], get_position="[lon, lat]",
         get_text="name", get_size=10, get_color="lcolor",
         get_text_anchor='"start"', get_pixel_offset=[7, -7],
-        background=True, get_background_color=[8, 16, 18, 215],
+        background=True, get_background_color=[240, 240, 242, 238],
         background_padding=[4, 2, 4, 2]))
 
 st.pydeck_chart(pdk.Deck(
@@ -480,22 +485,22 @@ st.pydeck_chart(pdk.Deck(
     initial_view_state=pdk.ViewState(
         latitude=N90_CENTER[0], longitude=N90_CENTER[1],
         zoom=_zoom_for(radius_nm), min_zoom=4, max_zoom=12),
-    # Dark scope. The fix palette, Class B, ARTCC, airport and
-    # traffic colours above are all tuned for this background —
-    # switching back to "light" makes the green and white unreadable.
-    map_style="dark",
+    # Same basemap as the CONUS fleet map, so the two pages read as
+    # one product. Every colour below is tuned for it.
+    map_style="light",
     tooltip={"html": "<b>{tip}</b>"},
 ), height=760)
 
 st.caption(
     "Fix triangles: GREEN departure gate, AMBER arrival + departure, "
-    "GREY coordination fix. Orange outline is an APPROXIMATE N90 "
+    "SLATE coordination fix. Orange outline is an APPROXIMATE N90 "
     "extent (hull of the fixes), NOT the delegated TRACON boundary — "
     "that geometry is not published in FAA open GIS. Blue: FAA New "
     "York Class B shelves. Grey: ARTCC high-sector boundaries. "
     f"Fix data extracted {data.get('fix_vintage', '?')}."
     + (f" Traffic: {_acnote} within {TRAFFIC_RADIUS_NM} nm — "
-       f"JetBlue blue and labelled, all others white."
+       f"JetBlue solid blue and labelled, all others "
+       f"black outline."
        if show_ac else "")
 )
 
