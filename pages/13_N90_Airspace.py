@@ -326,25 +326,31 @@ def load_airspace():
         # green or white on light grey is unreadable, so switching
         # the plate without darkening the text would have traded one
         # legibility problem for another.
-        # Triangles keep their bright role colours; labels use
-        # darkened versions on a light plate, because bright green or
-        # amber on near-white is unreadable (1.9 and 1.2 contrast).
-        # The third class was WHITE, which disappeared entirely on a
-        # light basemap — it is now dark slate, so all three read.
-        col = {"dep": [40, 190, 70], "both": [250, 210, 40]}
-        # Label colours are darker than they look like they need to
-        # be. The #A49B93 plate is a MID tone (luminance 0.33), so it
-        # gives far less contrast than white: the previous label
-        # greens and ambers scored 2.8 and 2.3 against it, well under
-        # the 4.5 readable threshold. These clear it.
-        tcol = {"dep": [6, 56, 31], "both": [58, 39, 0]}
-        lbl = {"dep": "departure gate", "both": "arrival + departure"}
+        # Scheme K. Three pieces per class: a muted TRIANGLE, a
+        # pastel CHIP behind the label, and dark text on it. No chip
+        # border — dropping it is what makes this read calm rather
+        # than decorated, and the fills stay distinct enough without.
+        #
+        # Class mapping, inferred from the vice adaptation rather
+        # than stated by it: ARRIVAL = coordination_fixes, which
+        # carry traffic INTO N90 from a centre. DEPARTURE =
+        # airspace_awareness only. OTHER = the seven in both lists.
+        #
+        # Text is dark enough to clear 4.5 contrast on its own chip —
+        # measured 9.0 arrival, 8.4 departure, 8.8 other — while the
+        # chips themselves sit at ~1.1 against the basemap, which is
+        # the point: visible, not shouting.
+        tri  = {"coord": [76, 139, 63], "dep": [180, 99, 90]}
+        txt  = {"coord": [27, 67, 50], "dep": [107, 31, 31]}
+        chip = {"coord": [216, 240, 192], "dep": [247, 214, 214]}
+        lbl  = {"coord": "arrival gate", "dep": "departure gate"}
         out["fixes"] = [{
             "name": f["name"], "lat": f["lat"], "lon": f["lon"],
-            "tcolor": col.get(f.get("role"), [70, 84, 90]),
-            "lcolor": tcol.get(f.get("role"), [20, 25, 27]),
+            "tcolor": tri.get(f.get("role"), [160, 139, 60]),
+            "lcolor": txt.get(f.get("role"), [74, 59, 18]),
+            "chip": chip.get(f.get("role"), [239, 231, 198]) + [238],
             "tip": (f"{f['name']} &mdash; "
-                    + lbl.get(f.get("role"), "coordination fix")
+                    + lbl.get(f.get("role"), "other nav aid")
                     + (f", from {f['from']}" if f.get("from") else "")
                     + f" ({f.get('dist_nm', '?')} nm)"),
         } for f in fx.get("fixes", [])]
@@ -572,9 +578,12 @@ if show_ac:
             size_max_pixels=26, get_angle="angle", pickable=True))
     if _ac:
         layers.append(pdk.Layer(
+            # 1.5x the other-traffic size (24 -> 36, and the pixel
+            # bounds scale with it) so the fleet is unmistakable
+            # against the outline-only aircraft around it.
             "IconLayer", data=_ac, get_position="[lon, lat]",
-            get_icon="icon", get_size=24, size_min_pixels=14,
-            size_max_pixels=34, get_angle="angle", pickable=True))
+            get_icon="icon", get_size=36, size_min_pixels=21,
+            size_max_pixels=51, get_angle="angle", pickable=True))
         layers.append(pdk.Layer(
             "TextLayer", data=_ac, get_position="[lon, lat]",
             get_text="cs", get_size=10, get_color=[0, 40, 120],
@@ -592,8 +601,10 @@ if show_fix and data.get("fixes"):
         "TextLayer", data=data["fixes"], get_position="[lon, lat]",
         get_text="name", get_size=10, get_color="lcolor",
         get_text_anchor='"start"', get_pixel_offset=[7, -7],
-        background=True, get_background_color=[164, 155, 147, 240],
-        background_padding=[4, 2, 4, 2]))
+        background=True, get_background_color="chip",
+        # No border: deck.gl TextLayer has no chip stroke, which is
+        # exactly what scheme K wants.
+        background_padding=[5, 2, 5, 2]))
 
 st.pydeck_chart(pdk.Deck(
     layers=layers,
@@ -607,8 +618,8 @@ st.pydeck_chart(pdk.Deck(
 ), height=760)
 
 st.caption(
-    "Fix triangles: GREEN departure gate, AMBER arrival + departure, "
-    "SLATE coordination fix. Orange outline is an APPROXIMATE N90 "
+    "Fix chips: GREEN arrival gate, ROSE departure gate, SAND other "
+    "nav aid. Orange outline is an APPROXIMATE N90 "
     "extent (hull of the fixes), NOT the delegated TRACON boundary — "
     "that geometry is not published in FAA open GIS. Blue: FAA New "
     "York Class B shelves. Grey: ARTCC high-sector boundaries. "
