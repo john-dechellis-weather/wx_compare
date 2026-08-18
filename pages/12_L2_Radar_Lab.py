@@ -47,11 +47,13 @@ except Exception as exc:  # arm_pyart missing is the likely cause
 # ---------------------------------------------------------------------------
 c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
 with c1:
+    region = st.selectbox("Region", list(L2.REGIONS), index=0)
     sites = st.multiselect(
-        "Radar sites", list(L2.N90_SITES),
-        default=["KOKX"],
-        help="Start with KOKX alone — it sits inside the terminal "
-             "area. Each added site costs ~20 s and widens coverage.",
+        "Radar sites", L2.REGIONS[region],
+        default=L2.REGIONS[region][:1],
+        help="Start with one site. Each added site costs ~20 s and "
+             "widens coverage. The grid centres itself on the first "
+             "volume that loads, so any region works.",
     )
 with c2:
     tilts = st.selectbox("Tilts", [2, 4, 6, 8], index=1,
@@ -125,6 +127,11 @@ if run:
                 "bounds": list(L2.bounds()),
             }
         prog.empty()
+        if comp is None:
+            # A failed build used to have nowhere to say why: the
+            # diagnostics expander only rendered on success.
+            st.error("No site produced a grid. Per-site reasons:")
+            st.json(diag)
     except Exception:
         prog.empty()
         st.error("Mosaic build failed — full traceback below.")
