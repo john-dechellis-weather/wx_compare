@@ -131,9 +131,103 @@ _AC_ICON_OTHER = {"url": _a320_icon_uri("none", "#000000", 0.9),
 # Same two hosts and the same User-Agent as page 3, so we stay one
 # well-behaved client rather than two.
 TRAFFIC_RADIUS_NM = 40
+# Ramp declutter. Every airport carries a permanent pile of parked
+# aircraft — a hundred at JFK alone — which swamps the terminal area
+# and hides the traffic that matters. Rule: inside DECLUTTER_SM of an
+# airport, if more than DECLUTTER_MIN aircraft are present, drop the
+# ones that are not moving.
+#
+# Only the STATIONARY ones. Suppressing everything inside 10 sm would
+# also delete aircraft on final and on climbout, which is exactly the
+# traffic an airspace page exists to show — a parked A320 and one at
+# 800 ft on approach are both "within 10 sm of JFK" and only one of
+# them is clutter.
+DECLUTTER_SM = 10.0
+DECLUTTER_MIN = 10
+DECLUTTER_ALT_FT = 1200      # at or below this, and slow, = parked
+DECLUTTER_GS_KT = 40
+
+
+def _declutter(rows):
+    """Drop stationary aircraft in crowded airport circles.
+
+    Returns (kept, n_hidden). Airborne traffic is never touched.
+    """
+    import math
+
+    if not rows:
+        return rows, 0
+    sm = DECLUTTER_SM * 1609.34
+    hidden = set()
+    for icao, (ala, alo, _k) in AIRPORTS.items():
+        near = []
+        for i, r in enumerate(rows):
+            dy = (r["lat"] - ala) * 111320.0
+            dx = ((r["lon"] - alo) * 111320.0
+                  * math.cos(math.radians(ala)))
+            if math.hypot(dx, dy) <= sm:
+                near.append(i)
+        if len(near) <= DECLUTTER_MIN:
+            continue
+        for i in near:
+            r = rows[i]
+            alt = r.get("alt")
+            parked = ((alt is None or alt <= DECLUTTER_ALT_FT)
+                      and (r.get("gs") or 0) <= DECLUTTER_GS_KT)
+            if parked:
+                hidden.add(i)
+    if not hidden:
+        return rows, 0
+    return [r for i, r in enumerate(rows) if i not in hidden], len(hidden)
+# Ramp-cluster suppression. Every airport carries a permanent pile of
+# parked and taxiing aircraft — a hundred or more at JFK — which
+# swamps the terminal area and hides the traffic that matters. When
+# more than CLUSTER_MIN aircraft sit inside CLUSTER_SM statute miles
+# of a field, that group is treated as ramp clutter and dropped.
+#
+# ONE EXEMPTION, and it matters: anything above CLUSTER_EXEMPT_FT or
+# faster than CLUSTER_EXEMPT_KT is kept regardless. Without it the
+# rule would also delete aircraft on short final into JFK, which is
+# precisely what an ops map exists to show.
+CLUSTER_SM = 10.0
+CLUSTER_MIN = 10
+CLUSTER_EXEMPT_FT = 3000
+CLUSTER_EXEMPT_KT = 100
 
 
 @st.cache_data(ttl=60, show_spinner=False)
+def _drop_ramp_clusters(rows):
+    """Remove parked/taxiing piles. Returns (kept, n_dropped).
+
+    For each airport, count aircraft within CLUSTER_SM. If that group
+    is bigger than CLUSTER_MIN it is ramp clutter and goes — except
+    for anything airborne by altitude or speed, which is kept.
+    """
+    import math
+
+    if not rows:
+        return rows, 0
+    doomed = set()
+    for _, (ala, alo, _k) in AIRPORTS.items():
+        near = []
+        for i, r in enumerate(rows):
+            dx = ((r["lon"] - alo) * 60.0
+                  * math.cos(math.radians(ala)))
+            dy = (r["lat"] - ala) * 60.0
+            # 1 nm = 1.15078 sm
+            if math.hypot(dx, dy) * 1.15078 <= CLUSTER_SM:
+                near.append(i)
+        if len(near) > CLUSTER_MIN:
+            for i in near:
+                r = rows[i]
+                if (r.get("_alt", 0) >= CLUSTER_EXEMPT_FT
+                        or r.get("_gs", 0) >= CLUSTER_EXEMPT_KT):
+                    continue
+                doomed.add(i)
+    kept = [r for i, r in enumerate(rows) if i not in doomed]
+    return kept, len(doomed)
+
+
 def area_traffic(bucket: str, radius_nm: int):
     """All aircraft within radius_nm of the N90 centre.
 
@@ -173,22 +267,33 @@ def area_traffic(bucket: str, radius_nm: int):
                 continue
             alt = p.get("alt_baro")
             alt = None if alt in ("ground", None) else alt
+            try:
+                gs = float(p.get("gs") or 0.0)
+            except Exception:
+                gs = 0.0
             mine = cs.startswith("JBU")
             (jbu if mine else other).append({
                 "lat": alat, "lon": alon,
                 "cs": cs.replace("JBU", "B6") if mine else cs,
                 "icon": _AC_ICON if mine else _AC_ICON_OTHER,
+                "alt": alt,
+                "gs": float(p.get("gs") or 0.0),
                 # deck.gl IconLayer angle is CCW; heading is CW from
                 # north, so it has to be flipped — same convention
                 # page 3 uses.
                 "angle": (360.0 - float(p.get("track") or 0.0)) % 360.0,
                 "tip": (f"{cs} &mdash; "
                         f"{'on ground' if alt is None else f'{alt:,} ft'}"
-                        f", {p.get('gs') or 0:.0f} kt"),
+                        f", {gs:.0f} kt"),
+                "_alt": alt if alt is not None else 0,
+                "_gs": gs,
             })
+        jbu, n_j = _drop_ramp_clusters(jbu)
+        other, n_o = _drop_ramp_clusters(other)
         return (jbu, other,
                 f"{len(jbu)} JetBlue and {len(other)} other of "
-                f"{len(ac)} aircraft")
+                f"{len(ac)} aircraft; {n_j + n_o} hidden as ramp "
+                f"clutter")
     return [], [], last
 
 
@@ -227,12 +332,17 @@ def load_airspace():
         # The third class was WHITE, which disappeared entirely on a
         # light basemap — it is now dark slate, so all three read.
         col = {"dep": [40, 190, 70], "both": [250, 210, 40]}
-        tcol = {"dep": [16, 96, 40], "both": [128, 88, 0]}
+        # Label colours are darker than they look like they need to
+        # be. The #A49B93 plate is a MID tone (luminance 0.33), so it
+        # gives far less contrast than white: the previous label
+        # greens and ambers scored 2.8 and 2.3 against it, well under
+        # the 4.5 readable threshold. These clear it.
+        tcol = {"dep": [6, 56, 31], "both": [58, 39, 0]}
         lbl = {"dep": "departure gate", "both": "arrival + departure"}
         out["fixes"] = [{
             "name": f["name"], "lat": f["lat"], "lon": f["lon"],
             "tcolor": col.get(f.get("role"), [70, 84, 90]),
-            "lcolor": tcol.get(f.get("role"), [38, 48, 52]),
+            "lcolor": tcol.get(f.get("role"), [20, 25, 27]),
             "tip": (f"{f['name']} &mdash; "
                     + lbl.get(f.get("role"), "coordination fix")
                     + (f", from {f['from']}" if f.get("from") else "")
@@ -446,6 +556,11 @@ if show_ac:
     from datetime import datetime, timezone
     _tb = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
     _ac, _other, _acnote = area_traffic(_tb, TRAFFIC_RADIUS_NM)
+    _ac, _h1 = _declutter(_ac)
+    _other, _h2 = _declutter(_other)
+    if _h1 + _h2:
+        _acnote += (f"; {_h1 + _h2} parked hidden inside "
+                    f"{DECLUTTER_SM:.0f} sm of airports")
     # Other traffic first, so JetBlue draws on top of it. Deliberately
     # UNLABELLED: 40 nm around New York holds a few hundred aircraft
     # and labelling them all would bury the airspace underneath. The
@@ -477,7 +592,7 @@ if show_fix and data.get("fixes"):
         "TextLayer", data=data["fixes"], get_position="[lon, lat]",
         get_text="name", get_size=10, get_color="lcolor",
         get_text_anchor='"start"', get_pixel_offset=[7, -7],
-        background=True, get_background_color=[240, 240, 242, 238],
+        background=True, get_background_color=[164, 155, 147, 240],
         background_padding=[4, 2, 4, 2]))
 
 st.pydeck_chart(pdk.Deck(
