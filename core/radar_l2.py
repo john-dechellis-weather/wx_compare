@@ -62,12 +62,29 @@ from datetime import datetime, timedelta, timezone
 # reports "no recent volume" in diagnostics instead of silently
 # shifting the grid.
 REGIONS = {
-    "N90 / New York": ["KOKX", "KDIX", "KENX", "KBOX"],
+    # DCA-BUF-PWM needs eight sites, not four. Deselect on the page
+    # to trade coverage for build time — each site is ~20 s.
+    "N90 / New York": ["KOKX", "KDIX", "KENX", "KBOX",
+                       "KLWX", "KBUF", "KTYX", "KGYX"],
     "ATL / Atlanta": ["KFFC", "KJGX", "KBMX", "KGSP"],
     "FLL-MIA / South Florida": ["KAMX", "KBYX", "KMLB", "KTBW"],
     "BOS / New England": ["KBOX", "KENX", "KGYX", "KOKX"],
     "MSP / Minneapolis": ["KMPX", "KARX", "KFSD", "KDLH"],
     "MCO / Orlando": ["KMLB", "KTBW", "KJAX", "KAMX"],
+}
+# Explicit view per region: (centre_lat, centre_lon, half_x_km,
+# half_y_km). Centring on the first radar that loaded put MCO's box
+# 73 km off-centre — its west edge landed on Leesburg (-81.876) and
+# clipped the storms, while 184 km of grid sat over the Atlantic.
+# Boxes are RECTANGULAR because the areas are: N90 spans DCA to BUF
+# to PWM, which is 8.4 deg of longitude against 4.8 of latitude.
+REGION_VIEW = {
+    "N90 / New York": (41.25, -74.52, 355, 270),
+    "ATL / Atlanta": (33.64, -84.43, 200, 200),
+    "FLL-MIA / South Florida": (26.30, -80.60, 200, 220),
+    "BOS / New England": (42.36, -71.01, 230, 200),
+    "MSP / Minneapolis": (44.88, -93.22, 220, 220),
+    "MCO / Orlando": (28.43, -81.31, 200, 180),
 }
 SITE_NOTES = {
     "KOKX": "Upton NY — inside the N90 terminal area, primary source",
@@ -82,6 +99,10 @@ SITE_NOTES = {
     "KARX": "La Crosse WI — southeast",
     "KFSD": "Sioux Falls SD — southwest",
     "KDLH": "Duluth MN — northeast",
+    "KLWX": "Sterling VA — the DCA/BWI/IAD radar",
+    "KBUF": "Buffalo NY — western end",
+    "KTYX": "Fort Drum NY — fills the Adirondack gap",
+    "KGYX": "Gray ME — the PWM radar",
     "KMLB": "Melbourne FL — ~35 nm east of MCO, the primary "
             "Orlando-area radar and well inside the useful radius",
     "KTBW": "Ruskin FL — Tampa Bay, ~65 nm southwest",
@@ -121,7 +142,10 @@ def _center_from(latlons):
 TILTS = int(os.environ.get("L2_TILTS", "6"))
 LEVELS = int(os.environ.get("L2_LEVELS", "5"))
 RES_M = float(os.environ.get("L2_RES_M", "250"))
-HALF_M = float(os.environ.get("L2_HALF_M", "200000"))
+HALF_X_M = float(os.environ.get("L2_HALF_X_M", "200000"))
+HALF_Y_M = float(os.environ.get("L2_HALF_Y_M", "200000"))
+# Back-compat alias; setting HALF_M sets both axes.
+HALF_M = HALF_X_M
 BASE_M = float(os.environ.get("L2_BASE_M", "500"))
 GRID_WORKERS = int(os.environ.get("L2_WORKERS", "2"))
 CC_MIN = float(os.environ.get("L2_CC_MIN", "0.80"))
@@ -306,12 +330,13 @@ def _grid_one(radar, diag=None, site=None):
     import numpy as np
     import pyart
 
-    n = int(2 * HALF_M / RES_M)
+    nx = int(2 * HALF_X_M / RES_M)
+    ny = int(2 * HALF_Y_M / RES_M)
     g = pyart.map.grid_from_radars(
         (radar,),
-        grid_shape=(LEVELS, n, n),
+        grid_shape=(LEVELS, ny, nx),
         grid_limits=((BASE_M, BASE_M + 1000.0 * max(LEVELS - 1, 1)),
-                     (-HALF_M, HALF_M), (-HALF_M, HALF_M)),
+                     (-HALF_Y_M, HALF_Y_M), (-HALF_X_M, HALF_X_M)),
         fields=["reflectivity"],
         weighting_function="nearest",
         min_radius=RES_M,
@@ -359,9 +384,10 @@ def _site_weight(rlat, rlon, shape):
     # a smoothly varying weight.
     rx = (rlon - lon0) * 111320.0 * math.cos(math.radians(lat0))
     ry = (rlat - lat0) * 111320.0
-    n = shape[-1]
-    ax = np.linspace(-HALF_M, HALF_M, n, dtype="float32")
-    d2 = ((ax - rx) ** 2)[None, :] + ((ax - ry) ** 2)[:, None]
+    ny, nx = shape[-2], shape[-1]
+    ax = np.linspace(-HALF_X_M, HALF_X_M, nx, dtype="float32")
+    ay = np.linspace(-HALF_Y_M, HALF_Y_M, ny, dtype="float32")
+    d2 = ((ax - rx) ** 2)[None, :] + ((ay - ry) ** 2)[:, None]
     d0 = BLEND_M
     return np.exp(-d2 / (d0 * d0)).astype("float32")
 
@@ -420,7 +446,8 @@ def build_mosaic(sites=None, diag=None):
     diag = diag if diag is not None else {}
     diag.setdefault("sites", {})
     diag["config"] = (f"{TILTS} tilts, {LEVELS} levels, {RES_M:.0f} m, "
-                      f"+-{HALF_M / 1000:.0f} km")
+                      f"+-{HALF_X_M / 1000:.0f} x "
+                      f"+-{HALF_Y_M / 1000:.0f} km")
     t_all = time.time()
     fs = None   # volume access lives in load_site
     num = den = None       # weighted-sum accumulators, linear Z
@@ -440,7 +467,9 @@ def build_mosaic(sites=None, diag=None):
             try:
                 # Centre on the first volume we successfully read, so
                 # the box follows the region rather than a constant.
-                if num is None:
+                if num is None and not diag.get("center_fixed"):
+                    # Only fall back to the radar when no region
+                    # centre was supplied; see REGION_VIEW.
                     GRID_CENTER = (float(radar.latitude["data"][0]),
                                    float(radar.longitude["data"][0]))
                     diag["center"] = [round(v, 4) for v in GRID_CENTER]
@@ -532,6 +561,6 @@ def bounds():
     import math
 
     lat0, lon0 = GRID_CENTER
-    dlat = HALF_M / 111320.0
-    dlon = HALF_M / (111320.0 * math.cos(math.radians(lat0)))
+    dlat = HALF_Y_M / 111320.0
+    dlon = HALF_X_M / (111320.0 * math.cos(math.radians(lat0)))
     return (lon0 - dlon, lat0 - dlat, lon0 + dlon, lat0 + dlat)
