@@ -427,6 +427,7 @@ with r1:
                                 "loop build is minutes of work.")
 product = "Composite (all reflectivity levels)"
 n_frames = 6
+smooth_on = True
 if radar_on:
     # Start the background warmer the first time anyone opens the
     # page with radar on. Idempotent, so this is safe on every rerun;
@@ -454,7 +455,13 @@ if radar_on:
                                   "frames are free, so growing an "
                                   "existing loop is cheap.")
     with r4:
-        st.write("")
+        smooth_on = st.toggle(
+            "Smoothing", value=True,
+            help="Gaussian smoothing plus seam matching at coverage "
+                 "handovers. Applies to frames built with the button "
+                 "below — WARMED frames are already rendered on disk "
+                 "and keep whatever setting was active when they "
+                 "were made.")
         build = st.button("Build radar loop", type="primary",
                           help="Only needed for a product or depth "
                                "the warmer is not already keeping "
@@ -479,6 +486,8 @@ if build:
         else:
             L2.TILTS, L2.LEVELS, L2.TOP_M, L2.BASE_M = 1, 1, 6000.0, 0.0
         L2.RES_M = 250.0
+        L2.SMOOTH_SIGMA = 1.0 if smooth_on else 0.0
+        L2.RES_MATCH = bool(smooth_on)
         L2.HALF_X_M = L2.HALF_Y_M = 230000.0
         L2.GRID_CENTER = (40.8656, -72.8639)      # KOKX
         bar = st.progress(0.0, "Starting...")

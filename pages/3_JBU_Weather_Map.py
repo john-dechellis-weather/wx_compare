@@ -575,7 +575,8 @@ _TS_TEXT_ICON = {"url": _ts_text_icon_uri(), "width": 96,
 
 # A320-detailed aircraft icon (style 1: nacelles + sharklets),
 # baked as an inline SVG data-URI - no external image dependency.
-def _a320_icon_uri(fill="#005ADC"):
+def _a320_icon_uri(fill="#005ADC", stroke="#FFFFFF",
+                   stroke_w=0.5):
     import urllib.parse
     body = ("M0,-10 L0.35,-9.6 L0.55,-8.8 L0.6,-6 L0.6,-1.6 "
             "L9.2,3.2 L9.6,3.4 L9.6,4 L9.1,4.1 L2.6,3.3 "
@@ -591,7 +592,7 @@ def _a320_icon_uri(fill="#005ADC"):
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" width="64" '
         'height="64" viewBox="-11 -11 22 22">'
-        f'<g fill="{fill}" stroke="#FFFFFF" stroke-width="0.5">'
+        f'<g fill="{fill}" stroke="{stroke}" stroke-width="{stroke_w}">'
         f'<path d="{body}"/><path d="{eng_r}"/>'
         f'<path d="{eng_l}"/></g></svg>'
     )
@@ -1188,8 +1189,12 @@ def cached_fleet(bucket: str):
         out = []
         for p in ac:
             cs = (p.get("flight") or "").strip()
-            if not cs.upper().startswith("JBU"):
-                continue
+            # Other operators are kept now rather than dropped. The
+            # sweep already paid for them — they arrive in the same
+            # payload — so carrying them costs nothing but a tag, and
+            # a JBU aircraft is far easier to read when you can see
+            # the traffic it is flying among.
+            mine = cs.upper().startswith("JBU")
             if p.get("lat") is None:
                 continue
             alt = p.get("alt_baro")
@@ -1201,10 +1206,11 @@ def cached_fleet(bucket: str):
                         float(trk) if isinstance(
                             trk, (int, float)) else 0.0,
                         float(gs) if isinstance(
-                            gs, (int, float)) else None))
+                            gs, (int, float)) else None,
+                        mine))
         tile_stats.append(
             f"({la:.0f},{lo:.0f}) {host}: {len(ac)} ac, "
-            f"{len(out)} JBU"
+            f"{sum(1 for r in out if r[6])} JBU"
         )
         return out, ("EMPTY200" if not ac else None)
 
@@ -1273,10 +1279,17 @@ def cached_fleet(bucket: str):
                 results.append(res)
 
     seen = {}
+    others = {}
     for res in results:
-        for cs, la, lo, alt, trk, gs in res:
-            if cs not in seen:
-                seen[cs] = (la, lo, alt, trk)
+        for cs, la, lo, alt, trk, gs, mine in res:
+            tgt = seen if mine else others
+            if cs not in tgt and cs not in seen:
+                tgt[cs] = (la, lo, alt, trk)
+    # Route lookups and the hazard ladder run on JBU only: `seen` is
+    # the fleet. `others` is context and never drives a colour, an
+    # alert or an API call — it is drawn and nothing more. That keeps
+    # the adsbdb load unchanged and stops a hundred foreign callsigns
+    # entering the route cache.
 
     # Destinations: one routeset POST for the whole fleet. The
     # parser is shape-defensive (public schema: _airports list of
@@ -1335,7 +1348,11 @@ def cached_fleet(bucket: str):
             "tip": f"{cs} | {alt_s}",
         })
     ok = len(_FLEET_TILES) - len(fails)
-    return out, ok, len(_FLEET_TILES), fails, tile_stats, rs_diag
+    out_other = [{"cs": cs, "lat": v[0], "lon": v[1],
+                  "alt": v[2], "trk": v[3]}
+                 for cs, v in others.items()]
+    return (out, ok, len(_FLEET_TILES), fails, tile_stats, rs_diag,
+            out_other)
 
 # ---------------------------------------------------------------------------
 # Cached analysis — TAFs update every 6 hours; 15-min cache is fresh enough
@@ -1746,10 +1763,11 @@ if run_button:
                 _fres = None
         if _fres is not None:
             (fleet, ok_tiles, n_tiles, tile_fails,
-             tile_stats, rs_diag) = _fres
+             tile_stats, rs_diag, fleet_other) = _fres
         else:
             fleet, ok_tiles, n_tiles = [], 0, 0
             tile_fails, tile_stats, rs_diag = [], [], []
+            fleet_other = []
 
         # No custom city layer: the light basemap already labels
         # major cities at these zooms (ours doubled them)
@@ -1964,11 +1982,13 @@ if run_button:
         # "UnboundLocalError: fleet" - which names the symptom and
         # hides the cause. Seen live 8/17.
         fleet = []
+        fleet_other = []
         _fleet_err = _fleet_tb = None
         try:
             _lres = cached_fleet(_fb)
             if _lres is not None:
                 fleet = _lres[0]
+                fleet_other = _lres[6] if len(_lres) > 6 else []
         except Exception as _fe:
             import traceback as _tb_f
             _fleet_err = f"{type(_fe).__name__}: {_fe}"
@@ -2083,6 +2103,38 @@ if run_button:
                 for n, e in enumerate(group):
                     (fleet_disp if n < 2
                      else gnd_disp).append(e[0])
+
+            # Other operators, drawn UNDER the fleet: half size,
+            # light grey body, yellow outline. Half size and a
+            # desaturated fill are what keep a hundred foreign
+            # aircraft from competing with the eleven that matter,
+            # while the yellow edge keeps them visible against both
+            # the light basemap and radar fill.
+            if fleet_other:
+                _oth_icon = {"url": _a320_icon_uri("#D3D3D3",
+                                                   "#FFD400", 0.9),
+                             "width": 64, "height": 64,
+                             "anchorX": 32, "anchorY": 32,
+                             "mask": False}
+                _oth_rows = [{
+                    "lon": o["lon"], "lat": o["lat"],
+                    "icon": _oth_icon,
+                    # IconLayer angle is CCW, heading is CW from
+                    # north — same flip the fleet layer uses.
+                    "angle": (360.0 - (o.get("trk") or 0.0)) % 360.0,
+                    "tip": (f"{o['cs']} &mdash; "
+                            + ("on ground" if o.get("alt") is None
+                               else f"{o['alt']:,} ft")),
+                } for o in fleet_other]
+                layers.append(pdk.Layer(
+                    "IconLayer", data=_oth_rows,
+                    get_position="[lon, lat]",
+                    get_icon="icon",
+                    get_size=12, size_min_pixels=7,
+                    size_max_pixels=17,
+                    get_angle="angle",
+                    pickable=True,
+                ))
 
             layers.append(pdk.Layer(
                 "IconLayer", data=fleet_disp,

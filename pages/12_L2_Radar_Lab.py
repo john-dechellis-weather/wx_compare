@@ -67,6 +67,13 @@ with c3:
 with c4:
     res_m = st.selectbox("Grid", [250, 500], index=0,
                          format_func=lambda v: f"{v} m")
+    smooth_on = st.toggle(
+        "Smoothing", value=True,
+        help="On: Gaussian render smoothing plus seam matching at "
+             "coverage handovers. Off: the raw gridded field, which "
+             "shows gate wedges and a hard edge where one radar's "
+             "coverage ends — useful for judging what the blend is "
+             "actually doing.")
 
 # Region defaults, overridable. The box is centred on the REGION,
 # not on whichever radar loaded first — a KMLB-centred MCO box put
@@ -117,6 +124,11 @@ if run:
     L2.TILTS = int(tilts)
     L2.LEVELS = int(levels)
     L2.RES_M = float(res_m)
+    # Smoothing is two separate stages and the toggle drives both:
+    # the Gaussian on the finished field, and the gradient-keyed
+    # seam match at coverage handovers.
+    L2.SMOOTH_SIGMA = 1.0 if smooth_on else 0.0
+    L2.RES_MATCH = bool(smooth_on)
     L2.HALF_X_M = float(half_x) * 1000.0
     L2.HALF_Y_M = float(half_y) * 1000.0
     diag = {}
