@@ -657,6 +657,25 @@ BLEND_TIME_S = float(os.environ.get("L2_BLEND_TIME_S", "300"))
 # EITHER site has data, so the footprint is always the union. Only
 # advection correction fixes that.
 BLEND_SHARPNESS = float(os.environ.get("L2_BLEND_SHARPNESS", "2.0"))
+
+# --- seam control ------------------------------------------------------
+# Each radar's usable range, and where its vote starts fading. Without
+# this a TDWR still carries weight 0.415 at 90 km — and then its data
+# simply stops, so the blend denominator falls off a cliff and draws a
+# ring at the edge of coverage. Calibration cannot fix that; only
+# tapering the weight to zero BEFORE the data ends can.
+SITE_RANGE_M = {"C": 90000.0, "S": 230000.0}
+# Fraction of max range where the taper begins.
+EDGE_TAPER_FROM = float(os.environ.get("L2_EDGE_TAPER_FROM", "0.72"))
+
+# Beamwidths, for the resolution-matching pass.
+SITE_BEAMWIDTH = {"C": 0.55, "S": 0.50}
+# Match texture across the seam. A TDWR resolves ~200 m at 20 km; an
+# 88D covering the same ground from 150 km resolves ~1300 m. Even with
+# identical dBZ the FINE STRUCTURE stops where TDWR coverage ends, and
+# the eye reads that as an edge. Smoothing each cell by its own
+# effective sample width makes texture continuous. off = disable.
+RES_MATCH = os.environ.get("L2_RES_MATCH", "on").lower() != "off"
 # Floor for BOTH the QC gate filter and the colour ramp — one knob, so
 # what is gridded is what is shown. 15 dBZ is the operationally
 # meaningful threshold for a terminal area: below it is drizzle,
@@ -909,7 +928,12 @@ def _grid_one(radar, diag=None, site=None):
                  float(radar.longitude["data"][0]))
 
 
-def _site_weight(rlat, rlon, shape, tilt_deg=0.5, age_s=0.0):
+def _site_band(site):
+    return "C" if str(site).upper() in TDWR_SITES else "S"
+
+
+def _site_weight(rlat, rlon, shape, tilt_deg=0.5, age_s=0.0,
+                 site=None):
     """Per-cell confidence in one radar. Three independent terms.
 
     Replaces the v1 element-wise max, which treated a gate 10 nm from
@@ -954,6 +978,19 @@ def _site_weight(rlat, rlon, shape, tilt_deg=0.5, age_s=0.0):
     d2 = ((ax - rx) ** 2)[None, :] + ((ay - ry) ** 2)[:, None]
     w = np.exp(-d2 / (BLEND_M * BLEND_M)).astype("float32")
 
+    # Cosine taper to zero at the site's usable range, so its vote is
+    # already gone by the time its data ends.
+    band = _site_band(site)
+    rmax = SITE_RANGE_M[band]
+    r0 = rmax * EDGE_TAPER_FROM
+    d1 = np.sqrt(d2, dtype="float32")
+    taper = np.ones_like(w)
+    edge = (d1 >= r0) & (d1 < rmax)
+    taper[edge] = 0.5 * (1.0 + np.cos(
+        np.pi * (d1[edge] - r0) / (rmax - r0)))
+    taper[d1 >= rmax] = 0.0
+    w *= taper
+
     if BLEND_TIME_S > 0 and age_s:
         w *= float(math.exp(-(age_s / BLEND_TIME_S) ** 2))
 
@@ -980,7 +1017,7 @@ def _site_weight(rlat, rlon, shape, tilt_deg=0.5, age_s=0.0):
 
 
 def _accumulate(num, den, arr, rlat, rlon, tilt_deg=0.5,
-                age_s=0.0):
+                age_s=0.0, site=None, res=None):
     """Fold one site into weighted sums, in LINEAR Z not dBZ.
 
     dBZ is logarithmic, so averaging it is not averaging power — a
@@ -993,7 +1030,8 @@ def _accumulate(num, den, arr, rlat, rlon, tilt_deg=0.5,
     ok = np.isfinite(arr)
     if not ok.any():
         return num, den
-    w = _site_weight(rlat, rlon, arr.shape, tilt_deg, age_s) * ok
+    w = _site_weight(rlat, rlon, arr.shape, tilt_deg, age_s,
+                     site) * ok
     z = np.zeros_like(arr)
     np.power(10.0, arr / 10.0, out=z, where=ok)
     if num is None:
@@ -1001,6 +1039,23 @@ def _accumulate(num, den, arr, rlat, rlon, tilt_deg=0.5,
         den = np.zeros_like(arr)
     num += (z * w).astype("float32")
     den += w.astype("float32")
+    if res is not None:
+        # Effective sample width of THIS site at each cell, carried
+        # as a weighted sum so the finished map says how well
+        # resolved each cell actually is.
+        import math as _m
+
+        lat0, lon0 = GRID_CENTER
+        rx = (rlon - lon0) * 111320.0 * _m.cos(_m.radians(lat0))
+        ry = (rlat - lat0) * 111320.0
+        ny, nx = arr.shape[-2], arr.shape[-1]
+        ax = np.linspace(-HALF_X_M, HALF_X_M, nx, dtype="float32")
+        ay = np.linspace(-HALF_Y_M, HALF_Y_M, ny, dtype="float32")
+        d = np.sqrt(((ax - rx) ** 2)[None, :] + ((ay - ry) ** 2)[:, None])
+        bw = _m.radians(SITE_BEAMWIDTH[_site_band(site)])
+        res[0] += (np.broadcast_to((d * bw).astype("float32"),
+                                   arr.shape) * w).sum(axis=0)
+        res[1] += w.sum(axis=0)
     return num, den
 
 
@@ -1116,6 +1171,11 @@ def _solve_biases(staged, diag):
     return out
 
 
+# Last resolution map, handed to the renderer without changing the
+# build_mosaic signature that pages already call.
+_RES_MAP = []
+
+
 def build_mosaic(sites=None, diag=None):
     """Fetch, QC, grid and merge. Returns (composite_2d, diag).
 
@@ -1143,6 +1203,7 @@ def build_mosaic(sites=None, diag=None):
     # ~31 MB; the radar volumes themselves are still freed as we go,
     # which is what actually drives peak memory.
     staged = []
+    res_acc = [None, None]      # [sum(res*w), sum(w)] per cell
     times = []
 
     from concurrent.futures import ThreadPoolExecutor
@@ -1219,7 +1280,11 @@ def build_mosaic(sites=None, diag=None):
                 arr = arr - b        # bring this site onto the S-band scale
             age = ((newest - t).total_seconds()
                    if (newest and t) else 0.0)
-            num, den = _accumulate(num, den, arr, rla, rlo, tilt, age)
+            if res_acc[0] is None:
+                res_acc[0] = np.zeros(arr.shape[-2:], dtype="float32")
+                res_acc[1] = np.zeros(arr.shape[-2:], dtype="float32")
+            num, den = _accumulate(num, den, arr, rla, rlo, tilt, age,
+                                   site, res_acc)
             del arr
         staged.clear()
         gc.collect()
@@ -1249,6 +1314,16 @@ def build_mosaic(sites=None, diag=None):
                          f"aloft product unavailable at this "
                          f"LEVELS/TOP_M")
     comp = np.nanmax(blended, axis=0)
+    if res_acc[0] is not None:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            res_map = np.where(res_acc[1] > 0,
+                               res_acc[0] / res_acc[1], np.nan)
+        diag["resolution_m"] = (
+            f"best {np.nanmin(res_map):.0f} m, "
+            f"median {np.nanmedian(res_map):.0f} m, "
+            f"worst {np.nanpercentile(res_map, 95):.0f} m")
+        _RES_MAP.clear()
+        _RES_MAP.append(res_map)
     del blended
     gc.collect()
     diag["blend"] = (f"range D0={BLEND_M / 1000:.0f} km, "
@@ -1273,6 +1348,45 @@ def build_mosaic(sites=None, diag=None):
 # ---------------------------------------------------------------------------
 # Render
 # ---------------------------------------------------------------------------
+def _resolution_match(field, res_m, base_sigma):
+    """Smooth each cell by its OWN effective sample width.
+
+    The seam this fixes is textural, not numerical. Inside 90 km a
+    TDWR resolves 200-900 m; the 88D covering the same ground from
+    150 km resolves ~1300 m. Values can agree perfectly and the eye
+    still sees an edge, because fine structure stops where TDWR
+    coverage ends.
+
+    Implemented as a blur stack: smooth the whole field at a few
+    fixed sigmas, then pick per cell by interpolating between the two
+    bracketing levels. A true per-pixel variable Gaussian is far more
+    expensive and indistinguishable at these scales.
+    """
+    import numpy as np
+
+    if not RES_MATCH or not np.isfinite(res_m).any():
+        return _nan_smooth(field, base_sigma)
+    # Target sigma in CELLS: enough to blur a cell to the coarsest
+    # resolution present, so everything ends up equally soft.
+    worst = float(np.nanpercentile(res_m, 95))
+    tgt = np.clip((worst - res_m) / max(RES_M, 1.0) * 0.5,
+                  0.0, 6.0)
+    tgt = np.nan_to_num(tgt, nan=0.0) + base_sigma
+    stack_sigmas = [base_sigma, 1.5, 2.5, 4.0, 6.5]
+    stack = [_nan_smooth(field, sg) for sg in stack_sigmas]
+    out = np.array(stack[0], copy=True)
+    for lo, hi, a_, b_ in zip(stack_sigmas[:-1], stack_sigmas[1:],
+                              stack[:-1], stack[1:]):
+        m = (tgt > lo) & (tgt <= hi)
+        if m.any():
+            f = ((tgt[m] - lo) / (hi - lo)).astype("float32")
+            out[m] = a_[m] * (1 - f) + b_[m] * f
+    m = tgt > stack_sigmas[-1]
+    if m.any():
+        out[m] = stack[-1][m]
+    return out
+
+
 def _nan_smooth(a, sigma):
     """Gaussian smooth that ignores NaN instead of spreading it.
 
@@ -1315,7 +1429,8 @@ def render_png(comp, path, diag=None):
     import numpy as np
     from matplotlib.colors import BoundaryNorm, ListedColormap
 
-    comp = _nan_smooth(comp, SMOOTH_SIGMA)
+    comp = (_resolution_match(comp, _RES_MAP[0], SMOOTH_SIGMA)
+            if _RES_MAP else _nan_smooth(comp, SMOOTH_SIGMA))
     if RAMP_MODE == "smooth":
         # Same AWIPS anchors, interpolated to 1 dBZ.
         from matplotlib.colors import LinearSegmentedColormap
