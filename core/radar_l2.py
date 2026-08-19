@@ -111,6 +111,21 @@ REGIONS = {
     # has convection.
     "FLL-MIA TDWR pair": ["TMIA", "TFLL"],
     "FLL-MIA merged (S+C)": ["KAMX", "TMIA", "TFLL", "TDJT"],
+    # The whole peninsula, four TDWRs plus four 88Ds.
+    #
+    # KTBW and KMLB are NOT optional padding. Measured over this box:
+    # the four TDWRs plus KAMX leave 38% of it with no coverage at
+    # all and only 21% seen by two or more radars, because a TDWR is
+    # a 90 km instrument and Tampa/Orlando sit 200+ km from the
+    # Miami group. Worse, TTPA overlaps NOTHING in that set, so the
+    # calibration solver could never estimate its bias and it would
+    # float in the mosaic at whatever offset it happens to carry.
+    # Adding the two S-band sites takes no-coverage to 3% and
+    # calibratable area to 63%, and gives TTPA and TMCO each an
+    # S-band neighbour to be anchored to.
+    "Florida Peninsula (S+C)": ["KAMX", "KTBW", "KMLB", "KJAX",
+                                "TMIA", "TFLL", "TDJT", "TMCO",
+                                "TTPA"],
 }
 # Explicit view per region: (centre_lat, centre_lon, half_x_km,
 # half_y_km). Centring on the first radar that loaded put MCO's box
@@ -132,6 +147,7 @@ REGION_VIEW = {
     "NY Metro 1.0deg proto": (40.59, -74.07, 80, 65),
     "FLL-MIA TDWR pair": (25.95, -80.30, 80, 70),
     "FLL-MIA merged (S+C)": (26.10, -80.35, 150, 140),
+    "Florida Peninsula (S+C)": (27.30, -81.40, 230, 230),
 }
 SITE_NOTES = {
     "KOKX": "Upton NY — inside the N90 terminal area, primary source",
@@ -154,6 +170,8 @@ SITE_NOTES = {
     "KDOX": "Dover DE — the Delmarva gap",
     "KCCX": "State College PA — western edge",
     "KBGM": "Binghamton NY — northwest",
+    "TTPA": "TDWR at TPA",
+    "TMCO": "TDWR at MCO",
     "KMLB": "Melbourne FL — ~35 nm east of MCO, the primary "
             "Orlando-area radar and well inside the useful radius",
     "KTBW": "Ruskin FL — Tampa Bay, ~65 nm southwest",
