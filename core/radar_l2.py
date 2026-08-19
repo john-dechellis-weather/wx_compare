@@ -245,6 +245,52 @@ TDWR_ID3 = {"TJFK": "JFK", "TEWR": "EWR", "TPHL": "PHL",
 TDWR_PRODUCTS = ["TZ0", "TZ1", "TZ2"]
 
 
+def _radar_from_nids(raw):
+    """NIDS bytes -> pyart Radar, via metpy.
+
+    pyart.io.read_nexrad_level3 refuses TDWR: measured live 8/19,
+    "Level3 product with code 180 is not supported" — its reader
+    covers WSR-88D product codes only. metpy's Level3File parses the
+    NIDS radial format generically and does not care which radar
+    produced it, which is why core.radar3 uses it for Level III
+    everywhere. So decode with metpy and assemble the pyart Radar
+    by hand.
+
+    Elevation comes from the file's own metadata rather than being
+    assumed from the product name — TJFK runs 0.5/1.0/2.8 and TEWR
+    0.3/1.0/2.7, so the tilt has to be read, not inferred.
+    """
+    import numpy as np
+    from metpy.io import Level3File
+
+    import pyart
+
+    f = Level3File(io.BytesIO(raw))
+    blk = f.sym_block[0][0]
+    data = np.asarray(f.map_data(blk["data"]), dtype="float32")
+    nrays, ngates = data.shape
+    az = np.asarray(blk["start_az"][:nrays], dtype="float32")
+    el = float(f.metadata.get("el_angle", 0.5))
+    gate_m = float(f.max_range) * 1000.0 / ngates
+
+    radar = pyart.testing.make_empty_ppi_radar(ngates, nrays, 1)
+    radar.range["data"] = ((np.arange(ngates) + 0.5)
+                           * gate_m).astype("float32")
+    radar.azimuth["data"] = az
+    radar.elevation["data"] = np.full(nrays, el, dtype="float32")
+    radar.fixed_angle["data"] = np.array([el], dtype="float32")
+    radar.latitude["data"] = np.array([float(f.lat)])
+    radar.longitude["data"] = np.array([float(f.lon)])
+    radar.altitude["data"] = np.array([float(getattr(f, "height", 0.0))])
+    radar.time["data"] = np.zeros(nrays, dtype="float64")
+    radar.add_field(
+        "reflectivity",
+        {"data": np.ma.masked_invalid(data), "units": "dBZ",
+         "_FillValue": -9999.0, "standard_name": "reflectivity"},
+        replace_existing=True)
+    return radar, el
+
+
 def _tdwr_catalog_urls(prod, s3, day):
     """Candidate catalog URLs for one TDWR product.
 
@@ -317,8 +363,9 @@ def _load_tdwr(site, diag):
             raw = requests.get(
                 u, headers={"User-Agent": "BlueMet/1.0"},
                 timeout=60).content
-            sweeps.append(pyart.io.read_nexrad_level3(io.BytesIO(raw)))
-            used.append(prod)
+            _r, _el = _radar_from_nids(raw)
+            sweeps.append(_r)
+            used.append(f"{prod}@{_el:.1f}deg")
         except Exception as exc:
             tried.append(f"{prod} download/parse: "
                          f"{type(exc).__name__}: {exc}")
