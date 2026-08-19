@@ -532,6 +532,32 @@ if _rs and _rs.get("frames"):
         st.warning("RENDER_EXTERNAL_URL not set — cannot build an "
                    "absolute URL for the radar layer.")
 
+# ---------------------------------------------------------------------------
+# Map sizing — TEMPORARY tuning controls
+# ---------------------------------------------------------------------------
+# Here to find the right default by eye, not to stay. Once the numbers
+# settle, hardcode MAP_H and MAP_W_PCT below and delete this expander.
+# Width is a percentage rather than pixels because Streamlit sizes a
+# chart to its container: the only way to make it narrower is to put
+# it in a column and leave the rest empty, so the slider drives a
+# column ratio.
+MAP_H_DEFAULT = 760
+MAP_W_DEFAULT = 100
+with st.expander("Map size (tuning)"):
+    z1, z2, z3 = st.columns([2, 2, 3])
+    with z1:
+        map_h = st.slider("Height (px)", 380, 1400, MAP_H_DEFAULT, 20)
+    with z2:
+        map_w = st.slider("Width (% of page)", 40, 100,
+                          MAP_W_DEFAULT, 5)
+    with z3:
+        st.caption(
+            f"Currently **{map_w}% x {map_h}px**. When this looks "
+            f"right, set MAP_H_DEFAULT = {map_h} and "
+            f"MAP_W_DEFAULT = {map_w} in the source and remove this "
+            f"expander."
+        )
+
 import math
 
 import pydeck as pdk
@@ -639,7 +665,7 @@ if show_fix and data.get("fixes"):
         # exactly what scheme K wants.
         background_padding=[5, 2, 5, 2]))
 
-st.pydeck_chart(pdk.Deck(
+_deck = pdk.Deck(
     layers=layers,
     initial_view_state=pdk.ViewState(
         latitude=N90_CENTER[0], longitude=N90_CENTER[1],
@@ -648,7 +674,17 @@ st.pydeck_chart(pdk.Deck(
     # one product. Every colour below is tuned for it.
     map_style="light",
     tooltip={"html": "<b>{tip}</b>"},
-), height=760)
+)
+
+# A chart fills its container, so width is controlled by rendering
+# into a column of the requested fraction and leaving the remainder
+# empty.
+if map_w >= 100:
+    st.pydeck_chart(_deck, height=map_h)
+else:
+    _mc = st.columns([map_w, max(1, 100 - map_w)])
+    with _mc[0]:
+        st.pydeck_chart(_deck, height=map_h)
 
 st.caption(
     "Fix chips: GREEN arrival gate, ROSE departure gate, SAND other "
