@@ -245,6 +245,66 @@ TDWR_ID3 = {"TJFK": "JFK", "TEWR": "EWR", "TPHL": "PHL",
 TDWR_PRODUCTS = ["TZ0", "TZ1", "TZ2"]
 
 
+def _nids_sweep(raw):
+    """Parse one NIDS file into raw arrays. No pyart object yet."""
+    import numpy as np
+    from metpy.io import Level3File
+
+    f = Level3File(io.BytesIO(raw))
+    blk = f.sym_block[0][0]
+    data = np.asarray(f.map_data(blk["data"]), dtype="float32")
+    nrays, ngates = data.shape
+    return {
+        "data": data,
+        "az": np.asarray(blk["start_az"][:nrays], dtype="float32"),
+        "el": float(f.metadata.get("el_angle", 0.5)),
+        "gate_m": float(f.max_range) * 1000.0 / ngates,
+        "lat": float(f.lat), "lon": float(f.lon),
+        "alt": float(getattr(f, "height", 0.0)),
+    }
+
+
+def _radar_from_sweeps(sweeps):
+    """Several NIDS sweeps -> ONE pyart Radar, assembled by hand.
+
+    pyart.util.join_radar was the obvious route and it produced a
+    radar whose field arrays had 1080 rays while its ray-indexed
+    metadata still had 360 — the gridder then raised "boolean index
+    did not match indexed array, size 1080 vs 360". Building the
+    object directly means the shapes cannot disagree.
+
+    Sweeps are truncated to a common ray and gate count. TDWR
+    products are 360 x 600 at 150 m, but a mismatch must not throw.
+    """
+    import numpy as np
+
+    import pyart
+
+    nrays = min(s_["data"].shape[0] for s_ in sweeps)
+    ngates = min(s_["data"].shape[1] for s_ in sweeps)
+    n = len(sweeps)
+    radar = pyart.testing.make_empty_ppi_radar(ngates, nrays, n)
+    radar.range["data"] = ((np.arange(ngates) + 0.5)
+                           * sweeps[0]["gate_m"]).astype("float32")
+    radar.azimuth["data"] = np.concatenate(
+        [s_["az"][:nrays] for s_ in sweeps]).astype("float32")
+    radar.elevation["data"] = np.concatenate(
+        [np.full(nrays, s_["el"], dtype="float32") for s_ in sweeps])
+    radar.fixed_angle["data"] = np.array(
+        [s_["el"] for s_ in sweeps], dtype="float32")
+    radar.latitude["data"] = np.array([sweeps[0]["lat"]])
+    radar.longitude["data"] = np.array([sweeps[0]["lon"]])
+    radar.altitude["data"] = np.array([sweeps[0]["alt"]])
+    radar.time["data"] = np.zeros(nrays * n, dtype="float64")
+    stack = np.vstack([s_["data"][:nrays, :ngates] for s_ in sweeps])
+    radar.add_field(
+        "reflectivity",
+        {"data": np.ma.masked_invalid(stack), "units": "dBZ",
+         "_FillValue": -9999.0, "standard_name": "reflectivity"},
+        replace_existing=True)
+    return radar
+
+
 def _radar_from_nids(raw):
     """NIDS bytes -> pyart Radar, via metpy.
 
@@ -363,9 +423,9 @@ def _load_tdwr(site, diag):
             raw = requests.get(
                 u, headers={"User-Agent": "BlueMet/1.0"},
                 timeout=60).content
-            _r, _el = _radar_from_nids(raw)
-            sweeps.append(_r)
-            used.append(f"{prod}@{_el:.1f}deg")
+            _sw = _nids_sweep(raw)
+            sweeps.append(_sw)
+            used.append(f"{prod}@{_sw['el']:.1f}deg")
         except Exception as exc:
             tried.append(f"{prod} download/parse: "
                          f"{type(exc).__name__}: {exc}")
@@ -374,12 +434,7 @@ def _load_tdwr(site, diag):
         raise RuntimeError(
             f"no Level III tilts for {site} ({s3}); tried "
             + " | ".join(tried[:4]))
-    radar = sweeps[0]
-    for extra in sweeps[1:]:
-        try:
-            radar = pyart.util.join_radar(radar, extra)
-        except Exception:
-            break
+    radar = _radar_from_sweeps(sweeps)
     diag.setdefault("tdwr", {})[site] = f"{s3} tilts {'+'.join(used)}"
     return radar
 
@@ -634,7 +689,14 @@ def load_site(site: str, fs, diag: dict):
                 path = _r._download_volume(scan, f"{td}/{scan.filename}")
                 with open(path, "rb") as fh:
                     radar = _read_volume_bytes(fh.read())
-            age = (now - scan.scan_time).total_seconds() / 60.0
+            # scan_time may be naive depending on which tier of the
+            # chain answered; normalise before subtracting or this
+            # raises AFTER radar is already loaded, which silently
+            # blanked the source label.
+            _st = scan.scan_time
+            if _st.tzinfo is None:
+                _st = _st.replace(tzinfo=timezone.utc)
+            age = (now - _st).total_seconds() / 60.0
             src = f"archive {scan.filename} ({age:.0f} min old)"
         except Exception as exc:
             notes.append(f"archive: {type(exc).__name__}: {exc}")
