@@ -79,6 +79,12 @@ REGIONS = {
     # for beating MRMS rather than just duplicating it.
     "NE Corridor / DCA-BOS": ["KLWX", "KDOX", "KDIX", "KOKX",
                               "KBOX", "KENX", "KCCX", "KBGM"],
+    # S-band + C-band merged. The two 88Ds carry the area and set the
+    # calibration; the three TDWRs sit AT the airports with 150 m
+    # gates and win inside ~20 nm, which is the approach and
+    # departure environment. C-band attenuation is what makes this
+    # non-trivial and is handled per-gate — see _cband_attenuation.
+    "N90 merged (S+C band)": ["KOKX", "KDIX", "TJFK", "TEWR", "TPHL"],
 }
 # Explicit view per region: (centre_lat, centre_lon, half_x_km,
 # half_y_km). Centring on the first radar that loaded put MCO's box
@@ -94,6 +100,7 @@ REGION_VIEW = {
     "MSP / Minneapolis": (44.88, -93.22, 220, 220),
     "MCO / Orlando": (28.43, -81.31, 200, 180),
     "NE Corridor / DCA-BOS": (40.60, -74.00, 300, 250),
+    "N90 merged (S+C band)": (40.75, -74.05, 190, 160),
 }
 SITE_NOTES = {
     "KOKX": "Upton NY — inside the N90 terminal area, primary source",
@@ -153,6 +160,76 @@ CBAND_B = float(os.environ.get("L2_CBAND_B", "0.64"))
 # Above this much accumulated two-way attenuation the correction is
 # guesswork — the gate is downweighted rather than trusted.
 PIA_TRUST_DB = float(os.environ.get("L2_PIA_TRUST_DB", "6.0"))
+
+
+# TDWR arrives as LEVEL III, not Level II — the FAA's SPG generates
+# derived products and the NWS distributes those. So it does not come
+# down the chunk feed at all; it comes from the same THREDDS
+# /terminal/level3/ tree that core.radar3 already talks to for NEXRAD
+# Level III, just under a different catalog root.
+#
+# Site ids are THREE letters there (JFK, EWR, PHL), not the four-letter
+# T-prefixed forms used on displays.
+TDWR_ID3 = {"TJFK": "JFK", "TEWR": "EWR", "TPHL": "PHL",
+            "TBOS": "BOS", "TDCA": "DCA", "TBWI": "BWI",
+            "TIAD": "IAD"}
+# Base reflectivity tilts 1-3. TZL is the long-range product but it is
+# resampled to 300 m, which throws away the resolution that made TDWR
+# worth having.
+TDWR_PRODUCTS = ["TZ0", "TZ1", "TZ2"]
+
+
+def _load_tdwr(site, diag):
+    """One TDWR volume assembled from Level III tilts.
+
+    Each product file is ONE sweep, so a volume is built by reading
+    several and merging. Returns a pyart Radar or raises.
+    """
+    import requests
+    from datetime import timedelta as _td
+    from siphon.catalog import TDSCatalog
+
+    import pyart
+
+    s3 = TDWR_ID3.get(site.upper(), site.upper()[-3:])
+    sweeps = []
+    used = []
+    now = datetime.now(timezone.utc)
+    for prod in TDWR_PRODUCTS[:max(1, min(TILTS, len(TDWR_PRODUCTS)))]:
+        ds = None
+        for d in (now, now - _td(days=1)):
+            url = ("https://thredds.ucar.edu/thredds/catalog/terminal/"
+                   f"level3/{prod}/{s3}/{d:%Y%m%d}/catalog.xml")
+            try:
+                cat = TDSCatalog(url)
+            except Exception:
+                continue
+            names = sorted(cat.datasets.keys(), reverse=True)
+            if names:
+                ds = cat.datasets[names[0]]
+                break
+        if ds is None:
+            continue
+        try:
+            u = (ds.access_urls.get("HTTPServer")
+                 or ds.access_urls.get("httpserver"))
+            raw = requests.get(
+                u, headers={"User-Agent": "BlueMet/1.0"},
+                timeout=60).content
+            sweeps.append(pyart.io.read_nexrad_level3(io.BytesIO(raw)))
+            used.append(prod)
+        except Exception:
+            continue
+    if not sweeps:
+        raise RuntimeError(f"no Level III tilts for {site} ({s3})")
+    radar = sweeps[0]
+    for extra in sweeps[1:]:
+        try:
+            radar = pyart.util.join_radar(radar, extra)
+        except Exception:
+            break
+    diag.setdefault("tdwr", {})[site] = f"{s3} tilts {'+'.join(used)}"
+    return radar
 
 
 def _cband_attenuation(radar, field="reflectivity"):
@@ -364,20 +441,32 @@ def load_site(site: str, fs, diag: dict):
     src = ""
     notes = []
 
-    # --- path 1: live chunk feed -------------------------------------
-    try:
-        from core import radar_l2rt
+    # --- TDWR: Level III, not Level II -------------------------------
+    if site.upper() in TDWR_SITES:
+        try:
+            radar = _load_tdwr(site, diag)
+            src = f"TDWR Level III ({diag.get('tdwr', {}).get(site, '')})"
+        except Exception as exc:
+            diag["sites"][site] = (f"TDWR fetch: "
+                                   f"{type(exc).__name__}: {exc}")
+            return None, None
 
-        raw, info = radar_l2rt.fetch_live_volume_bytes(site)
-        radar = _read_volume_bytes(raw)
-        src = (f"chunk feed vol {info.get('volume')} "
-               f"{info.get('n_used')}/{info.get('n_chunks')} chunks, "
-               f"{info.get('age_s')}s old")
-    except Exception as exc:
-        notes.append(f"chunk feed: {type(exc).__name__}: {exc}")
+    # --- path 1: live chunk feed (S-band only) -----------------------
+    if radar is None:
+        try:
+            from core import radar_l2rt
+
+            raw, info = radar_l2rt.fetch_live_volume_bytes(site)
+            radar = _read_volume_bytes(raw)
+            src = (f"chunk feed vol {info.get('volume')} "
+                   f"{info.get('n_used')}/{info.get('n_chunks')} "
+                   f"chunks, {info.get('age_s')}s old")
+        except Exception as exc:
+            notes.append(f"chunk feed: {type(exc).__name__}: {exc}")
 
     # --- path 2: complete volume via the AWS/GCS/THREDDS chain -------
-    if radar is None:
+    # WSR-88D only; that chain has no TDWR in it.
+    if radar is None and site.upper() not in TDWR_SITES:
         try:
             import tempfile
             from datetime import datetime, timedelta, timezone
