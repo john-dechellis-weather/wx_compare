@@ -601,6 +601,34 @@ MIN_RADIUS_M = float(os.environ.get("L2_MIN_RADIUS_M", "1000"))
 # At 250 m cells that is a 250 m smoothing length — well below the
 # beam width it is hiding.
 SMOOTH_SIGMA = float(os.environ.get("L2_SMOOTH_SIGMA", "1.0"))
+
+# NWS/AWIPS reflectivity table — the one every US radar display uses,
+# 5 dBZ steps from 5 to 75. Anchors are the standard hex values, not
+# an approximation of them, so a 45 dBZ cell here is the same orange
+# a controller or a dispatcher already reads as 45.
+AWIPS_LEVELS = list(range(5, 80, 5))
+AWIPS_COLORS = [
+    "#04E9E7",  #  5-10  light cyan
+    "#019FF4",  # 10-15  blue
+    "#0300F4",  # 15-20  dark blue
+    "#02FD02",  # 20-25  green
+    "#01C501",  # 25-30
+    "#008E00",  # 30-35  dark green
+    "#FDF802",  # 35-40  yellow
+    "#E5BC00",  # 40-45
+    "#FD9500",  # 45-50  orange
+    "#FD0000",  # 50-55  red
+    "#D40000",  # 55-60
+    "#BC0000",  # 60-65  dark red
+    "#F800FD",  # 65-70  magenta
+    "#9854C6",  # 70-75  purple
+    "#FDFDFD",  # 75+    white
+]
+# "steps" is authentic AWIPS: hard 5 dBZ bands. "smooth" keeps the
+# same anchor colours but interpolates between them, which suits the
+# 250 m grid better — at this resolution hard bands read as terracing
+# on a gradient rather than as information.
+RAMP_MODE = os.environ.get("L2_RAMP", "steps").lower()
 # Range scale for blend weights. Default is the 52 nm crossover
 # where beam spreading makes L2 coarser than MRMS = 96 km.
 BLEND_M = float(os.environ.get("L2_BLEND_M", "96000"))
@@ -1288,11 +1316,17 @@ def render_png(comp, path, diag=None):
     from matplotlib.colors import BoundaryNorm, ListedColormap
 
     comp = _nan_smooth(comp, SMOOTH_SIGMA)
-    # 1.0 dBZ steps, not 2.5: at 2.5 the bands themselves are visible
-    # as contour terracing on a smooth gradient.
-    lev = np.arange(DBZ_MIN, 80.001, 1.0)
-    cols = plt.get_cmap("gist_ncar")(np.linspace(0.08, 0.95, len(lev) - 1))
-    cmap = ListedColormap(cols)
+    if RAMP_MODE == "smooth":
+        # Same AWIPS anchors, interpolated to 1 dBZ.
+        from matplotlib.colors import LinearSegmentedColormap
+        lev = np.arange(AWIPS_LEVELS[0], 75.001, 1.0)
+        base = LinearSegmentedColormap.from_list(
+            "awips", AWIPS_COLORS, N=256)
+        cmap = ListedColormap(base(np.linspace(0, 1, len(lev) - 1)))
+    else:
+        lev = np.array(AWIPS_LEVELS, dtype=float)
+        cmap = ListedColormap(AWIPS_COLORS[:len(lev) - 1])
+    cmap.set_over(AWIPS_COLORS[-1])
     cmap.set_bad(alpha=0.0)
     norm = BoundaryNorm(lev, cmap.N)
 
@@ -1309,8 +1343,8 @@ def render_png(comp, path, diag=None):
     plt.close(fig)
     if diag is not None:
         diag["png_bytes"] = os.path.getsize(path)
-        diag["render"] = (f"smooth sigma={SMOOTH_SIGMA}, "
-                          f"{len(lev) - 1} contour bands")
+        diag["render"] = (f"AWIPS {RAMP_MODE}, {len(lev) - 1} bands, "
+                          f"smooth sigma={SMOOTH_SIGMA}")
     return path
 
 
