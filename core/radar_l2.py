@@ -110,7 +110,7 @@ REGIONS = {
     # which the NY pair lacks. Better test bed, and Florida actually
     # has convection.
     "FLL-MIA TDWR pair": ["TMIA", "TFLL"],
-    "FLL-MIA merged (S+C)": ["KAMX", "TMIA", "TFLL", "TPBI"],
+    "FLL-MIA merged (S+C)": ["KAMX", "TMIA", "TFLL", "TDJT"],
 }
 # Explicit view per region: (centre_lat, centre_lon, half_x_km,
 # half_y_km). Centring on the first radar that loaded put MCO's box
@@ -178,7 +178,8 @@ TDWR_SITES = {
     "TDCA": "TDWR at DCA", "TBWI": "TDWR at BWI",
     "TIAD": "TDWR at IAD",
     "TMIA": "TDWR at MIA", "TFLL": "TDWR at FLL",
-    "TPBI": "TDWR at PBI", "TMCO": "TDWR at MCO",
+    "TDJT": "TDWR at DJT (was PBI)",
+    "TPBI": "TDWR at DJT (was PBI)", "TMCO": "TDWR at MCO",
     "TTPA": "TDWR at TPA",
 }
 N90_TDWR = ["TJFK", "TEWR"]
@@ -235,10 +236,16 @@ MAX_RANGE_M = float(MAX_RANGE_M) if MAX_RANGE_M else None
 #
 # Site ids are THREE letters there (JFK, EWR, PHL), not the four-letter
 # T-prefixed forms used on displays.
-TDWR_ID3 = {"TJFK": "JFK", "TEWR": "EWR", "TPHL": "PHL",
-            "TBOS": "BOS", "TDCA": "DCA", "TBWI": "BWI",
-            "TIAD": "IAD", "TMIA": "MIA", "TFLL": "FLL",
-            "TPBI": "PBI", "TMCO": "MCO", "TTPA": "TPA"}
+# Values are CANDIDATE ids, tried in order. West Palm Beach is the
+# reason: the airport is now DJT, but a radar-site id and an airport
+# code do not have to move together and Unidata's catalog may still
+# carry the old PBI. Trying both costs one extra listing on a miss
+# and removes the guess.
+TDWR_ID3 = {"TJFK": ["JFK"], "TEWR": ["EWR"], "TPHL": ["PHL"],
+            "TBOS": ["BOS"], "TDCA": ["DCA"], "TBWI": ["BWI"],
+            "TIAD": ["IAD"], "TMIA": ["MIA"], "TFLL": ["FLL"],
+            "TDJT": ["DJT", "PBI"], "TPBI": ["DJT", "PBI"],
+            "TMCO": ["MCO"], "TTPA": ["TPA"]}
 # Base reflectivity tilts 1-3. TZL is the long-range product but it is
 # resampled to 300 m, which throws away the resolution that made TDWR
 # worth having.
@@ -386,7 +393,10 @@ def _load_tdwr(site, diag):
 
     import pyart
 
-    s3 = TDWR_ID3.get(site.upper(), site.upper()[-3:])
+    cands = TDWR_ID3.get(site.upper(), [site.upper()[-3:]])
+    if isinstance(cands, str):
+        cands = [cands]
+    s3 = cands[0]
     tried = []
     sweeps, used = [], []
     now = datetime.now(timezone.utc)
@@ -395,26 +405,28 @@ def _load_tdwr(site, diag):
                                              len(TDWR_PRODUCTS)))])
     for prod in wanted:
         ds = None
-        for day in (now, now - _td(days=1)):
-            for url in _tdwr_catalog_urls(prod, s3, day):
+        for cand in cands:
+          for day in (now, now - _td(days=1)):
+            for url in _tdwr_catalog_urls(prod, cand, day):
                 try:
                     from siphon.catalog import TDSCatalog
 
                     cat = TDSCatalog(url)
                     names = sorted(cat.datasets.keys(), reverse=True)
                     if not names:
-                        tried.append(f"{url.split('/catalog')[0]}: "
-                                     f"empty")
+                        tried.append(f"{cand}/{prod}: empty")
                         continue
                     ds = cat.datasets[names[0]]
-                    tried.append(f"{url.split('/catalog')[0]}: "
-                                 f"{len(names)} datasets")
+                    s3 = cand
+                    tried.append(f"{cand}/{prod}: {len(names)} datasets")
                     break
                 except Exception as exc:
-                    tried.append(f"{url.split('/catalog')[0]}: "
+                    tried.append(f"{cand}/{prod}: "
                                  f"{type(exc).__name__}")
             if ds is not None:
                 break
+          if ds is not None:
+            break
         if ds is None:
             continue
         try:
