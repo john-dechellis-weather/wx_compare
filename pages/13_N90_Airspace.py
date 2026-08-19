@@ -428,6 +428,18 @@ with r1:
 product = "Composite (all reflectivity levels)"
 n_frames = 6
 if radar_on:
+    # Start the background warmer the first time anyone opens the
+    # page with radar on. Idempotent, so this is safe on every rerun;
+    # L2_WARMER=off disables it without a deploy.
+    try:
+        from core import radar_l2 as _L2W
+        _L2W.ensure_radar_warmer(_STATIC)
+        _warm = _L2W.warm_frames(_STATIC, "n90", 24)
+    except Exception:
+        _warm = []
+else:
+    _warm = []
+if radar_on:
     with r2:
         product = st.selectbox(
             "Product",
@@ -443,7 +455,12 @@ if radar_on:
                                   "existing loop is cheap.")
     with r4:
         st.write("")
-        build = st.button("Build radar loop", type="primary")
+        build = st.button("Build radar loop", type="primary",
+                          help="Only needed for a product or depth "
+                               "the warmer is not already keeping "
+                               "current.")
+        if _warm:
+            st.caption(f"{len(_warm)} warmed frames on disk")
 else:
     build = False
 
@@ -482,6 +499,22 @@ if build:
         import traceback
         st.error(f"Radar build failed — {type(exc).__name__}: {exc}")
         st.code(traceback.format_exc(), language="text")
+
+# Warmed frames win over a manual build: they are already on disk and
+# kept current every two minutes, so opening the page costs nothing.
+# The Build button stays for products or depths the warmer does not
+# cover.
+if radar_on and _warm and not st.session_state.get("_n90_radar"):
+    try:
+        from core import radar_l2 as _L2B
+        st.session_state["_n90_radar"] = {
+            "frames": _warm[-int(n_frames):],
+            "diag": {"source": f"warmer ({len(_warm)} on disk)"},
+            "bounds": list(_L2B.bounds()), "tag": "n90",
+            "product": "Composite (warmed)",
+        }
+    except Exception:
+        pass
 
 _rs = st.session_state.get("_n90_radar") if radar_on else None
 _frame_url = None
