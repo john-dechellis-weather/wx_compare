@@ -71,6 +71,14 @@ REGIONS = {
     "BOS / New England": ["KBOX", "KENX", "KGYX", "KOKX"],
     "MSP / Minneapolis": ["KMPX", "KARX", "KFSD", "KDLH"],
     "MCO / Orlando": ["KMLB", "KTBW", "KJAX", "KAMX"],
+    # DCA to BOS. Eight sites is ~2.7 min a pass at 20 s each, which
+    # fits inside the 4-6 min volume cadence — the largest domain
+    # that can stay current. The Northeast has the densest WSR-88D
+    # coverage in the country, so nearly all of this box sits inside
+    # the 52 nm radius of at least one site, which is the condition
+    # for beating MRMS rather than just duplicating it.
+    "NE Corridor / DCA-BOS": ["KLWX", "KDOX", "KDIX", "KOKX",
+                              "KBOX", "KENX", "KCCX", "KBGM"],
 }
 # Explicit view per region: (centre_lat, centre_lon, half_x_km,
 # half_y_km). Centring on the first radar that loaded put MCO's box
@@ -85,6 +93,7 @@ REGION_VIEW = {
     "BOS / New England": (42.36, -71.01, 230, 200),
     "MSP / Minneapolis": (44.88, -93.22, 220, 220),
     "MCO / Orlando": (28.43, -81.31, 200, 180),
+    "NE Corridor / DCA-BOS": (40.60, -74.00, 300, 250),
 }
 SITE_NOTES = {
     "KOKX": "Upton NY — inside the N90 terminal area, primary source",
@@ -103,6 +112,10 @@ SITE_NOTES = {
     "KBUF": "Buffalo NY — western end",
     "KTYX": "Fort Drum NY — fills the Adirondack gap",
     "KGYX": "Gray ME — the PWM radar",
+    "KLWX": "Sterling VA — DCA/BWI/IAD",
+    "KDOX": "Dover DE — the Delmarva gap",
+    "KCCX": "State College PA — western edge",
+    "KBGM": "Binghamton NY — northwest",
     "KMLB": "Melbourne FL — ~35 nm east of MCO, the primary "
             "Orlando-area radar and well inside the useful radius",
     "KTBW": "Ruskin FL — Tampa Bay, ~65 nm southwest",
@@ -117,7 +130,78 @@ N90_SITES = {s: (None, None, SITE_NOTES.get(s, ""))
 # in. NOT wired up yet: TDWR is C-band and attenuates hard behind heavy
 # cores, so max-merging it with S-band would make TJFK show LESS than
 # KOKX behind a squall line. Needs attenuation handling first.
+# TDWR. C-band, 150 m gates, 0.55 deg beam, sited AT the airports —
+# better than an 88D inside ~20 nm, which is precisely the approach
+# and departure environment. Two things make it hard to blend, and
+# both are handled in _cband_attenuation below.
+TDWR_SITES = {
+    "TJFK": "TDWR at JFK", "TEWR": "TDWR at EWR",
+    "TPHL": "TDWR at PHL", "TBOS": "TDWR at BOS",
+    "TDCA": "TDWR at DCA", "TBWI": "TDWR at BWI",
+    "TIAD": "TDWR at IAD",
+}
 N90_TDWR = ["TJFK", "TEWR"]
+
+# Two-way C-band specific attenuation, k = A * Z**B dB/km. Measured
+# consequence at these coefficients: a TDWR looking through a 55 dBZ
+# core for 10 km reads about 10.6 dB LOW on everything behind it, and
+# 21 dB low through 20 km. S-band over the same path loses under
+# 0.5 dB. That difference is not noise — it is the single reason
+# TDWR cannot simply be dropped into the blend.
+CBAND_A = float(os.environ.get("L2_CBAND_A", "1.6e-4"))
+CBAND_B = float(os.environ.get("L2_CBAND_B", "0.64"))
+# Above this much accumulated two-way attenuation the correction is
+# guesswork — the gate is downweighted rather than trusted.
+PIA_TRUST_DB = float(os.environ.get("L2_PIA_TRUST_DB", "6.0"))
+
+
+def _cband_attenuation(radar, field="reflectivity"):
+    """Correct C-band reflectivity for rain attenuation, and report
+    how much correction each gate needed.
+
+    Works in POLAR space, before gridding, because attenuation is a
+    path integral along the ray — once gridded, the ray geometry is
+    gone and the correction is impossible to compute.
+
+    Returns (pia_2way_db, corrected_dbz). The PIA array is the more
+    important half: it is not just a correction, it is a confidence
+    map. A gate needing 2 dB of correction is trustworthy; one
+    needing 15 dB is a guess, because the estimate compounds its own
+    errors along the ray and a fully attenuated ray gives no signal
+    to correct at all.
+    """
+    import numpy as np
+
+    z = radar.fields[field]["data"]
+    dbz = np.ma.filled(z, np.nan).astype("float32")
+    rng = radar.range["data"].astype("float32")
+    dr_km = float(np.diff(rng).mean()) / 1000.0 if rng.size > 1 else 0.15
+
+    lin = np.power(10.0, np.clip(dbz, -30, 70) / 10.0,
+                   where=np.isfinite(dbz),
+                   out=np.zeros_like(dbz))
+    k = CBAND_A * np.power(lin, CBAND_B)          # dB/km one-way
+    k[~np.isfinite(dbz)] = 0.0
+    # Two-way PIA to the NEAR edge of each gate: the cumulative sum
+    # is shifted so a gate is not attenuated by itself.
+    pia = 2.0 * np.cumsum(k, axis=1) * dr_km
+    pia[:, 1:] = pia[:, :-1]
+    pia[:, 0] = 0.0
+    return pia.astype("float32"), (dbz + pia).astype("float32")
+
+
+def _cband_weight(pia):
+    """Confidence multiplier from accumulated attenuation.
+
+    exp(-(pia/PIA_TRUST_DB)^2): full weight where the ray is clean,
+    fading as the correction grows. At the 6 dB default a gate behind
+    5 km of 55 dBZ core keeps ~40% weight, and one behind 20 km of it
+    keeps essentially none — which is right, because there is no
+    signal left to correct.
+    """
+    import numpy as np
+
+    return np.exp(-(pia / PIA_TRUST_DB) ** 2).astype("float32")
 
 # Grid centre, set at build time from the loaded radars. Never
 # hardcoded: see _center_from().
@@ -317,6 +401,27 @@ def load_site(site: str, fs, diag: dict):
     if radar is None:
         diag["sites"][site] = " | ".join(notes) or "no volume"
         return None, None
+
+    # C-band sites get attenuation-corrected in polar space, before
+    # gridding. The PIA array rides along as a field so the gridder
+    # carries it onto the grid and the blend can use it as a
+    # confidence map — see _cband_weight.
+    if site.upper() in TDWR_SITES:
+        try:
+            pia, corr = _cband_attenuation(radar)
+            import numpy as _np
+            radar.fields["reflectivity"]["data"] = _np.ma.masked_invalid(
+                corr)
+            radar.add_field(
+                "pia_2way",
+                {"data": _np.ma.masked_invalid(pia),
+                 "units": "dB", "_FillValue": -9999.0},
+                replace_existing=True)
+            notes.append(f"C-band corrected, max PIA "
+                         f"{float(_np.nanmax(pia)):.1f} dB")
+        except Exception as exc:
+            notes.append(f"C-band correction failed: "
+                         f"{type(exc).__name__}: {exc}")
 
     # Clamp to what actually arrived — a partial volume may hold far
     # fewer sweeps than TILTS.
