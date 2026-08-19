@@ -85,6 +85,26 @@ REGIONS = {
     # departure environment. C-band attenuation is what makes this
     # non-trivial and is handled per-gate — see _cband_attenuation.
     "N90 merged (S+C band)": ["KOKX", "KDIX", "TJFK", "TEWR", "TPHL"],
+    # The two NY-metro TDWRs alone. Same ~1 min cadence, so scan
+    # spread is near zero and there is no advection smearing to
+    # correct. 33 km apart, which means a cell over Newark Bay is
+    # viewed 121 deg apart and Manhattan 70 deg apart — nearly
+    # independent attenuation paths, so a core that blinds one is
+    # broadside to the other. That is what makes the pair recover
+    # shadowed cores neither could see alone.
+    #
+    # LOW LEVEL ONLY. Level III gives three tilts (0.6/1.0/2.0 deg)
+    # and nothing higher, so within 30 km every beam is under 1 km
+    # AGL. Raising TILTS does not help; TZ0/TZ1/TZ2 is all the SPG
+    # distributes. For anything aloft use the S-band sites.
+    "NY Metro TDWR pair": ["TJFK", "TEWR"],
+    # Single-tilt prototype: 1.0 deg only, 30 nm range each, no
+    # S-band. The point is a controlled comparison — TJFK and TEWR
+    # share exactly one elevation angle, so any residual difference
+    # is calibration, attenuation or radome wetting rather than a
+    # tilt mismatch. Set L2_TDWR_PRODUCT=TZ1 and
+    # L2_MAX_RANGE_M=55560 to run it as intended.
+    "NY Metro 1.0deg proto": ["TJFK", "TEWR"],
 }
 # Explicit view per region: (centre_lat, centre_lon, half_x_km,
 # half_y_km). Centring on the first radar that loaded put MCO's box
@@ -101,6 +121,9 @@ REGION_VIEW = {
     "MCO / Orlando": (28.43, -81.31, 200, 180),
     "NE Corridor / DCA-BOS": (40.60, -74.00, 300, 250),
     "N90 merged (S+C band)": (40.75, -74.05, 190, 160),
+    "NY Metro TDWR pair": (40.62, -74.07, 90, 80),
+    # Union of two 30 nm circles 33 km apart, plus margin.
+    "NY Metro 1.0deg proto": (40.59, -74.07, 80, 65),
 }
 SITE_NOTES = {
     "KOKX": "Upton NY — inside the N90 terminal area, primary source",
@@ -161,6 +184,37 @@ CBAND_B = float(os.environ.get("L2_CBAND_B", "0.64"))
 # guesswork — the gate is downweighted rather than trusted.
 PIA_TRUST_DB = float(os.environ.get("L2_PIA_TRUST_DB", "6.0"))
 
+# --- inter-radar bias calibration -------------------------------------
+# Only compare cells with real echo: weak returns are noisy and their
+# differences are dominated by sampling, not calibration.
+CAL_MIN_DBZ = float(os.environ.get("L2_CAL_MIN_DBZ", "20"))
+# A pair needs this many overlapping cells before its difference is
+# believed. In dry weather no pair will reach it and calibration
+# correctly becomes a no-op.
+CAL_MIN_CELLS = int(os.environ.get("L2_CAL_MIN_CELLS", "300"))
+# Hard cap. A real inter-radar bias is 1-3 dB; anything larger is a
+# bad estimate, not a calibration problem, and must not be applied.
+CAL_MAX_DB = float(os.environ.get("L2_CAL_MAX_DB", "6.0"))
+# Calibration samples must come from cells where BOTH radars are
+# sampling nearly the same altitude. Measured for the TJFK/TEWR pair
+# at a shared 1.0 deg tilt: over the midpoint the two beams are 11 m
+# apart, but over JFK they are 638 m apart and at the east end 739 m,
+# because the cell is at very different RANGES from the two sites.
+# Comparing those would charge a real vertical reflectivity gradient
+# to instrument bias. Only near the perpendicular bisector are the
+# two genuinely measuring the same air.
+CAL_MAX_DZ_M = float(os.environ.get("L2_CAL_MAX_DZ_M", "150"))
+
+# --- single-tilt prototype knobs --------------------------------------
+# TDWR tilts are not identical between sites: TJFK runs 0.5/1.0/2.8 and
+# TEWR 0.3/1.0/2.7. Only 1.0 deg is common to both, so a clean
+# two-site experiment uses that product alone and leaves the mismatched
+# base and upper tilts out until there is an adjustment for them.
+TDWR_PRODUCT_ONLY = os.environ.get("L2_TDWR_PRODUCT")   # e.g. "TZ1"
+# Hard range cut, applied per site before gridding.
+MAX_RANGE_M = os.environ.get("L2_MAX_RANGE_M")
+MAX_RANGE_M = float(MAX_RANGE_M) if MAX_RANGE_M else None
+
 
 # TDWR arrives as LEVEL III, not Level II — the FAA's SPG generates
 # derived products and the NWS distributes those. So it does not come
@@ -195,7 +249,10 @@ def _load_tdwr(site, diag):
     sweeps = []
     used = []
     now = datetime.now(timezone.utc)
-    for prod in TDWR_PRODUCTS[:max(1, min(TILTS, len(TDWR_PRODUCTS)))]:
+    wanted = ([TDWR_PRODUCT_ONLY] if TDWR_PRODUCT_ONLY
+              else TDWR_PRODUCTS[:max(1, min(TILTS,
+                                             len(TDWR_PRODUCTS)))])
+    for prod in wanted:
         ds = None
         for d in (now, now - _td(days=1)):
             url = ("https://thredds.ucar.edu/thredds/catalog/terminal/"
@@ -530,6 +587,8 @@ def load_site(site: str, fs, diag: dict):
 # QC
 # ---------------------------------------------------------------------------
 def gatefilter(radar, diag=None, site=None):
+    import numpy as np
+
     """Dual-pol QC + despeckle.
 
     Two stages, and the second is the one that matters for how the
@@ -555,6 +614,14 @@ def gatefilter(radar, diag=None, site=None):
 
     gf = pyart.filters.GateFilter(radar)
     gf.exclude_transition()
+    if MAX_RANGE_M:
+        # Range cut before anything else. Past the cut the beam is
+        # both higher and wider, so including it would dilute exactly
+        # the close-in advantage the experiment is testing.
+        gf.exclude_gates(
+            np.broadcast_to(radar.range["data"][None, :],
+                            radar.fields["reflectivity"]["data"].shape)
+            > MAX_RANGE_M)
     gf.exclude_masked("reflectivity")
     gf.exclude_below("reflectivity", DBZ_MIN)
     have_cc = "cross_correlation_ratio" in radar.fields
@@ -715,6 +782,105 @@ def _finalize(num, den):
     return out
 
 
+def _beam_height_map(rlat, rlon, tilt_deg, site_alt_m, shape):
+    """Height MSL that this site's lowest tilt samples, per cell.
+
+    Used to keep calibration honest: two radars only measure the same
+    air where their beams are at the same altitude.
+    """
+    import math
+
+    import numpy as np
+
+    lat0, lon0 = GRID_CENTER
+    rx = (rlon - lon0) * 111320.0 * math.cos(math.radians(lat0))
+    ry = (rlat - lat0) * 111320.0
+    ny, nx = shape[-2], shape[-1]
+    ax = np.linspace(-HALF_X_M, HALF_X_M, nx, dtype="float32")
+    ay = np.linspace(-HALF_Y_M, HALF_Y_M, ny, dtype="float32")
+    d = np.sqrt(((ax - rx) ** 2)[None, :] + ((ay - ry) ** 2)[:, None])
+    return (d * math.sin(math.radians(tilt_deg))
+            + d * d / (2.0 * 1.333 * 6371000.0)
+            + site_alt_m).astype("float32")
+
+
+def _solve_biases(staged, diag):
+    """Per-site dBZ offsets from overlap, solved as a graph.
+
+    Every cell seen by two radars is a direct comparison of what they
+    say about the same air at nearly the same time. Measured over the
+    merged N90 box, 73% of the area is seen by two or more sites and
+    30% by three or more — plenty of samples.
+
+    Method: median difference per pair (median, not mean, because a
+    single convective core in one site's view and not the other's
+    would drag a mean), then least squares over the pair graph for
+    per-site offsets.
+
+    ANCHORED TO THE S-BAND SITES, not to the global mean. The 88Ds
+    are the better-calibrated instruments and do not suffer C-band
+    attenuation, so the physically right move is to pull TDWR toward
+    them rather than meet in the middle. Anchoring to the mean would
+    let two attenuating C-band sites drag a good 88D down.
+
+    Returns {site: offset_db}; empty dict when there is not enough
+    overlap, which is the normal case in dry weather.
+    """
+    import itertools
+
+    import numpy as np
+
+    names = [x[5] for x in staged]
+    if len(names) < 2:
+        return {}
+    hmaps = [_beam_height_map(x[1], x[2], x[3], x[6], x[0].shape)
+             for x in staged]
+    pairs, obs = [], []
+    for (ia, a), (ib, b) in itertools.combinations(
+            list(enumerate(staged)), 2):
+        fa, fb = a[0], b[0]
+        dz = np.abs(hmaps[ia] - hmaps[ib])
+        m = (np.isfinite(fa) & np.isfinite(fb)
+             & (fa > CAL_MIN_DBZ) & (fb > CAL_MIN_DBZ)
+             & (dz[None, :, :] <= CAL_MAX_DZ_M))
+        n = int(m.sum())
+        if n < CAL_MIN_CELLS:
+            continue
+        d = float(np.median(fa[m] - fb[m]))
+        pairs.append((ia, ib))
+        obs.append(d)
+        diag.setdefault("cal_pairs", {})[
+            f"{names[ia]}-{names[ib]}"] = (
+                f"{d:+.2f} dB, {n} cells within "
+                f"{CAL_MAX_DZ_M:.0f} m of equal beam height")
+    if not pairs:
+        diag["calibration"] = ("no pair reached "
+                               f"{CAL_MIN_CELLS} overlapping cells "
+                               f"above {CAL_MIN_DBZ:.0f} dBZ — "
+                               "offsets not applied")
+        return {}
+    k = len(names)
+    A = np.zeros((len(pairs) + 1, k), dtype="float64")
+    y = np.zeros(len(pairs) + 1, dtype="float64")
+    for r, ((ia, ib), d) in enumerate(zip(pairs, obs)):
+        A[r, ia], A[r, ib], y[r] = 1.0, -1.0, d
+    # Anchor row: mean offset of the S-band sites is zero.
+    sband = [i for i, n_ in enumerate(names)
+             if n_.upper() not in TDWR_SITES]
+    anchor = sband or list(range(k))
+    for i in anchor:
+        A[-1, i] = 1.0 / len(anchor)
+    sol, *_ = np.linalg.lstsq(A, y, rcond=None)
+    out = {}
+    for i, n_ in enumerate(names):
+        b = float(np.clip(sol[i], -CAL_MAX_DB, CAL_MAX_DB))
+        if abs(b) > 0.05:
+            out[n_] = b
+    diag["calibration"] = ", ".join(
+        f"{n_} {b:+.2f} dB" for n_, b in out.items()) or "all within 0.05 dB"
+    return out
+
+
 def build_mosaic(sites=None, diag=None):
     """Fetch, QC, grid and merge. Returns (composite_2d, diag).
 
@@ -778,7 +944,11 @@ def build_mosaic(sites=None, diag=None):
                 except Exception:
                     pass
                 arr, (rla, rlo) = _grid_one(radar, diag, site)
-                staged.append((arr, rla, rlo, _tilt, t))
+                try:
+                    _alt = float(radar.altitude["data"][0])
+                except Exception:
+                    _alt = 0.0
+                staged.append((arr, rla, rlo, _tilt, t, site, _alt))
                 if t:
                     times.append(t)
             except Exception as exc:
@@ -788,9 +958,30 @@ def build_mosaic(sites=None, diag=None):
                 del radar
                 gc.collect()
 
+    # How high did each site actually sample inside the box? This is
+    # the check that says whether an "aloft" question is answerable
+    # at all: a TDWR pair maxes out under 1 km within 30 km, so a
+    # storm building aloft over the metro is invisible to it however
+    # the tilts are combined.
+    try:
+        import math as _m
+        for _a, _rla, _rlo, _tlt, _t, _sname, _salt in staged:
+            _reach = max(HALF_X_M, HALF_Y_M)
+            _hi = (_reach * _m.sin(_m.radians(_tlt))
+                   + _reach ** 2 / (2 * 1.333 * 6371000.0))
+            diag.setdefault("vertical_reach_m", {})[_sname] = (
+                f"lowest tilt {_tlt:.1f} deg -> {_hi:,.0f} m at "
+                f"{_reach / 1000:.0f} km")
+    except Exception:
+        pass
+
     if staged:
         newest = max((x[4] for x in staged if x[4]), default=None)
-        for arr, rla, rlo, tilt, t in staged:
+        bias = _solve_biases(staged, diag)
+        for arr, rla, rlo, tilt, t, site, _alt in staged:
+            b = bias.get(site)
+            if b:
+                arr = arr - b        # bring this site onto the S-band scale
             age = ((newest - t).total_seconds()
                    if (newest and t) else 0.0)
             num, den = _accumulate(num, den, arr, rla, rlo, tilt, age)
@@ -806,6 +997,22 @@ def build_mosaic(sites=None, diag=None):
     # multi-radar estimate before the vertical max is taken.
     blended = _finalize(num, den)
     del num, den
+    # ALOFT: max over levels ABOVE aloft_base_m, so a cell that is
+    # strong at altitude while base reflectivity is still weak shows
+    # up. Only meaningful when the sites actually sample that high —
+    # see vertical_reach_m.
+    _ab = float(os.environ.get("L2_ALOFT_BASE_M", "3000"))
+    _zs = np.linspace(
+        BASE_M, TOP_M if TOP_M else BASE_M + 1000.0 * max(LEVELS - 1, 1),
+        blended.shape[0])
+    _hi_idx = [i for i, z in enumerate(_zs) if z >= _ab]
+    if _hi_idx:
+        diag["aloft"] = (f"max above {_ab:,.0f} m from levels "
+                         f"{_hi_idx[0]}-{_hi_idx[-1]}")
+    else:
+        diag["aloft"] = (f"no grid level reaches {_ab:,.0f} m — "
+                         f"aloft product unavailable at this "
+                         f"LEVELS/TOP_M")
     comp = np.nanmax(blended, axis=0)
     del blended
     gc.collect()
