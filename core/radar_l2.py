@@ -105,6 +105,12 @@ REGIONS = {
     # tilt mismatch. Set L2_TDWR_PRODUCT=TZ1 and
     # L2_MAX_RANGE_M=55560 to run it as intended.
     "NY Metro 1.0deg proto": ["TJFK", "TEWR"],
+    # South Florida: TMIA and TFLL are 33 km apart, the same spacing
+    # as the NY pair, with KAMX as an S-band anchor for calibration —
+    # which the NY pair lacks. Better test bed, and Florida actually
+    # has convection.
+    "FLL-MIA TDWR pair": ["TMIA", "TFLL"],
+    "FLL-MIA merged (S+C)": ["KAMX", "TMIA", "TFLL", "TPBI"],
 }
 # Explicit view per region: (centre_lat, centre_lon, half_x_km,
 # half_y_km). Centring on the first radar that loaded put MCO's box
@@ -124,6 +130,8 @@ REGION_VIEW = {
     "NY Metro TDWR pair": (40.62, -74.07, 90, 80),
     # Union of two 30 nm circles 33 km apart, plus margin.
     "NY Metro 1.0deg proto": (40.59, -74.07, 80, 65),
+    "FLL-MIA TDWR pair": (25.95, -80.30, 80, 70),
+    "FLL-MIA merged (S+C)": (26.10, -80.35, 150, 140),
 }
 SITE_NOTES = {
     "KOKX": "Upton NY — inside the N90 terminal area, primary source",
@@ -169,6 +177,9 @@ TDWR_SITES = {
     "TPHL": "TDWR at PHL", "TBOS": "TDWR at BOS",
     "TDCA": "TDWR at DCA", "TBWI": "TDWR at BWI",
     "TIAD": "TDWR at IAD",
+    "TMIA": "TDWR at MIA", "TFLL": "TDWR at FLL",
+    "TPBI": "TDWR at PBI", "TMCO": "TDWR at MCO",
+    "TTPA": "TDWR at TPA",
 }
 N90_TDWR = ["TJFK", "TEWR"]
 
@@ -226,44 +237,77 @@ MAX_RANGE_M = float(MAX_RANGE_M) if MAX_RANGE_M else None
 # T-prefixed forms used on displays.
 TDWR_ID3 = {"TJFK": "JFK", "TEWR": "EWR", "TPHL": "PHL",
             "TBOS": "BOS", "TDCA": "DCA", "TBWI": "BWI",
-            "TIAD": "IAD"}
+            "TIAD": "IAD", "TMIA": "MIA", "TFLL": "FLL",
+            "TPBI": "PBI", "TMCO": "MCO", "TTPA": "TPA"}
 # Base reflectivity tilts 1-3. TZL is the long-range product but it is
 # resampled to 300 m, which throws away the resolution that made TDWR
 # worth having.
 TDWR_PRODUCTS = ["TZ0", "TZ1", "TZ2"]
 
 
+def _tdwr_catalog_urls(prod, s3, day):
+    """Candidate catalog URLs for one TDWR product.
+
+    The layout is NOT certain, which is why several are tried and the
+    outcome of each is recorded. Unidata serves NEXRAD Level III at
+    /nexrad/level3/{PROD}/{SITE}/{YYYYMMDD}/ — core.radar3 uses that
+    and it works — and TDWR lives under a sibling root. Observed in
+    the wild without a date folder too, hence both forms.
+    """
+    base = "https://thredds.ucar.edu/thredds/catalog"
+    return [
+        f"{base}/terminal/level3/{prod}/{s3}/{day:%Y%m%d}/catalog.xml",
+        f"{base}/terminal/level3/{prod}/{s3}/catalog.xml",
+        f"{base}/nexrad/level3/{prod}/{s3}/{day:%Y%m%d}/catalog.xml",
+        f"{base}/nexrad/level3/{prod}/{s3}/catalog.xml",
+    ]
+
+
 def _load_tdwr(site, diag):
     """One TDWR volume assembled from Level III tilts.
 
     Each product file is ONE sweep, so a volume is built by reading
-    several and merging. Returns a pyart Radar or raises.
+    several and merging.
+
+    Every URL tried is recorded with its outcome. The first version
+    swallowed catalog errors in a bare `except: continue` and
+    reported only "no Level III tilts", which says nothing about
+    whether the host was wrong, the path was wrong, or the site
+    simply had no recent data.
     """
     import requests
     from datetime import timedelta as _td
-    from siphon.catalog import TDSCatalog
 
     import pyart
 
     s3 = TDWR_ID3.get(site.upper(), site.upper()[-3:])
-    sweeps = []
-    used = []
+    tried = []
+    sweeps, used = [], []
     now = datetime.now(timezone.utc)
     wanted = ([TDWR_PRODUCT_ONLY] if TDWR_PRODUCT_ONLY
               else TDWR_PRODUCTS[:max(1, min(TILTS,
                                              len(TDWR_PRODUCTS)))])
     for prod in wanted:
         ds = None
-        for d in (now, now - _td(days=1)):
-            url = ("https://thredds.ucar.edu/thredds/catalog/terminal/"
-                   f"level3/{prod}/{s3}/{d:%Y%m%d}/catalog.xml")
-            try:
-                cat = TDSCatalog(url)
-            except Exception:
-                continue
-            names = sorted(cat.datasets.keys(), reverse=True)
-            if names:
-                ds = cat.datasets[names[0]]
+        for day in (now, now - _td(days=1)):
+            for url in _tdwr_catalog_urls(prod, s3, day):
+                try:
+                    from siphon.catalog import TDSCatalog
+
+                    cat = TDSCatalog(url)
+                    names = sorted(cat.datasets.keys(), reverse=True)
+                    if not names:
+                        tried.append(f"{url.split('/catalog')[0]}: "
+                                     f"empty")
+                        continue
+                    ds = cat.datasets[names[0]]
+                    tried.append(f"{url.split('/catalog')[0]}: "
+                                 f"{len(names)} datasets")
+                    break
+                except Exception as exc:
+                    tried.append(f"{url.split('/catalog')[0]}: "
+                                 f"{type(exc).__name__}")
+            if ds is not None:
                 break
         if ds is None:
             continue
@@ -275,10 +319,14 @@ def _load_tdwr(site, diag):
                 timeout=60).content
             sweeps.append(pyart.io.read_nexrad_level3(io.BytesIO(raw)))
             used.append(prod)
-        except Exception:
-            continue
+        except Exception as exc:
+            tried.append(f"{prod} download/parse: "
+                         f"{type(exc).__name__}: {exc}")
+    diag.setdefault("tdwr_probe", {})[site] = tried[:8]
     if not sweeps:
-        raise RuntimeError(f"no Level III tilts for {site} ({s3})")
+        raise RuntimeError(
+            f"no Level III tilts for {site} ({s3}); tried "
+            + " | ".join(tried[:4]))
     radar = sweeps[0]
     for extra in sweeps[1:]:
         try:
