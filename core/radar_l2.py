@@ -589,7 +589,23 @@ WEIGHT_FN = os.environ.get("L2_WEIGHT", "Barnes2")
 # Radius-of-influence floor. This is the smoothing/peak trade: a
 # planted 58 dBZ core survived intact at 500 and 1000 m but lost
 # 2.6 dB at 2000 m. 1000 m smooths the blocks without eating cores.
-MIN_RADIUS_M = float(os.environ.get("L2_MIN_RADIUS_M", "1000"))
+# Radius-of-influence FLOOR, per band. This was one shared 1000 m
+# value and it was the single biggest destroyer of resolution in the
+# pipeline. Barnes2 averages every gate inside the ROI, so a 1000 m
+# floor makes each cell a mean over a 1 km ball — at 20 km a TDWR
+# resolves 349 m and we were averaging over 1000, throwing away 3x
+# the detail before the render smoother even ran. Compared against a
+# real TDWR display the difference was stark: fine radial structure
+# and individual cells there, smooth blobs here.
+#
+# pyart's dist_beam ROI already grows with range on its own. The
+# floor only needs to stop it collapsing below the grid cell, so it
+# should be near RES_M, not far above it.
+MIN_RADIUS_BAND = {
+    "C": float(os.environ.get("L2_MIN_RADIUS_C_M", "200")),
+    "S": float(os.environ.get("L2_MIN_RADIUS_S_M", "500")),
+}
+MIN_RADIUS_M = MIN_RADIUS_BAND["S"]
 # Render-time smoothing, in grid cells. Applied to the finished
 # composite rather than by widening the gridding ROI, because the two
 # have very different costs: measured 8/18 on a varying field
@@ -600,7 +616,11 @@ MIN_RADIUS_M = float(os.environ.get("L2_MIN_RADIUS_M", "1000"))
 # peaks start to go (3.7 dB at sigma=3), so 1.0 is the sweet spot.
 # At 250 m cells that is a 250 m smoothing length — well below the
 # beam width it is hiding.
-SMOOTH_SIGMA = float(os.environ.get("L2_SMOOTH_SIGMA", "1.0"))
+# 0.4, not 1.0: at a 250 m grid a sigma of 1.0 is another 250 m of
+# blur on top of the gridder, which on TDWR data is most of what
+# separates a cell from a blob. Enough to take the edge off gate
+# wedges, not enough to erase structure.
+SMOOTH_SIGMA = float(os.environ.get("L2_SMOOTH_SIGMA", "0.4"))
 
 # NWS/AWIPS reflectivity table — the one every US radar display uses,
 # 5 dBZ steps from 5 to 75. Anchors are the standard hex values, not
@@ -923,6 +943,7 @@ def gatefilter(radar, diag=None, site=None):
 # Grid + merge
 # ---------------------------------------------------------------------------
 def _grid_one(radar, diag=None, site=None):
+    _roi_floor = MIN_RADIUS_BAND[_site_band(site)]
     """Grid one radar onto the shared target grid; return float32."""
     import numpy as np
     import pyart
@@ -938,7 +959,7 @@ def _grid_one(radar, diag=None, site=None):
                      (-HALF_Y_M, HALF_Y_M), (-HALF_X_M, HALF_X_M)),
         fields=["reflectivity"],
         weighting_function=WEIGHT_FN,
-        min_radius=MIN_RADIUS_M,
+        min_radius=_roi_floor,
         gatefilters=(gatefilter(radar, diag, site),),
         grid_origin=GRID_CENTER,
     )
@@ -1351,7 +1372,8 @@ def build_mosaic(sites=None, diag=None):
                      f"vert {BLEND_VERT_M:.0f} m, "
                      f"time {BLEND_TIME_S:.0f} s, "
                      f"sharpness {BLEND_SHARPNESS:g} | "
-                     f"grid {WEIGHT_FN} roi>={MIN_RADIUS_M:.0f} m | "
+                     f"grid {WEIGHT_FN} roi>=C{MIN_RADIUS_BAND['C']:.0f}"
+                     f"/S{MIN_RADIUS_BAND['S']:.0f} m | "
                      f"floor {DBZ_MIN:.0f} dBZ")
     if times:
         # Scan times differ between sites; a 40 kt storm moves ~2 nm
