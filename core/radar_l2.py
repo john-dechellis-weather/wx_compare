@@ -123,6 +123,20 @@ REGIONS = {
     # Adding the two S-band sites takes no-coverage to 3% and
     # calibratable area to 63%, and gives TTPA and TMCO each an
     # S-band neighbour to be anchored to.
+    # TDWR ONLY, no S-band. Central and south Florida.
+    #
+    # Note the geometry this exposes: TMIA-TFLL are 33 km apart and
+    # TFLL-TDJT about 60 km, so the south Florida three overlap
+    # heavily and blend. TTPA and TMCO are 200+ km from that group
+    # and from each other, so they render as isolated 90 km discs
+    # with nothing to blend against. That separation IS the result —
+    # it shows what TDWR alone can and cannot cover.
+    #
+    # Run it as: L2_TDWR_PRODUCT=TZ0 (lowest tilt only),
+    # L2_TOP_M=6000 with LEVELS=1 (one deep layer, so the climbing
+    # beam lands in it whole rather than slicing into range rings),
+    # L2_DBZ_MIN=10, and L2_CBAND_CORRECT=off for genuinely raw.
+    "FL TDWR only (raw)": ["TMCO", "TTPA", "TDJT", "TFLL", "TMIA"],
     "Florida Peninsula (S+C)": ["KAMX", "KTBW", "KMLB",
                                 "TMIA", "TFLL", "TDJT", "TMCO",
                                 "TTPA"],
@@ -147,6 +161,7 @@ REGION_VIEW = {
     "NY Metro 1.0deg proto": (40.59, -74.07, 80, 65),
     "FLL-MIA TDWR pair": (25.95, -80.30, 80, 70),
     "FLL-MIA merged (S+C)": (26.10, -80.35, 150, 140),
+    "FL TDWR only (raw)": (27.05, -81.55, 195, 235),
     "Florida Peninsula (S+C)": (26.90, -81.30, 210, 195),
 }
 SITE_NOTES = {
@@ -208,6 +223,11 @@ N90_TDWR = ["TJFK", "TEWR"]
 # 21 dB low through 20 km. S-band over the same path loses under
 # 0.5 dB. That difference is not noise — it is the single reason
 # TDWR cannot simply be dropped into the blend.
+# Set L2_CBAND_CORRECT=off to see TDWR exactly as it comes off the
+# wire — attenuated, uncorrected. Useful for judging how bad the
+# C-band problem actually is on a given day before deciding how much
+# to trust the correction.
+CBAND_CORRECT = os.environ.get("L2_CBAND_CORRECT", "on").lower() != "off"
 CBAND_A = float(os.environ.get("L2_CBAND_A", "1.6e-4"))
 CBAND_B = float(os.environ.get("L2_CBAND_B", "0.64"))
 # Above this much accumulated two-way attenuation the correction is
@@ -739,7 +759,7 @@ def load_site(site: str, fs, diag: dict):
     # gridding. The PIA array rides along as a field so the gridder
     # carries it onto the grid and the blend can use it as a
     # confidence map — see _cband_weight.
-    if site.upper() in TDWR_SITES:
+    if site.upper() in TDWR_SITES and CBAND_CORRECT:
         try:
             pia, corr = _cband_attenuation(radar)
             import numpy as _np
