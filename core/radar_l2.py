@@ -585,7 +585,18 @@ SPECKLE = int(os.environ.get("L2_SPECKLE", "10"))
 # Measured 8/18 on a realistic volume: Barnes2 costs ~20% more wall
 # time than nearest (11.5 s vs 9.4 s) with identical peak memory —
 # far cheaper than expected.
-WEIGHT_FN = os.environ.get("L2_WEIGHT", "Barnes2")
+# RAW mode. One switch, so a single flag guarantees no smoothing is
+# hiding anywhere: nearest-neighbour gridding, ROI floor at the grid
+# cell, no render Gaussian, no seam matching. Intended as the base
+# for a custom TDWR/WSR combiner — you cannot judge a blending
+# algorithm through three layers of blur applied after it.
+# DEFAULT ON. Raw is the base state now: a custom TDWR/WSR combiner
+# is being developed against this output, and a blending algorithm
+# cannot be judged through three layers of blur applied after it.
+# Set L2_RAW=off to restore Barnes2 + Gaussian + seam matching.
+RAW_MODE = os.environ.get("L2_RAW", "on").lower() != "off"
+WEIGHT_FN = ("nearest" if RAW_MODE
+             else os.environ.get("L2_WEIGHT", "Barnes2"))
 # Radius-of-influence floor. This is the smoothing/peak trade: a
 # planted 58 dBZ core survived intact at 500 and 1000 m but lost
 # 2.6 dB at 2000 m. 1000 m smooths the blocks without eating cores.
@@ -602,9 +613,12 @@ WEIGHT_FN = os.environ.get("L2_WEIGHT", "Barnes2")
 # floor only needs to stop it collapsing below the grid cell, so it
 # should be near RES_M, not far above it.
 MIN_RADIUS_BAND = {
-    "C": float(os.environ.get("L2_MIN_RADIUS_C_M", "200")),
-    "S": float(os.environ.get("L2_MIN_RADIUS_S_M", "500")),
+    "C": float(os.environ.get("L2_MIN_RADIUS_C_M", "150")),
+    "S": float(os.environ.get("L2_MIN_RADIUS_S_M", "250")),
 }
+# In RAW mode _grid_one uses RES_M directly instead of these — the
+# floor becomes one grid cell, which is the smallest value that still
+# stops the ROI collapsing to nothing.
 MIN_RADIUS_M = MIN_RADIUS_BAND["S"]
 # Render-time smoothing, in grid cells. Applied to the finished
 # composite rather than by widening the gridding ROI, because the two
@@ -620,7 +634,8 @@ MIN_RADIUS_M = MIN_RADIUS_BAND["S"]
 # blur on top of the gridder, which on TDWR data is most of what
 # separates a cell from a blob. Enough to take the edge off gate
 # wedges, not enough to erase structure.
-SMOOTH_SIGMA = float(os.environ.get("L2_SMOOTH_SIGMA", "0.4"))
+SMOOTH_SIGMA = (0.0 if RAW_MODE
+                else float(os.environ.get("L2_SMOOTH_SIGMA", "0.4")))
 
 # NWS/AWIPS reflectivity table — the one every US radar display uses,
 # 5 dBZ steps from 5 to 75. Anchors are the standard hex values, not
@@ -648,7 +663,54 @@ AWIPS_COLORS = [
 # same anchor colours but interpolates between them, which suits the
 # 250 m grid better — at this resolution hard bands read as terracing
 # on a gradient rather than as information.
+# AWIPS steps, not the interpolated ramp — banding is honest here.
 RAMP_MODE = os.environ.get("L2_RAMP", "steps").lower()
+
+# ---------------------------------------------------------------------------
+# RAW BY DEFAULT — every smoothing stage is off
+# ---------------------------------------------------------------------------
+# Defaults as of 8/19: SMOOTH_SIGMA 0, RES_MATCH off, WEIGHT_FN
+# nearest, ROI floors at the grid cell. Nothing averages, nothing
+# blurs, nothing matches texture across a seam. What you see is what
+# the radars reported, resampled onto a common grid and nothing more.
+#
+# It will look bad: gate wedges, hard coverage edges, calibration
+# steps between sites, speckle. That is the point — every artifact is
+# now visible and attributable instead of hidden under a blur.
+#
+# The old machinery is still here and still tested; it is just not
+# wired on. To bring any of it back:
+#     L2_WEIGHT=Barnes2       gridding-stage averaging
+#     L2_SMOOTH_SIGMA=0.4     Gaussian on the finished field
+#     L2_RES_MATCH=on         gradient-keyed seam matching
+#
+# ---------------------------------------------------------------------------
+# CUSTOM COMBINER HOOK
+# ---------------------------------------------------------------------------
+# Set COMBINE_FN to your own callable and build_mosaic will use it
+# instead of the built-in weighted blend. Signature:
+#
+#     COMBINE_FN(staged, diag) -> ndarray (levels, ny, nx) in dBZ
+#
+# `staged` is a list, one entry per radar that loaded, of:
+#     (field, rlat, rlon, tilt_deg, scan_time, site, site_alt_m)
+# where `field` is that site's data ALREADY GRIDDED onto the common
+# grid, dBZ, NaN where it saw nothing. Everything is on the same grid
+# so the arrays line up cell for cell.
+#
+# Helpers available, all documented at their definitions:
+#     _site_band(site)                 -> "C" (TDWR) or "S" (WSR-88D)
+#     _site_weight(lat, lon, shape, tilt, age_s, site)
+#                                      -> range/height/time weights
+#     _beam_height_map(lat, lon, tilt, alt, shape)
+#                                      -> sampling height MSL per cell
+#     SITE_RANGE_M / SITE_BEAMWIDTH    -> per-band geometry
+#     _cband_attenuation(radar)        -> PIA, already applied on load
+#
+# Return NaN where nothing should be drawn. Return dBZ, not linear Z —
+# the built-in blend converts internally because averaging logarithms
+# is wrong, and any combiner that averages should do the same.
+COMBINE_FN = None
 # Range scale for blend weights. Default is the 52 nm crossover
 # where beam spreading makes L2 coarser than MRMS = 96 km.
 BLEND_M = float(os.environ.get("L2_BLEND_M", "96000"))
@@ -706,7 +768,8 @@ SITE_BEAMWIDTH = {"C": 0.55, "S": 0.50}
 # identical dBZ the FINE STRUCTURE stops where TDWR coverage ends, and
 # the eye reads that as an edge. Smoothing each cell by its own
 # effective sample width makes texture continuous. off = disable.
-RES_MATCH = os.environ.get("L2_RES_MATCH", "on").lower() != "off"
+RES_MATCH = (False if RAW_MODE
+             else os.environ.get("L2_RES_MATCH", "on").lower() != "off")
 # How far to look when deciding what "local" resolution means, and the
 # hardest blur allowed. Both keep the match to the seam rather than
 # letting it flatten the whole field.
@@ -943,8 +1006,11 @@ def gatefilter(radar, diag=None, site=None):
 # Grid + merge
 # ---------------------------------------------------------------------------
 def _grid_one(radar, diag=None, site=None):
-    _roi_floor = MIN_RADIUS_BAND[_site_band(site)]
     """Grid one radar onto the shared target grid; return float32."""
+    # RAW: floor at the grid cell itself — any smaller is meaningless
+    # and pyart rejects zero. Otherwise the per-band floor.
+    _roi_floor = (RES_M if RAW_MODE
+                  else MIN_RADIUS_BAND[_site_band(site)])
     import numpy as np
     import pyart
 
@@ -1218,6 +1284,42 @@ def _solve_biases(staged, diag):
 _RES_MAP = []
 
 
+
+
+# ---------------------------------------------------------------------------
+# Custom combiner hook
+# ---------------------------------------------------------------------------
+# Set COMBINER to your own function and it replaces the built-in
+# weighted blend entirely. Signature:
+#
+#     combiner(fields, meta) -> ndarray (nz, ny, nx) of dBZ, NaN where
+#                               nothing was observed
+#
+#   fields  list of (nz, ny, nx) float32 dBZ arrays, one per site,
+#           already gridded onto the SAME grid, NaN where that site
+#           saw nothing. Nothing has been smoothed or averaged
+#           across sites.
+#   meta    list of dicts, same order, each with:
+#             site      "TMIA" / "KAMX"
+#             band      "C" or "S"
+#             lat, lon  radar position
+#             tilt      lowest elevation angle, degrees
+#             age_s     seconds behind the newest volume in the set
+#             alt_m     site altitude MSL
+#             range_m   usable range of that radar
+#             beamwidth degrees
+#
+# The grid itself is described by GRID_CENTER, HALF_X_M, HALF_Y_M,
+# RES_M, BASE_M/TOP_M and LEVELS, all module globals at call time —
+# so per-cell range and beam height are reconstructible with
+# _beam_height_map() and _site_weight() if you want them.
+#
+# Return dBZ, not linear Z. The built-in blend converts internally
+# because averaging in log space is wrong, but a combiner that never
+# averages does not need to care.
+COMBINER = None
+
+
 def build_mosaic(sites=None, diag=None):
     """Fetch, QC, grid and merge. Returns (composite_2d, diag).
 
@@ -1313,6 +1415,62 @@ def build_mosaic(sites=None, diag=None):
     except Exception:
         pass
 
+    if staged and COMBINER is not None:
+        # Custom combiner: hand over the raw per-site grids and use
+        # whatever it returns. The built-in weighting, linear-Z
+        # averaging and column max below are all bypassed.
+        newest = max((x[4] for x in staged if x[4]), default=None)
+        _fields = [x[0] for x in staged]
+        _meta = [{
+            "site": x[5], "band": _site_band(x[5]),
+            "lat": x[1], "lon": x[2], "tilt": x[3],
+            "alt_m": x[6],
+            "age_s": ((newest - x[4]).total_seconds()
+                      if (newest and x[4]) else 0.0),
+            "range_m": SITE_RANGE_M[_site_band(x[5])],
+            "beamwidth": SITE_BEAMWIDTH[_site_band(x[5])],
+        } for x in staged]
+        try:
+            blended = COMBINER(_fields, _meta)
+            diag["combiner"] = getattr(COMBINER, "__name__", "custom")
+        except Exception as exc:
+            diag["combiner"] = (f"FAILED {type(exc).__name__}: {exc}"
+                                " — fell back to the built-in blend")
+            blended = None
+        if blended is not None:
+            staged.clear()
+            gc.collect()
+            comp = np.nanmax(blended, axis=0)
+            del blended
+            diag["cells"] = int(comp.size)
+            diag["wall_s"] = round(time.time() - t_all, 1)
+            diag["coverage_pct"] = round(
+                100.0 * float(np.isfinite(comp).sum()) / comp.size, 1)
+            return comp, diag
+
+    if staged and COMBINE_FN is not None:
+        # Custom combiner takes the whole blending step.
+        try:
+            blended = COMBINE_FN(staged, diag)
+            diag["blend"] = f"custom: {getattr(COMBINE_FN, '__name__', '?')}"
+            comp = np.nanmax(blended, axis=0)
+            del blended
+            staged.clear()
+            gc.collect()
+            if times:
+                diag["scan_spread_s"] = int(
+                    (max(times) - min(times)).total_seconds())
+                diag["valid"] = max(times).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ")
+            diag["cells"] = int(comp.size)
+            diag["wall_s"] = round(time.time() - t_all, 1)
+            diag["coverage_pct"] = round(
+                100.0 * float(np.isfinite(comp).sum()) / comp.size, 1)
+            return comp, diag
+        except Exception as exc:
+            diag["combine_error"] = (f"{type(exc).__name__}: {exc} "
+                                     "- fell back to built-in blend")
+
     if staged:
         newest = max((x[4] for x in staged if x[4]), default=None)
         bias = _solve_biases(staged, diag)
@@ -1368,6 +1526,10 @@ def build_mosaic(sites=None, diag=None):
         _RES_MAP.append(res_map)
     del blended
     gc.collect()
+    if RAW_MODE:
+        diag["raw_mode"] = ("ON — nearest-neighbour grid, ROI = one "
+                            "cell, no render smoothing, no seam "
+                            "matching. Blend weights still apply.")
     diag["blend"] = (f"range D0={BLEND_M / 1000:.0f} km, "
                      f"vert {BLEND_VERT_M:.0f} m, "
                      f"time {BLEND_TIME_S:.0f} s, "
