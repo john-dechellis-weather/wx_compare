@@ -632,6 +632,17 @@ RAMP_MODE = os.environ.get("L2_RAMP", "steps").lower()
 # Range scale for blend weights. Default is the 52 nm crossover
 # where beam spreading makes L2 coarser than MRMS = 96 km.
 BLEND_M = float(os.environ.get("L2_BLEND_M", "96000"))
+# Per-band range scale. One shared 96 km scale was wrong: measured at
+# FLL, the TDWR 21 km away contributed only 40% of the value while
+# sites at 49, 57 and 70 km supplied the rest, so the effective sample
+# width came out 394 m instead of the 202 m TFLL actually resolves.
+# The blend was averaging away the advantage the whole design exists
+# to capture. A TDWR is only better inside ~50 km, so its vote should
+# fade on that scale, not on the S-band's.
+BLEND_BAND_M = {
+    "C": float(os.environ.get("L2_BLEND_C_M", "45000")),
+    "S": float(os.environ.get("L2_BLEND_S_M", "96000")),
+}
 # Vertical proximity scale. Range weighting alone cannot tell that two
 # sites equidistant from a cell may be sampling completely different
 # altitudes — at a 1500 m grid level a 0.5 deg beam is 1300 m below it
@@ -676,6 +687,16 @@ SITE_BEAMWIDTH = {"C": 0.55, "S": 0.50}
 # the eye reads that as an edge. Smoothing each cell by its own
 # effective sample width makes texture continuous. off = disable.
 RES_MATCH = os.environ.get("L2_RES_MATCH", "on").lower() != "off"
+# How far to look when deciding what "local" resolution means, and the
+# hardest blur allowed. Both keep the match to the seam rather than
+# letting it flatten the whole field.
+# Scale must be SMALL relative to a coverage region: at 250 m cells a
+# TDWR disc is ~360 cells across, so a 12-cell scale confines the
+# blur to a ~3 km band at the handover and leaves the interior alone.
+RES_MATCH_SCALE_CELLS = float(
+    os.environ.get("L2_RES_MATCH_SCALE", "12"))
+RES_MATCH_GAIN = float(os.environ.get("L2_RES_MATCH_GAIN", "6.0"))
+RES_MATCH_MAX_SIGMA = float(os.environ.get("L2_RES_MATCH_MAX", "2.0"))
 # Floor for BOTH the QC gate filter and the colour ramp — one knob, so
 # what is gridded is what is shown. 15 dBZ is the operationally
 # meaningful threshold for a terminal area: below it is drizzle,
@@ -976,12 +997,12 @@ def _site_weight(rlat, rlon, shape, tilt_deg=0.5, age_s=0.0,
     ax = np.linspace(-HALF_X_M, HALF_X_M, nx, dtype="float32")
     ay = np.linspace(-HALF_Y_M, HALF_Y_M, ny, dtype="float32")
     d2 = ((ax - rx) ** 2)[None, :] + ((ay - ry) ** 2)[:, None]
-    w = np.exp(-d2 / (BLEND_M * BLEND_M)).astype("float32")
+    _d0 = BLEND_BAND_M[_site_band(site)]
+    w = np.exp(-d2 / (_d0 * _d0)).astype("float32")
 
     # Cosine taper to zero at the site's usable range, so its vote is
     # already gone by the time its data ends.
-    band = _site_band(site)
-    rmax = SITE_RANGE_M[band]
+    rmax = SITE_RANGE_M[_site_band(site)]
     r0 = rmax * EDGE_TAPER_FROM
     d1 = np.sqrt(d2, dtype="float32")
     taper = np.ones_like(w)
@@ -1368,9 +1389,24 @@ def _resolution_match(field, res_m, base_sigma):
         return _nan_smooth(field, base_sigma)
     # Target sigma in CELLS: enough to blur a cell to the coarsest
     # resolution present, so everything ends up equally soft.
-    worst = float(np.nanpercentile(res_m, 95))
-    tgt = np.clip((worst - res_m) / max(RES_M, 1.0) * 0.5,
-                  0.0, 6.0)
+    # Smooth where resolution CHANGES, not where it is coarse.
+    #
+    # First attempt matched the local resolution LEVEL: every cell was
+    # blurred up toward its neighbours' coarseness. Measured on a fine
+    # core inside a coarse field, that drove texture inside the core
+    # to std 0.00 while the coarse area kept 0.96 — it sanded the
+    # TDWR detail flat, which is the opposite of the goal.
+    #
+    # The seam is a DISCONTINUITY, so the fix keys on the gradient. In
+    # a uniform area — fine or coarse — resolution is locally constant
+    # and nothing is blurred. Only the band where a TDWR hands over to
+    # an 88D gets softened, and only as much as the handover is abrupt.
+    from scipy.ndimage import gaussian_filter as _gf
+
+    r = np.nan_to_num(res_m, nan=float(np.nanmedian(res_m)))
+    local = _gf(r, RES_MATCH_SCALE_CELLS, mode="nearest")
+    disc = np.abs(r - local) / np.maximum(local, 1.0)
+    tgt = np.clip(disc * RES_MATCH_GAIN, 0.0, RES_MATCH_MAX_SIGMA)
     tgt = np.nan_to_num(tgt, nan=0.0) + base_sigma
     stack_sigmas = [base_sigma, 1.5, 2.5, 4.0, 6.5]
     stack = [_nan_smooth(field, sg) for sg in stack_sigmas]
