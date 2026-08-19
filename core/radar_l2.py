@@ -826,3 +826,106 @@ def build_loop(site, n_frames, outdir, tag="cmax", progress=None,
     diag["n_frames"] = len(frames)
     return frames, diag
 
+# ---------------------------------------------------------------------------
+# Warmer
+# ---------------------------------------------------------------------------
+# Deliberately a SEPARATE daemon from core.cam_warm, not a job added to
+# WARM_JOBS. Three reasons: the CAM warmer is keyed by model/cycle and
+# writes frames into a manifest store, which does not fit a rolling
+# radar loop; a radar cycle is minutes where a CAM cycle is hours, so
+# they want different sleep intervals; and a failure here must not be
+# able to stall the CAM warmer that pages 9 and 11 depend on. Same
+# shape as cam_warm.ensure_warmer_started though — idempotent, daemon
+# thread, env kill switch — so it behaves the way the rest of the app
+# already does.
+#
+# What it does: for each region in ROTATION, keep the newest N frames
+# rendered on disk. Frames are keyed by volume filename, so a pass
+# that finds nothing new costs a listing and no renders.
+
+import threading as _th
+
+_warm_lock = _th.Lock()
+_warm_started = False
+
+# Region -> (sites, tag). Kept short on purpose: each site is ~20 s,
+# so a four-site region is over a minute and the whole rotation has to
+# finish inside the volume cadence to stay current.
+ROTATION = {
+    "N90": (["KOKX", "KDIX"], "n90"),
+    "MCO": (["KMLB", "KTBW"], "mco"),
+}
+WARM_FRAMES = int(os.environ.get("L2_WARM_FRAMES", "6"))
+WARM_SLEEP_S = int(os.environ.get("L2_WARM_SLEEP_S", "120"))
+
+
+def _warm_log(outdir, msg):
+    from datetime import datetime, timezone
+    from pathlib import Path as _PP
+
+    try:
+        with open(_PP(outdir) / "radar_warmer.log", "a") as fh:
+            fh.write(f"{datetime.now(timezone.utc):%m-%d %H:%M:%S} "
+                     f"{msg}\n")
+    except OSError:
+        pass
+
+
+def _warm_daemon(outdir):
+    _warm_log(outdir, "radar warmer started")
+    while True:
+        for name, (sites, tag) in ROTATION.items():
+            try:
+                t0 = time.time()
+                diag = {}
+                frames, diag = build_loop(
+                    sites[0], WARM_FRAMES, outdir, tag=tag, diag=diag)
+                built = sum(1 for v in diag.get("frames", {}).values()
+                            if v != "cached")
+                _warm_log(outdir,
+                          f"{name}: {len(frames)} frames "
+                          f"({built} new) in {time.time() - t0:.0f}s")
+            except Exception as exc:
+                _warm_log(outdir, f"{name} FAILED: "
+                                  f"{type(exc).__name__}: {exc}")
+        time.sleep(WARM_SLEEP_S)
+
+
+def ensure_radar_warmer(outdir) -> None:
+    """Idempotent; starts one background thread per process.
+
+    L2_WARMER=off is the kill switch — this does real work every two
+    minutes and must be stoppable without a deploy.
+    """
+    if os.environ.get("L2_WARMER", "on").lower() == "off":
+        return
+    global _warm_started
+    with _warm_lock:
+        if _warm_started:
+            return
+        _th.Thread(target=_warm_daemon, args=(outdir,), daemon=True,
+                   name="l2-radar-warmer").start()
+        _warm_started = True
+
+
+def warm_frames(outdir, tag, n=None):
+    """Frames already on disk for a tag, oldest first.
+
+    Reads the filesystem rather than any manifest, so a page can show
+    whatever the warmer has produced without coordinating with it.
+    Volume filenames sort chronologically, which is what makes this
+    work: KOKX20260818_193112_V06 sorts after ..._192612_V06.
+    """
+    from pathlib import Path as _PP
+
+    files = sorted(_PP(outdir).glob(f"l2loop_{tag}_*.png"))
+    if n:
+        files = files[-n:]
+    out = []
+    for f in files:
+        stem = f.stem.split("_")
+        hhmm = stem[-2][:6] if len(stem) >= 3 else "?"
+        out.append({"name": f.name,
+                    "valid": f"{hhmm[:2]}:{hhmm[2:4]}:{hhmm[4:6]}Z"})
+    return out
+
