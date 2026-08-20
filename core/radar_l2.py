@@ -1906,3 +1906,163 @@ def warm_frames(outdir, tag, n=None):
                     "valid": f"{hhmm[:2]}:{hhmm[2:4]}:{hhmm[4:6]}Z"})
     return out
 
+# ---------------------------------------------------------------------------
+# Merge algorithms
+# ---------------------------------------------------------------------------
+# A menu rather than one answer. Each takes the SAME inputs — every
+# site already gridded onto the common grid — and differs only in how
+# it decides a cell's value. Switching between them on live weather is
+# the fastest way to see what each actually costs.
+#
+# Contract, same as COMBINE_FN:
+#     fn(staged, diag) -> ndarray (levels, ny, nx) dBZ, NaN = nothing
+# staged entries are (field, rlat, rlon, tilt, scan_time, site, alt).
+
+
+def _stack_weights(staged):
+    """Per-site weight cubes and their gridded fields."""
+    import numpy as np
+
+    newest = max((x[4] for x in staged if x[4]), default=None)
+    fields, weights = [], []
+    for arr, rla, rlo, tilt, t, site, alt in staged:
+        age = ((newest - t).total_seconds()
+               if (newest and t) else 0.0)
+        w = _site_weight(rla, rlo, arr.shape, tilt, age, site)
+        w = np.where(np.isfinite(arr), w, 0.0).astype("float32")
+        fields.append(arr)
+        weights.append(w)
+    return np.stack(fields), np.stack(weights)
+
+
+def combine_max(staged, diag):
+    """Element-wise max. The v1 behaviour, kept as the baseline.
+
+    Sharpest possible — no averaging at all — but a site reading 6 dB
+    hot wins everywhere it reaches, so calibration differences appear
+    as hard cliffs at coverage edges.
+    """
+    import numpy as np
+
+    f, _ = _stack_weights(staged)
+    with np.errstate(invalid="ignore"):
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            return np.nanmax(f, axis=0)
+
+
+def combine_nearest(staged, diag):
+    """Winner-take-all: each cell takes the single best-weighted site.
+
+    No averaging, so detail and peak values survive intact. Seams fall
+    on the equidistant lines between radars rather than at coverage
+    edges — a Voronoi tessellation. Often the honest choice when scan
+    times differ, because averaging two views of a moving cell smears
+    it into a double image while this picks one.
+    """
+    import numpy as np
+
+    f, w = _stack_weights(staged)
+    idx = np.argmax(w, axis=0)
+    out = np.take_along_axis(f, idx[None], axis=0)[0]
+    return np.where(w.max(axis=0) > 0, out, np.nan)
+
+
+def combine_quality(staged, diag):
+    """Best-resolution-wins: the site with the finest sample volume.
+
+    Range-weighting asks "who is closest"; this asks "who resolved
+    this cell best", which is not the same question once a C-band
+    150 m radar and an S-band 250 m radar are both in range. Keeps
+    TDWR detail out to its full range instead of fading it by
+    distance.
+    """
+    import math
+
+    import numpy as np
+
+    f, w = _stack_weights(staged)
+    res = []
+    for (arr, rla, rlo, tilt, t, site, alt), wi in zip(staged, w):
+        lat0, lon0 = GRID_CENTER
+        rx = (rlo - lon0) * 111320.0 * math.cos(math.radians(lat0))
+        ry = (rla - lat0) * 111320.0
+        ny, nx = arr.shape[-2], arr.shape[-1]
+        ax = np.linspace(-HALF_X_M, HALF_X_M, nx, dtype="float32")
+        ay = np.linspace(-HALF_Y_M, HALF_Y_M, ny, dtype="float32")
+        d = np.sqrt(((ax - rx) ** 2)[None, :] + ((ay - ry) ** 2)[:, None])
+        bw = math.radians(SITE_BEAMWIDTH[_site_band(site)])
+        r = np.maximum(d * bw, 150.0).astype("float32")
+        r = np.broadcast_to(r, arr.shape).copy()
+        r[wi <= 0] = np.inf          # no data = infinitely bad
+        res.append(r)
+    res = np.stack(res)
+    idx = np.argmin(res, axis=0)
+    out = np.take_along_axis(f, idx[None], axis=0)[0]
+    return np.where(np.isfinite(res).any(axis=0), out, np.nan)
+
+
+def combine_weighted(staged, diag):
+    """Weighted mean in linear Z — the built-in blend, as a callable.
+
+    Smoothest transitions of the four. Averaging is also what costs
+    it peak values and fine structure, and what smears a cell seen at
+    two different times.
+    """
+    import numpy as np
+
+    f, w = _stack_weights(staged)
+    z = np.zeros_like(f)
+    ok = np.isfinite(f)
+    np.power(10.0, f / 10.0, out=z, where=ok)
+    num = (z * w).sum(axis=0)
+    den = w.sum(axis=0)
+    out = np.full(num.shape, np.nan, dtype="float32")
+    good = den > 0
+    np.divide(num, den, out=out, where=good)
+    np.log10(out, out=out, where=good & (out > 0))
+    out *= 10.0
+    out[~good] = np.nan
+    return out
+
+
+def combine_weighted_sharp(staged, diag):
+    """Weighted mean, then unsharp mask to put the edges back.
+
+    The blend's smoothness is bought by averaging, which rounds off
+    gradients. An unsharp pass — subtract a blurred copy, add the
+    difference back — restores edge contrast without reintroducing
+    the seams, because the seams are low-frequency and the detail is
+    high-frequency. L2_UNSHARP sets the amount.
+    """
+    import numpy as np
+    from scipy.ndimage import gaussian_filter
+
+    base = combine_weighted(staged, diag)
+    amt = float(os.environ.get("L2_UNSHARP", "0.6"))
+    out = np.array(base, copy=True)
+    for k in range(out.shape[0]):
+        lay = out[k]
+        m = np.isfinite(lay)
+        if not m.any():
+            continue
+        filled = np.where(m, lay, 0.0).astype("float32")
+        norm = gaussian_filter(m.astype("float32"), 2.0,
+                               mode="nearest")
+        blur = gaussian_filter(filled, 2.0, mode="nearest")
+        with np.errstate(invalid="ignore", divide="ignore"):
+            blur = np.where(norm > 1e-3, blur / norm, lay)
+        out[k] = np.where(m, lay + amt * (lay - blur), np.nan)
+    return out
+
+
+COMBINERS = {
+    "built-in weighted": None,       # uses the full path incl. bias
+    "weighted (linear Z)": combine_weighted,
+    "weighted + unsharp": combine_weighted_sharp,
+    "nearest site wins": combine_nearest,
+    "best resolution wins": combine_quality,
+    "element-wise max": combine_max,
+}
+
