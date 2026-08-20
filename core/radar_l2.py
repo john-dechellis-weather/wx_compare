@@ -1780,16 +1780,63 @@ def render_scan(site, scan, outdir, tag, diag=None):
 
 def build_loop(site, n_frames, outdir, tag="cmax", progress=None,
                diag=None):
-    """Render up to n_frames volumes. Returns (frames, diag).
+    """Render frames. Returns (frames, diag), oldest first.
 
-    frames is oldest-first: [{"name", "valid"}]. Old frames for this
-    tag are pruned to twice the requested depth so the disk does not
-    grow without bound.
+    `site` may be a single id or a LIST of ids, and the two take
+    different paths for a reason worth stating:
+
+      one frame from a list  -> a true multi-radar MOSAIC of the
+                                current volumes, via build_mosaic.
+      several frames         -> a single-radar loop from the first
+                                site's archive history.
+
+    The split exists because history and mosaicking pull against
+    each other. build_mosaic assembles whatever each radar has
+    RIGHT NOW; the archive chain can walk back through one radar's
+    past volumes, but there is no equivalent for TDWR Level III, and
+    even with S-band alone the sites do not scan in step, so a
+    "frame at 22:15" would mean seven different moments.
+
+    So a loop is one radar over time, a mosaic is many radars at one
+    time, and asking for both at once quietly gets you the loop. The
+    diagnostic says which you received.
+
+    Old frames for this tag are pruned to twice the requested depth
+    so the disk does not grow without bound.
     """
     from pathlib import Path as _PP
 
     diag = diag if diag is not None else {}
     diag.setdefault("frames", {})
+    sites = [site] if isinstance(site, str) else list(site)
+
+    if len(sites) > 1 and n_frames <= 1:
+        from pathlib import Path as _PP
+
+        if progress:
+            progress(0.2, f"mosaic of {len(sites)} sites...")
+        comp, diag = build_mosaic(sites=sites, diag=diag)
+        if comp is None:
+            return [], diag
+        out = _PP(outdir)
+        out.mkdir(parents=True, exist_ok=True)
+        stamp = (diag.get("valid") or "").replace(":", "").replace(
+            "-", "").replace("T", "_").replace("Z", "") or "now"
+        name = f"l2loop_{tag}_MOSAIC{stamp}.png"
+        render_png(comp, out / name, diag)
+        diag["mode"] = f"mosaic of {len(sites)} sites"
+        return [{"name": name,
+                 "valid": (diag.get("valid", "")[-9:-1] + "Z")
+                 if diag.get("valid") else "now"}], diag
+
+    if len(sites) > 1:
+        diag["mode"] = (f"single-radar loop from {sites[0]} — a "
+                        f"multi-frame request cannot be a mosaic; "
+                        f"ask for 1 frame to get all "
+                        f"{len(sites)} sites")
+    else:
+        diag["mode"] = f"single-radar loop from {sites[0]}"
+    site = sites[0]
     scans = recent_scans(site, n_frames)
     if not scans:
         diag["error"] = f"no {site} volumes in the last 4 h"
@@ -1844,9 +1891,13 @@ _warm_started = False
 # Region -> (sites, tag). Kept short on purpose: each site is ~20 s,
 # so a four-site region is over a minute and the whole rotation has to
 # finish inside the volume cadence to stay current.
+# Warmed as MOSAICS, one frame each: the region's full site list at
+# one frame is the mosaic path in build_loop. Keeping this in step
+# with REGIONS is the point — three separate site lists (page, lab,
+# warmer) is how the pages came to disagree about what "N90" meant.
 ROTATION = {
-    "N90": (["KOKX", "KDIX"], "n90"),
-    "MCO": (["KMLB", "KTBW"], "mco"),
+    "N90": (REGIONS["N90 merged (S+C band)"], "n90"),
+    "MCO": (REGIONS["MCO / Orlando"][:2], "mco"),
 }
 WARM_FRAMES = int(os.environ.get("L2_WARM_FRAMES", "6"))
 WARM_SLEEP_S = int(os.environ.get("L2_WARM_SLEEP_S", "120"))
@@ -1871,8 +1922,15 @@ def _warm_daemon(outdir):
             try:
                 t0 = time.time()
                 diag = {}
+                # Region geometry too, not just the site list.
+                for _rn, _rv in REGION_VIEW.items():
+                    if REGIONS.get(_rn) == sites:
+                        global GRID_CENTER, HALF_X_M, HALF_Y_M
+                        GRID_CENTER = (_rv[0], _rv[1])
+                        HALF_X_M, HALF_Y_M = _rv[2] * 1000.0, _rv[3] * 1000.0
+                        break
                 frames, diag = build_loop(
-                    sites[0], WARM_FRAMES, outdir, tag=tag, diag=diag)
+                    sites, 1, outdir, tag=tag, diag=diag)
                 built = sum(1 for v in diag.get("frames", {}).values()
                             if v != "cached")
                 _warm_log(outdir,
