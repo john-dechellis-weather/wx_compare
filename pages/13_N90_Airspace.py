@@ -110,13 +110,16 @@ def _a320_icon_uri(fill="#005ADC", stroke="#FFFFFF",
 
 _AC_ICON = {"url": _a320_icon_uri(), "width": 64, "height": 64,
             "anchorX": 32, "anchorY": 32, "mask": False}
-# Everyone else: OUTLINE ONLY — fill="none", black stroke. The
+# Everyone else: grey #7F817E body, black outline, drawn at half the
+# previous size. Filled rather than hollow now — at this size an
+# outline alone reads as a smudge, while a solid grey body still
+# stays clearly subordinate to the blue fleet. The
 # silhouette shape and heading still read, but an unfilled symbol
 # stays visually subordinate to the solid blue fleet and lets the
 # basemap show through, which matters when a few hundred aircraft
 # are in the box. stroke_w is in viewBox units: the box is 22 units
 # rendered at 64 px, so 0.9 units is about 2.6 px on screen.
-_AC_ICON_OTHER = {"url": _a320_icon_uri("none", "#000000", 0.9),
+_AC_ICON_OTHER = {"url": _a320_icon_uri("#7F817E", "#000000", 0.9),
                   "width": 64, "height": 64, "anchorX": 32,
                   "anchorY": 32, "mask": False}
 
@@ -428,6 +431,7 @@ with r1:
 product = "Composite (all reflectivity levels)"
 n_frames = 6
 smooth_on = True
+algo = "built-in weighted"
 if radar_on:
     # Start the background warmer the first time anyone opens the
     # page with radar on. Idempotent, so this is safe on every rerun;
@@ -450,6 +454,19 @@ if radar_on:
                  "lowest sweep only, projected as a plan view.",
         )
     with r3:
+        try:
+            from core import radar_l2 as _L2C
+            _algos = list(_L2C.COMBINERS)
+        except Exception:
+            _algos = ["built-in weighted"]
+        algo = st.selectbox(
+            "Merge algorithm", _algos, index=0,
+            help="How overlapping radars are combined. Weighted "
+                 "blends smoothly but averages away peaks and fine "
+                 "structure; nearest and best-resolution pick one "
+                 "site per cell, keeping detail at the cost of "
+                 "visible seams; max is the sharpest and the least "
+                 "honest about calibration.")
         n_frames = st.slider("Frames", 1, 24, 6,
                              help="~10 s per NEW frame. Cached "
                                   "frames are free, so growing an "
@@ -488,6 +505,10 @@ if build:
         L2.RES_M = 250.0
         L2.SMOOTH_SIGMA = 1.0 if smooth_on else 0.0
         L2.RES_MATCH = bool(smooth_on)
+        # None = the full built-in path, which also runs the
+        # inter-radar bias solver. The named combiners skip that and
+        # merge the gridded fields directly.
+        L2.COMBINE_FN = L2.COMBINERS.get(algo)
         L2.HALF_X_M = L2.HALF_Y_M = 230000.0
         L2.GRID_CENTER = (40.8656, -72.8639)      # KOKX
         bar = st.progress(0.0, "Starting...")
@@ -642,16 +663,19 @@ if show_ac:
     if _other:
         layers.append(pdk.Layer(
             "IconLayer", data=_other, get_position="[lon, lat]",
-            get_icon="icon", get_size=19, size_min_pixels=11,
-            size_max_pixels=26, get_angle="angle", pickable=True))
+            # Half the previous size (19 -> 10, bounds scaled with
+            # it), against a fleet drawn at double. A 7x size ratio
+            # is deliberate: with a few hundred aircraft in a 40 nm
+            # circle, subordinate has to mean SMALL, not just paler.
+            get_icon="icon", get_size=10, size_min_pixels=6,
+            size_max_pixels=13, get_angle="angle", pickable=True))
     if _ac:
         layers.append(pdk.Layer(
-            # 1.5x the other-traffic size (24 -> 36, and the pixel
-            # bounds scale with it) so the fleet is unmistakable
-            # against the outline-only aircraft around it.
+            # Doubled again (36 -> 72). The fleet is the subject of
+            # this page; everything else is context.
             "IconLayer", data=_ac, get_position="[lon, lat]",
-            get_icon="icon", get_size=36, size_min_pixels=21,
-            size_max_pixels=51, get_angle="angle", pickable=True))
+            get_icon="icon", get_size=72, size_min_pixels=42,
+            size_max_pixels=102, get_angle="angle", pickable=True))
         layers.append(pdk.Layer(
             "TextLayer", data=_ac, get_position="[lon, lat]",
             get_text="cs", get_size=10, get_color=[0, 40, 120],

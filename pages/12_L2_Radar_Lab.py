@@ -83,6 +83,8 @@ _clat, _clon, _hx, _hy = L2.REGION_VIEW.get(
 b1, b2, b3 = st.columns([1, 1, 2])
 with b1:
     half_x = st.number_input("Half-width E-W (km)", 60, 500, _hx, 10)
+    algo = st.selectbox("Merge algorithm", list(L2.COMBINERS), index=0,
+                        help="How overlapping radars are combined.")
 with b2:
     half_y = st.number_input("Half-width N-S (km)", 60, 500, _hy, 10)
 with b3:
@@ -129,6 +131,7 @@ if run:
     # seam match at coverage handovers.
     L2.SMOOTH_SIGMA = 1.0 if smooth_on else 0.0
     L2.RES_MATCH = bool(smooth_on)
+    L2.COMBINE_FN = L2.COMBINERS.get(algo)
     L2.HALF_X_M = float(half_x) * 1000.0
     L2.HALF_Y_M = float(half_y) * 1000.0
     diag = {}
