@@ -84,7 +84,15 @@ REGIONS = {
     # gates and win inside ~20 nm, which is the approach and
     # departure environment. C-band attenuation is what makes this
     # non-trivial and is handled per-gate — see _cband_attenuation.
-    "N90 merged (S+C band)": ["KOKX", "KDIX", "TJFK", "TEWR", "TPHL"],
+    # Four 88Ds plus three TDWRs. KENX (Albany) and KBGM
+    # (Binghamton) are what close the northwest: on the old 190x160
+    # box the five-site set left 4.3% uncovered and 73% multi-radar;
+    # with these two it is 0% uncovered and 97% multi-radar, and the
+    # box can grow to reach ALB, BDL, AVP and ACY without opening
+    # holes. More multi-radar area also means more overlap for the
+    # bias solver, which is what keeps the TDWRs anchored.
+    "N90 merged (S+C band)": ["KOKX", "KDIX", "KENX", "KBGM",
+                              "TJFK", "TEWR", "TPHL"],
     # The two NY-metro TDWRs alone. Same ~1 min cadence, so scan
     # spread is near zero and there is no advection smearing to
     # correct. 33 km apart, which means a cell over Newark Bay is
@@ -155,7 +163,9 @@ REGION_VIEW = {
     "MSP / Minneapolis": (44.88, -93.22, 220, 220),
     "MCO / Orlando": (28.43, -81.31, 200, 180),
     "NE Corridor / DCA-BOS": (40.60, -74.00, 300, 250),
-    "N90 merged (S+C band)": (40.75, -74.05, 190, 160),
+    # Enlarged to make the two new sites worth their fetch time:
+    # -77.17..-71.43, 39.22..43.18. 0.6% uncovered, 82% multi-radar.
+    "N90 merged (S+C band)": (41.20, -74.30, 240, 220),
     "NY Metro TDWR pair": (40.62, -74.07, 90, 80),
     # Union of two 30 nm circles 33 km apart, plus margin.
     "NY Metro 1.0deg proto": (40.59, -74.07, 80, 65),
