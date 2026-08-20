@@ -525,6 +525,11 @@ if build:
         # Geometry and site list come from the region definition.
         _clat_r, _clon_r, _hx_r, _hy_r = L2.REGION_VIEW[L2_REGION]
         L2.GRID_CENTER = (_clat_r, _clon_r)
+        # Without center_fixed, build_mosaic re-centres on whichever
+        # radar loads first — TPHL won that race, so the box ran
+        # Wilkes-Barre to Delaware and cropped KENX and KBGM out
+        # entirely even though both had loaded fine.
+        diag = {"center": [_clat_r, _clon_r], "center_fixed": True}
         L2.HALF_X_M = _hx_r * 1000.0
         L2.HALF_Y_M = _hy_r * 1000.0
         L2.SMOOTH_SIGMA = 1.0 if smooth_on else 0.0
@@ -536,7 +541,6 @@ if build:
         L2.POSTFILTER = (None if post.startswith("none")
                          else L2.POSTFILTERS[post])
         bar = st.progress(0.0, "Starting...")
-        diag = {}
         frames, diag = L2.build_loop(
             L2.REGIONS[L2_REGION], int(n_frames), _STATIC,
             tag=_L2_TAG,
