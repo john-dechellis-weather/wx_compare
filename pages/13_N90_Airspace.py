@@ -432,6 +432,7 @@ product = "Composite (all reflectivity levels)"
 n_frames = 6
 smooth_on = True
 algo = "built-in weighted"
+post = "none (raw)"
 if radar_on:
     # Start the background warmer the first time anyone opens the
     # page with radar on. Idempotent, so this is safe on every rerun;
@@ -467,6 +468,14 @@ if radar_on:
                  "site per cell, keeping detail at the cost of "
                  "visible seams; max is the sharpest and the least "
                  "honest about calibration.")
+        post = st.selectbox(
+            "Detail filter", list(_L2C.POSTFILTERS), index=0,
+            help="Applied per cell from its surroundings. Adaptive "
+                 "blends local max and mean by how structured the "
+                 "area is — mean where smooth, max where structured "
+                 "— and fills single-cell dropouts. Bilateral "
+                 "averages only similar-valued neighbours, so it "
+                 "never dilates a core.")
         n_frames = st.slider("Frames", 1, 24, 6,
                              help="~10 s per NEW frame. Cached "
                                   "frames are free, so growing an "
@@ -509,6 +518,8 @@ if build:
         # inter-radar bias solver. The named combiners skip that and
         # merge the gridded fields directly.
         L2.COMBINE_FN = L2.COMBINERS.get(algo)
+        L2.POSTFILTER = (None if post.startswith("none")
+                         else L2.POSTFILTERS[post])
         L2.HALF_X_M = L2.HALF_Y_M = 230000.0
         L2.GRID_CENTER = (40.8656, -72.8639)      # KOKX
         bar = st.progress(0.0, "Starting...")
