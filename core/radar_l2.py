@@ -264,6 +264,18 @@ CAL_MAX_DB = float(os.environ.get("L2_CAL_MAX_DB", "6.0"))
 # to instrument bias. Only near the perpendicular bisector are the
 # two genuinely measuring the same air.
 CAL_MAX_DZ_M = float(os.environ.get("L2_CAL_MAX_DZ_M", "150"))
+# Sites must also be sampling at a comparable ELEVATION ANGLE. Live
+# run 8/20 produced pair differences of +7.45, +7.82 and +8.50 dB and
+# solved offsets of +4.47 and -6.00 — implausible as calibration,
+# which is 1-3 dB. The cause is that equal beam HEIGHT is not the
+# same as equal beam GEOMETRY: a 0.3 deg beam at long range and a
+# 0.5 deg beam at short range can pass through the same altitude
+# while sampling completely different volumes of a storm, and the
+# difference between them is structure, not bias.
+CAL_MAX_DTILT = float(os.environ.get("L2_CAL_MAX_DTILT", "0.35"))
+# And a solved offset this large is a failed solve, not a miscalibrated
+# radar. Report it, do not apply it.
+CAL_SANITY_DB = float(os.environ.get("L2_CAL_SANITY_DB", "4.0"))
 
 # --- single-tilt prototype knobs --------------------------------------
 # TDWR tilts are not identical between sites: TJFK runs 0.5/1.0/2.8 and
@@ -1190,8 +1202,10 @@ def _accumulate(num, den, arr, rlat, rlon, tilt_deg=0.5,
         ay = np.linspace(-HALF_Y_M, HALF_Y_M, ny, dtype="float32")
         d = np.sqrt(((ax - rx) ** 2)[None, :] + ((ay - ry) ** 2)[:, None])
         bw = _m.radians(SITE_BEAMWIDTH[_site_band(site)])
-        res[0] += (np.broadcast_to((d * bw).astype("float32"),
-                                   arr.shape) * w).sum(axis=0)
+        # Floor at a gate length: d*bw goes to zero AT the radar,
+        # which reported an absurd "best 4 m" resolution.
+        _samp = np.maximum(d * bw, 150.0).astype("float32")
+        res[0] += (np.broadcast_to(_samp, arr.shape) * w).sum(axis=0)
         res[1] += w.sum(axis=0)
     return num, den
 
@@ -1266,6 +1280,12 @@ def _solve_biases(staged, diag):
     for (ia, a), (ib, b) in itertools.combinations(
             list(enumerate(staged)), 2):
         fa, fb = a[0], b[0]
+        if abs(staged[ia][3] - staged[ib][3]) > CAL_MAX_DTILT:
+            diag.setdefault("cal_skipped", {})[
+                f"{names[ia]}-{names[ib]}"] = (
+                f"tilts {staged[ia][3]:.1f} vs {staged[ib][3]:.1f} deg "
+                f"differ by more than {CAL_MAX_DTILT} deg")
+            continue
         dz = np.abs(hmaps[ia] - hmaps[ib])
         m = (np.isfinite(fa) & np.isfinite(fb)
              & (fa > CAL_MIN_DBZ) & (fb > CAL_MIN_DBZ)
@@ -1299,10 +1319,20 @@ def _solve_biases(staged, diag):
         A[-1, i] = 1.0 / len(anchor)
     sol, *_ = np.linalg.lstsq(A, y, rcond=None)
     out = {}
+    rejected = {}
     for i, n_ in enumerate(names):
-        b = float(np.clip(sol[i], -CAL_MAX_DB, CAL_MAX_DB))
+        b = float(sol[i])
+        if abs(b) > CAL_SANITY_DB:
+            rejected[n_] = f"{b:+.2f} dB"
+            continue
+        b = float(np.clip(b, -CAL_MAX_DB, CAL_MAX_DB))
         if abs(b) > 0.05:
             out[n_] = b
+    if rejected:
+        diag["cal_rejected"] = (
+            ", ".join(f"{k} {v}" for k, v in rejected.items())
+            + f" — beyond {CAL_SANITY_DB:.0f} dB, treated as a failed "
+              "solve and NOT applied")
     diag["calibration"] = ", ".join(
         f"{n_} {b:+.2f} dB" for n_, b in out.items()) or "all within 0.05 dB"
     return out
