@@ -2066,3 +2066,217 @@ COMBINERS = {
     "element-wise max": combine_max,
 }
 
+# ---------------------------------------------------------------------------
+# Time alignment
+# ---------------------------------------------------------------------------
+# The problem: radars do not scan together. A TDWR volume is ~1 min,
+# an 88D 4-6, and nothing synchronises them. At 40 kt a cell moves
+# 2 nm in 3 minutes, so blending two views of it puts the SAME storm
+# in two places and the mean renders it twice, faintly. No weighting
+# scheme fixes that — a weighted mean of two displaced copies is
+# still two displaced copies.
+#
+# The fix is to move each field to a common valid time before
+# blending. Motion comes from the data itself: phase correlation
+# between consecutive grids of the SAME radar gives the domain
+# displacement, no external wind field required.
+
+_MOTION_PREV = {}          # site -> (field2d, datetime)
+_MOTION_CACHE = {"v": (0.0, 0.0), "at": None}
+
+
+def _phase_shift(a, b):
+    """Displacement in CELLS that best maps a onto b.
+
+    Phase correlation: the cross-power spectrum of two shifted copies
+    of the same scene has a phase ramp whose inverse transform is a
+    delta at the shift. Robust to intensity changes in a way that
+    template matching is not, which matters because a growing cell is
+    not just a translated one.
+    """
+    import numpy as np
+
+    fa = np.nan_to_num(a, nan=0.0).astype("float32")
+    fb = np.nan_to_num(b, nan=0.0).astype("float32")
+    if fa.std() < 1e-3 or fb.std() < 1e-3:
+        return 0.0, 0.0
+    fa = fa - fa.mean()
+    fb = fb - fb.mean()
+    win = (np.hanning(fa.shape[0])[:, None]
+           * np.hanning(fa.shape[1])[None, :]).astype("float32")
+    A = np.fft.rfft2(fa * win)
+    B = np.fft.rfft2(fb * win)
+    # conj(A)*B, not A*conj(B): the latter yields the shift that maps
+    # b onto a, i.e. the negative of what we want. Verified against
+    # planted shifts — magnitudes were exact and every sign inverted.
+    cross = np.conj(A) * B
+    mag = np.abs(cross)
+    cross = np.where(mag > 1e-6, cross / np.maximum(mag, 1e-6), 0)
+    r = np.fft.irfft2(cross, s=fa.shape)
+    peak = np.unravel_index(np.argmax(r), r.shape)
+    dy = peak[0] if peak[0] <= fa.shape[0] // 2 else peak[0] - fa.shape[0]
+    dx = peak[1] if peak[1] <= fa.shape[1] // 2 else peak[1] - fa.shape[1]
+    return float(dy), float(dx)
+
+
+def estimate_motion(staged, diag):
+    """Domain motion in m/s, from the site with the most echo.
+
+    Returns (vy, vx). Cached: consecutive builds are usually minutes
+    apart, which is exactly the interval phase correlation wants.
+    """
+    import numpy as np
+
+    best, best_cov = None, 0.0
+    import warnings
+    for arr, rla, rlo, tilt, t, site, alt in staged:
+        if t is None:
+            continue
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            lay = np.nanmax(arr, axis=0)
+        cov = float(np.isfinite(lay).mean())
+        if cov > best_cov:
+            best, best_cov = (site, lay, t), cov
+    if best is None or best_cov < 0.02:
+        diag["motion"] = "not enough echo to estimate"
+        return 0.0, 0.0
+    site, lay, t = best
+    prev = _MOTION_PREV.get(site)
+    _MOTION_PREV[site] = (lay, t)
+    if prev is None:
+        diag["motion"] = f"first frame for {site}, no motion yet"
+        return _MOTION_CACHE["v"]
+    p_lay, p_t = prev
+    dt = (t - p_t).total_seconds()
+    if dt < 30 or dt > 1800 or p_lay.shape != lay.shape:
+        diag["motion"] = f"unusable interval ({dt:.0f}s)"
+        return _MOTION_CACHE["v"]
+    dy, dx = _phase_shift(p_lay, lay)
+    vy = dy * RES_M / dt
+    vx = dx * RES_M / dt
+    spd = (vx * vx + vy * vy) ** 0.5
+    if spd > 45.0:          # >87 kt is a correlation failure, not weather
+        diag["motion"] = f"rejected {spd:.0f} m/s as implausible"
+        return _MOTION_CACHE["v"]
+    _MOTION_CACHE["v"] = (vy, vx)
+    diag["motion"] = (f"{spd * 1.944:.0f} kt toward "
+                      f"{(np.degrees(np.arctan2(vx, vy))) % 360:.0f} deg "
+                      f"(from {site}, {dt:.0f}s apart)")
+    return vy, vx
+
+
+def _advect(field, vy, vx, dt_s):
+    """Shift a field to a different valid time. Sub-cell accurate."""
+    import numpy as np
+    from scipy.ndimage import shift as _shift
+
+    if abs(dt_s) < 1 or (abs(vy) < 0.05 and abs(vx) < 0.05):
+        return field
+    sy = vy * dt_s / RES_M
+    sx = vx * dt_s / RES_M
+    out = np.empty_like(field)
+    for k in range(field.shape[0]):
+        out[k] = _shift(field[k], (sy, sx), order=1, mode="constant",
+                        cval=np.nan, prefilter=False)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Multi-scale fusion
+# ---------------------------------------------------------------------------
+
+
+def combine_fused(staged, diag):
+    """Seamless low frequencies, sharpest available high frequencies.
+
+    The insight that makes this work: a SEAM is low-frequency — a
+    broad step between two calibrations — while DETAIL is
+    high-frequency. They live in different parts of the spectrum, so
+    they can be sourced separately.
+
+        low  <- weighted mean of every site   (smooth, no seams,
+                                               calibration averaged)
+        high <- the best-RESOLVED site per cell (full TDWR structure
+                                                 near the airports)
+
+    That is why this beats picking one site per cell, which gives
+    detail plus seams, and beats a plain weighted mean, which gives
+    neither seams nor detail. Near JFK the high-frequency content
+    comes from TJFK at 150 m; fifty miles out it comes from KOKX; the
+    low-frequency backbone is continuous across both, so the
+    handover is invisible.
+
+    Time alignment runs first — fusing displaced copies would sharpen
+    a double image.
+    """
+    import math
+
+    import numpy as np
+    from scipy.ndimage import gaussian_filter
+
+    vy, vx = estimate_motion(staged, diag)
+    newest = max((x[4] for x in staged if x[4]), default=None)
+
+    aligned = []
+    for arr, rla, rlo, tilt, t, site, alt in staged:
+        dt = (newest - t).total_seconds() if (newest and t) else 0.0
+        aligned.append((_advect(arr, vy, vx, dt) if dt else arr,
+                        rla, rlo, tilt, newest, site, alt))
+    diag["aligned_to"] = (newest.strftime("%H:%M:%SZ")
+                          if newest else "n/a")
+
+    low = combine_weighted(aligned, diag)
+    f, w = _stack_weights(aligned)
+
+    # Effective sample width per site, to pick the sharpest source.
+    res = []
+    for (arr, rla, rlo, tilt, t, site, alt), wi in zip(aligned, w):
+        lat0, lon0 = GRID_CENTER
+        rx = (rlo - lon0) * 111320.0 * math.cos(math.radians(lat0))
+        ry = (rla - lat0) * 111320.0
+        ny, nx = arr.shape[-2], arr.shape[-1]
+        ax = np.linspace(-HALF_X_M, HALF_X_M, nx, dtype="float32")
+        ay = np.linspace(-HALF_Y_M, HALF_Y_M, ny, dtype="float32")
+        d = np.sqrt(((ax - rx) ** 2)[None, :] + ((ay - ry) ** 2)[:, None])
+        bw = math.radians(SITE_BEAMWIDTH[_site_band(site)])
+        r = np.broadcast_to(np.maximum(d * bw, 150.0)
+                            .astype("float32"), arr.shape).copy()
+        r[wi <= 0] = np.inf
+        res.append(r)
+    res = np.stack(res)
+    pick = np.argmin(res, axis=0)
+    sharp = np.take_along_axis(f, pick[None], axis=0)[0]
+
+    cut = float(os.environ.get("L2_FUSE_SIGMA", "2.0"))
+    gain = float(os.environ.get("L2_FUSE_GAIN", "1.0"))
+    out = np.array(low, copy=True)
+    for k in range(out.shape[0]):
+        s_lay, l_lay = sharp[k], low[k]
+        m = np.isfinite(s_lay) & np.isfinite(l_lay)
+        if not m.any():
+            continue
+        filled = np.where(m, s_lay, 0.0).astype("float32")
+        norm = gaussian_filter(m.astype("float32"), cut, mode="nearest")
+        blur = gaussian_filter(filled, cut, mode="nearest")
+        with np.errstate(invalid="ignore", divide="ignore"):
+            blur = np.where(norm > 1e-3, blur / norm, s_lay)
+        detail = np.where(m, s_lay - blur, 0.0)   # high-pass only
+        cand = l_lay + gain * detail
+        # CLAMP to what the radars actually saw. Adding a high-pass
+        # band to a low-pass base can overshoot at edges — measured
+        # 66.1 dBZ against a 50 dBZ truth before this. A fused value
+        # must never exceed the strongest observation contributing to
+        # that cell, nor fall below the weakest; the fusion is
+        # allowed to redistribute detail, not to invent intensity.
+        with np.errstate(invalid="ignore"):
+            hi = np.nanmax(f[:, k, :, :], axis=0)
+            lo_env = np.nanmin(f[:, k, :, :], axis=0)
+        out[k] = np.where(m, np.clip(cand, lo_env, hi), l_lay)
+    return out
+
+
+COMBINERS["fused (low blend + high detail)"] = combine_fused
+COMBINERS["fused, no time align"] = lambda st, dg: combine_fused(
+    [(a, b, c, d, None, f_, g) for a, b, c, d, e, f_, g in st], dg)
+
