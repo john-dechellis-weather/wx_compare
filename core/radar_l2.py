@@ -309,8 +309,22 @@ def _nids_sweep(raw):
     blk = f.sym_block[0][0]
     data = np.asarray(f.map_data(blk["data"]), dtype="float32")
     nrays, ngates = data.shape
+    # Volume time from the NIDS header. Without it the assembled
+    # radar keeps pyart's default epoch and datetime_from_radar
+    # reports 1970 — which showed up as scan_spread_s and
+    # detail_age_s of 1,187,652,841 and killed motion estimation
+    # with "unusable interval".
+    vt = None
+    for k_ in ("vol_time", "prod_time", "valid_time"):
+        v_ = f.metadata.get(k_)
+        if hasattr(v_, "year"):
+            vt = v_
+            break
+    if vt is not None and vt.tzinfo is None:
+        vt = vt.replace(tzinfo=timezone.utc)
     return {
         "data": data,
+        "time": vt,
         "az": np.asarray(blk["start_az"][:nrays], dtype="float32"),
         "el": float(f.metadata.get("el_angle", 0.5)),
         "gate_m": float(f.max_range) * 1000.0 / ngates,
@@ -495,8 +509,11 @@ def _load_tdwr(site, diag):
             f"no Level III tilts for {site} ({s3}); tried "
             + " | ".join(tried[:4]))
     radar = _radar_from_sweeps(sweeps)
-    diag.setdefault("tdwr", {})[site] = f"{s3} tilts {'+'.join(used)}"
-    return radar
+    vt = next((sw.get("time") for sw in sweeps if sw.get("time")), None)
+    diag.setdefault("tdwr", {})[site] = (
+        f"{s3} tilts {'+'.join(used)}"
+        + (f" @ {vt:%H:%M:%SZ}" if vt else " (no volume time)"))
+    return radar, vt
 
 
 def _cband_attenuation(radar, field="reflectivity"):
@@ -856,13 +873,15 @@ def load_site(site: str, fs, diag: dict):
     """
     t0 = time.time()
     radar = None
+    scan_t = None
     src = ""
     notes = []
 
     # --- TDWR: Level III, not Level II -------------------------------
     if site.upper() in TDWR_SITES:
         try:
-            radar = _load_tdwr(site, diag)
+            radar, _tdwr_t = _load_tdwr(site, diag)
+            scan_t = _tdwr_t
             src = f"TDWR Level III ({diag.get('tdwr', {}).get(site, '')})"
         except Exception as exc:
             diag["sites"][site] = (f"TDWR fetch: "
@@ -948,7 +967,7 @@ def load_site(site: str, fs, diag: dict):
         f"{radar.nrays * radar.ngates / 1e6:.1f}M gates | "
         f"{time.time() - t0:.1f}s"
         + (f" | {'; '.join(notes)}" if notes else ""))
-    return radar, None
+    return radar, scan_t
 
 
 # ---------------------------------------------------------------------------
@@ -1383,11 +1402,16 @@ def build_mosaic(sites=None, diag=None):
                 # Scan time comes from the volume itself rather than a
                 # filename, so it is right for both the chunk feed and
                 # the archive path.
-                try:
-                    import pyart
-                    t = pyart.util.datetime_from_radar(radar)
-                except Exception:
-                    t = None
+                if t is None:
+                    try:
+                        import pyart
+                        t = pyart.util.datetime_from_radar(radar)
+                        if t.year < 2000:
+                            t = None   # pyart's default epoch
+                        elif t.tzinfo is None:
+                            t = t.replace(tzinfo=timezone.utc)
+                    except Exception:
+                        t = None
                 _tilt = 0.5
                 try:
                     _tilt = float(radar.fixed_angle["data"][0])
