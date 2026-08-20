@@ -476,10 +476,14 @@ if radar_on:
                  "— and fills single-cell dropouts. Bilateral "
                  "averages only similar-valued neighbours, so it "
                  "never dilates a core.")
-        n_frames = st.slider("Frames", 1, 24, 6,
-                             help="~10 s per NEW frame. Cached "
-                                  "frames are free, so growing an "
-                                  "existing loop is cheap.")
+        n_frames = st.slider("Frames", 1, 24, 1,
+                             help="1 frame = a MOSAIC of every site "
+                                  "in the region, current. More "
+                                  "than 1 = a single-radar loop "
+                                  "through history, because the "
+                                  "sites do not scan in step and "
+                                  "TDWR has no archive. ~10 s per "
+                                  "new frame; cached ones are free.")
     with r4:
         smooth_on = st.toggle(
             "Smoothing", value=True,
@@ -497,6 +501,12 @@ if radar_on:
 else:
     build = False
 
+# The page's radar is defined by a REGION in core.radar_l2, not by
+# constants here. It used to hardcode sites=["KOKX"] and a fixed
+# 230 km box, written before regions existed — so editing REGIONS
+# changed the L2 Radar Lab and did nothing here, and the two pages
+# quietly disagreed about what "N90" meant.
+L2_REGION = "N90 merged (S+C band)"
 _L2_TAG = "cmax" if product.startswith("Composite") else "base"
 
 if build:
@@ -512,6 +522,11 @@ if build:
         else:
             L2.TILTS, L2.LEVELS, L2.TOP_M, L2.BASE_M = 1, 1, 6000.0, 0.0
         L2.RES_M = 250.0
+        # Geometry and site list come from the region definition.
+        _clat_r, _clon_r, _hx_r, _hy_r = L2.REGION_VIEW[L2_REGION]
+        L2.GRID_CENTER = (_clat_r, _clon_r)
+        L2.HALF_X_M = _hx_r * 1000.0
+        L2.HALF_Y_M = _hy_r * 1000.0
         L2.SMOOTH_SIGMA = 1.0 if smooth_on else 0.0
         L2.RES_MATCH = bool(smooth_on)
         # None = the full built-in path, which also runs the
@@ -520,12 +535,11 @@ if build:
         L2.COMBINE_FN = L2.COMBINERS.get(algo)
         L2.POSTFILTER = (None if post.startswith("none")
                          else L2.POSTFILTERS[post])
-        L2.HALF_X_M = L2.HALF_Y_M = 230000.0
-        L2.GRID_CENTER = (40.8656, -72.8639)      # KOKX
         bar = st.progress(0.0, "Starting...")
         diag = {}
         frames, diag = L2.build_loop(
-            "KOKX", int(n_frames), _STATIC, tag=_L2_TAG,
+            L2.REGIONS[L2_REGION], int(n_frames), _STATIC,
+            tag=_L2_TAG,
             progress=lambda f, m: bar.progress(min(f, 1.0), m),
             diag=diag)
         bar.empty()
@@ -536,6 +550,8 @@ if build:
         }
         if not frames:
             st.error(f"No frames built — {diag.get('error', 'unknown')}")
+        elif diag.get("mode"):
+            st.caption(f"Mode: {diag['mode']}")
     except Exception as exc:
         import traceback
         st.error(f"Radar build failed — {type(exc).__name__}: {exc}")
