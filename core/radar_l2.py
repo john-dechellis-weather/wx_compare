@@ -1649,6 +1649,12 @@ def render_png(comp, path, diag=None):
     import numpy as np
     from matplotlib.colors import BoundaryNorm, ListedColormap
 
+    if POSTFILTER is not None:
+        # Post-filter first: it works on structure, and running it
+        # after a Gaussian would mean deciding max-vs-mean from
+        # texture the blur already removed.
+        comp = POSTFILTER(comp[None])[0] if comp.ndim == 2 else \
+            POSTFILTER(comp)
     comp = (_resolution_match(comp, _RES_MAP[0], SMOOTH_SIGMA)
             if _RES_MAP else _nan_smooth(comp, SMOOTH_SIGMA))
     if RAMP_MODE == "smooth":
@@ -2279,4 +2285,262 @@ def combine_fused(staged, diag):
 COMBINERS["fused (low blend + high detail)"] = combine_fused
 COMBINERS["fused, no time align"] = lambda st, dg: combine_fused(
     [(a, b, c, d, None, f_, g) for a, b, c, d, e, f_, g in st], dg)
+
+# ---------------------------------------------------------------------------
+# Rapid update: 88D backbone, TDWR-cadence detail
+# ---------------------------------------------------------------------------
+# The cadences are mismatched in a way that is an OPPORTUNITY, not a
+# problem. A WSR-88D volume takes 4-6 minutes; a TDWR is about 1. If
+# the two are fused every time the 88D finishes, the display runs at
+# 88D speed and four TDWR scans are thrown away.
+#
+# Split the update rate the way the fusion already splits the
+# spectrum. The low-frequency backbone comes from the 88D and is
+# reused between its volumes. The high-frequency detail comes from
+# TDWR and is re-injected on every TDWR scan. Inside TDWR coverage
+# the picture refreshes each minute; outside it, the 88D field is
+# what it always was.
+#
+# One thing this MUST do to be honest: advect the cached backbone
+# forward. It is minutes old by the time the third TDWR scan arrives,
+# and pasting fresh detail onto a stale base would put sharp edges in
+# the wrong place — worse than not updating at all.
+#
+# The output is a hybrid-age product and the diagnostics say so:
+# base_age_s and detail_age_s are reported separately, never averaged
+# into one "valid time" that would be true of neither half.
+
+_BASE_CACHE = {"low": None, "t": None, "key": None}
+
+
+def _grid_key():
+    return (round(GRID_CENTER[0], 4), round(GRID_CENTER[1], 4),
+            HALF_X_M, HALF_Y_M, RES_M, LEVELS, BASE_M, TOP_M)
+
+
+def combine_rapid(staged, diag):
+    """Reuse the 88D backbone; refresh detail at TDWR cadence.
+
+    With S-band present the backbone is rebuilt and cached. With only
+    TDWR in `staged` — a between-volumes update — the cached backbone
+    is advected forward and fresh C-band detail injected into it.
+    """
+    import math
+
+    import numpy as np
+    from scipy.ndimage import gaussian_filter
+
+    sband = [x for x in staged if _site_band(x[5]) == "S"]
+    cband = [x for x in staged if _site_band(x[5]) == "C"]
+    vy, vx = estimate_motion(staged, diag)
+    key = _grid_key()
+
+    now_t = max((x[4] for x in staged if x[4]), default=None)
+
+    if sband:
+        aligned_s = []
+        newest_s = max((x[4] for x in sband if x[4]), default=None)
+        for arr, rla, rlo, tilt, t, site, alt in sband:
+            dt = ((newest_s - t).total_seconds()
+                  if (newest_s and t) else 0.0)
+            aligned_s.append((_advect(arr, vy, vx, dt) if dt else arr,
+                              rla, rlo, tilt, newest_s, site, alt))
+        low = combine_weighted(aligned_s, diag)
+        _BASE_CACHE.update({"low": low, "t": newest_s, "key": key})
+        diag["base"] = f"rebuilt from {len(sband)} S-band site(s)"
+    elif _BASE_CACHE["low"] is not None and _BASE_CACHE["key"] == key:
+        base_dt = ((now_t - _BASE_CACHE["t"]).total_seconds()
+                   if (now_t and _BASE_CACHE["t"]) else 0.0)
+        # Move the stale backbone to the detail's valid time before
+        # anything is pasted onto it.
+        low = _advect(_BASE_CACHE["low"], vy, vx, base_dt)
+        diag["base"] = (f"cached 88D backbone, advected "
+                        f"{base_dt:.0f}s forward")
+        diag["base_age_s"] = int(base_dt)
+    else:
+        diag["base"] = "no backbone available; C-band only"
+        low = combine_weighted(cband, diag) if cband else None
+    if low is None:
+        return combine_weighted(staged, diag)
+
+    if not cband:
+        diag["detail"] = "no TDWR this cycle; backbone only"
+        return low
+
+    newest_c = max((x[4] for x in cband if x[4]), default=None)
+    aligned_c = []
+    for arr, rla, rlo, tilt, t, site, alt in cband:
+        dt = ((newest_c - t).total_seconds()
+              if (newest_c and t) else 0.0)
+        aligned_c.append((_advect(arr, vy, vx, dt) if dt else arr,
+                          rla, rlo, tilt, newest_c, site, alt))
+    f, w = _stack_weights(aligned_c)
+    idx = np.argmax(w, axis=0)
+    sharp = np.take_along_axis(f, idx[None], axis=0)[0]
+    sharp = np.where(w.max(axis=0) > 0, sharp, np.nan)
+
+    cut = float(os.environ.get("L2_FUSE_SIGMA", "2.0"))
+    gain = float(os.environ.get("L2_FUSE_GAIN", "1.0"))
+    out = np.array(low, copy=True)
+    for k in range(out.shape[0]):
+        s_lay, l_lay = sharp[k], low[k]
+        m = np.isfinite(s_lay) & np.isfinite(l_lay)
+        if not m.any():
+            continue
+        filled = np.where(m, s_lay, 0.0).astype("float32")
+        norm = gaussian_filter(m.astype("float32"), cut, mode="nearest")
+        blur = gaussian_filter(filled, cut, mode="nearest")
+        with np.errstate(invalid="ignore", divide="ignore"):
+            blur = np.where(norm > 1e-3, blur / norm, s_lay)
+        cand = l_lay + gain * np.where(m, s_lay - blur, 0.0)
+        with np.errstate(invalid="ignore"):
+            hi = np.nanmax(f[:, k, :, :], axis=0)
+            lo_env = np.nanmin(f[:, k, :, :], axis=0)
+        # Only where TDWR actually sees. Everywhere else the 88D
+        # field passes through untouched.
+        out[k] = np.where(m, np.clip(cand, lo_env, hi), l_lay)
+    if newest_c and now_t:
+        diag["detail_age_s"] = int((now_t - newest_c).total_seconds())
+    diag["detail"] = (f"injected from {len(cband)} TDWR site(s) at "
+                      + (newest_c.strftime("%H:%M:%SZ")
+                         if newest_c else "?"))
+    return out
+
+
+COMBINERS["rapid (88D base + TDWR detail)"] = combine_rapid
+
+# ---------------------------------------------------------------------------
+# Post-filters: keep fine detail, kill noise
+# ---------------------------------------------------------------------------
+# The problem a plain Gaussian cannot solve. TDWR at 150 m carries
+# both real structure (gradients, core edges, radial fine detail) and
+# junk (speckle, dropouts, the black voids visible on any raw TDWR
+# display). A uniform blur cannot tell them apart, so it removes both
+# and the result is smooth and flat.
+#
+# What every filter here has in common: the decision is made PER CELL
+# from what surrounds it, not applied globally.
+
+_POST_WIN = int(os.environ.get("L2_POST_WIN", "3"))
+
+
+def post_none(a):
+    return a
+
+
+def post_adaptive(a):
+    """Blend local max and local mean by how structured the area is.
+
+    Where the neighbourhood is smooth — stratiform, or noise on a
+    flat field — the mean wins and speckle disappears. Where it is
+    structured, the max wins, which both preserves the peak and
+    fills the single-cell dropouts that pepper raw TDWR.
+
+    The weight is the local standard deviation put through a
+    smoothstep, so the transition between the two behaviours is
+    continuous. A hard threshold would draw its own edges.
+    """
+    import numpy as np
+    from scipy.ndimage import maximum_filter, uniform_filter
+
+    lo = float(os.environ.get("L2_POST_LO", "2.0"))
+    hi = float(os.environ.get("L2_POST_HI", "8.0"))
+    out = np.array(a, copy=True)
+    for k in range(out.shape[0]):
+        lay = out[k]
+        m = np.isfinite(lay)
+        if not m.any():
+            continue
+        f = np.where(m, lay, 0.0).astype("float32")
+        w = m.astype("float32")
+        cnt = uniform_filter(w, _POST_WIN, mode="nearest")
+        mean = uniform_filter(f, _POST_WIN, mode="nearest")
+        with np.errstate(invalid="ignore", divide="ignore"):
+            mean = np.where(cnt > 1e-3, mean / cnt, lay)
+        sq = uniform_filter(f * f, _POST_WIN, mode="nearest")
+        with np.errstate(invalid="ignore", divide="ignore"):
+            var = np.where(cnt > 1e-3, sq / cnt - mean * mean, 0.0)
+        sd = np.sqrt(np.maximum(var, 0.0))
+        mx = maximum_filter(np.where(m, lay, -999.0), _POST_WIN,
+                            mode="nearest")
+        t = np.clip((sd - lo) / max(hi - lo, 1e-6), 0.0, 1.0)
+        alpha = t * t * (3.0 - 2.0 * t)          # smoothstep
+        blended = alpha * mx + (1.0 - alpha) * mean
+        # Fill dropouts from their surroundings. A raw TDWR field is
+        # peppered with single-cell voids — the black speckle on any
+        # scope — and they are not "no echo", they are "no return
+        # this pulse". A cell whose neighbourhood is mostly valid
+        # gets the same blended value; one surrounded by genuine
+        # emptiness stays empty, which is what FILL_MIN enforces.
+        fill_min = float(os.environ.get("L2_POST_FILL", "0.55"))
+        fillable = (~m) & (cnt >= fill_min)
+        out[k] = np.where(m | fillable, blended, np.nan)
+    return out
+
+
+def post_bilateral(a):
+    """Average only the neighbours that look like me.
+
+    The standard answer to "smooth without crossing edges": each
+    neighbour is weighted by BOTH its distance and how close its
+    value is. Across a gradient the far-valued neighbours get almost
+    no weight, so the edge survives while noise inside a uniform area
+    is averaged away. Unlike the adaptive filter it never takes a
+    max, so it cannot dilate a core or fill a dropout — it is the
+    conservative choice.
+    """
+    import numpy as np
+    from scipy.ndimage import uniform_filter
+
+    srange = float(os.environ.get("L2_POST_SIGMA_R", "4.0"))
+    out = np.array(a, copy=True)
+    r = _POST_WIN // 2
+    for k in range(out.shape[0]):
+        lay = out[k]
+        m = np.isfinite(lay)
+        if not m.any():
+            continue
+        base = np.where(m, lay, 0.0).astype("float32")
+        acc = np.zeros_like(base)
+        wsum = np.zeros_like(base)
+        for dy in range(-r, r + 1):
+            for dx in range(-r, r + 1):
+                sh = np.roll(np.roll(base, dy, 0), dx, 1)
+                shm = np.roll(np.roll(m, dy, 0), dx, 1)
+                dv = sh - base
+                w = np.exp(-(dv * dv) / (2.0 * srange * srange))
+                w = np.where(shm, w, 0.0)
+                acc += w * sh
+                wsum += w
+        with np.errstate(invalid="ignore", divide="ignore"):
+            res = np.where(wsum > 1e-6, acc / wsum, lay)
+        out[k] = np.where(m, res, np.nan)
+    return out
+
+
+def post_median(a):
+    """Plain median. Removes isolated speckle, keeps edges, but also
+    erases genuine single-cell peaks — listed for comparison."""
+    import numpy as np
+    from scipy.ndimage import median_filter
+
+    out = np.array(a, copy=True)
+    for k in range(out.shape[0]):
+        lay = out[k]
+        m = np.isfinite(lay)
+        if not m.any():
+            continue
+        f = median_filter(np.where(m, lay, np.nanmedian(lay)),
+                          _POST_WIN, mode="nearest")
+        out[k] = np.where(m, f, np.nan)
+    return out
+
+
+POSTFILTERS = {
+    "none (raw)": post_none,
+    "adaptive max/mean": post_adaptive,
+    "bilateral (edge-preserving)": post_bilateral,
+    "median": post_median,
+}
+POSTFILTER = None          # set by the page; None = no post-filter
 
