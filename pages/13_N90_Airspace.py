@@ -671,11 +671,15 @@ if show_ac:
             size_max_pixels=13, get_angle="angle", pickable=True))
     if _ac:
         layers.append(pdk.Layer(
-            # Doubled again (36 -> 72). The fleet is the subject of
-            # this page; everything else is context.
+            # EXACTLY twice the other-traffic size: other is 10
+            # (6-13 px), fleet is 20 (12-26 px). Two separate
+            # instructions — "double the fleet" and "halve the
+            # others" — compounded to a 7x ratio once, so this is
+            # written as a ratio to the other layer rather than
+            # adjusted on its own.
             "IconLayer", data=_ac, get_position="[lon, lat]",
-            get_icon="icon", get_size=72, size_min_pixels=42,
-            size_max_pixels=102, get_angle="angle", pickable=True))
+            get_icon="icon", get_size=20, size_min_pixels=12,
+            size_max_pixels=26, get_angle="angle", pickable=True))
         layers.append(pdk.Layer(
             "TextLayer", data=_ac, get_position="[lon, lat]",
             get_text="cs", get_size=10, get_color=[0, 40, 120],
