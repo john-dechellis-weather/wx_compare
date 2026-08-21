@@ -165,7 +165,12 @@ REGION_VIEW = {
     "NE Corridor / DCA-BOS": (40.60, -74.00, 300, 250),
     # Enlarged to make the two new sites worth their fetch time:
     # -77.17..-71.43, 39.22..43.18. 0.6% uncovered, 82% multi-radar.
-    "N90 merged (S+C band)": (41.20, -74.30, 400, 400),
+    # 400 x 400 NM centred on JFK, hardcoded. Half-width 200 nm =
+    # 370.4 km, so the box runs -78.16..-69.39 and 37.31..43.97:
+    # DCA, BOS, PWM, ALB and ACY inside; BUF and PIT outside.
+    # 2963 x 2963 cells at 250 m. Anything outside is not rendered
+    # even where a radar still sees it — the square IS the product.
+    "N90 merged (S+C band)": (40.6398, -73.7789, 370.4, 370.4),
     "NY Metro TDWR pair": (40.62, -74.07, 90, 80),
     # Union of two 30 nm circles 33 km apart, plus margin.
     "NY Metro 1.0deg proto": (40.59, -74.07, 80, 65),
