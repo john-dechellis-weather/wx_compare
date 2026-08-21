@@ -417,7 +417,8 @@ with c[4]:
                                f"Refreshes every 60 s.")
 with c[5]:
     radius_nm = st.select_slider(
-        "Initial radius (nm)", [100, 150, 200, 300, 400], value=300)
+        "Initial radius (nm)", [100, 150, 200, 250, 300, 350, 400],
+        value=300)
 
 # ---------------------------------------------------------------------------
 # Radar (opt-in)
