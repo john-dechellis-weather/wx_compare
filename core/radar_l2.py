@@ -165,7 +165,7 @@ REGION_VIEW = {
     "NE Corridor / DCA-BOS": (40.60, -74.00, 300, 250),
     # Enlarged to make the two new sites worth their fetch time:
     # -77.17..-71.43, 39.22..43.18. 0.6% uncovered, 82% multi-radar.
-    "N90 merged (S+C band)": (41.20, -74.30, 240, 220),
+    "N90 merged (S+C band)": (41.20, -74.30, 400, 400),
     "NY Metro TDWR pair": (40.62, -74.07, 90, 80),
     # Union of two 30 nm circles 33 km apart, plus margin.
     "NY Metro 1.0deg proto": (40.59, -74.07, 80, 65),
@@ -796,7 +796,15 @@ BLEND_SHARPNESS = float(os.environ.get("L2_BLEND_SHARPNESS", "2.0"))
 # simply stops, so the blend denominator falls off a cliff and draws a
 # ring at the edge of coverage. Calibration cannot fix that; only
 # tapering the weight to zero BEFORE the data ends can.
-SITE_RANGE_M = {"C": 90000.0, "S": 230000.0}
+# S-band raised to 459 km (248 nm), the full Level II reflectivity
+# range. Worth knowing what that buys: at 248 nm the 0.5 deg beam is
+# 16.4 km AGL — above almost all weather — so it is not more coverage
+# of a storm, it is a much higher slice of one. 100 nm is already
+# 3.6 km and missing surface returns. The range weight fades hard
+# with distance, so far-field echo arrives at low weight and fills
+# box corners rather than replacing anything nearer.
+SITE_RANGE_M = {"C": 90000.0,
+                "S": float(os.environ.get("L2_S_RANGE_M", "459000"))}
 # Fraction of max range where the taper begins.
 EDGE_TAPER_FROM = float(os.environ.get("L2_EDGE_TAPER_FROM", "0.72"))
 
