@@ -1147,6 +1147,13 @@ _FLEET_TILES = [
 ]
 
 
+# Whether the sweep keeps non-JBU aircraft at all. Off by default:
+# carrying 5,000-8,000 rows through dedupe, caching and JSON
+# serialisation costs real time even when nothing draws them.
+import os as _os_ko
+KEEP_OTHERS = _os_ko.environ.get("JBU_KEEP_OTHERS", "on").lower() != "off"
+
+
 @st.cache_data(ttl=90, show_spinner=False, max_entries=2)
 def cached_fleet(bucket: str):
     """All airborne JBU over CONUS.
@@ -1196,6 +1203,8 @@ def cached_fleet(bucket: str):
             # the traffic it is flying among.
             mine = cs.upper().startswith("JBU")
             if p.get("lat") is None:
+                continue
+            if not mine and not KEEP_OTHERS:
                 continue
             alt = p.get("alt_baro")
             trk = p.get("track")
@@ -1855,7 +1864,17 @@ if run_button:
                      "the delegated boundary.",
             )
         with _ctl[3]:
-            classb_on = st.checkbox(
+            other_ac = st.selectbox(
+            "Other traffic", ["Off", "FL180+", "FL100+", "All"],
+            index=0,
+            help="Every other operator in the CONUS sweep. OFF by "
+                 "default: at midday that is 5,000-8,000 aircraft, "
+                 "and each one carries its own icon in the layer "
+                 "JSON — several MB per refresh before anything is "
+                 "drawn. An altitude floor cuts most of it without "
+                 "losing the enroute picture.",
+        )
+        classb_on = st.checkbox(
                 "NY Class B", value=False, key="classb_f",
                 help="FAA Class B shelves for the New York area - "
                      "the protected core, NOT the N90 TRACON "
@@ -2110,7 +2129,24 @@ if run_button:
             # aircraft from competing with the eleven that matter,
             # while the yellow edge keeps them visible against both
             # the light basemap and radar fill.
-            if fleet_other:
+            _floor = {"Off": None, "FL180+": 18000,
+                      "FL100+": 10000, "All": -1}[other_ac]
+            _fleet_other_n = len(fleet_other)
+            _oth_src = []
+            if _floor is not None and fleet_other:
+                for o in fleet_other:
+                    _a = o.get("alt")
+                    if _floor > 0 and (_a is None or _a < _floor):
+                        continue
+                    _oth_src.append(o)
+                # Hard cap regardless of filter. A layer this size is
+                # a page-load budget, not a display choice.
+                _OTH_CAP = 1200
+                if len(_oth_src) > _OTH_CAP:
+                    _oth_src.sort(key=lambda r: -(r.get("alt") or 0))
+                    _oth_src = _oth_src[:_OTH_CAP]
+            if _oth_src:
+                fleet_other = _oth_src
                 _oth_icon = {"url": _a320_icon_uri("#D3D3D3",
                                                    "#FFD400", 0.9),
                              "width": 64, "height": 64,
@@ -2184,6 +2220,10 @@ if run_button:
                      "coordination fix. The outline is an "
                      "APPROXIMATE extent (hull of those fixes), not "
                      "the delegated N90 boundary.")
+        if other_ac != "Off":
+            _rad += (f" Other traffic: {len(fleet_other)} shown "
+                     f"({other_ac}) of {_fleet_other_n} in the "
+                     f"sweep.")
         if classb_on:
             _rad += (f" Blue outline: FAA New York CLASS B shelves "
                      f"(snapshot {_cb_vintage}) - not the N90 "
