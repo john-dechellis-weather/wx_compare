@@ -144,6 +144,15 @@ REGIONS = {
     # L2_TOP_M=6000 with LEVELS=1 (one deep layer, so the climbing
     # beam lands in it whole rather than slicing into range rings),
     # L2_DBZ_MIN=10, and L2_CBAND_CORRECT=off for genuinely raw.
+    # Two-site S+C merge test bed. Better geometry than the NY pair
+    # for exactly this: KLIX and TMSY are 68 km apart (vs 33 km for
+    # TJFK/TEWR), so they view the terminal area from 147 deg apart
+    # over the field, 170 deg over Lake Pontchartrain and 117 deg
+    # over downtown. Nearly opposed views mean nearly independent
+    # attenuation paths — a core that blinds the C-band is broadside
+    # to the S-band. 43% of the box is seen by BOTH, which is the
+    # area that actually exercises the merge algorithms.
+    "MSY / New Orleans (S+C)": ["KLIX", "TMSY"],
     "FL TDWR only (raw)": ["TMCO", "TTPA", "TDJT", "TFLL", "TMIA"],
     "Florida Peninsula (S+C)": ["KAMX", "KTBW", "KMLB",
                                 "TMIA", "TFLL", "TDJT", "TMCO",
@@ -176,6 +185,7 @@ REGION_VIEW = {
     "NY Metro 1.0deg proto": (40.59, -74.07, 80, 65),
     "FLL-MIA TDWR pair": (25.95, -80.30, 80, 70),
     "FLL-MIA merged (S+C)": (26.10, -80.35, 150, 140),
+    "MSY / New Orleans (S+C)": (30.10, -90.15, 120, 120),
     "FL TDWR only (raw)": (27.05, -81.55, 195, 235),
     "Florida Peninsula (S+C)": (26.90, -81.30, 210, 195),
 }
@@ -202,6 +212,9 @@ SITE_NOTES = {
     "KBGM": "Binghamton NY — northwest",
     "TTPA": "TDWR at TPA",
     "TMCO": "TDWR at MCO",
+    "KLIX": "Slidell LA — the New Orleans WSR-88D (NOT KHDC, "
+            "which is Hammond Northshore airport)",
+    "TMSY": "TDWR at MSY, 14 km from the field",
     "KMLB": "Melbourne FL — ~35 nm east of MCO, the primary "
             "Orlando-area radar and well inside the useful radius",
     "KTBW": "Ruskin FL — Tampa Bay, ~65 nm southwest",
@@ -225,6 +238,7 @@ TDWR_SITES = {
     "TPHL": "TDWR at PHL", "TBOS": "TDWR at BOS",
     "TDCA": "TDWR at DCA", "TBWI": "TDWR at BWI",
     "TIAD": "TDWR at IAD",
+    "TMSY": "TDWR at MSY",
     "TMIA": "TDWR at MIA", "TFLL": "TDWR at FLL",
     "TDJT": "TDWR at DJT (was PBI)",
     "TPBI": "TDWR at DJT (was PBI)", "TMCO": "TDWR at MCO",
@@ -308,7 +322,8 @@ MAX_RANGE_M = float(MAX_RANGE_M) if MAX_RANGE_M else None
 # and removes the guess.
 TDWR_ID3 = {"TJFK": ["JFK"], "TEWR": ["EWR"], "TPHL": ["PHL"],
             "TBOS": ["BOS"], "TDCA": ["DCA"], "TBWI": ["BWI"],
-            "TIAD": ["IAD"], "TMIA": ["MIA"], "TFLL": ["FLL"],
+            "TIAD": ["IAD"], "TMSY": ["MSY"],
+            "TMIA": ["MIA"], "TFLL": ["FLL"],
             "TDJT": ["DJT", "PBI"], "TPBI": ["DJT", "PBI"],
             "TMCO": ["MCO"], "TTPA": ["TPA"]}
 # Base reflectivity tilts 1-3. TZL is the long-range product but it is
