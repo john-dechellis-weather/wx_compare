@@ -278,6 +278,16 @@ def area_traffic(bucket: str, radius_nm: int):
             (jbu if mine else other).append({
                 "lat": alat, "lon": alon,
                 "cs": cs.replace("JBU", "B6") if mine else cs,
+                # Mode S enhanced surveillance, for wind derivation.
+                # Present on a subset of aircraft only — core.adsb_wind
+                # counts what it could and could not use rather than
+                # letting a low yield look like a broken calculation.
+                "tas": p.get("tas"),
+                "true_heading": p.get("true_heading"),
+                "mag_heading": p.get("mag_heading"),
+                "roll": p.get("roll"),
+                "oat": p.get("oat"),
+                "trk": p.get("track"),
                 "icon": _AC_ICON if mine else _AC_ICON_OTHER,
                 "alt": alt,
                 "gs": float(p.get("gs") or 0.0),
@@ -767,6 +777,49 @@ st.caption(
        f"black outline."
        if show_ac else "")
 )
+
+# ---------------------------------------------------------------------------
+# Winds and temperatures aloft, from the traffic already fetched
+# ---------------------------------------------------------------------------
+if show_ac and (_ac or _other):
+    try:
+        from core import adsb_wind as _AW
+
+        _wobs, _wstats = _AW.observations(list(_ac) + list(_other))
+        _wprof = _AW.profile(_wobs, bin_ft=4000, min_n=2)
+    except Exception as _wexc:
+        _wobs, _wstats, _wprof = [], {"error": str(_wexc)}, []
+    with st.expander(
+            f"Winds aloft from aircraft "
+            f"({_wstats.get('used', 0)} of {_wstats.get('seen', 0)} "
+            f"reporting)"):
+        if _wprof:
+            st.dataframe(
+                [{"Layer": f"FL{p_['fl_lo']:03d}-{p_['fl_hi']:03d}",
+                  "Wind": f"{p_['dir_from_deg']:.0f}\u00b0 / "
+                          f"{p_['speed_kt']:.0f} kt",
+                  "OAT": (f"{p_['oat_c']:.0f} \u00b0C"
+                          if p_['oat_c'] is not None else "\u2014"),
+                  "Aircraft": p_["n"]} for p_ in _wprof],
+                width="stretch", hide_index=True)
+            st.caption(
+                "Derived from each aircraft's true airspeed and "
+                "heading against its groundspeed and track — the "
+                "difference between the two vectors IS the wind. "
+                "Components are averaged, not directions: 350\u00b0 "
+                "and 010\u00b0 average to 180\u00b0, the opposite "
+                "of the truth. Temperature is the aircraft's own "
+                "OAT probe."
+            )
+        else:
+            st.caption(
+                f"No usable reports. {_wstats.get('no_modes', 0)} "
+                f"aircraft lacked Mode S airspeed/heading, "
+                f"{_wstats.get('turning', 0)} were turning, "
+                f"{_wstats.get('too_low', 0)} too low. Those fields "
+                f"come from enhanced surveillance downlinks, not "
+                f"standard ADS-B, so coverage is a subset."
+            )
 
 if _rs and _rs.get("diag"):
     with st.expander("Radar diagnostics"):
