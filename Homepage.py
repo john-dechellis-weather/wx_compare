@@ -46,6 +46,52 @@ from auth import check_password
 check_password()
 
 
+# ---------------------------------------------------------------------------
+# Background warmers
+# ---------------------------------------------------------------------------
+# Started HERE, not on the pages that consume them.
+#
+# Both used to be started by their own page — the CAM warmer from
+# pages 9 and 11, the radar warmer from page 13. That meant they only
+# ran while someone was looking at the page they fed, which is exactly
+# backwards: a warmer exists so the data is ready BEFORE anyone
+# arrives. A container restart killed the thread and nothing revived
+# it until the next visit to that specific page. Across a day of
+# deploys the CAM warmer never got an uninterrupted run at a job that
+# needs 2-3 hours, and the store stayed empty while appearing to be
+# configured correctly.
+#
+# Homepage is on every path into the app, so starting them here means
+# a restart costs one page load rather than a page load OF THE RIGHT
+# PAGE. Both calls are idempotent and both have env kill switches
+# (CAM_WARMER, L2_WARMER), so this is safe to run on every rerun.
+_persistent = Path("/opt/render/project/src/cache")
+CACHE_ROOT = (_persistent if _persistent.exists()
+              else Path("/tmp/wx_compare_cache"))
+CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+
+_warm_notes = []
+try:
+    from core.cam_warm import ensure_warmer_started
+
+    ensure_warmer_started(CACHE_ROOT)
+    _warm_notes.append("CAM warmer started")
+except Exception as _exc:
+    _warm_notes.append(f"CAM warmer FAILED: {type(_exc).__name__}: {_exc}")
+
+try:
+    from core.radar_l2 import ensure_radar_warmer
+
+    # Radar frames live under static/ so they can be served as
+    # absolute URLs to the map, not in the cache dir.
+    _static = Path(__file__).resolve().parent / "static"
+    ensure_radar_warmer(_static)
+    _warm_notes.append("radar warmer started")
+except Exception as _exc:
+    _warm_notes.append(f"radar warmer FAILED: "
+                       f"{type(_exc).__name__}: {_exc}")
+
+
 def _home():
     st.title("BlueMet")
     st.markdown(
@@ -57,6 +103,16 @@ def _home():
         unsafe_allow_html=True,
     )
     st.caption("Multi-model comparison for CONUS airports.")
+    with st.expander("Background warmers", expanded=False):
+        for _n in _warm_notes:
+            (st.error if "FAILED" in _n else st.caption)(_n)
+        st.caption(
+            f"Store: {CACHE_ROOT}"
+            + ("" if _persistent.exists() else
+               "  \u2014 WARNING: the persistent disk is NOT mounted "
+               "at /opt/render/project/src/cache, so this is /tmp and "
+               "is wiped on every restart.")
+        )
     st.markdown(
         """
         ### Sections
