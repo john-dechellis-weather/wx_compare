@@ -450,6 +450,9 @@ if radar_on:
     # L2_WARMER=off disables it without a deploy.
     try:
         from core import radar_l2 as _L2W
+        # Also started from Homepage, which is what actually keeps it
+        # alive between visits. Kept here as a belt-and-braces for a
+        # deep link straight to this page; the call is idempotent.
         _L2W.ensure_radar_warmer(_STATIC)
         _warm = _L2W.warm_frames(_STATIC, "n90", 24)
     except Exception:
