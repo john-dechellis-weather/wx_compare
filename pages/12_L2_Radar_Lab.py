@@ -19,11 +19,24 @@ from pathlib import Path
 
 import streamlit as st
 
+st.set_page_config(page_title="L2 Radar Lab", layout="wide")
+
+# ORDER MATTERS, and it is the same on every page: set_page_config
+# first (Streamlit requires it before any other st call), then the
+# theme, then auth. Pages 12 and 13 previously ran check_password
+# BEFORE set_page_config and never applied the theme at all, so
+# navigating here from a themed page visibly switched styling and
+# the sidebar lost its nav group captions.
+from retro_theme import apply_retro_theme
+
+apply_retro_theme()
+
 from auth import check_password
 
 check_password()
 
-st.set_page_config(page_title="L2 Radar Lab", layout="wide")
+
+
 st.title("Level II Radar Lab — N90")
 st.caption(
     "Experimental super-resolution multi-radar mosaic. 250 m gates vs "
@@ -82,7 +95,7 @@ _clat, _clon, _hx, _hy = L2.REGION_VIEW.get(
     region, (None, None, 200, 200))
 b1, b2, b3 = st.columns([1, 1, 2])
 with b1:
-    half_x = st.number_input("Half-width E-W (km)", 60, 500, _hx, 10)
+    half_x = st.number_input("Half-width E-W (km)", 60, 400, _hx, 10)
     post = st.selectbox("Detail filter", list(L2.POSTFILTERS),
                         index=0,
                         help="Per-cell filter driven by surrounding "
@@ -90,7 +103,7 @@ with b1:
     algo = st.selectbox("Merge algorithm", list(L2.COMBINERS), index=0,
                         help="How overlapping radars are combined.")
 with b2:
-    half_y = st.number_input("Half-width N-S (km)", 60, 500, _hy, 10)
+    half_y = st.number_input("Half-width N-S (km)", 60, 400, _hy, 10)
 with b3:
     st.caption(
         f"Centre {_clat:.2f}, {_clon:.2f}. Level II range is ~230 km "

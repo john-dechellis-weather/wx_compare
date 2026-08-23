@@ -41,11 +41,23 @@ from pathlib import Path
 
 import streamlit as st
 
+st.set_page_config(page_title="N90 Airspace", layout="wide")
+
+# ORDER MATTERS, and it is the same on every page: set_page_config
+# first (Streamlit requires it before any other st call), then the
+# theme, then auth. Pages 12 and 13 previously ran check_password
+# BEFORE set_page_config and never applied the theme at all, so
+# navigating here from a themed page visibly switched styling and
+# the sidebar lost its nav group captions.
+from retro_theme import apply_retro_theme
+
+apply_retro_theme()
+
 from auth import check_password
 
 check_password()
 
-st.set_page_config(page_title="N90 Airspace", layout="wide")
+
 
 # N90 centroid — between JFK and the KOKX radar, so the terminal area
 # sits mid-frame rather than at an edge.
@@ -633,6 +645,112 @@ with st.expander("Map size (tuning)"):
             f"expander."
         )
 
+
+# ---------------------------------------------------------------------------
+# CAM overlay — pre-warmed model frames under the airspace
+# ---------------------------------------------------------------------------
+# Uses the SAME frames page 9 serves, so this costs no extra warming:
+# warm_get returns a rendered PNG for (model, hub, forecast hour) if
+# the warmer has it. Nothing renders on demand here — if a frame is
+# not warm, the hour is simply not offered.
+#
+# It aligns because the frames are drawn in PlateCarree, which IS
+# lat/lon, so a BitmapLayer places them by corner coordinates with no
+# reprojection. Had they been Lambert Conformal — the usual choice for
+# CAM output — this would not work without reprojecting every frame.
+#
+# KNOWN COSMETIC FLAW, accepted deliberately: the frames have
+# coastlines and state borders baked in at zorder 3, so you get two
+# sets, slightly offset at the edges where the projections diverge.
+# Fixing it means either a transparent render variant (which doubles
+# the warm store) or the grid-warming rework (which removes the
+# problem entirely by colourising on demand). Neither is worth doing
+# before this proves useful, and at ~0.5 opacity the doubling is
+# subtle.
+_CAM_MODELS = {"hrrr": "HRRR", "rrfs": "RRFS",
+               "hiresw_arw": "HiResW ARW", "hiresw_fv3": "HiResW FV3"}
+_CAM_HUB = "KJFK"
+# +-5 deg around JFK: RENDER_FACTOR 2 x WARM_ZOOM 2.5. The N90 box is
+# +-3.33 lat / +-4.39 lon around the same point, so the frame
+# contains it on both axes.
+_CAM_BOUNDS = [-73.7789 - 5.0, 40.6398 - 5.0,
+               -73.7789 + 5.0, 40.6398 + 5.0]
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def cam_overlay_url(model: str, fhr: int):
+    """(url, cycle, note). Warm frames only — never renders."""
+    from pathlib import Path as _PP
+
+    try:
+        from core.cam_warm import warm_get, warm_hours
+    except Exception as exc:
+        return None, None, f"cam_warm import: {exc}"
+    _pers = _PP("/opt/render/project/src/cache")
+    root = _pers if _pers.exists() else _PP("/tmp/wx_compare_cache")
+    try:
+        if fhr not in warm_hours(model):
+            return None, None, f"f{fhr:02d} not a warmed hour"
+        got = warm_get(root, model, _CAM_HUB, fhr)
+    except Exception as exc:
+        return None, None, f"warm_get: {type(exc).__name__}: {exc}"
+    if not got:
+        return None, None, "not warm yet"
+    png, cycle = got
+    out = _STATIC
+    out.mkdir(parents=True, exist_ok=True)
+    tag = str(cycle).replace(":", "").replace("-", "")[:13]
+    name = f"camovl_{model}_{tag}_f{fhr:02d}.png"
+    dest = out / name
+    if not dest.exists():
+        dest.write_bytes(png)
+        # Keep the last handful; a full loop would fill the disk.
+        olds = sorted(out.glob("camovl_*.png"),
+                      key=lambda q: q.stat().st_mtime)
+        for q in olds[:-24]:
+            try:
+                q.unlink()
+            except OSError:
+                pass
+    base = (os.environ.get("RENDER_EXTERNAL_URL")
+            or os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
+    if not base:
+        return None, cycle, "RENDER_EXTERNAL_URL not set"
+    return f"{base}/app/static/{name}", cycle, "warm"
+
+
+st.divider()
+m1, m2, m3, m4 = st.columns([1, 2, 3, 2])
+with m1:
+    cam_on = st.checkbox("CAM overlay", value=False,
+                         help="Pre-warmed model frames beneath the "
+                              "airspace. Only hours the warmer has "
+                              "are offered — nothing renders here.")
+cam_url = None
+if cam_on:
+    with m2:
+        cam_model = st.selectbox("Model", list(_CAM_MODELS),
+                                 format_func=lambda k: _CAM_MODELS[k])
+    try:
+        from core.cam_warm import warm_hours as _wh
+        _hours = list(_wh(cam_model))
+    except Exception:
+        _hours = list(range(0, 19))
+    with m3:
+        cam_fhr = st.select_slider("Forecast hour", _hours,
+                                   value=_hours[0],
+                                   format_func=lambda h: f"f{h:02d}")
+    with m4:
+        cam_op = st.slider("Opacity", 0.0, 1.0, 0.5, 0.05)
+    cam_url, cam_cycle, cam_note = cam_overlay_url(cam_model, cam_fhr)
+    if cam_url:
+        st.caption(f"{_CAM_MODELS[cam_model]} f{cam_fhr:02d} \u2014 "
+                   f"cycle {cam_cycle} \u2014 reflectivity")
+    else:
+        st.info(f"No warm frame for {_CAM_MODELS[cam_model]} "
+                f"f{cam_fhr:02d} \u2014 {cam_note}. The warmer fills "
+                f"in over a couple of hours after a restart.")
+
 import math
 
 import pydeck as pdk
@@ -647,6 +765,13 @@ def _zoom_for(radius_nm, px=1400.0):
 
 
 layers = []
+
+# CAM frame at the very bottom — context beneath the radar, the
+# airspace and the traffic.
+if cam_url:
+    layers.append(pdk.Layer(
+        "BitmapLayer", data=None, image=cam_url,
+        bounds=_CAM_BOUNDS, opacity=float(cam_op)))
 
 # Radar goes down first so fixes, airports and boundaries stay legible
 # on top of it.

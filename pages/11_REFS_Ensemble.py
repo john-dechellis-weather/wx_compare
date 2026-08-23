@@ -19,6 +19,13 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Same order as every other page: config, theme, auth. Page 11 was
+# never themed, so arriving here from a themed page switched styling
+# and dropped the sidebar nav captions.
+from retro_theme import apply_retro_theme
+
+apply_retro_theme()
+
 _persistent = Path("/opt/render/project/src/cache")
 CACHE_ROOT = (_persistent if _persistent.exists()
               else Path("/tmp/wx_compare_cache"))
