@@ -647,109 +647,78 @@ with st.expander("Map size (tuning)"):
 
 
 # ---------------------------------------------------------------------------
-# CAM overlay — pre-warmed model frames under the airspace
+# CAM overlay — transparent model field, pre-warmed
 # ---------------------------------------------------------------------------
-# Uses the SAME frames page 9 serves, so this costs no extra warming:
-# warm_get returns a rendered PNG for (model, hub, forecast hour) if
-# the warmer has it. Nothing renders on demand here — if a frame is
-# not warm, the hour is simply not offered.
+# core.cam_overlay renders the FIELD ONLY onto a transparent canvas.
+# The earlier version reused page 9's warm frames, which are complete
+# matplotlib figures — axes, gridlines, coastlines, colorbar, white
+# margin — so overlaying one put a framed picture on the map with a
+# second set of coastlines and a colorbar over the ocean.
 #
-# It aligns because the frames are drawn in PlateCarree, which IS
-# lat/lon, so a BitmapLayer places them by corner coordinates with no
-# reprojection. Had they been Lambert Conformal — the usual choice for
-# CAM output — this would not work without reprojecting every frame.
-#
-# KNOWN COSMETIC FLAW, accepted deliberately: the frames have
-# coastlines and state borders baked in at zorder 3, so you get two
-# sets, slightly offset at the edges where the projections diverge.
-# Fixing it means either a transparent render variant (which doubles
-# the warm store) or the grid-warming rework (which removes the
-# problem entirely by colourising on demand). Neither is worth doing
-# before this proves useful, and at ~0.5 opacity the doubling is
-# subtle.
-_CAM_MODELS = {"hrrr": "HRRR", "rrfs": "RRFS",
-               "hiresw_arw": "HiResW ARW", "hiresw_fv3": "HiResW FV3"}
-_CAM_HUB = "KJFK"
-# +-5 deg around JFK: RENDER_FACTOR 2 x WARM_ZOOM 2.5. The N90 box is
-# +-3.33 lat / +-4.39 lon around the same point, so the frame
-# contains it on both axes.
-_CAM_BOUNDS = [-73.7789 - 5.0, 40.6398 - 5.0,
-               -73.7789 + 5.0, 40.6398 + 5.0]
+# One fixed domain (PIT to RDU to PWM) rather than per-hub frames, so
+# panning and zooming never trigger a fetch: the browser already has
+# the whole image and is just moving it.
+_OVL_MODELS = {"hrrr": "HRRR"}
 
 
-@st.cache_data(ttl=900, show_spinner=False)
-def cam_overlay_url(model: str, fhr: int):
-    """(url, cycle, note). Warm frames only — never renders."""
-    from pathlib import Path as _PP
-
+@st.cache_data(ttl=300, show_spinner=False)
+def overlay_state(model: str, _bucket: str):
+    """(hours available, cycle) from what the warmer has produced."""
     try:
-        from core.cam_warm import warm_get, warm_hours
-    except Exception as exc:
-        return None, None, f"cam_warm import: {exc}"
-    _pers = _PP("/opt/render/project/src/cache")
-    root = _pers if _pers.exists() else _PP("/tmp/wx_compare_cache")
-    try:
-        if fhr not in warm_hours(model):
-            return None, None, f"f{fhr:02d} not a warmed hour"
-        got = warm_get(root, model, _CAM_HUB, fhr)
-    except Exception as exc:
-        return None, None, f"warm_get: {type(exc).__name__}: {exc}"
-    if not got:
-        return None, None, "not warm yet"
-    png, cycle = got
-    out = _STATIC
-    out.mkdir(parents=True, exist_ok=True)
-    tag = str(cycle).replace(":", "").replace("-", "")[:13]
-    name = f"camovl_{model}_{tag}_f{fhr:02d}.png"
-    dest = out / name
-    if not dest.exists():
-        dest.write_bytes(png)
-        # Keep the last handful; a full loop would fill the disk.
-        olds = sorted(out.glob("camovl_*.png"),
-                      key=lambda q: q.stat().st_mtime)
-        for q in olds[:-24]:
-            try:
-                q.unlink()
-            except OSError:
-                pass
-    base = (os.environ.get("RENDER_EXTERNAL_URL")
-            or os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
-    if not base:
-        return None, cycle, "RENDER_EXTERNAL_URL not set"
-    return f"{base}/app/static/{name}", cycle, "warm"
+        from core import cam_overlay as _OV
+        return _OV.available(model, _STATIC), _OV.cycle_on_disk(
+            model, _STATIC)
+    except Exception:
+        return [], None
 
 
 st.divider()
-m1, m2, m3, m4 = st.columns([1, 2, 3, 2])
+m1, m2, m3 = st.columns([1, 3, 2])
 with m1:
     cam_on = st.checkbox("CAM overlay", value=False,
-                         help="Pre-warmed model frames beneath the "
-                              "airspace. Only hours the warmer has "
-                              "are offered — nothing renders here.")
+                         help="Pre-warmed HRRR simulated reflectivity "
+                              "beneath the airspace. Frames are built "
+                              "by a background warmer — nothing "
+                              "renders on demand here.")
 cam_url = None
+cam_bounds = None
+cam_op = 0.6
 if cam_on:
-    with m2:
-        cam_model = st.selectbox("Model", list(_CAM_MODELS),
-                                 format_func=lambda k: _CAM_MODELS[k])
-    try:
-        from core.cam_warm import warm_hours as _wh
-        _hours = list(_wh(cam_model))
-    except Exception:
-        _hours = list(range(0, 19))
-    with m3:
-        cam_fhr = st.select_slider("Forecast hour", _hours,
-                                   value=_hours[0],
-                                   format_func=lambda h: f"f{h:02d}")
-    with m4:
-        cam_op = st.slider("Opacity", 0.0, 1.0, 0.5, 0.05)
-    cam_url, cam_cycle, cam_note = cam_overlay_url(cam_model, cam_fhr)
-    if cam_url:
-        st.caption(f"{_CAM_MODELS[cam_model]} f{cam_fhr:02d} \u2014 "
-                   f"cycle {cam_cycle} \u2014 reflectivity")
+    _ovl_model = "hrrr"
+    from datetime import datetime as _dtn, timezone as _tzn
+    _hours, _cyc = overlay_state(
+        _ovl_model, _dtn.now(_tzn.utc).strftime("%Y%m%d%H%M")[:-1])
+    if _hours:
+        with m2:
+            cam_fhr = st.select_slider(
+                "Forecast hour", _hours, value=_hours[0],
+                format_func=lambda h: f"f{h:02d}")
+        with m3:
+            cam_op = st.slider("Opacity", 0.0, 1.0, 0.6, 0.05)
+        try:
+            from core import cam_overlay as _OV
+            _name = _OV.frame_name(_ovl_model, _cyc, cam_fhr)
+            _base = (os.environ.get("RENDER_EXTERNAL_URL")
+                     or os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
+            if _base and (_STATIC / _name).exists():
+                cam_url = f"{_base}/app/static/{_name}"
+                cam_bounds = _OV.bounds()
+                st.caption(
+                    f"HRRR {_cyc[:8]} {_cyc[8:10]}Z f{cam_fhr:02d} "
+                    f"\u2014 simulated reflectivity, "
+                    f"{len(_hours)} hours warmed"
+                )
+            elif not _base:
+                st.warning("RENDER_EXTERNAL_URL not set.")
+        except Exception as _oexc:
+            st.warning(f"Overlay unavailable — {_oexc}")
     else:
-        st.info(f"No warm frame for {_CAM_MODELS[cam_model]} "
-                f"f{cam_fhr:02d} \u2014 {cam_note}. The warmer fills "
-                f"in over a couple of hours after a restart.")
+        with m2:
+            st.info(
+                "No overlay frames yet. The warmer builds f00-f18 "
+                "after each HRRR cycle; give it a few minutes from a "
+                "cold start. OVL_WARMER=off disables it."
+            )
 
 import math
 
@@ -768,10 +737,10 @@ layers = []
 
 # CAM frame at the very bottom — context beneath the radar, the
 # airspace and the traffic.
-if cam_url:
+if cam_url and cam_bounds:
     layers.append(pdk.Layer(
         "BitmapLayer", data=None, image=cam_url,
-        bounds=_CAM_BOUNDS, opacity=float(cam_op)))
+        bounds=cam_bounds, opacity=float(cam_op)))
 
 # Radar goes down first so fixes, airports and boundaries stay legible
 # on top of it.
