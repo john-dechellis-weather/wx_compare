@@ -84,15 +84,13 @@ REGIONS = {
     # gates and win inside ~20 nm, which is the approach and
     # departure environment. C-band attenuation is what makes this
     # non-trivial and is handled per-gate — see _cband_attenuation.
-    # Four 88Ds plus three TDWRs. KENX (Albany) and KBGM
-    # (Binghamton) are what close the northwest: on the old 190x160
-    # box the five-site set left 4.3% uncovered and 73% multi-radar;
-    # with these two it is 0% uncovered and 97% multi-radar, and the
-    # box can grow to reach ALB, BDL, AVP and ACY without opening
-    # holes. More multi-radar area also means more overlap for the
-    # bias solver, which is what keeps the TDWRs anchored.
-    "N90 merged (S+C band)": ["KOKX", "KDIX", "KENX", "KBGM",
-                              "TJFK", "TEWR", "TPHL"],
+    # TWO SITES. KOKX and KDIX are the only radars with the N90
+    # terminal area inside their 52 nm circle — everything else is
+    # coverage, not resolution. Starting here keeps the build fast
+    # and the merge legible: one overlap region, one pair to reason
+    # about. TDWR and the northern 88Ds are in other regions when
+    # they are wanted.
+    "N90 merged (S+C band)": ["KOKX", "KDIX"],
     # The two NY-metro TDWRs alone. Same ~1 min cadence, so scan
     # spread is near zero and there is no advection smearing to
     # correct. 33 km apart, which means a cell over Newark Bay is
@@ -174,12 +172,12 @@ REGION_VIEW = {
     "NE Corridor / DCA-BOS": (40.60, -74.00, 300, 250),
     # Enlarged to make the two new sites worth their fetch time:
     # -77.17..-71.43, 39.22..43.18. 0.6% uncovered, 82% multi-radar.
-    # 400 x 400 NM centred on JFK, hardcoded. Half-width 200 nm =
-    # 370.4 km, so the box runs -78.16..-69.39 and 37.31..43.97:
-    # DCA, BOS, PWM, ALB and ACY inside; BUF and PIT outside.
-    # 2963 x 2963 cells at 250 m. Anything outside is not rendered
-    # even where a radar still sees it — the square IS the product.
-    "N90 merged (S+C band)": (40.6398, -73.7789, 370.4, 370.4),
+    # JFK-centred, +-250 km (270 x 270 nm). Sized so the grid stays
+    # at the full 250 m: 2000 x 2000 = 4.0M cells, under the 4.5M
+    # ceiling. The 400 nm box needed 8.8M and had to be coarsened to
+    # 350 m to render at all, which threw away the resolution the
+    # whole exercise is for.
+    "N90 merged (S+C band)": (40.6398, -73.7789, 250.0, 250.0),
     "NY Metro TDWR pair": (40.62, -74.07, 90, 80),
     # Union of two 30 nm circles 33 km apart, plus margin.
     "NY Metro 1.0deg proto": (40.59, -74.07, 80, 65),
