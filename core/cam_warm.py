@@ -19,6 +19,7 @@ hourly background work is just HRRR's 4x13 frames.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import traceback
@@ -266,7 +267,18 @@ def _warm_model(cache_root: Path, key: str, log) -> None:
             "cycle": cyc, "fhr": h,
             "lat": lat, "lon": lon, "zoom_deg": _zoom,
         })
-    data = parallel_fetch_decode(tasks, max_workers=2)
+    # INSTRUMENTED. max_workers=2 has been the setting since this was
+    # written and nobody has measured whether it is the constraint.
+    # Fetch is network-bound and parallel; RENDER is matplotlib with
+    # cartopy coastlines and runs serially in this thread. If render
+    # dominates, raising workers changes nothing — so measure the
+    # split before touching either. L2 warmer note: the same question
+    # applies there.
+    _t_fetch = time.time()
+    data = parallel_fetch_decode(
+        tasks, max_workers=int(os.environ.get("CAM_WORKERS", "2")))
+    _t_fetch = time.time() - _t_fetch
+    _t_render = time.time()
 
     n_ok = 0
     for icao, h in build:
@@ -303,7 +315,17 @@ def _warm_model(cache_root: Path, key: str, log) -> None:
         "warmed_at": datetime.now(timezone.utc).isoformat(),
     }))
     data.clear()
-    log(f"warmed {key}: {n_ok} frames")
+    _t_render = time.time() - _t_render
+    # The number that decides the next optimisation: if fetch
+    # dominates, raise CAM_WORKERS; if render does, workers are
+    # irrelevant and the lever is dpi, figure size, or moving the
+    # draw off the main thread.
+    _n = max(n_ok, 1)
+    log(f"warmed {key}: {n_ok} frames | "
+        f"fetch {_t_fetch:.0f}s ({_t_fetch / _n:.1f}s/frame, "
+        f"{int(os.environ.get('CAM_WORKERS', '2'))} workers) | "
+        f"render {_t_render:.0f}s ({_t_render / _n:.1f}s/frame) | "
+        f"{'FETCH-bound' if _t_fetch > _t_render else 'RENDER-bound'}")
 
     # Prune older cycle dirs for this model (keep the newest 2)
     mdir = _warm_dir(cache_root) / key.replace("@", "__")
