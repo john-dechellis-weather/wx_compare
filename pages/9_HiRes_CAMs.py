@@ -206,7 +206,8 @@ def _render_chunk(pchunk, data, frames, errs, prog,
 def build_scrub_html(frames: dict, hour_axis: list,
                      order: list, single: bool = False,
                      home=None, conus=None,
-                     axcal=None) -> tuple:
+                     axcal=None, cycles: dict = None,
+                     product_key: str = "") -> tuple:
     """Client-side shared-slider grid from {model: {fhr: png}}.
     Returns (html, height). Used by smooth-scrub mode AND the
     instant-open warm path."""
@@ -214,6 +215,17 @@ def build_scrub_html(frames: dict, hour_axis: list,
     import json as _json
 
     from core.hrrr_cam import MODELS
+
+    def names_run(m):
+        return MODELS[m]["label"]
+
+    # Field name for the second line. PRODUCT_LABELS is what the
+    # colorbar uses, so the two agree.
+    try:
+        from core.hrrr_cam import PRODUCT_LABELS as _PL
+        _prod_label = _PL.get(product_key, product_key or "")
+    except Exception:
+        _prod_label = ""
 
     model_arrays = {}
     for m in order:
@@ -228,6 +240,41 @@ def build_scrub_html(frames: dict, hour_axis: list,
             )
         model_arrays[m] = arr
     labels = [f"f{h:02d}" for h in hour_axis]
+    # Run and valid time per model per hour, for the pinned overlay.
+    # The headline baked into each PNG sits at the top of the CANVAS,
+    # so zooming scrolls it out of view — which is exactly when you
+    # need it. An HTML overlay pinned to the viewer stays put at any
+    # zoom, and can update the valid time as the slider moves, which
+    # a baked-in label cannot.
+    from datetime import datetime as _dt, timedelta as _tdd
+    heads = {}
+    for m in order:
+        ci = (cycles or {}).get(m)
+        row = []
+        for h in hour_axis:
+            if ci:
+                try:
+                    c = _dt.fromisoformat(str(ci))
+                    v = c + _tdd(hours=h)
+                    # Two lines: what and when on the first, the
+                    # field on the second. Run hour only for the
+                    # init — the date is on the valid line and
+                    # repeating it wastes width.
+                    # Split on \x1f so the JS can style the parts
+                    # without re-parsing prose: [prefix, valid,
+                    # product]. A separator the text can never
+                    # contain, rather than a delimiter like | that
+                    # a product label might legitimately use.
+                    row.append(
+                        f"{names_run(m)} (Init {c:%H}Z) Valid: "
+                        f"\x1f{v:%H}Z {v:%a} {v.month}-{v.day}\x1f"
+                        f"{_prod_label}")
+                    continue
+                except Exception:
+                    pass
+            row.append(f"{names_run(m)}  \x1ff{h:02d}\x1f"
+                       f"{_prod_label}")
+        heads[m] = row
     order = [m for m in order if m in model_arrays]
     names = {m: MODELS[m]["label"] for m in order}
     _cols = "1fr" if single else "1fr 1fr"
@@ -241,6 +288,21 @@ def build_scrub_html(frames: dict, hour_axis: list,
         ".zoomwrap img{transform-origin:0 0;user-select:none;"
         "-webkit-user-drag:none}"
         ".camlbl{font:bold 13px monospace;margin:2px 0}"
+        # Pinned to the VIEWPORT of the zoom wrapper, not to the
+        # image, so panning and zooming leave it in place.
+        # A BAR above the map, not a box on it. Sitting outside the
+        # zoom wrapper means it can never cover weather, and because
+        # the wrapper scrolls underneath it the bar stays visible at
+        # any zoom — which is the whole point.
+        ".hdr{display:block;width:100%;box-sizing:border-box;"
+        "background:#F2F2EE;border:1px solid #111;border-bottom:none;"
+        "border-radius:4px 4px 0 0;padding:3px 8px;text-align:center;"
+        "font:normal 12px/1.35 monospace;color:#111}"
+        ".hdr .vt{font-weight:bold}"
+        ".hdr .sub{font-style:italic;font-size:11px;opacity:0.85;"
+        "font-weight:normal}"
+        "#fswrap.fs .hdr{font-size:15px;line-height:1.4}"
+        "#fswrap.fs .hdr .sub{font-size:13px}"
         ".ctl{font:13px monospace;margin:8px 0}"
         "input[type=range]{width:70%}"
         "#fswrap.fs{background:#c0c0c0;overflow:auto;"
@@ -271,15 +333,23 @@ def build_scrub_html(frames: dict, hour_axis: list,
                  + "' style='font:11px monospace;cursor:pointer;"
                  "margin-left:10px;padding:1px 8px'>&#x26F6; "
                  "full size</button>"
-                 "</div><div" + _wrap + "><img id='img_"
+                 "</div><div class='hdr' id='hdr_" + m + "'></div>"
+                 "<div" + _wrap + "><img id='img_"
                  + m + "'></div></div>")
     html += "</div></div><script>"
     html += "const D=" + _json.dumps(model_arrays) + ";"
     html += "const L=" + _json.dumps(labels) + ";"
+    html += "const H=" + _json.dumps(heads) + ";"
     html += (
         "const sl=document.getElementById('hsl');"
         "function upd(){const i=+sl.value;"
         "document.getElementById('hlbl').textContent=L[i];"
+        "for(const m in H){const hd="
+        "document.getElementById('hdr_'+m);"
+        "if(hd){const t=(H[m][i]||'').split('\\x1f');"
+        "hd.innerHTML=(t[0]||'')"
+        "+(t[1]?\"<span class='vt'>\"+t[1]+'</span>':'')"
+        "+(t[2]?\"<br><span class='sub'>\"+t[2]+'</span>':'');}}"
         "for(const m in D){const el="
         "document.getElementById('img_'+m);"
         "if(D[m][i]){el.src=D[m][i];el.style.display='';"
@@ -748,9 +818,16 @@ if active:
         if not frames:
             st.error("No frames preloaded - check model/product/range.")
         else:
+            # Cycle per model, so the pinned overlay can show the
+            # run AND the valid time of whichever frame is showing.
+            _cyc_by_model = {}
+            for _m, _ci, _h in plan:
+                _cyc_by_model.setdefault(_m, _ci)
             html, hgt = build_scrub_html(
                 frames, hours, GRID_ORDER,
                 single=bool(_single_model),
+                cycles=_cyc_by_model,
+                product_key=product,
                 # home=None -> HOME is null in the JS, so the
                 # panel opens at scale 1 with the ENTIRE
                 # rendered frame visible, and dblclick returns
@@ -859,14 +936,21 @@ else:
     _OPEN_ORDER = ["hrrr", "rrfs", "hiresw_arw",
                    "hiresw_fv3"]
     _warm_frames: dict = {}
+    # warm_get returns (png, cycle) and the cycle was being thrown
+    # away at got[0]. It is what the pinned overlay needs to say
+    # WHICH RUN a frame belongs to, so keep the first one seen per
+    # model — every frame in a warm set shares a cycle by definition.
+    _warm_cycles: dict = {}
     try:
         for _m in _OPEN_ORDER:
             for _h in warm_hours(_m):
                 got = warm_get(CACHE_ROOT, _m, _open_hub, _h)
                 if got:
                     _warm_frames.setdefault(_m, {})[_h] = got[0]
+                    _warm_cycles.setdefault(_m, got[1])
     except Exception:
         _warm_frames = {}
+        _warm_cycles = {}
     _n_warm = sum(len(v) for v in _warm_frames.values())
     if _n_warm >= 6:
         st.info(
@@ -878,8 +962,12 @@ else:
                         for h in v})
         from core.cam_warm import RENDER_FACTOR as _RF
         _hla2, _hlo2 = WARM_HUBS[_open_hub]
+        # warm_get returns (png, cycle); _warm_cycles is populated
+        # alongside _warm_frames when the store is read.
         _html, _hgt = build_scrub_html(
             _warm_frames, _axis, _OPEN_ORDER,
+            cycles=_warm_cycles,
+            product_key=WARM_PRODUCT,
             home=None,   # open on the whole ±5 deg frame
             conus=(_hla2, _hlo2, WARM_ZOOM * _RF),
             axcal=st.session_state.get("_axcal"),
