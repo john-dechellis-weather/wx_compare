@@ -80,6 +80,16 @@ except Exception as _exc:
     _warm_notes.append(f"CAM warmer FAILED: {type(_exc).__name__}: {_exc}")
 
 try:
+    from core.cam_overlay import ensure_overlay_warmer
+
+    _static_ovl = Path(__file__).resolve().parent / "static"
+    ensure_overlay_warmer(_static_ovl)
+    _warm_notes.append("CAM overlay warmer started (HRRR f00-f18)")
+except Exception as _exc:
+    _warm_notes.append(f"overlay warmer FAILED: "
+                       f"{type(_exc).__name__}: {_exc}")
+
+try:
     from core.radar_l2 import ensure_radar_warmer
 
     # Radar frames live under static/ so they can be served as
