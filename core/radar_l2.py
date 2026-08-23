@@ -1941,10 +1941,24 @@ def build_loop(site, n_frames, outdir, tag="cmax", progress=None,
             return [], diag
         out = _PP(outdir)
         out.mkdir(parents=True, exist_ok=True)
+        # Name it in the SAME shape a volume filename has —
+        # SITE + YYYYMMDD_HHMMSS — so warm_frames parses the valid
+        # time out of it. The first version wrote MOSAIC20260823_...
+        # and warm_frames, which reads the second-to-last underscore
+        # field, produced "MO:SA:ICZ" for every frame.
         stamp = (diag.get("valid") or "").replace(":", "").replace(
             "-", "").replace("T", "_").replace("Z", "") or "now"
-        name = f"l2loop_{tag}_MOSAIC{stamp}.png"
+        name = f"l2loop_{tag}_MOSAIC{stamp}_V06.png"
         render_png(comp, out / name, diag)
+        # Prune to a rolling window. The warmer runs continuously,
+        # so without this the disk grows by ~2.7 MB every pass.
+        keep_n = int(os.environ.get("L2_KEEP_MOSAICS", "12"))
+        olds = sorted(out.glob(f"l2loop_{tag}_MOSAIC*.png"))
+        for q in olds[:-keep_n]:
+            try:
+                q.unlink()
+            except OSError:
+                pass
         diag["mode"] = f"mosaic of {len(sites)} sites"
         return [{"name": name,
                  "valid": (diag.get("valid", "")[-9:-1] + "Z")
@@ -2021,6 +2035,10 @@ ROTATION = {
     "MCO": (REGIONS["MCO / Orlando"][:2], "mco"),
 }
 WARM_FRAMES = int(os.environ.get("L2_WARM_FRAMES", "6"))
+# 120 s against a 4-6 min volume cadence: every new scan is picked up
+# within about two minutes of appearing, and a pass that finds nothing
+# new costs one fetch rather than a render. Two sites at ~40 s is a
+# ~33% duty cycle, which leaves room for the CAM and overlay warmers.
 WARM_SLEEP_S = int(os.environ.get("L2_WARM_SLEEP_S", "120"))
 
 
@@ -2093,12 +2111,20 @@ def warm_frames(outdir, tag, n=None):
     files = sorted(_PP(outdir).glob(f"l2loop_{tag}_*.png"))
     if n:
         files = files[-n:]
+    import re
+
     out = []
     for f in files:
-        stem = f.stem.split("_")
-        hhmm = stem[-2][:6] if len(stem) >= 3 else "?"
-        out.append({"name": f.name,
-                    "valid": f"{hhmm[:2]}:{hhmm[2:4]}:{hhmm[4:6]}Z"})
+        # Look for HHMMSS immediately after an 8-digit date, rather
+        # than trusting a fixed field position — mosaic and
+        # single-site names have different shapes.
+        m = re.search(r"\d{8}_(\d{6})", f.stem)
+        if m:
+            h = m.group(1)
+            valid = f"{h[:2]}:{h[2:4]}:{h[4:6]}Z"
+        else:
+            valid = "?"
+        out.append({"name": f.name, "valid": valid})
     return out
 
 # ---------------------------------------------------------------------------
