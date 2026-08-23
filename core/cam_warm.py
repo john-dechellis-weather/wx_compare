@@ -288,14 +288,15 @@ def _warm_model(cache_root: Path, key: str, log) -> None:
                 continue
             vals, lats, lons = res
             valid = cyc + timedelta(hours=h)
-            title = (
-                f"{MODELS[model]['label']} {cyc:%m/%d %H}Z  "
-                f"f{h:02d}  valid {valid:%m/%d %H}Z  [prewarmed]"
-            )
+            title = (f"{MODELS[model]['label']}  "
+                     f"valid {valid:%m/%d %H}Z")
+            headline = (f"{MODELS[model]['label']} "
+                        f"{cyc:%d %b %Y  %H}Z run")
             try:
                 png = render_field(
                     w_product, vals, lats, lons,
                     _hla, _hlo, _zoom, title,
+                    headline=headline,
                 )
             except Exception:
                 continue

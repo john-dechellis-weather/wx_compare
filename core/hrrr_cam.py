@@ -704,6 +704,38 @@ def parallel_fetch_decode(tasks: list[dict], max_workers: int = 6):
     return out
 
 
+# JetBlue stations, for in-frame markers. Same set the fleet map
+# uses; coordinates are airport reference points.
+JBU_STATIONS = {
+    "KJFK": (40.6398, -73.7789), "KBOS": (42.3630, -71.0064),
+    "KEWR": (40.6925, -74.1687), "KLGA": (40.7772, -73.8726),
+    "KPHL": (39.8721, -75.2411), "KDCA": (38.8521, -77.0377),
+    "KBWI": (39.1754, -76.6683), "KPVD": (41.7240, -71.4283),
+    "KBDL": (41.9389, -72.6832), "KALB": (42.7483, -73.8017),
+    "KSYR": (43.1112, -76.1063), "KBUF": (42.9405, -78.7322),
+    "KROC": (43.1189, -77.6724), "KPIT": (40.4915, -80.2329),
+    "KCLE": (41.4118, -81.8498), "KDTW": (42.2124, -83.3534),
+    "KORD": (41.9786, -87.9048), "KMDW": (41.7860, -87.7524),
+    "KCLT": (35.2140, -80.9431), "KRDU": (35.8776, -78.7875),
+    "KRIC": (37.5052, -77.3197), "KORF": (36.8946, -76.2012),
+    "KCHS": (32.8986, -80.0405), "KSAV": (32.1276, -81.2021),
+    "KJAX": (30.4941, -81.6879), "KMCO": (28.4312, -81.3081),
+    "KTPA": (27.9755, -82.5332), "KFLL": (26.0726, -80.1527),
+    "KMIA": (25.7932, -80.2906), "KPBI": (26.6832, -80.0956),
+    "KRSW": (26.5362, -81.7552), "KEYW": (24.5561, -81.7595),
+    "KSRQ": (27.3954, -82.5544), "KATL": (33.6367, -84.4281),
+    "KBNA": (36.1245, -86.6782), "KMSY": (29.9934, -90.2580),
+    "KIAH": (29.9844, -95.3414), "KAUS": (30.1975, -97.6664),
+    "KDFW": (32.8968, -97.0380), "KDEN": (39.8617, -104.6732),
+    "KPHX": (33.4343, -112.0116), "KLAS": (36.0801, -115.1523),
+    "KLAX": (33.9425, -118.4081), "KSAN": (32.7336, -117.1897),
+    "KSFO": (37.6189, -122.3750), "KSJC": (37.3626, -121.9291),
+    "KSMF": (38.6954, -121.5908), "KPDX": (45.5887, -122.5975),
+    "KSEA": (47.4502, -122.3088), "KMSP": (44.8820, -93.2218),
+    "KDTW2": (42.2124, -83.3534),
+}
+
+
 def render_field(
     product: str,
     vals: np.ndarray,
@@ -713,11 +745,13 @@ def render_field(
     center_lon: float,
     zoom_deg: float,
     title: str,
+    headline: str = "",
     aircraft=None,
     routes=None,
 ) -> bytes:
     import matplotlib
     matplotlib.use("Agg")
+    import matplotlib.patheffects as _pe
     import matplotlib.pyplot as plt
     from matplotlib.colors import BoundaryNorm, ListedColormap
     import cartopy.crs as ccrs
@@ -901,6 +935,43 @@ def render_field(
         ax.annotate(lbl, xy=(ac.lon, ac.lat), xytext=(4, 4),
                     textcoords="offset points", fontsize=6,
                     fontweight="bold", color="#0000CC", zorder=10)
+
+    # --- JetBlue stations inside the frame -----------------------
+    # Drawn from the same list the fleet map uses. A dot the size of
+    # the centre hub's, with the 3-letter code in tiny text, so a
+    # KJFK frame also shows BOS, PHL, DCA and anything else in view.
+    # Purely geographic, so it belongs in the image rather than as a
+    # map overlay.
+    try:
+        w, e, s_, n_ = ax.get_extent(crs=ccrs.PlateCarree())
+        for _ic, (_sla, _slo) in JBU_STATIONS.items():
+            if not (w <= _slo <= e and s_ <= _sla <= n_):
+                continue
+            ax.plot(_slo, _sla, marker="o", markersize=4.0,
+                    color="#0033A0", markeredgecolor="white",
+                    markeredgewidth=0.6, transform=ccrs.PlateCarree(),
+                    zorder=9)
+            ax.annotate(_ic[1:], xy=(_slo, _sla), xytext=(3.5, -6.5),
+                        textcoords="offset points", fontsize=4.6,
+                        fontweight="bold", color="#0033A0",
+                        zorder=9,
+                        path_effects=[_pe.withStroke(
+                            linewidth=1.4, foreground="white")])
+    except Exception:
+        pass
+
+    # --- headline, INSIDE the axes ------------------------------
+    # Drawn in axes coordinates so it sits over the map itself. The
+    # frames are viewed magnified and panned, and anything in the
+    # matplotlib TITLE area scrolls out of view as soon as you zoom —
+    # which is exactly when you most need to know which run you are
+    # looking at.
+    if headline:
+        ax.text(0.5, 0.985, headline, transform=ax.transAxes,
+                ha="center", va="top", fontsize=9, fontweight="bold",
+                color="#101010", zorder=12,
+                bbox=dict(boxstyle="round,pad=0.32", fc="#FFFFFF",
+                          ec="#101010", lw=0.8, alpha=0.92))
 
     if zoom_deg > 4:
         # Wide (CONUS-class) frames are viewed magnified: keep
