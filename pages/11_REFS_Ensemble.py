@@ -202,10 +202,20 @@ with st.sidebar:
              "allowed; warmed hub products load instantly.",
     )
     zoom = st.slider("Zoom (degrees)", 1.0, 6.0, 2.5, 0.5)
+    # Display width as a percentage of the column. Default 70 rather
+    # than full width: the ensemble opens as a grid of members, and
+    # at 100% the first row alone fills the window so nothing else is
+    # visible without scrolling. 70% fits the whole set on a laptop.
+    refs_scale = st.slider(
+        "Panel size (%)", 40, 100, 70, 5,
+        help="Display size only — the underlying render is "
+             "unchanged, so this costs nothing to move.")
+    st.session_state["refs_scale_v"] = refs_scale
 
     st.divider()
     run_button = st.button("Render", type="primary",
-                           use_container_width=True)
+                           width=int(760 * st.session_state.get(
+                               "refs_scale_v", 70) / 100))
 
 if run_button and icao_input:
     st.session_state["refs_icao"] = icao_input
@@ -217,7 +227,8 @@ if not active:
     _c = st.columns(len(REFS_HUBS))
     for _i, _hk in enumerate(REFS_HUBS):
         if _c[_i].button(_hk[1:], key=f"w_{_hk}",
-                         use_container_width=True):
+                         width=int(360 * st.session_state.get(
+                             "refs_scale_v", 70) / 100)):
             st.session_state["refs_icao"] = _hk
             st.rerun()
 else:
@@ -225,7 +236,8 @@ else:
     for _i, _hk in enumerate(REFS_HUBS):
         _lbl = ("* " + _hk[1:]) if _hk == active else _hk[1:]
         if _sw[_i].button(_lbl, key=f"sw_{_hk}",
-                          use_container_width=True):
+                          width=int(360 * st.session_state.get(
+                              "refs_scale_v", 70) / 100)):
             st.session_state["refs_icao"] = _hk
             st.rerun()
 

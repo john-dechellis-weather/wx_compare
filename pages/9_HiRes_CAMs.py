@@ -501,7 +501,34 @@ with st.sidebar:
 if run_button and icao_input:
     st.session_state["cam_icao"] = icao_input
 
+# Auto-render on first arrival. The page used to sit blank until
+# someone pressed Render, which is the wrong default once the warm
+# store is populated: the frames are already built, so the wait is
+# a second or two, and making people click for it hides the whole
+# point of warming. Only fires ONCE per session — after that the
+# pinned hub in session state drives it, so a rerun from moving a
+# slider does not re-trigger anything.
+if not st.session_state.get("_cam_autorun") and icao_input:
+    st.session_state["_cam_autorun"] = True
+    st.session_state["cam_icao"] = icao_input
+
 active = st.session_state.get("cam_icao")
+
+# Placeholder claimed BEFORE the work starts, so the notice is
+# painted while frames load rather than after. Cleared at the end of
+# the render, which is why it is a placeholder and not st.info.
+_render_notice = st.empty()
+if active:
+    _render_notice.markdown(
+        "<p style='text-align:center; font-size:30px; "
+        "font-weight:700; margin:18px 0 6px 0;'>"
+        "Rendering models\u2026</p>"
+        "<p style='text-align:center; font-size:15px; opacity:0.75; "
+        "margin:0 0 14px 0;'>"
+        "Warmed frames appear in a few seconds. Nothing to click."
+        "</p>",
+        unsafe_allow_html=True,
+    )
 
 if active:
     # Always-visible hub switcher: session state pins cam_icao
@@ -811,6 +838,9 @@ if active:
                     st.error(f"{cfg['label']}: {res}")
                 if cfg.get("note"):
                     st.caption(cfg["note"])
+
+    # Panels are on screen; take the notice down.
+    _render_notice.empty()
 
 else:
     # INSTANT-OPEN: before any click, serve the prewarmed default-hub
