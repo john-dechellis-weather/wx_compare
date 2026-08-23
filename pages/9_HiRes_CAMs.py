@@ -122,13 +122,16 @@ def cached_grid_frame(
         vals, lats, lons = res
         cycle = datetime.fromisoformat(cycle_iso)
         valid = cycle + _td(hours=fhr)
-        title = (
-            f"{MODELS[model]['label']} {cycle:%m/%d %H}Z  f{fhr:02d}  "
-            f"valid {valid:%m/%d %H}Z"
-        )
+        # Forecast hour dropped from the title: the scrubber shows
+        # it, and the thing you cannot recover by looking at the
+        # control is WHICH RUN this is.
+        title = f"{MODELS[model]['label']}  valid {valid:%m/%d %H}Z"
+        headline = (f"{MODELS[model]['label']} "
+                    f"{cycle:%d %b %Y  %H}Z run")
         try:
             out[model] = render_field(
                 product, vals, lats, lons, clat, clon, zoom, title,
+                headline=headline,
             )
         except Exception as e:
             out[model] = f"error: {e}"
