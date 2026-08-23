@@ -199,7 +199,16 @@ def _daemon(outdir):
     while True:
         for model in WARM_MODELS:
             try:
-                cycle = HC.latest_cycle(model)
+                # COMPLETE runs only. HC.latest_cycle returns the
+                # newest cycle with the hour you asked for, so asking
+                # for the LAST hour is the completeness test. Without
+                # it an 18Z HRRR that has reached f02 replaces a
+                # finished 17Z run with two useful frames.
+                cycle = HC.newest_complete(model, MAX_FHR)
+                if cycle is None:
+                    _log(outdir, f"{model}: no cycle complete to "
+                                 f"f{MAX_FHR:02d} yet")
+                    continue
                 t0 = time.time()
                 built = 0
                 for fhr in range(0, MAX_FHR + 1):
@@ -210,9 +219,17 @@ def _daemon(outdir):
                     except Exception as exc:
                         _log(outdir, f"{model} f{fhr:02d}: "
                                      f"{type(exc).__name__}: {exc}")
-                # Prune anything not from the current cycle.
+                # Keep the PREVIOUS complete run too, so a page can
+                # offer "previous run" without re-fetching it.
                 keep = {frame_name(model, cycle, f)
                         for f in range(0, MAX_FHR + 1)}
+                try:
+                    for older in HC.complete_cycles(model, MAX_FHR,
+                                                    n=2)[1:]:
+                        keep |= {frame_name(model, older, f)
+                                 for f in range(0, MAX_FHR + 1)}
+                except Exception:
+                    pass
                 for old in Path(outdir).glob(f"ovl_{model}_*.png"):
                     if old.name not in keep:
                         try:
@@ -240,15 +257,21 @@ def ensure_overlay_warmer(outdir) -> None:
         _started = True
 
 
-def available(model: str, outdir) -> list:
-    """Forecast hours already on disk, newest cycle only."""
+def cycles_on_disk(model: str, outdir) -> list:
+    """Cycles present, newest first. Each is a YYYYMMDDHH string."""
+    hits = list(Path(outdir).glob(f"ovl_{model}_*.png"))
+    return sorted({h.name.split("_")[2] for h in hits}, reverse=True)
+
+
+def available(model: str, outdir, cycle: str = None) -> list:
+    """Forecast hours on disk for a cycle (newest if unspecified)."""
     out = Path(outdir)
     hits = sorted(out.glob(f"ovl_{model}_*.png"))
     if not hits:
         return []
-    newest = max(h.name.split("_")[2] for h in hits)
+    want = cycle or max(h.name.split("_")[2] for h in hits)
     return sorted(int(h.name.split("_f")[1][:2]) for h in hits
-                  if h.name.split("_")[2] == newest)
+                  if h.name.split("_")[2] == want)
 
 
 def cycle_on_disk(model: str, outdir):

@@ -940,3 +940,41 @@ def render_field(
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
+
+def complete_cycles(model: str, need_fhr: int, n: int = 3,
+                    now=None) -> list:
+    """The n newest cycles that have reached need_fhr, newest first.
+
+    A model publishes forecast hours as it computes them, so the
+    newest cycle is usually PARTIAL — an 18Z HRRR at 18:20Z may only
+    have f00-f02, which is useless for planning and worse than
+    useless if it silently replaces a complete 17Z run.
+
+    latest_cycle already probes for a SPECIFIC hour, so asking it for
+    the LAST hour of the run is exactly the completeness test: if the
+    final hour exists, everything before it does too.
+
+    Costs one HEAD request per candidate cycle, so it is cheap enough
+    to call on a page load.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    cfg = MODELS[model]
+    now = now or datetime.now(timezone.utc)
+    out = []
+    probe = now
+    for _ in range(n):
+        cyc = latest_cycle(model, need_fhr, now=probe)
+        if cyc is None:
+            break
+        out.append(cyc)
+        # Step back past this cycle and look for the one before it.
+        probe = cyc - timedelta(minutes=1)
+    return out
+
+
+def newest_complete(model: str, need_fhr: int, now=None):
+    """Newest cycle that has reached need_fhr, or None."""
+    got = complete_cycles(model, need_fhr, n=1, now=now)
+    return got[0] if got else None
+
