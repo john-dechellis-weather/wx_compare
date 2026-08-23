@@ -619,6 +619,12 @@ def _center_from(latlons):
 TILTS = int(os.environ.get("L2_TILTS", "6"))
 LEVELS = int(os.environ.get("L2_LEVELS", "5"))
 RES_M = float(os.environ.get("L2_RES_M", "250"))
+# Ceiling on grid cells per level. A box and a resolution are chosen
+# independently, and their product is what actually has to fit in
+# memory — the 400x400 nm N90 box at 250 m is 8.8M cells, which
+# OOM-killed the renderer. Rather than fail, the grid coarsens to fit
+# and says so, because a slightly softer picture beats a 502.
+MAX_CELLS = float(os.environ.get("L2_MAX_CELLS", "4.5e6"))
 HALF_X_M = float(os.environ.get("L2_HALF_X_M", "200000"))
 HALF_Y_M = float(os.environ.get("L2_HALF_Y_M", "200000"))
 # Back-compat alias; setting HALF_M sets both axes.
@@ -1074,6 +1080,35 @@ def gatefilter(radar, diag=None, site=None):
 # ---------------------------------------------------------------------------
 # Grid + merge
 # ---------------------------------------------------------------------------
+def _fit_resolution(diag=None):
+    """Grid spacing that keeps the cell count under MAX_CELLS.
+
+    Returns RES_M unchanged when it already fits. When it does not,
+    coarsens to the nearest 50 m that does and RECORDS it — silently
+    rendering at a different resolution than asked for would be worse
+    than the failure it prevents.
+
+    This exists because box size and resolution are chosen
+    independently and their PRODUCT is what has to fit in memory. The
+    400x400 nm N90 box at 250 m is 8.8M cells per level, which
+    OOM-killed the renderer and returned 502 from Render.
+    """
+    import math
+
+    want = (2 * HALF_X_M / RES_M) * (2 * HALF_Y_M / RES_M)
+    if want <= MAX_CELLS:
+        return RES_M
+    scale = math.sqrt(want / MAX_CELLS)
+    res = math.ceil(RES_M * scale / 50.0) * 50.0
+    if diag is not None:
+        n2 = (2 * HALF_X_M / res) * (2 * HALF_Y_M / res)
+        diag["resolution_capped"] = (
+            f"{RES_M:.0f} m would be {want / 1e6:.1f}M cells, over the "
+            f"{MAX_CELLS / 1e6:.1f}M ceiling; using {res:.0f} m "
+            f"({n2 / 1e6:.1f}M)")
+    return res
+
+
 def _grid_one(radar, diag=None, site=None):
     """Grid one radar onto the shared target grid; return float32."""
     # RAW: floor at the grid cell itself — any smaller is meaningless
@@ -1083,8 +1118,9 @@ def _grid_one(radar, diag=None, site=None):
     import numpy as np
     import pyart
 
-    nx = int(2 * HALF_X_M / RES_M)
-    ny = int(2 * HALF_Y_M / RES_M)
+    res = _fit_resolution(diag)
+    nx = int(2 * HALF_X_M / res)
+    ny = int(2 * HALF_Y_M / res)
     g = pyart.map.grid_from_radars(
         (radar,),
         grid_shape=(LEVELS, ny, nx),
@@ -1767,10 +1803,15 @@ def render_png(comp, path, diag=None):
     fig = plt.figure(figsize=(nx / 200.0, ny / 200.0), dpi=200)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_axis_off()
-    ax.contourf(np.ma.masked_invalid(comp), levels=lev,
-                cmap=cmap, norm=norm, extend="max", antialiased=True)
-    ax.set_xlim(0, nx - 1)
-    ax.set_ylim(0, ny - 1)
+    # imshow, NOT contourf. Measured 8/22: contourf took 15.8 s on a
+    # 1840x1840 grid and was OOM-KILLED on 2963x2963 — which is what
+    # the 400x400 nm N90 box became at 250 m, and what returned 502
+    # from Render. imshow is 5.5x faster and a fraction of the memory
+    # because it does not build contour polygons. With a discrete
+    # 5 dBZ palette the two are visually identical anyway: contourf
+    # was computing boundaries for a field that is already banded.
+    ax.imshow(np.ma.masked_invalid(comp), cmap=cmap, norm=norm,
+              origin="lower", interpolation="nearest", aspect="auto")
     fig.savefig(path, format="png", transparent=True,
                 bbox_inches=None, pad_inches=0)
     plt.close(fig)
