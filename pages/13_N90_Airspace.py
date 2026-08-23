@@ -662,14 +662,22 @@ _OVL_MODELS = {"hrrr": "HRRR"}
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def overlay_state(model: str, _bucket: str):
-    """(hours available, cycle) from what the warmer has produced."""
+def overlay_cycles(model: str, _bucket: str):
+    """Complete runs on disk, newest first."""
     try:
         from core import cam_overlay as _OV
-        return _OV.available(model, _STATIC), _OV.cycle_on_disk(
-            model, _STATIC)
+        return _OV.cycles_on_disk(model, _STATIC)
     except Exception:
-        return [], None
+        return []
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def overlay_state(model: str, cycle: str, _bucket: str):
+    try:
+        from core import cam_overlay as _OV
+        return _OV.available(model, _STATIC, cycle)
+    except Exception:
+        return []
 
 
 st.divider()
@@ -686,8 +694,21 @@ cam_op = 0.6
 if cam_on:
     _ovl_model = "hrrr"
     from datetime import datetime as _dtn, timezone as _tzn
-    _hours, _cyc = overlay_state(
-        _ovl_model, _dtn.now(_tzn.utc).strftime("%Y%m%d%H%M")[:-1])
+    _bkt = _dtn.now(_tzn.utc).strftime("%Y%m%d%H%M")[:-1]
+    _cycles = overlay_cycles(_ovl_model, _bkt)
+    _cyc = _cycles[0] if _cycles else None
+    if len(_cycles) > 1:
+        with m1:
+            # Only COMPLETE runs reach disk, so every entry here is a
+            # full forecast — no half-finished 18Z pretending to be
+            # current.
+            _cyc = st.selectbox(
+                "Run", _cycles, index=0,
+                format_func=lambda c: f"{c[4:6]}/{c[6:8]} {c[8:10]}Z",
+                help="Complete runs only. The newest cycle is often "
+                     "still computing and is skipped until it "
+                     "finishes.")
+    _hours = overlay_state(_ovl_model, _cyc, _bkt) if _cyc else []
     if _hours:
         with m2:
             cam_fhr = st.select_slider(
