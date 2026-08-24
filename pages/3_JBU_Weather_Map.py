@@ -1876,7 +1876,13 @@ if run_button:
                      "hull of those fixes - an approximation, not "
                      "the delegated boundary.",
             )
-        layers = []
+        # NOT a second `layers = []`. There was one here, left behind
+        # when the Class B block above it was removed, and it silently
+        # discarded every layer built before this point — the METAR
+        # breach dots, the TAF rings, all of it. A reset that looks
+        # like the start of a section is exactly the kind of line that
+        # survives a deletion and keeps working syntactically while
+        # throwing away the work above it.
         if n90_on:
             _n_fx, _n_hull, _n_vintage, _n_err = n90_data()
             if _n_err:
@@ -1945,16 +1951,18 @@ if run_button:
                     "https://mapservices.weather.noaa.gov/"
                     "eventdriven/rest/services/radar/"
                     "radar_base_reflectivity/MapServer/export"
-                    # 2440x1080, not 4880x2160. NOAA GENERATES this
-                    # image per request, so the size is server work
-                    # and transfer, not a cached tile — and 10.5
-                    # megapixels of PNG32 is 3-8 MB that the browser
-                    # waits on. At 2440x1080 CONUS is still ~2.5 km
-                    # per pixel, finer than the 1 km source can show
-                    # at any realistic display size, for a quarter of
-                    # the pixels.
+                    # 4880x2160 = 1.1 km per pixel across CONUS,
+                    # which is where a request stops undersampling
+                    # MRMS's 1 km grid. It was briefly dropped to
+                    # 2440 to save bandwidth and that was the wrong
+                    # trade on this page: 2440 resolves 2.2 km per
+                    # pixel and discards half the detail the source
+                    # has. The 5-minute cache bucket below is the
+                    # right lever for bandwidth — it lets a repeat
+                    # view inside that window hit browser cache
+                    # instead of re-fetching.
                     "?bbox=-126,23,-65,50&bboxSR=4326"
-                    "&imageSR=4326&size=2440,1080"
+                    "&imageSR=4326&size=4880,2160"
                     "&format=png32&transparent=true&f=image"
                     f"&_={_rb}"
                 )
