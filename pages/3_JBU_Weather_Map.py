@@ -1560,7 +1560,12 @@ if run_button:
     # severity-sorted, with the driving condition as a colored chip.
     metar_rows = None
     try:
-        metar_rows = _metar_fut.result(timeout=45)
+        # 12 s, not 45. These are PREFETCH threads — if one is slow
+        # the code below falls back to fetching directly, so a long
+        # timeout does not make the page more correct, only slower.
+        # Two of these back to back could hold the page for 105 s,
+        # which is most of the "takes a minute to load".
+        metar_rows = _metar_fut.result(timeout=12)
     except Exception:
         metar_rows = None
     if metar_rows is None:
@@ -1765,7 +1770,7 @@ if run_button:
         try:
             _fut = st.session_state.pop("_fleet_future", None)
             if _fut is not None:
-                _fres = _fut.result(timeout=60)
+                _fres = _fut.result(timeout=20)
         except Exception:
             _fres = None
         if _fres is None:
@@ -1922,8 +1927,14 @@ if run_button:
         _mrms_ts = None
         if radar_on:
             _b = datetime.now(timezone.utc)
+            # 5-minute bucket. MRMS publishes every ~2 min but the
+            # cache-buster defeats every layer of caching between
+            # here and NOAA, so a shorter bucket means a fresh
+            # multi-megabyte render on almost every page view. Five
+            # minutes keeps it current enough for a CONUS overview
+            # and lets a repeat visit hit cache.
             _rb = (_b.strftime("%Y%m%d%H")
-                   + f"{(_b.minute // 2) * 2:02d}")
+                   + f"{(_b.minute // 5) * 5:02d}")
             _mrms_ts = None
             if radar_mode == "MRMS hi-res":
                 # NOAA ArcGIS export: 1km QC'd MRMS merged
@@ -1934,8 +1945,16 @@ if run_button:
                     "https://mapservices.weather.noaa.gov/"
                     "eventdriven/rest/services/radar/"
                     "radar_base_reflectivity/MapServer/export"
+                    # 2440x1080, not 4880x2160. NOAA GENERATES this
+                    # image per request, so the size is server work
+                    # and transfer, not a cached tile — and 10.5
+                    # megapixels of PNG32 is 3-8 MB that the browser
+                    # waits on. At 2440x1080 CONUS is still ~2.5 km
+                    # per pixel, finer than the 1 km source can show
+                    # at any realistic display size, for a quarter of
+                    # the pixels.
                     "?bbox=-126,23,-65,50&bboxSR=4326"
-                    "&imageSR=4326&size=4880,2160"
+                    "&imageSR=4326&size=2440,1080"
                     "&format=png32&transparent=true&f=image"
                     f"&_={_rb}"
                 )
