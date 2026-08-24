@@ -68,6 +68,18 @@ def cached_refs_cycle(model: str, fhr: int, bucket: str):
     return cyc.isoformat() if cyc else None
 
 
+
+def _data_uri(b: bytes) -> str:
+    """data: URI carrying the MIME the bytes actually are."""
+    import base64 as _b64
+
+    if b[:4] == b"RIFF" and b[8:12] == b"WEBP":
+        mime = "image/webp"
+    else:
+        mime = "image/png"
+    return f"data:{mime};base64," + _b64.b64encode(b).decode()
+
+
 def build_scrub_html(frames: dict, hour_axis: list,
                      order: list, single: bool = False) -> tuple:
     """Client-side shared-slider grid from {model: {fhr: png}}.
@@ -86,8 +98,10 @@ def build_scrub_html(frames: dict, hour_axis: list,
         for h in hour_axis:
             png = frames[m].get(h)
             arr.append(
-                "data:image/png;base64,"
-                + base64.b64encode(png).decode() if png else None
+                # MIME from the magic bytes: render_field returns
+                # WebP now, and calling it PNG fails silently in
+                # some browsers.
+                _data_uri(png) if png else None
             )
         model_arrays[m] = arr
     labels = [f"f{h:02d}" for h in hour_axis]
