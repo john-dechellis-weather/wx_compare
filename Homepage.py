@@ -44,8 +44,6 @@ apply_retro_theme()
 
 from auth import check_password
 
-check_password()
-
 
 # ---------------------------------------------------------------------------
 # Background warmers
@@ -224,5 +222,22 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ORDER MATTERS. st.navigation must run BEFORE the auth gate.
+#
+# check_password() ends in st.stop() when nobody is logged in, so
+# calling it first meant st.navigation never executed — and with no
+# explicit navigation, Streamlit falls back to auto-discovering
+# pages/, which is a flat alphabetical list with no group headings.
+# That is why the sidebar lost "Forecast Tools", "Airspace" and the
+# rest on the password screen and got them back after login.
+#
+# Declaring the nav first renders the grouped sidebar immediately;
+# the gate then stops the script before nav.run() executes any page,
+# so nothing is reachable without the password. Every page also
+# calls check_password itself, so this is belt-and-braces rather
+# than the only guard.
 nav = st.navigation(PAGES)
+
+check_password()
+
 nav.run()
