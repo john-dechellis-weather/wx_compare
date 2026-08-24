@@ -81,12 +81,21 @@ WARM_PRODUCT = "REFD"
 # synoptic cycles, sacrificing the hourly freshness that is
 # HRRR's whole identity (f19-48 stays live behind the extended
 # toggle).
+# Per-model depth, then a GLOBAL CAP. Warming every model to its own
+# maximum is 1,255 frames per cycle set and a ~100% duty cycle, which
+# leaves nothing for the page that matters. Capping at 24 h cuts it to
+# 500 frames and ~58%, and hours past 24 are rendered on demand — a
+# few seconds each, and rarely scrubbed.
+#
+# Raise CAM_WARM_MAX_FHR only after the warmer log shows headroom.
 WARM_MAX = {"hrrr": 18, "rrfs": 84, "nam_nest": 60,
             "hiresw_arw": 48, "hiresw_fv3": 48}
+WARM_CAP_FHR = int(os.environ.get("CAM_WARM_MAX_FHR", "24"))
 
 
 def warm_hours(model: str) -> list:
-    return list(range(0, WARM_MAX.get(model, 12) + 1))
+    return list(range(0, min(WARM_MAX.get(model, 12),
+                             WARM_CAP_FHR) + 1))
 
 
 # Back-compat union (page-side gating uses per-model warm_hours)
@@ -280,6 +289,12 @@ def _warm_model(cache_root: Path, key: str, log) -> None:
     _t_fetch = time.time() - _t_fetch
     _t_render = time.time()
 
+    # Yield between frames. A matplotlib render holds the GIL for its
+    # duration, so a tight loop starves the thread serving page 3 —
+    # which is the page that must never be slow. A short sleep
+    # between frames costs a few minutes across a full rebuild and
+    # makes the site usable while it runs. 0 disables.
+    _yield_s = float(os.environ.get("CAM_WARM_YIELD_S", "0.6"))
     n_ok = 0
     for icao, h in build:
             _hla, _hlo = _coords[icao]
@@ -303,6 +318,8 @@ def _warm_model(cache_root: Path, key: str, log) -> None:
             _frame_path(cache_root, key, cycle_iso, icao,
                         h).write_bytes(png)
             n_ok += 1
+            if _yield_s:
+                time.sleep(_yield_s)
             del png, vals, lats, lons
             import gc
             gc.collect()
