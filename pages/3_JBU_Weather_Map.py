@@ -1151,7 +1151,12 @@ _FLEET_TILES = [
 # carrying 5,000-8,000 rows through dedupe, caching and JSON
 # serialisation costs real time even when nothing draws them.
 import os as _os_ko
-KEEP_OTHERS = _os_ko.environ.get("JBU_KEEP_OTHERS", "on").lower() != "off"
+# Other operators are no longer displayed on this page, so the sweep
+# does not keep them: 5,000-8,000 rows carried through dedupe,
+# caching and JSON serialisation cost real time even when nothing
+# drew them. JBU_KEEP_OTHERS=on re-enables collection if the layer
+# ever comes back.
+KEEP_OTHERS = _os_ko.environ.get("JBU_KEEP_OTHERS", "off").lower() == "on"
 
 
 @st.cache_data(ttl=90, show_spinner=False, max_entries=2)
@@ -1841,7 +1846,10 @@ if run_button:
         # label is collapsed: with a label it renders a line above
         # itself and the checkboxes no longer sit on the same
         # baseline. Its three options are self-describing.
-        _ctl = st.columns([2.4, 1.15, 1.15, 1.2], gap="small")
+        # Three columns now: the NY Class B checkbox and the Other
+        # traffic selector were removed, so a fourth would render as
+        # an empty gap.
+        _ctl = st.columns([2.4, 1.15, 1.15], gap="small")
         with _ctl[0]:
             radar_mode = st.radio(
                 "Radar overlay",
@@ -1862,24 +1870,6 @@ if run_button:
                      "other coordination fixes. The outline is a "
                      "hull of those fixes - an approximation, not "
                      "the delegated boundary.",
-            )
-        with _ctl[3]:
-            other_ac = st.selectbox(
-            "Other traffic", ["Off", "FL180+", "FL100+", "All"],
-            index=0,
-            help="Every other operator in the CONUS sweep. OFF by "
-                 "default: at midday that is 5,000-8,000 aircraft, "
-                 "and each one carries its own icon in the layer "
-                 "JSON — several MB per refresh before anything is "
-                 "drawn. An altitude floor cuts most of it without "
-                 "losing the enroute picture.",
-        )
-        classb_on = st.checkbox(
-                "NY Class B", value=False, key="classb_f",
-                help="FAA Class B shelves for the New York area - "
-                     "the protected core, NOT the N90 TRACON "
-                     "boundary (the TRACON is considerably "
-                     "larger).",
             )
         layers = []
         if n90_on:
@@ -1929,20 +1919,6 @@ if run_button:
                         get_background_color=[0, 0, 0, 215],
                         background_padding=[4, 2, 4, 2],
                     ))
-        if classb_on:
-            _cb_rows, _cb_vintage, _cb_err = ny_class_b()
-            if _cb_err:
-                st.warning(f"Class B outline unavailable - {_cb_err}")
-            elif _cb_rows:
-                layers.append(pdk.Layer(
-                    "PolygonLayer", data=_cb_rows,
-                    get_polygon="polygon",
-                    filled=False, stroked=True,
-                    get_line_color=[0, 90, 200, 200],
-                    line_width_min_pixels=1,
-                    get_line_width=1,
-                    pickable=True,
-                ))
         _mrms_ts = None
         if radar_on:
             _b = datetime.now(timezone.utc)
@@ -2129,49 +2105,6 @@ if run_button:
             # aircraft from competing with the eleven that matter,
             # while the yellow edge keeps them visible against both
             # the light basemap and radar fill.
-            _floor = {"Off": None, "FL180+": 18000,
-                      "FL100+": 10000, "All": -1}[other_ac]
-            _fleet_other_n = len(fleet_other)
-            _oth_src = []
-            if _floor is not None and fleet_other:
-                for o in fleet_other:
-                    _a = o.get("alt")
-                    if _floor > 0 and (_a is None or _a < _floor):
-                        continue
-                    _oth_src.append(o)
-                # Hard cap regardless of filter. A layer this size is
-                # a page-load budget, not a display choice.
-                _OTH_CAP = 1200
-                if len(_oth_src) > _OTH_CAP:
-                    _oth_src.sort(key=lambda r: -(r.get("alt") or 0))
-                    _oth_src = _oth_src[:_OTH_CAP]
-            if _oth_src:
-                fleet_other = _oth_src
-                _oth_icon = {"url": _a320_icon_uri("#D3D3D3",
-                                                   "#FFD400", 0.9),
-                             "width": 64, "height": 64,
-                             "anchorX": 32, "anchorY": 32,
-                             "mask": False}
-                _oth_rows = [{
-                    "lon": o["lon"], "lat": o["lat"],
-                    "icon": _oth_icon,
-                    # IconLayer angle is CCW, heading is CW from
-                    # north — same flip the fleet layer uses.
-                    "angle": (360.0 - (o.get("trk") or 0.0)) % 360.0,
-                    "tip": (f"{o['cs']} &mdash; "
-                            + ("on ground" if o.get("alt") is None
-                               else f"{o['alt']:,} ft")),
-                } for o in fleet_other]
-                layers.append(pdk.Layer(
-                    "IconLayer", data=_oth_rows,
-                    get_position="[lon, lat]",
-                    get_icon="icon",
-                    get_size=12, size_min_pixels=7,
-                    size_max_pixels=17,
-                    get_angle="angle",
-                    pickable=True,
-                ))
-
             layers.append(pdk.Layer(
                 "IconLayer", data=fleet_disp,
                 get_position="[lon, lat]",
@@ -2220,14 +2153,7 @@ if run_button:
                      "coordination fix. The outline is an "
                      "APPROXIMATE extent (hull of those fixes), not "
                      "the delegated N90 boundary.")
-        if other_ac != "Off":
-            _rad += (f" Other traffic: {len(fleet_other)} shown "
-                     f"({other_ac}) of {_fleet_other_n} in the "
-                     f"sweep.")
-        if classb_on:
-            _rad += (f" Blue outline: FAA New York CLASS B shelves "
-                     f"(snapshot {_cb_vintage}) - not the N90 "
-                     f"TRACON boundary.")
+
         if radar_on:
             if radar_mode == "MRMS hi-res":
                 _rad = (" Radar: MRMS 1km merged reflectivity "
