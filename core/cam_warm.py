@@ -154,11 +154,26 @@ def _read_manifest(cache_root: Path, model: str) -> dict:
 
 def _frame_path(cache_root: Path, key: str, cycle_iso: str,
                 icao: str, fhr: int) -> Path:
+    """Path to a warm frame.
+
+    Returns an EXISTING file in either format if one is there, and
+    otherwise the path for the format currently configured. That
+    matters during the PNG-to-WebP switchover: without it, changing
+    the format makes every frame already on disk invisible and the
+    whole store silently rebuilds — hours of work thrown away for a
+    file-extension change.
+    """
     model, product = _job(key)
     safe_cycle = cycle_iso.replace(":", "").replace("+", "")
     d = _warm_dir(cache_root) / key.replace("@", "__") / safe_cycle
     d.mkdir(parents=True, exist_ok=True)
-    return d / f"{icao}_{product}_f{fhr:02d}.png"
+    for ext in ("webp", "png"):
+        cand = d / f"{icao}_{product}_f{fhr:02d}.{ext}"
+        if cand.exists():
+            return cand
+    ext = "webp" if os.environ.get(
+        "CAM_IMG_FORMAT", "webp").lower() == "webp" else "png"
+    return d / f"{icao}_{product}_f{fhr:02d}.{ext}"
 
 
 def warm_cycle(cache_root: Path, key: str):
@@ -399,3 +414,87 @@ def ensure_warmer_started(cache_root: Path) -> None:
         )
         t.start()
         _started = True
+
+# ---------------------------------------------------------------------------
+# Serving frames as URLs instead of inline bytes
+# ---------------------------------------------------------------------------
+# The CAM page base64s every frame into the HTML. That costs three
+# ways at once: +33% from the encoding, the browser cannot cache any
+# of it because inline data has no URL, and Streamlit re-ships the
+# WHOLE payload on every rerun — every slider move, every checkbox.
+# Measured at ~77 MB per page view before WebP, which exhausted a
+# 25 GB monthly bandwidth allowance in about 330 views.
+#
+# Publishing each frame as a file under static/ turns them into
+# cacheable resources: the HTML drops to kilobytes, a rerun re-sends
+# nothing, and scrubbing back through hours already seen costs zero.
+#
+# The warm store stays authoritative and lives on the PERSISTENT
+# disk. static/ is inside the app directory, which is wiped on every
+# deploy — so these are disposable copies, recreated on demand from
+# the store. That is the right way round: losing them costs a file
+# copy, losing the store costs hours of rendering.
+
+
+def publish_frame(cache_root: Path, static_dir, model: str, icao: str,
+                  fhr: int):
+    """Copy a warm frame into static/ and return (name, cycle_iso).
+
+    Returns (None, None) when the frame is not warm. Idempotent —
+    an existing copy is reused, so the cost after the first call is
+    one stat().
+    """
+    import shutil
+
+    man = _read_manifest(cache_root, model)
+    cycle_iso = man.get("cycle")
+    if not cycle_iso:
+        return None, None
+    if fhr not in warm_hours(model):
+        return None, None
+    src = _frame_path(cache_root, model, cycle_iso, icao.upper(), fhr)
+    if not src.exists():
+        return None, None
+    tag = str(cycle_iso).replace(":", "").replace("-", "").replace(
+        "+", "")[:13]
+    # Cycle is IN the filename, so a new run publishes new URLs and
+    # the browser never serves a stale frame from cache.
+    name = (f"cam_{model}_{tag}_{icao.upper()}"
+            f"_f{fhr:02d}{src.suffix}")
+    dest = Path(static_dir) / name
+    if not dest.exists():
+        try:
+            Path(static_dir).mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dest)
+        except OSError:
+            return None, None
+    return name, cycle_iso
+
+
+def prune_published(static_dir, keep_cycles: int = 2):
+    """Drop published frames from older cycles.
+
+    static/ is ephemeral but not unbounded — a busy day of hourly
+    HRRR cycles would accumulate thousands of files between deploys.
+    """
+    from collections import defaultdict
+
+    d = Path(static_dir)
+    if not d.exists():
+        return 0
+    by_model = defaultdict(set)
+    for f in d.glob("cam_*_*"):
+        parts = f.name.split("_")
+        if len(parts) >= 4:
+            by_model[parts[1]].add(parts[2])
+    dropped = 0
+    for model, cycles in by_model.items():
+        for old in sorted(cycles, reverse=True)[keep_cycles:]:
+            for f in d.glob(f"cam_{model}_{old}_*"):
+                try:
+                    f.unlink()
+                    dropped += 1
+                except OSError:
+                    pass
+    return dropped
+
