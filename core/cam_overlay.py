@@ -194,10 +194,30 @@ def _log(outdir, msg):
 def _daemon(outdir):
     from core import hrrr_cam as HC
 
+    # Staggered: the CAM warmer goes first (it has the longest job),
+    # this one second, the radar warmer last. Simultaneous starts
+    # OOM-killed the service.
+    time.sleep(float(os.environ.get("OVL_DELAY_S", "120")))
+    ceiling = float(os.environ.get("OVL_MEM_CEILING_MB", "2200"))
+
+    def _rss():
+        try:
+            import resource
+            return resource.getrusage(
+                resource.RUSAGE_SELF).ru_maxrss / 1024
+        except Exception:
+            return 0.0
+
     _log(outdir, f"overlay warmer started, models={WARM_MODELS}, "
                  f"f00-f{MAX_FHR:02d}")
     while True:
         for model in WARM_MODELS:
+            # Yield rather than push the box over: page 3 opening
+            # fast matters more than an overlay frame being current.
+            if _rss() > ceiling:
+                _log(outdir, f"{model}: SKIPPED, RSS {_rss():.0f} MB "
+                             f"over {ceiling:.0f} MB")
+                continue
             try:
                 # COMPLETE runs only. HC.latest_cycle returns the
                 # newest cycle with the hour you asked for, so asking
@@ -246,7 +266,7 @@ def _daemon(outdir):
 
 def ensure_overlay_warmer(outdir) -> None:
     """Idempotent. OVL_WARMER=off disables without a deploy."""
-    if os.environ.get("OVL_WARMER", "on").lower() == "off":
+    if os.environ.get("OVL_WARMER", "off").lower() != "on":
         return
     global _started
     with _lock:

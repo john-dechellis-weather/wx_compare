@@ -2054,10 +2054,34 @@ def _warm_log(outdir, msg):
         pass
 
 
+def _mem_mb():
+    """Resident set size of this process, MB."""
+    try:
+        import resource
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    except Exception:
+        return 0.0
+
+
 def _warm_daemon(outdir):
-    _warm_log(outdir, "radar warmer started")
+    # STAGGERED START. All three warmers are launched together from
+    # Homepage, which runs on every page view. Starting them at the
+    # same instant put a 2000x2000 mosaic build, a CAM render and an
+    # HRRR fetch on the box simultaneously and OOM-killed the
+    # service — which surfaces as a 502, not as a warmer error.
+    time.sleep(float(os.environ.get("L2_WARM_DELAY_S", "240")))
+    _warm_log(outdir, f"radar warmer started (RSS {_mem_mb():.0f} MB)")
+    ceiling = float(os.environ.get("L2_WARM_MEM_CEILING_MB", "2200"))
     while True:
         for name, (sites, tag) in ROTATION.items():
+            # Skip a pass rather than push the box over. A stale
+            # frame is recoverable; an OOM restart loses every
+            # warmer's progress at once.
+            if _mem_mb() > ceiling:
+                _warm_log(outdir, f"{name}: SKIPPED, RSS "
+                                  f"{_mem_mb():.0f} MB over "
+                                  f"{ceiling:.0f} MB ceiling")
+                continue
             try:
                 t0 = time.time()
                 diag = {}
@@ -2087,7 +2111,9 @@ def ensure_radar_warmer(outdir) -> None:
     L2_WARMER=off is the kill switch — this does real work every two
     minutes and must be stoppable without a deploy.
     """
-    if os.environ.get("L2_WARMER", "on").lower() == "off":
+    # Default OFF: this is the heaviest of the three warmers and
+    # starting it alongside the others OOM-killed the box.
+    if os.environ.get("L2_WARMER", "off").lower() != "on":
         return
     global _warm_started
     with _warm_lock:
