@@ -141,6 +141,81 @@ def n90_data():
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
+
+# ---------------------------------------------------------------------------
+# MRMS, fetched server-side
+# ---------------------------------------------------------------------------
+# The URL used to be handed straight to the browser as a BitmapLayer
+# image. That has three problems: a failure is INVISIBLE — the layer
+# is present, the deck renders, nothing appears and there is nothing
+# to read; the PNG32 NOAA returns is ~4.7 MB every time the
+# cache-buster changes; and the browser refetches it on every view.
+#
+# Fetching it here fixes all three. Errors surface as a warning with
+# the actual status, the image is converted to WebP (typically a
+# 60-70% cut on this content), and it is served from static/ with the
+# cycle in the filename so the browser caches it properly.
+@st.cache_data(ttl=300, show_spinner=False)
+def mrms_image(bucket: str):
+    """(url, note). Never raises into the map."""
+    import io as _io
+
+    import requests as _rq
+
+    src = (
+        "https://mapservices.weather.noaa.gov/eventdriven/rest/"
+        "services/radar/radar_base_reflectivity/MapServer/export"
+        # 4880x2160 = 1.1 km/px across CONUS, which is where the
+        # request stops undersampling MRMS's 1 km grid.
+        "?bbox=-126,23,-65,50&bboxSR=4326&imageSR=4326"
+        "&size=4880,2160&format=png32&transparent=true&f=image"
+    )
+    try:
+        r = _rq.get(src, timeout=25,
+                    headers={"User-Agent": "bluemet.org"})
+    except Exception as exc:
+        return None, f"fetch failed: {type(exc).__name__}: {exc}"
+    if r.status_code != 200:
+        return None, f"HTTP {r.status_code} from NOAA"
+    raw = r.content
+    if len(raw) < 5000 or raw[:4] not in (b"\x89PNG", b"RIFF"):
+        return None, (f"NOAA returned {len(raw)} bytes, not an image "
+                      f"(likely an error page)")
+    # Resolved INSIDE the function: this is defined near the top of
+    # the file but _MAP_STATIC and _os_ko are assigned much further
+    # down, and a module-level forward reference here is a NameError
+    # at call time rather than at import.
+    import os as _o
+    from pathlib import Path as _P
+
+    out = _P(__file__).resolve().parent.parent / "static"
+    out.mkdir(parents=True, exist_ok=True)
+    name = f"mrms_{bucket}.webp"
+    dest = out / name
+    if not dest.exists():
+        try:
+            from PIL import Image as _Im
+
+            im = _Im.open(_io.BytesIO(raw)).convert("RGBA")
+            im.save(dest, "WEBP", quality=88, method=4)
+        except Exception:
+            name = f"mrms_{bucket}.png"
+            dest = out / name
+            dest.write_bytes(raw)
+        for old in sorted(out.glob("mrms_*"))[:-3]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+    base = (_o.environ.get("RENDER_EXTERNAL_URL")
+            or _o.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
+    if not base:
+        return None, "RENDER_EXTERNAL_URL not set"
+    kb = dest.stat().st_size / 1024
+    return (f"{base}/app/static/{name}",
+            f"{len(raw) / 1024:.0f} KB PNG -> {kb:.0f} KB served")
+
+
 def ny_class_b():
     """16 shelf rings, outlines only. Returns (rows, meta, error).
 
@@ -1854,7 +1929,10 @@ if run_button:
         # Three columns now: the NY Class B checkbox and the Other
         # traffic selector were removed, so a fourth would render as
         # an empty gap.
-        _ctl = st.columns([2.4, 1.15, 1.15], gap="small")
+        # Two columns: radar mode and flight numbers. The Class B,
+        # other-traffic and N90-fix controls have all been removed
+        # from this page; a third column would render as a gap.
+        _ctl = st.columns([2.4, 1.15], gap="small")
         with _ctl[0]:
             radar_mode = st.radio(
                 "Radar overlay",
@@ -1868,14 +1946,6 @@ if run_button:
             show_cs = st.checkbox(
                 "Flight numbers", value=True, key="show_cs_f",
             )
-        with _ctl[2]:
-            n90_on = st.checkbox(
-                "N90 fixes", value=False, key="n90_f",
-                help="Blue = arrival/departure gates, purple = "
-                     "other coordination fixes. The outline is a "
-                     "hull of those fixes - an approximation, not "
-                     "the delegated boundary.",
-            )
         # NOT a second `layers = []`. There was one here, left behind
         # when the Class B block above it was removed, and it silently
         # discarded every layer built before this point — the METAR
@@ -1883,53 +1953,6 @@ if run_button:
         # like the start of a section is exactly the kind of line that
         # survives a deletion and keeps working syntactically while
         # throwing away the work above it.
-        if n90_on:
-            _n_fx, _n_hull, _n_vintage, _n_err = n90_data()
-            if _n_err:
-                st.warning(f"N90 layer unavailable - {_n_err}")
-            else:
-                if _n_hull:
-                    layers.append(pdk.Layer(
-                        "PolygonLayer", data=_n_hull,
-                        get_polygon="polygon",
-                        filled=False, stroked=True,
-                        # 5x heavier than the Class B outline so the
-                        # approximate N90 extent reads as a boundary
-                        # at CONUS zoom rather than a hairline. Alpha
-                        # raised too - a thick line at 130 alpha
-                        # looked washed out against the light basemap.
-                        get_line_color=[230, 120, 30, 190],
-                        line_width_min_pixels=5,
-                        get_line_width=5, pickable=True,
-                    ))
-                if _n_fx:
-                    # Triangles via IconLayer would need an atlas;
-                    # a TextLayer glyph scales cleanly and needs no
-                    # asset. Chart convention for a reporting point
-                    # is a triangle.
-                    layers.append(pdk.Layer(
-                        "TextLayer", data=_n_fx,
-                        get_position="[lon, lat]",
-                        get_text='"▲"',
-                        get_size=13, get_color="tcolor",
-                        pickable=True,
-                    ))
-                    layers.append(pdk.Layer(
-                        "TextLayer", data=_n_fx,
-                        get_position="[lon, lat]",
-                        get_text="name",
-                        get_size=10, get_color="tcolor",
-                        get_text_anchor='"start"',
-                        get_pixel_offset=[7, -7],
-                        # Black plate behind each fix name. Fix
-                        # labels sit on top of radar fill, coastline
-                        # and station dots, where blue-on-green was
-                        # unreadable; a solid backing makes them
-                        # legible regardless of what is underneath.
-                        background=True,
-                        get_background_color=[0, 0, 0, 215],
-                        background_padding=[4, 2, 4, 2],
-                    ))
         _mrms_ts = None
         if radar_on:
             _b = datetime.now(timezone.utc)
@@ -1943,34 +1966,15 @@ if run_button:
                    + f"{(_b.minute // 5) * 5:02d}")
             _mrms_ts = None
             if radar_mode == "MRMS hi-res":
-                # NOAA ArcGIS export: 1km QC'd MRMS merged
-                # reflectivity (Level-2 network mosaic) as one
-                # transparent PNG - the highest-quality national
-                # radar image publicly served
-                _img = (
-                    "https://mapservices.weather.noaa.gov/"
-                    "eventdriven/rest/services/radar/"
-                    "radar_base_reflectivity/MapServer/export"
-                    # 4880x2160 = 1.1 km per pixel across CONUS,
-                    # which is where a request stops undersampling
-                    # MRMS's 1 km grid. It was briefly dropped to
-                    # 2440 to save bandwidth and that was the wrong
-                    # trade on this page: 2440 resolves 2.2 km per
-                    # pixel and discards half the detail the source
-                    # has. The 5-minute cache bucket below is the
-                    # right lever for bandwidth — it lets a repeat
-                    # view inside that window hit browser cache
-                    # instead of re-fetching.
-                    "?bbox=-126,23,-65,50&bboxSR=4326"
-                    "&imageSR=4326&size=4880,2160"
-                    "&format=png32&transparent=true&f=image"
-                    f"&_={_rb}"
-                )
-                layers.append(pdk.Layer(
-                    "BitmapLayer", data=None, image=_img,
-                    bounds=[-126.0, 23.0, -65.0, 50.0],
-                    opacity=0.6,
-                ))
+                _mimg, _mnote = mrms_image(_rb)
+                if _mimg:
+                    layers.append(pdk.Layer(
+                        "BitmapLayer", data=None, image=_mimg,
+                        bounds=[-126.0, 23.0, -65.0, 50.0],
+                        opacity=0.6,
+                    ))
+                else:
+                    st.warning(f"MRMS unavailable - {_mnote}")
                 _mrms_ts = "hires"
             if radar_mode == "Echo tops":
                 # Echo tops - or cells fallback - via IEM WMS,
@@ -2174,13 +2178,6 @@ if run_button:
         )
         _rad = (" Map auto-refreshes every 2 min; aircraft "
                 "positions update each refresh.")
-        if n90_on:
-            _rad += (" Triangles: N90 fixes - GREEN = departure "
-                     "gate, YELLOW = arrival + departure, WHITE = "
-                     "coordination fix. The outline is an "
-                     "APPROXIMATE extent (hull of those fixes), not "
-                     "the delegated N90 boundary.")
-
         if radar_on:
             if radar_mode == "MRMS hi-res":
                 _rad = (" Radar: MRMS 1km merged reflectivity "
