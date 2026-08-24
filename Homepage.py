@@ -6,6 +6,7 @@ sidebar titles set explicitly (filename prefixes no longer control
 order or labels).
 """
 
+import os
 import time
 from pathlib import Path
 
@@ -49,6 +50,25 @@ check_password()
 # ---------------------------------------------------------------------------
 # Background warmers
 # ---------------------------------------------------------------------------
+# PRIORITY ORDER, stated so it is not re-litigated by whoever adds
+# the next warmer:
+#
+#   1. JBU Weather Map CONUS  — the page that matters. Must open in
+#      seconds, always. Nothing may be added that competes with it.
+#   2. Hi-Res CAMs
+#   3. REFS Ensemble
+#
+# The constraint that makes this awkward: a warmer thread rendering
+# matplotlib holds the GIL, which blocks the request thread serving
+# page 3. There is no scheduling trick around that on a small box —
+# the only real lever is running FEWER and LIGHTER warmers. That is
+# why the two newest ones default to off rather than merely being
+# delayed, and why the memory ceiling skips a pass instead of
+# queueing it.
+#
+# If page 3 is ever slow, the order to disable things is the reverse
+# of the priority list: L2_WARMER=off, then OVL_WARMER=off, then
+# CAM_WARMER=off. Reach for that before optimising anything.
 # Started HERE, not on the pages that consume them.
 #
 # Both used to be started by their own page — the CAM warmer from
@@ -79,12 +99,22 @@ try:
 except Exception as _exc:
     _warm_notes.append(f"CAM warmer FAILED: {type(_exc).__name__}: {_exc}")
 
+# The CAM warmer above is the one that matters and has always run.
+# The two below are new and heavy, and starting all three together
+# OOM-killed the service (502 on every page). They are OFF by
+# default now: turn each on deliberately, one at a time, and watch
+# the log before adding the next.
+#     OVL_WARMER=on   HRRR overlay frames  (~5% duty)
+#     L2_WARMER=on    N90 radar mosaics    (~33% duty)
 try:
     from core.cam_overlay import ensure_overlay_warmer
 
     _static_ovl = Path(__file__).resolve().parent / "static"
-    ensure_overlay_warmer(_static_ovl)
-    _warm_notes.append("CAM overlay warmer started (HRRR f00-f18)")
+    if os.environ.get("OVL_WARMER", "off").lower() == "on":
+        ensure_overlay_warmer(_static_ovl)
+        _warm_notes.append("CAM overlay warmer started (HRRR f00-f18)")
+    else:
+        _warm_notes.append("CAM overlay warmer OFF (set OVL_WARMER=on)")
 except Exception as _exc:
     _warm_notes.append(f"overlay warmer FAILED: "
                        f"{type(_exc).__name__}: {_exc}")
@@ -95,8 +125,11 @@ try:
     # Radar frames live under static/ so they can be served as
     # absolute URLs to the map, not in the cache dir.
     _static = Path(__file__).resolve().parent / "static"
-    ensure_radar_warmer(_static)
-    _warm_notes.append("radar warmer started")
+    if os.environ.get("L2_WARMER", "off").lower() == "on":
+        ensure_radar_warmer(_static)
+        _warm_notes.append("radar warmer started")
+    else:
+        _warm_notes.append("radar warmer OFF (set L2_WARMER=on)")
 except Exception as _exc:
     _warm_notes.append(f"radar warmer FAILED: "
                        f"{type(_exc).__name__}: {_exc}")
