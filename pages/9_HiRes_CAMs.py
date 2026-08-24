@@ -7,6 +7,7 @@ stay dormant in core.hrrr_cam for later re-enable.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 
 import streamlit as st
@@ -220,7 +221,7 @@ def build_scrub_html(frames: dict, hour_axis: list,
                      order: list, single: bool = False,
                      home=None, conus=None,
                      axcal=None, cycles: dict = None,
-                     product_key: str = "") -> tuple:
+                     product_key: str = "", urls: dict = None) -> tuple:
     """Client-side shared-slider grid from {model: {fhr: png}}.
     Returns (html, height). Used by smooth-scrub mode AND the
     instant-open warm path."""
@@ -247,12 +248,12 @@ def build_scrub_html(frames: dict, hour_axis: list,
         arr = []
         for h in hour_axis:
             png = frames[m].get(h)
+            # A URL beats bytes every time: cacheable, not re-sent on
+            # rerun, and no base64 tax. Bytes remain the fallback for
+            # on-demand renders that were never written to disk.
+            u = (urls or {}).get(m, {}).get(h)
             arr.append(
-                # MIME sniffed from the magic bytes, not assumed.
-                # render_field now returns WebP by default, and
-                # labelling WebP as image/png works in some browsers
-                # and silently fails in others.
-                _data_uri(png) if png else None
+                u if u else (_data_uri(png) if png else None)
             )
         model_arrays[m] = arr
     labels = [f"f{h:02d}" for h in hour_axis]
@@ -957,16 +958,43 @@ else:
     # WHICH RUN a frame belongs to, so keep the first one seen per
     # model — every frame in a warm set shares a cycle by definition.
     _warm_cycles: dict = {}
+    # URLs, not bytes. publish_frame copies the warm frame into
+    # static/ and hands back a name; the browser then caches it and a
+    # rerun re-sends nothing. Falls back to reading the bytes only if
+    # publishing fails, so a missing static dir degrades to the old
+    # behaviour rather than an empty page.
+    _warm_urls: dict = {}
+    _base_url = (os.environ.get("RENDER_EXTERNAL_URL")
+                 or os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
+    _static_dir = Path(__file__).resolve().parent.parent / "static"
     try:
+        from core.cam_warm import publish_frame, prune_published
+
         for _m in _OPEN_ORDER:
             for _h in warm_hours(_m):
+                _nm, _cy = (publish_frame(CACHE_ROOT, _static_dir,
+                                          _m, _open_hub, _h)
+                            if _base_url else (None, None))
+                if _nm:
+                    _warm_urls.setdefault(_m, {})[_h] = (
+                        f"{_base_url}/app/static/{_nm}")
+                    _warm_frames.setdefault(_m, {})[_h] = b""
+                    _warm_cycles.setdefault(_m, _cy)
+                    continue
                 got = warm_get(CACHE_ROOT, _m, _open_hub, _h)
                 if got:
                     _warm_frames.setdefault(_m, {})[_h] = got[0]
                     _warm_cycles.setdefault(_m, got[1])
+        try:
+            prune_published(_static_dir)
+        except Exception:
+            pass
     except Exception:
         _warm_frames = {}
         _warm_cycles = {}
+        _warm_urls = {}
+    # Counts URL-published frames too: those hold a b"" placeholder
+    # so the model/hour structure the scrubber walks stays intact.
     _n_warm = sum(len(v) for v in _warm_frames.values())
     if _n_warm >= 6:
         st.info(
@@ -983,6 +1011,7 @@ else:
         _html, _hgt = build_scrub_html(
             _warm_frames, _axis, _OPEN_ORDER,
             cycles=_warm_cycles,
+            urls=_warm_urls,
             product_key=WARM_PRODUCT,
             home=None,   # open on the whole ±5 deg frame
             conus=(_hla2, _hlo2, WARM_ZOOM * _RF),
