@@ -14,6 +14,8 @@ Models:
 """
 from __future__ import annotations
 
+import os
+
 import io
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -966,7 +968,11 @@ def render_field(
     # matplotlib TITLE area scrolls out of view as soon as you zoom —
     # which is exactly when you most need to know which run you are
     # looking at.
-    if headline:
+    # Headline is drawn by the PAGE now, in an HTML bar above the
+    # map, so it stays visible at any zoom. Baking it into the image
+    # meant it scrolled away exactly when it was needed. Kept behind
+    # a flag for anyone rendering a frame outside the scrubber.
+    if headline and os.environ.get("CAM_INMAP_TITLE", "off") == "on":
         ax.text(0.5, 0.985, headline, transform=ax.transAxes,
                 ha="center", va="top", fontsize=9, fontweight="bold",
                 color="#101010", zorder=12,
@@ -978,7 +984,8 @@ def render_field(
         # the map nearly edge-to-edge and park a slim horizontal
         # colorbar under it, so hub-zoomed views show map, not
         # a monster legend (observed live at 6x magnification)
-        ax.set_title(title, fontsize=8, pad=2)
+        if os.environ.get("CAM_INMAP_TITLE", "off") == "on":
+            ax.set_title(title, fontsize=8, pad=2)
         cb = plt.colorbar(
             mesh, ax=ax, orientation="horizontal",
             fraction=0.030, pad=0.015, aspect=55,
@@ -989,7 +996,8 @@ def render_field(
         fig.subplots_adjust(left=0.015, right=0.985,
                             top=0.955, bottom=0.075)
     else:
-        ax.set_title(title, fontsize=10)
+        if os.environ.get("CAM_INMAP_TITLE", "off") == "on":
+            ax.set_title(title, fontsize=10)
         plt.colorbar(mesh, ax=ax, pad=0.02, shrink=0.85,
                      label=PRODUCT_LABELS.get(product, product))
     # NOTE: no bbox_inches="tight" - crops the GeoAxes (see core.radar).
@@ -1010,7 +1018,39 @@ def render_field(
                      else 180 if zoom_deg > 4 else 100))
     plt.close(fig)
     buf.seek(0)
-    return buf.getvalue()
+    raw = buf.getvalue()
+
+    # WebP, not PNG. Measured 8/24 on a representative frame:
+    # 533 KB PNG32 -> 190 KB WebP LOSSLESS, a 64% cut with no
+    # quality loss whatsoever. Quality 90 is 140 KB and visually
+    # identical on a reflectivity field, which is what the default
+    # uses; set CAM_WEBP_Q=100 for mathematically lossless.
+    #
+    # This matters beyond speed: the CAM page ships ~77 MB per view
+    # because frames are base64'd inline, and 25 GB of monthly
+    # bandwidth disappears in about 330 views. This is the single
+    # biggest per-image lever and costs one conversion per frame.
+    #
+    # CAM_IMG_FORMAT=png reverts. Every browser in use supports
+    # WebP, but the escape hatch is cheap to keep.
+    if os.environ.get("CAM_IMG_FORMAT", "webp").lower() != "webp":
+        return raw
+    try:
+        import io as _io
+
+        from PIL import Image as _Im
+
+        q = int(os.environ.get("CAM_WEBP_Q", "90"))
+        im = _Im.open(_io.BytesIO(raw)).convert("RGBA")
+        out = _io.BytesIO()
+        im.save(out, "WEBP", quality=q, lossless=(q >= 100),
+                method=4)
+        conv = out.getvalue()
+        # Only if it actually helped — a tiny or already-sparse
+        # frame can compress worse.
+        return conv if len(conv) < len(raw) else raw
+    except Exception:
+        return raw
 
 def complete_cycles(model: str, need_fhr: int, n: int = 3,
                     now=None) -> list:
