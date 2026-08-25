@@ -276,28 +276,26 @@ def build_scrub_html(frames: dict, hour_axis: list,
         ci = (cycles or {}).get(m)
         row = []
         for h in hour_axis:
+            c = None
             if ci:
                 try:
                     c = _dt.fromisoformat(str(ci))
-                    v = c + _tdd(hours=h)
-                    # Two lines: what and when on the first, the
-                    # field on the second. Run hour only for the
-                    # init — the date is on the valid line and
-                    # repeating it wastes width.
-                    # Split on \x1f so the JS can style the parts
-                    # without re-parsing prose: [prefix, valid,
-                    # product]. A separator the text can never
-                    # contain, rather than a delimiter like | that
-                    # a product label might legitimately use.
-                    row.append(
-                        f"{names_run(m)} (Init {c:%H}Z) Valid: "
-                        f"\x1f{v:%H}Z {v:%a} {v.month}-{v.day}\x1f"
-                        f"{_prod_label}")
-                    continue
                 except Exception:
-                    pass
-            row.append(f"{names_run(m)}  \x1ff{h:02d}\x1f"
-                       f"{_prod_label}")
+                    c = None
+            if c is not None:
+                v = c + _tdd(hours=h)
+                # Everything the map used to carry INSIDE the image
+                # now lives here, above it, so it survives any zoom.
+                # Split on \x1f: [prefix, bold valid, italic product].
+                row.append(
+                    f"{names_run(m)} (Init {c:%H}Z) f{h:02d}  Valid: "
+                    f"\x1f{v:%H}Z {v:%a} {v.month}-{v.day}\x1f"
+                    f"{_prod_label}")
+            else:
+                # No cycle known — still name the hour and product
+                # rather than falling back to a bare label.
+                row.append(f"{names_run(m)}  f{h:02d}\x1f\x1f"
+                           f"{_prod_label}")
         heads[m] = row
     order = [m for m in order if m in model_arrays]
     names = {m: MODELS[m]["label"] for m in order}
@@ -320,13 +318,17 @@ def build_scrub_html(frames: dict, hour_axis: list,
         # any zoom — which is the whole point.
         ".hdr{display:block;width:100%;box-sizing:border-box;"
         "background:#F2F2EE;border:1px solid #111;border-bottom:none;"
-        "border-radius:4px 4px 0 0;padding:3px 8px;text-align:center;"
-        "font:normal 12px/1.35 monospace;color:#111}"
+        "border-radius:4px 4px 0 0;padding:6px 10px;text-align:center;"
+        # 22px, not 12. The in-map title box it replaces rendered
+        # far larger than a normal caption once the frame was scaled
+        # to the panel, and shrinking it in the move made the run and
+        # valid time harder to read than before.
+        "font:normal 22px/1.3 monospace;color:#111}"
         ".hdr .vt{font-weight:bold}"
-        ".hdr .sub{font-style:italic;font-size:11px;opacity:0.85;"
+        ".hdr .sub{font-style:italic;font-size:17px;opacity:0.85;"
         "font-weight:normal}"
-        "#fswrap.fs .hdr{font-size:15px;line-height:1.4}"
-        "#fswrap.fs .hdr .sub{font-size:13px}"
+        "#fswrap.fs .hdr{font-size:28px;line-height:1.35}"
+        "#fswrap.fs .hdr .sub{font-size:21px}"
         ".ctl{font:13px monospace;margin:8px 0}"
         "input[type=range]{width:70%}"
         "#fswrap.fs{background:#c0c0c0;overflow:auto;"
@@ -459,9 +461,10 @@ def build_scrub_html(frames: dict, hour_axis: list,
         )
     html += "</script>"
     if single:
-        return html, 140 + 940
+        # +70 for the enlarged two-line header bar above each panel.
+        return html, 210 + 940
     rows = (len(order) + 1) // 2
-    return html, 140 + rows * 660
+    return html, 140 + rows * 730
 
 
 # ---------------------------------------------------------------------------
@@ -703,20 +706,19 @@ if active:
             specs.append((m, cyc, fh))
         return specs, notes
 
+    # HRRR and RRFS only. The other models still exist in
+    # core.hrrr_cam and can be brought back by adding a line here,
+    # but they were not pre-warmed and nobody was scrubbing them, so
+    # every selection was a cold render.
     _VIEW_LABELS = {
-        "All models (2x2)": None,
+        "Both (HRRR + RRFS)": None,
         "HRRR": "hrrr", "RRFS": "rrfs",
-        "REFS mean": "refs_mean",
-        "NAM 3km": "nam_nest",
-        "HRW-ARW": "hiresw_arw", "HRW-FV3": "hiresw_fv3",
     }
     view_choice = st.radio(
         "View", list(_VIEW_LABELS.keys()),
         index=0, horizontal=True, key="cam_view",
         help="Single-model view renders one large panel with "
-             "mouse-wheel zoom and drag-pan (digital zoom of "
-             "the rendered image; the sidebar Zoom slider still "
-             "controls true render detail).",
+             "mouse-wheel zoom and drag-pan.",
     )
     _single_model = _VIEW_LABELS[view_choice]
     hrrr_ext = st.checkbox(
@@ -727,9 +729,7 @@ if active:
              "hours past 18 selects the newest long-range run - "
              "and the whole scrub renders from that single run "
              "for consistency. Hours past 18 aren't prewarmed, "
-             "so they download on demand. NAM 3km (60h) and the "
-             "HiRes Windows pair (48h) always run long, so they "
-             "need no such option.",
+             "so they download on demand.",
     )
 
     def _eff_max_fhr(m, cfg):

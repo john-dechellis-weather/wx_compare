@@ -122,13 +122,18 @@ def build_scrub_html(frames: dict, hour_axis: list,
         # overflow:hidden then clips the bottom — which is why the
         # default view showed a wide short slice instead of the whole
         # map. Fitting by HEIGHT and centring shows all of it.
-        ".camgrid img{max-width:100%;max-height:100%;"
-        "object-fit:contain;display:block;margin:0 auto;"
-        "border:1px solid #888}"
-        ".zoomwrap{overflow:hidden;cursor:grab;height:100%;"
-        "display:flex;align-items:center;justify-content:center}"
-        ".zoomwrap img{transform-origin:center center;"
-        "user-select:none;-webkit-user-drag:none}"
+        # The frame is a 10x10 degree SQUARE. The earlier fix set
+        # object-fit on `.camgrid img`, but the image sits inside
+        # `.zoomwrap`, whose own rule won — so the bottom was still
+        # clipped. aspect-ratio on the WRAPPER is what actually
+        # reserves square space; the img then fits inside it.
+        ".camgrid img{border:1px solid #888}"
+        ".zoomwrap{overflow:hidden;cursor:grab;width:100%;"
+        "aspect-ratio:1/1;display:flex;align-items:center;"
+        "justify-content:center}"
+        ".zoomwrap img{width:100%;height:100%;object-fit:contain;"
+        "transform-origin:center center;user-select:none;"
+        "-webkit-user-drag:none}"
         ".camlbl{font:bold 13px monospace;margin:2px 0}"
         ".ctl{font:13px monospace;margin:8px 0}"
         "input[type=range]{width:70%}"
@@ -188,9 +193,11 @@ def build_scrub_html(frames: dict, hour_axis: list,
     if single:
         # Square frame, so the component must be roughly as tall as
         # it is wide or the fit above has nothing to work with.
-        return html, 140 + 820
+        # Square wrapper: the component has to be at least as tall
+        # as the panel is wide, or the iframe scrolls instead.
+        return html, 210 + 900
     rows = (len(order) + 1) // 2
-    return html, 140 + rows * 640
+    return html, 140 + rows * 770
 
 
 PRODUCTS = {
