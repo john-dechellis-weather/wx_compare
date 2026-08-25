@@ -31,6 +31,11 @@ CACHE_ROOT = (_persistent if _persistent.exists()
               else Path("/tmp/wx_compare_cache"))
 CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 
+# Announce activity so the warmer backs off while this page renders.
+from core.cam_warm import note_request as _note_req
+
+_note_req()
+
 from core.cam_warm import (
     HUBS as REFS_HUBS, WARM_ZOOM, ensure_warmer_started,
     warm_cycle, warm_get, warm_hours,

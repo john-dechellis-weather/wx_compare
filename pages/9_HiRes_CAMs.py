@@ -34,6 +34,13 @@ st.set_page_config(
 from retro_theme import apply_retro_theme
 apply_retro_theme()
 
+try:
+    from core.cam_warm import note_request as _note_req
+
+    _note_req()
+except Exception:
+    pass
+
 from auth import check_password
 check_password()
 

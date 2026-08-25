@@ -22,6 +22,17 @@ st.set_page_config(
 from retro_theme import apply_retro_theme
 apply_retro_theme()
 
+# Tell the warmer the site is in use, BEFORE any work on this page.
+# It backs off while requests are arriving, so the CONUS map does not
+# compete with matplotlib for the GIL. First line that runs, because
+# announcing it after the slow part would be pointless.
+try:
+    from core.cam_warm import note_request as _note_req
+
+    _note_req()
+except Exception:
+    pass
+
 from auth import check_password
 check_password()
 
@@ -1855,33 +1866,22 @@ if run_button:
     @st.fragment(run_every="120s")
     def _map_fragment():
         import pydeck as pdk
-        # One control row so the map starts higher. The radio's
-        # label is collapsed: with a label it renders a line above
-        # itself and the checkboxes no longer sit on the same
-        # baseline. Its three options are self-describing.
-        # Three columns now: the NY Class B checkbox and the Other
-        # traffic selector were removed, so a fourth would render as
-        # an empty gap.
-        # Two columns: radar mode and flight numbers. The Class B,
-        # other-traffic and N90-fix controls have all been removed
-        # from this page; a third column would render as a gap.
-        # Radar was removed from this page. Its value is the FLEET
-        # against station conditions and TAF breaches — the radar
-        # overlay was a national picture that other pages do
-        # better, and it cost a NOAA fetch, a multi-megabyte image
-        # and a control that re-ran the whole page when clicked.
-        _ctl = st.columns([2.4], gap="small")
-        with _ctl[1]:
+        # ONE control left on this page: flight numbers. Radar,
+        # Class B, other traffic and N90 fixes have all been removed
+        # — the value here is the fleet against station conditions
+        # and TAF breaches, and every one of those layers was either
+        # better served elsewhere or cost an external fetch on the
+        # render path.
+        #
+        # A single st.columns([2.4]) with `with _ctl[1]:` was left
+        # behind by that removal and raised IndexError on every load:
+        # one column, index 1. Narrow column so the checkbox does not
+        # stretch across the page.
+        _ctl = st.columns([1.0, 3.0], gap="small")
+        with _ctl[0]:
             show_cs = st.checkbox(
                 "Flight numbers", value=True, key="show_cs_f",
             )
-        # NOT a second `layers = []`. There was one here, left behind
-        # when the Class B block above it was removed, and it silently
-        # discarded every layer built before this point — the METAR
-        # breach dots, the TAF rings, all of it. A reset that looks
-        # like the start of a section is exactly the kind of line that
-        # survives a deletion and keeps working syntactically while
-        # throwing away the work above it.
         # Live positions: refetch the fleet on each heartbeat
         # (90s cache; the 4-lane sweep runs inside the fragment
         # when it expires, so aircraft advance every beat)
