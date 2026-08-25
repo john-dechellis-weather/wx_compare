@@ -71,6 +71,10 @@ CRITICAL_CIG_FT = 400
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def n90_data():
+    """UNUSED on this page — the N90 fixes layer was
+    removed. Kept because the loader is small and the
+    asset it reads is still shipped for the N90
+    Airspace page; deleting it here saves nothing."""
     """(fixes, hull_rows, meta, error) for the N90 layer."""
     try:
         import json as _json
@@ -141,132 +145,11 @@ def n90_data():
 
 
 
-# Last-known-good MRMS image, refreshed in the BACKGROUND.
-#
-# The previous version fetched NOAA inside the page render. That made
-# failures visible, which was the point — but it also put a 4.7 MB
-# download on the critical path and turned a radio click into a
-# minute-long wait. An external fetch must never block a render.
-#
-# So: the page uses whatever image is already on disk, and kicks a
-# refresh in a thread if it is stale. The first ever load has no
-# image and says so; every load after that is instant and at most
-# one cycle behind, which for a 5-minute product is not a
-# meaningful difference.
-_MRMS = {"name": None, "bucket": None, "note": "not fetched yet",
-         "busy": False}
-
-
-def _mrms_refresh(bucket: str):
-    """Fetch, convert, publish. Runs in a thread; never raises."""
-    import io as _io
-    import os as _o
-    from pathlib import Path as _P
-
-    import requests as _rq
-
-    if _MRMS["busy"]:
-        return
-    _MRMS["busy"] = True
-    try:
-        src = (
-            "https://mapservices.weather.noaa.gov/eventdriven/rest/"
-            "services/radar/radar_base_reflectivity/MapServer/export"
-            # 4880x2160 = 1.1 km/px across CONUS, where the request
-            # stops undersampling MRMS's 1 km grid.
-            "?bbox=-126,23,-65,50&bboxSR=4326&imageSR=4326"
-            "&size=4880,2160&format=png32&transparent=true&f=image"
-        )
-        try:
-            r = _rq.get(src, timeout=40,
-                        headers={"User-Agent": "bluemet.org"})
-        except Exception as exc:
-            _MRMS["note"] = f"fetch failed: {type(exc).__name__}"
-            return
-        if r.status_code != 200:
-            _MRMS["note"] = f"HTTP {r.status_code} from NOAA"
-            return
-        raw = r.content
-        if len(raw) < 5000 or raw[:4] not in (b"\x89PNG", b"RIFF"):
-            _MRMS["note"] = (f"NOAA returned {len(raw)} bytes, "
-                             f"not an image")
-            return
-        out = _P(__file__).resolve().parent.parent / "static"
-        out.mkdir(parents=True, exist_ok=True)
-        name = f"mrms_{bucket}.webp"
-        dest = out / name
-        if not dest.exists():
-            try:
-                from PIL import Image as _Im
-
-                _Im.open(_io.BytesIO(raw)).convert("RGBA").save(
-                    dest, "WEBP", quality=88, method=4)
-            except Exception:
-                name = f"mrms_{bucket}.png"
-                dest = out / name
-                dest.write_bytes(raw)
-            for old_f in sorted(out.glob("mrms_*"))[:-3]:
-                try:
-                    old_f.unlink()
-                except OSError:
-                    pass
-        _MRMS.update({
-            "name": name, "bucket": bucket,
-            "note": (f"{len(raw) / 1024:.0f} KB PNG -> "
-                     f"{dest.stat().st_size / 1024:.0f} KB served"),
-        })
-    finally:
-        _MRMS["busy"] = False
-
-
-def mrms_image(bucket: str):
-    """(url, note). Native GRIB2 render if the warmer has one,
-    otherwise NOAA's ArcGIS export.
-
-    The native path is both higher resolution and smaller: 7000 px
-    across CONUS at the grid's own 0.01 degree spacing, rendered to
-    a 15-colour AWIPS palette that WebP compresses to ~130 KB. The
-    export gives 4880 px as multi-megabyte PNG32. Fallback keeps
-    radar on the page if MRMS_WARMER is off or the source is down.
-    """
-    import os as _o
-    from pathlib import Path as _P
-
-    try:
-        from core import mrms as _MR
-
-        _nm, _stamp = _MR.newest(
-            _P(__file__).resolve().parent.parent / "static")
-        if _nm:
-            _b2 = (_o.environ.get("RENDER_EXTERNAL_URL")
-                   or _o.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
-            if _b2:
-                return (f"{_b2}/app/static/{_nm}",
-                        f"native 1 km, {_stamp}Z")
-    except Exception:
-        pass
-
-    if _MRMS["bucket"] != bucket and not _MRMS["busy"]:
-        # threading imported HERE: the module-level alias is defined
-        # ~800 lines below this function, and a forward reference is
-        # a NameError at call time rather than at import. Third time
-        # this pattern has bitten this file.
-        import threading as _th
-
-        _th.Thread(target=_mrms_refresh, args=(bucket,),
-                   daemon=True).start()
-    if not _MRMS["name"]:
-        return None, _MRMS["note"]
-    base = (_o.environ.get("RENDER_EXTERNAL_URL")
-            or _o.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
-    if not base:
-        return None, "RENDER_EXTERNAL_URL not set"
-    stale = "" if _MRMS["bucket"] == bucket else " (refreshing)"
-    return (f"{base}/app/static/{_MRMS['name']}",
-            _MRMS["note"] + stale)
-
-
 def ny_class_b():
+    """UNUSED on this page — the Class B layer was
+    removed. Kept because the loader is small and the
+    asset it reads is still shipped for the N90
+    Airspace page; deleting it here saves nothing."""
     """16 shelf rings, outlines only. Returns (rows, meta, error).
 
     Drawn as separate outlined rings rather than a merged union:
@@ -1530,7 +1413,7 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-# Prefetch overlap: start the paced fetchers (fleet sweep, MRMS
+# Prefetch overlap: start the paced fetchers (fleet sweep,
 # decode) in background threads immediately - their politeness
 # sleeps then run concurrently with TAF/METAR fetching and
 # analysis instead of serially after it (this was most of the
@@ -1982,16 +1865,12 @@ if run_button:
         # Two columns: radar mode and flight numbers. The Class B,
         # other-traffic and N90-fix controls have all been removed
         # from this page; a third column would render as a gap.
-        _ctl = st.columns([2.4, 1.15], gap="small")
-        with _ctl[0]:
-            radar_mode = st.radio(
-                "Radar overlay",
-                ["MRMS hi-res", "Echo tops", "Off"],
-                index=2, horizontal=True, key="radar_mode_f",
-                label_visibility="collapsed",
-                help="Radar overlay source.",
-            )
-        radar_on = radar_mode != "Off"
+        # Radar was removed from this page. Its value is the FLEET
+        # against station conditions and TAF breaches — the radar
+        # overlay was a national picture that other pages do
+        # better, and it cost a NOAA fetch, a multi-megabyte image
+        # and a control that re-ran the whole page when clicked.
+        _ctl = st.columns([2.4], gap="small")
         with _ctl[1]:
             show_cs = st.checkbox(
                 "Flight numbers", value=True, key="show_cs_f",
@@ -2003,58 +1882,6 @@ if run_button:
         # like the start of a section is exactly the kind of line that
         # survives a deletion and keeps working syntactically while
         # throwing away the work above it.
-        _mrms_ts = None
-        if radar_on:
-            _b = datetime.now(timezone.utc)
-            # 5-minute bucket. MRMS publishes every ~2 min but the
-            # cache-buster defeats every layer of caching between
-            # here and NOAA, so a shorter bucket means a fresh
-            # multi-megabyte render on almost every page view. Five
-            # minutes keeps it current enough for a CONUS overview
-            # and lets a repeat visit hit cache.
-            _rb = (_b.strftime("%Y%m%d%H")
-                   + f"{(_b.minute // 5) * 5:02d}")
-            _mrms_ts = None
-            if radar_mode == "MRMS hi-res":
-                _mimg, _mnote = mrms_image(_rb)
-                if _mimg:
-                    # Bounds follow the SOURCE. The native MRMS grid
-                    # spans -130..-60, 20..55; the ArcGIS export is
-                    # cropped to -126..-65, 23..50. Using one box for
-                    # both would stretch whichever image it did not
-                    # belong to.
-                    _mb = ([-130.0, 20.0, -60.0, 55.0]
-                           if "native" in (_mnote or "")
-                           else [-126.0, 23.0, -65.0, 50.0])
-                    layers.append(pdk.Layer(
-                        "BitmapLayer", data=None, image=_mimg,
-                        bounds=_mb, opacity=0.6,
-                    ))
-                else:
-                    st.warning(f"MRMS unavailable - {_mnote}")
-                _mrms_ts = "hires"
-            if radar_mode == "Echo tops":
-                # Echo tops - or cells fallback - via IEM WMS,
-                # now requested near the composite's native
-                # resolution (was 5x undersampled at 2440px)
-                _svc = ("eet" if radar_mode == "Echo tops"
-                        else "n0q")
-                _wms = (
-                    "https://mesonet.agron.iastate.edu/"
-                    f"cgi-bin/wms/nexrad/{_svc}.cgi"
-                    "?SERVICE=WMS&VERSION=1.1.1"
-                    "&REQUEST=GetMap"
-                    f"&LAYERS=nexrad-{_svc}&STYLES="
-                    "&SRS=EPSG:4326&BBOX=-126,23,-65,50"
-                    "&WIDTH=4880&HEIGHT=2160"
-                    "&FORMAT=image/png&TRANSPARENT=TRUE"
-                    f"&_={_rb}"
-                )
-                layers.append(pdk.Layer(
-                    "BitmapLayer", data=None, image=_wms,
-                    bounds=[-126.0, 23.0, -65.0, 50.0],
-                    opacity=0.6,
-                ))
         # Live positions: refetch the fleet on each heartbeat
         # (90s cache; the 4-lane sweep runs inside the fragment
         # when it expires, so aircraft advance every beat)
@@ -2235,15 +2062,6 @@ if run_button:
         )
         _rad = (" Map auto-refreshes every 2 min; aircraft "
                 "positions update each refresh.")
-        if radar_on:
-            if radar_mode == "MRMS hi-res":
-                _rad = (" Radar: MRMS 1km merged reflectivity "
-                        "(NOAA), ~2-min updates.")
-            elif radar_mode == "Echo tops":
-                _rad = " Radar: NEXRAD echo tops via IEM."
-            else:
-                _rad = (" Radar: NEXRAD reflectivity via IEM "
-                        "(cells fallback).")
         # Claimed BEFORE the chart so it paints while deck.gl builds,
         # and cleared immediately after.
         _map_notice = st.empty()
