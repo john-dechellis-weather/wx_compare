@@ -90,6 +90,29 @@ WARM_PRODUCT = "REFD"
 # Raise CAM_WARM_MAX_FHR only after the warmer log shows headroom.
 WARM_MAX = {"hrrr": 18, "rrfs": 84, "nam_nest": 60,
             "hiresw_arw": 48, "hiresw_fv3": 48}
+# f24 for EVERY job, CAMs and REFS alike. Measured duty cycle at this
+# cap, each model against its own cadence:
+#
+#     hrrr        1 h cycle   95 frames   26%   <- hourly, dominates
+#     rrfs        3 h        125          12%
+#     nam_nest    6 h        125           6%
+#     hiresw_arw  6 h        125           6%
+#     hiresw_fv3  6 h        125           6%
+#     REFS x4     6 h        500          23%
+#                                        ----
+#                                         79%
+#
+# That leaves headroom for the CONUS map, which is the page that
+# must never be slow. Uncapped REFS alone is 56% and pushes the
+# total past 100%, at which point the warmer never catches up and
+# the store stays empty — which is what had been happening.
+#
+# Hours past f24 render on demand at a few seconds each. Page 11 now
+# USES partial coverage rather than ignoring the store when the last
+# requested hour is not warm.
+#
+# Raise CAM_WARM_MAX_FHR only after the warmer log shows the store
+# filling and page 3 still opening fast.
 WARM_CAP_FHR = int(os.environ.get("CAM_WARM_MAX_FHR", "24"))
 
 
