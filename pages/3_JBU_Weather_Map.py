@@ -140,80 +140,130 @@ def n90_data():
 # so the helper does not depend on import order.
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
 
-# ---------------------------------------------------------------------------
-# MRMS, fetched server-side
-# ---------------------------------------------------------------------------
-# The URL used to be handed straight to the browser as a BitmapLayer
-# image. That has three problems: a failure is INVISIBLE — the layer
-# is present, the deck renders, nothing appears and there is nothing
-# to read; the PNG32 NOAA returns is ~4.7 MB every time the
-# cache-buster changes; and the browser refetches it on every view.
+# Last-known-good MRMS image, refreshed in the BACKGROUND.
 #
-# Fetching it here fixes all three. Errors surface as a warning with
-# the actual status, the image is converted to WebP (typically a
-# 60-70% cut on this content), and it is served from static/ with the
-# cycle in the filename so the browser caches it properly.
-@st.cache_data(ttl=300, show_spinner=False)
-def mrms_image(bucket: str):
-    """(url, note). Never raises into the map."""
+# The previous version fetched NOAA inside the page render. That made
+# failures visible, which was the point — but it also put a 4.7 MB
+# download on the critical path and turned a radio click into a
+# minute-long wait. An external fetch must never block a render.
+#
+# So: the page uses whatever image is already on disk, and kicks a
+# refresh in a thread if it is stale. The first ever load has no
+# image and says so; every load after that is instant and at most
+# one cycle behind, which for a 5-minute product is not a
+# meaningful difference.
+_MRMS = {"name": None, "bucket": None, "note": "not fetched yet",
+         "busy": False}
+
+
+def _mrms_refresh(bucket: str):
+    """Fetch, convert, publish. Runs in a thread; never raises."""
     import io as _io
-
-    import requests as _rq
-
-    src = (
-        "https://mapservices.weather.noaa.gov/eventdriven/rest/"
-        "services/radar/radar_base_reflectivity/MapServer/export"
-        # 4880x2160 = 1.1 km/px across CONUS, which is where the
-        # request stops undersampling MRMS's 1 km grid.
-        "?bbox=-126,23,-65,50&bboxSR=4326&imageSR=4326"
-        "&size=4880,2160&format=png32&transparent=true&f=image"
-    )
-    try:
-        r = _rq.get(src, timeout=25,
-                    headers={"User-Agent": "bluemet.org"})
-    except Exception as exc:
-        return None, f"fetch failed: {type(exc).__name__}: {exc}"
-    if r.status_code != 200:
-        return None, f"HTTP {r.status_code} from NOAA"
-    raw = r.content
-    if len(raw) < 5000 or raw[:4] not in (b"\x89PNG", b"RIFF"):
-        return None, (f"NOAA returned {len(raw)} bytes, not an image "
-                      f"(likely an error page)")
-    # Resolved INSIDE the function: this is defined near the top of
-    # the file but _MAP_STATIC and _os_ko are assigned much further
-    # down, and a module-level forward reference here is a NameError
-    # at call time rather than at import.
     import os as _o
     from pathlib import Path as _P
 
-    out = _P(__file__).resolve().parent.parent / "static"
-    out.mkdir(parents=True, exist_ok=True)
-    name = f"mrms_{bucket}.webp"
-    dest = out / name
-    if not dest.exists():
-        try:
-            from PIL import Image as _Im
+    import requests as _rq
 
-            im = _Im.open(_io.BytesIO(raw)).convert("RGBA")
-            im.save(dest, "WEBP", quality=88, method=4)
-        except Exception:
-            name = f"mrms_{bucket}.png"
-            dest = out / name
-            dest.write_bytes(raw)
-        for old in sorted(out.glob("mrms_*"))[:-3]:
+    if _MRMS["busy"]:
+        return
+    _MRMS["busy"] = True
+    try:
+        src = (
+            "https://mapservices.weather.noaa.gov/eventdriven/rest/"
+            "services/radar/radar_base_reflectivity/MapServer/export"
+            # 4880x2160 = 1.1 km/px across CONUS, where the request
+            # stops undersampling MRMS's 1 km grid.
+            "?bbox=-126,23,-65,50&bboxSR=4326&imageSR=4326"
+            "&size=4880,2160&format=png32&transparent=true&f=image"
+        )
+        try:
+            r = _rq.get(src, timeout=40,
+                        headers={"User-Agent": "bluemet.org"})
+        except Exception as exc:
+            _MRMS["note"] = f"fetch failed: {type(exc).__name__}"
+            return
+        if r.status_code != 200:
+            _MRMS["note"] = f"HTTP {r.status_code} from NOAA"
+            return
+        raw = r.content
+        if len(raw) < 5000 or raw[:4] not in (b"\x89PNG", b"RIFF"):
+            _MRMS["note"] = (f"NOAA returned {len(raw)} bytes, "
+                             f"not an image")
+            return
+        out = _P(__file__).resolve().parent.parent / "static"
+        out.mkdir(parents=True, exist_ok=True)
+        name = f"mrms_{bucket}.webp"
+        dest = out / name
+        if not dest.exists():
             try:
-                old.unlink()
-            except OSError:
-                pass
+                from PIL import Image as _Im
+
+                _Im.open(_io.BytesIO(raw)).convert("RGBA").save(
+                    dest, "WEBP", quality=88, method=4)
+            except Exception:
+                name = f"mrms_{bucket}.png"
+                dest = out / name
+                dest.write_bytes(raw)
+            for old_f in sorted(out.glob("mrms_*"))[:-3]:
+                try:
+                    old_f.unlink()
+                except OSError:
+                    pass
+        _MRMS.update({
+            "name": name, "bucket": bucket,
+            "note": (f"{len(raw) / 1024:.0f} KB PNG -> "
+                     f"{dest.stat().st_size / 1024:.0f} KB served"),
+        })
+    finally:
+        _MRMS["busy"] = False
+
+
+def mrms_image(bucket: str):
+    """(url, note). Native GRIB2 render if the warmer has one,
+    otherwise NOAA's ArcGIS export.
+
+    The native path is both higher resolution and smaller: 7000 px
+    across CONUS at the grid's own 0.01 degree spacing, rendered to
+    a 15-colour AWIPS palette that WebP compresses to ~130 KB. The
+    export gives 4880 px as multi-megabyte PNG32. Fallback keeps
+    radar on the page if MRMS_WARMER is off or the source is down.
+    """
+    import os as _o
+    from pathlib import Path as _P
+
+    try:
+        from core import mrms as _MR
+
+        _nm, _stamp = _MR.newest(
+            _P(__file__).resolve().parent.parent / "static")
+        if _nm:
+            _b2 = (_o.environ.get("RENDER_EXTERNAL_URL")
+                   or _o.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
+            if _b2:
+                return (f"{_b2}/app/static/{_nm}",
+                        f"native 1 km, {_stamp}Z")
+    except Exception:
+        pass
+
+    if _MRMS["bucket"] != bucket and not _MRMS["busy"]:
+        # threading imported HERE: the module-level alias is defined
+        # ~800 lines below this function, and a forward reference is
+        # a NameError at call time rather than at import. Third time
+        # this pattern has bitten this file.
+        import threading as _th
+
+        _th.Thread(target=_mrms_refresh, args=(bucket,),
+                   daemon=True).start()
+    if not _MRMS["name"]:
+        return None, _MRMS["note"]
     base = (_o.environ.get("RENDER_EXTERNAL_URL")
             or _o.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
     if not base:
         return None, "RENDER_EXTERNAL_URL not set"
-    kb = dest.stat().st_size / 1024
-    return (f"{base}/app/static/{name}",
-            f"{len(raw) / 1024:.0f} KB PNG -> {kb:.0f} KB served")
+    stale = "" if _MRMS["bucket"] == bucket else " (refreshing)"
+    return (f"{base}/app/static/{_MRMS['name']}",
+            _MRMS["note"] + stale)
 
 
 def ny_class_b():
@@ -1548,7 +1598,7 @@ with st.sidebar:
     st.divider()
     st.header("Map")
     map_height = st.slider(
-        "Map height (px)", 450, 1200, 650, 50,
+        "Map height (px)", 450, 1400, 1000, 50,
         help="Width is fluid (fills the space beside the TAF "
              "table and follows the window); height is set "
              "here - Streamlit's component sizing defeats "
@@ -1968,10 +2018,17 @@ if run_button:
             if radar_mode == "MRMS hi-res":
                 _mimg, _mnote = mrms_image(_rb)
                 if _mimg:
+                    # Bounds follow the SOURCE. The native MRMS grid
+                    # spans -130..-60, 20..55; the ArcGIS export is
+                    # cropped to -126..-65, 23..50. Using one box for
+                    # both would stretch whichever image it did not
+                    # belong to.
+                    _mb = ([-130.0, 20.0, -60.0, 55.0]
+                           if "native" in (_mnote or "")
+                           else [-126.0, 23.0, -65.0, 50.0])
                     layers.append(pdk.Layer(
                         "BitmapLayer", data=None, image=_mimg,
-                        bounds=[-126.0, 23.0, -65.0, 50.0],
-                        opacity=0.6,
+                        bounds=_mb, opacity=0.6,
                     ))
                 else:
                     st.warning(f"MRMS unavailable - {_mnote}")
@@ -2187,7 +2244,16 @@ if run_button:
             else:
                 _rad = (" Radar: NEXRAD reflectivity via IEM "
                         "(cells fallback).")
+        # Claimed BEFORE the chart so it paints while deck.gl builds,
+        # and cleared immediately after.
+        _map_notice = st.empty()
+        _map_notice.markdown(
+            "<p style='text-align:center;font-size:22px;"
+            "font-weight:700;margin:10px 0'>"
+            "Flight map rendering\u2026</p>",
+            unsafe_allow_html=True)
         st.pydeck_chart(deck, height=map_height)
+        _map_notice.empty()
         st.caption(
             "Solid dot = METAR breach NOW; ring = TAF "
             "forecast (concentric = both); orange TS above = "
