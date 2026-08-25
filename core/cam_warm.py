@@ -151,6 +151,43 @@ def _job(key: str) -> tuple:
     return key, WARM_PRODUCT
 CHECK_INTERVAL_S = 600
 
+# ---------------------------------------------------------------------------
+# Traffic-aware backoff
+# ---------------------------------------------------------------------------
+# A fixed yield between frames is blind: it pauses just as much at
+# 03Z with nobody on the site as it does while someone is waiting for
+# the CONUS map. This makes the warmer aware of actual requests.
+#
+# Pages call note_request() as they start rendering. Before each
+# frame the warmer checks how long ago that was, and if the site is
+# in use it waits — up to a bounded number of times, so a page on a
+# 2-minute auto-refresh cannot starve the warmer forever.
+#
+# It cannot fix the underlying problem, which is that matplotlib
+# holds the GIL and Python threads therefore cannot truly run in
+# parallel. The real fix is a separate PROCESS. This gets most of
+# the benefit for none of the memory.
+_LAST_REQUEST = [0.0]
+QUIET_S = float(os.environ.get("CAM_WARM_QUIET_S", "4"))
+MAX_BACKOFF_S = float(os.environ.get("CAM_WARM_MAX_BACKOFF_S", "25"))
+
+
+def note_request() -> None:
+    """Called by pages on render. Cheap enough for every rerun."""
+    _LAST_REQUEST[0] = time.time()
+
+
+def _wait_for_quiet() -> float:
+    """Block while the site is in use. Returns seconds waited."""
+    waited = 0.0
+    while waited < MAX_BACKOFF_S:
+        since = time.time() - _LAST_REQUEST[0]
+        if since >= QUIET_S:
+            return waited
+        time.sleep(0.5)
+        waited += 0.5
+    return waited
+
 _started = False
 _lock = threading.Lock()
 
@@ -356,6 +393,9 @@ def _warm_model(cache_root: Path, key: str, log) -> None:
             _frame_path(cache_root, key, cycle_iso, icao,
                         h).write_bytes(png)
             n_ok += 1
+            # Yield to anyone actually using the site before starting
+            # the next frame.
+            _wait_for_quiet()
             if _yield_s:
                 time.sleep(_yield_s)
             del png, vals, lats, lons
