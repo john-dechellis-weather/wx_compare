@@ -282,8 +282,23 @@ else:
     cycle_iso = None
     if _warm_ok:
         _wc = warm_cycle(CACHE_ROOT, _wk)
-        if _wc and hours[-1] in warm_hours(_wk):
+        # Use the warm store if it covers ANY of the requested hours,
+        # not only if it covers the LAST one. The warmer is now
+        # depth-capped (CAM_WARM_MAX_FHR, 24 by default) to leave CPU
+        # for the CONUS map, so a request out to f60 would never see
+        # a warm frame under the old test — the store would be full
+        # and completely unused. Hours past the cap fall through to
+        # an on-demand render, which is the intended trade.
+        _wh = set(warm_hours(_wk))
+        if _wc and (_wh & set(hours)):
             cycle_iso = _wc
+            _n_warm_hrs = len(_wh & set(hours))
+            if _n_warm_hrs < len(hours):
+                st.caption(
+                    f"{_n_warm_hrs} of {len(hours)} hours are "
+                    f"pre-warmed (to f{max(_wh):02d}); later hours "
+                    f"render on demand."
+                )
     if cycle_iso is None:
         cycle_iso = cached_refs_cycle(model, hours[-1], bucket10)
     if cycle_iso is None:
