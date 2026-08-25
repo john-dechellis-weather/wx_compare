@@ -104,40 +104,14 @@ try:
 except Exception as _exc:
     _warm_notes.append(f"CAM warmer FAILED: {type(_exc).__name__}: {_exc}")
 
-# The CAM warmer above is the one that matters and has always run.
-# The two below are new and heavy, and starting all three together
-# OOM-killed the service (502 on every page). They are OFF by
-# default now: turn each on deliberately, one at a time, and watch
-# the log before adding the next.
-#     OVL_WARMER=on   HRRR overlay frames  (~5% duty)
-#     L2_WARMER=on    N90 radar mosaics    (~33% duty)
-try:
-    from core.cam_overlay import ensure_overlay_warmer
-
-    _static_ovl = Path(__file__).resolve().parent / "static"
-    if os.environ.get("OVL_WARMER", "off").lower() == "on":
-        ensure_overlay_warmer(_static_ovl)
-        _warm_notes.append("CAM overlay warmer started (HRRR f00-f18)")
-    else:
-        _warm_notes.append("CAM overlay warmer OFF (set OVL_WARMER=on)")
-except Exception as _exc:
-    _warm_notes.append(f"overlay warmer FAILED: "
-                       f"{type(_exc).__name__}: {_exc}")
-
-try:
-    from core.radar_l2 import ensure_radar_warmer
-
-    # Radar frames live under static/ so they can be served as
-    # absolute URLs to the map, not in the cache dir.
-    _static = Path(__file__).resolve().parent / "static"
-    if os.environ.get("L2_WARMER", "off").lower() == "on":
-        ensure_radar_warmer(_static)
-        _warm_notes.append("radar warmer started")
-    else:
-        _warm_notes.append("radar warmer OFF (set L2_WARMER=on)")
-except Exception as _exc:
-    _warm_notes.append(f"radar warmer FAILED: "
-                       f"{type(_exc).__name__}: {_exc}")
+# The CAM-overlay and radar warmers were started here for the N90
+# Airspace page, which is no longer in the navigation. Both imports
+# are gone rather than merely disabled: an import of core.radar_l2
+# pulls in pyart, numpy and matplotlib on EVERY page load, which is
+# real memory and startup time for a page nobody can reach.
+#
+# core/cam_overlay.py and core/radar_l2.py are untouched. Restoring
+# the N90 page means restoring its nav entry and these two blocks.
 
 
 def _home():
@@ -201,10 +175,15 @@ PAGES = {
         st.Page("pages/8_JBU_Flight_Tracker.py",
                 title="JBU Flight Tracker"),
     ],
-    "Airspace": [
-        st.Page("pages/13_N90_Airspace.py",
-                title="N90 Airspace"),
-    ],
+    # N90 Airspace removed from navigation. The page file stays in
+    # pages/ and still works if reached directly, but it is not
+    # listed, so nothing it imports is loaded and none of its
+    # warmers or fetchers can start. Streamlit only executes a page
+    # when it is selected — the cost of an unlisted page is the disk
+    # it sits on.
+    #
+    # To bring it back: restore this block. Everything else about the
+    # page is unchanged.
     "Experimental": [
         st.Page("pages/12_L2_Radar_Lab.py",
                 title="L2 Radar Lab"),
