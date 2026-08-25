@@ -34,6 +34,13 @@ st.set_page_config(
 from retro_theme import apply_retro_theme
 apply_retro_theme()
 
+try:
+    from core.cam_warm import note_request as _note_req
+
+    _note_req()
+except Exception:
+    pass
+
 from auth import check_password
 check_password()
 
@@ -269,40 +276,62 @@ def build_scrub_html(frames: dict, hour_axis: list,
         ci = (cycles or {}).get(m)
         row = []
         for h in hour_axis:
+            c = None
             if ci:
                 try:
                     c = _dt.fromisoformat(str(ci))
-                    v = c + _tdd(hours=h)
-                    # Two lines: what and when on the first, the
-                    # field on the second. Run hour only for the
-                    # init — the date is on the valid line and
-                    # repeating it wastes width.
-                    # Split on \x1f so the JS can style the parts
-                    # without re-parsing prose: [prefix, valid,
-                    # product]. A separator the text can never
-                    # contain, rather than a delimiter like | that
-                    # a product label might legitimately use.
-                    row.append(
-                        f"{names_run(m)} (Init {c:%H}Z) Valid: "
-                        f"\x1f{v:%H}Z {v:%a} {v.month}-{v.day}\x1f"
-                        f"{_prod_label}")
-                    continue
                 except Exception:
-                    pass
-            row.append(f"{names_run(m)}  \x1ff{h:02d}\x1f"
-                       f"{_prod_label}")
+                    c = None
+            if c is not None:
+                v = c + _tdd(hours=h)
+                # Everything the map used to carry INSIDE the image
+                # now lives here, above it, so it survives any zoom.
+                # Split on \x1f: [prefix, bold valid, italic product].
+                # "HRRR 23Z August 18" — the model and when it is
+                # VALID, which is the question being asked. The
+                # forecast hour is on the slider and the init is
+                # derivable; neither belongs in the headline.
+                row.append(
+                    f"{names_run(m)} "
+                    f"\x1f{v:%H}Z {v:%B} {v.day}\x1f"
+                    f"{_prod_label}")
+            else:
+                # No cycle known — still name the hour and product
+                # rather than falling back to a bare label.
+                row.append(f"{names_run(m)}\x1ff{h:02d}\x1f"
+                           f"{_prod_label}")
         heads[m] = row
     order = [m for m in order if m in model_arrays]
     names = {m: MODELS[m]["label"] for m in order}
     _cols = "1fr" if single else "1fr 1fr"
     html = (
         "<style>"
+        # Square side, set per view: one big panel fills
+        # the screen; two side by side each get less.
+        ":root{--sq:980px}"
+        ".camgrid.pair{--sq:820px}"
         ".camgrid{display:grid;grid-template-columns:"
         + _cols + ";gap:6px}"
-        ".camgrid img{width:100%;border:1px solid #888}"
+        # Fit by HEIGHT. aspect-ratio:1/1 looked right but makes the
+        # wrapper as TALL as the container is WIDE — 2300 px in a
+        # wide window — which the fixed component height then clips.
+        # A fixed height with object-fit:contain shows the whole
+        # square frame at any container width, letterboxed sideways.
+        ".camgrid img{border:1px solid #888}"
+        # SQUARE viewport, not full width. The frame is 10x10
+        # degrees; stretching the wrapper across a 2300 px window
+        # left enormous white margins either side and squeezed the
+        # map into a short band. Sizing the wrapper to the frame's
+        # own shape uses the space for map instead of padding.
+        # min() so a narrow window still fits.
+        ".camgrid img{border:1px solid #888}"
         ".zoomwrap{overflow:hidden;cursor:grab;"
-        "aspect-ratio:1/1;background:#fff}"
-        ".zoomwrap img{transform-origin:0 0;user-select:none;"
+        "width:min(var(--sq),100%);height:var(--sq);"
+        "margin:0 auto;display:flex;align-items:center;"
+        "justify-content:center;background:#fff}"
+        ".zoomwrap img{max-width:100%;max-height:100%;"
+        "width:auto;height:100%;object-fit:contain;"
+        "transform-origin:center center;user-select:none;"
         "-webkit-user-drag:none}"
         ".camlbl{font:bold 13px monospace;margin:2px 0}"
         # Pinned to the VIEWPORT of the zoom wrapper, not to the
@@ -311,15 +340,22 @@ def build_scrub_html(frames: dict, hour_axis: list,
         # zoom wrapper means it can never cover weather, and because
         # the wrapper scrolls underneath it the bar stays visible at
         # any zoom — which is the whole point.
-        ".hdr{display:block;width:100%;box-sizing:border-box;"
+        # Width follows the square so the bar and the map share an
+        # edge instead of the bar running the whole column.
+        ".hdr{display:block;width:min(var(--sq),100%);"
+        "margin:0 auto;box-sizing:border-box;"
         "background:#F2F2EE;border:1px solid #111;border-bottom:none;"
-        "border-radius:4px 4px 0 0;padding:3px 8px;text-align:center;"
-        "font:normal 12px/1.35 monospace;color:#111}"
+        "border-radius:4px 4px 0 0;padding:6px 10px;text-align:center;"
+        # 22px, not 12. The in-map title box it replaces rendered
+        # far larger than a normal caption once the frame was scaled
+        # to the panel, and shrinking it in the move made the run and
+        # valid time harder to read than before.
+        "font:normal 22px/1.3 monospace;color:#111}"
         ".hdr .vt{font-weight:bold}"
-        ".hdr .sub{font-style:italic;font-size:11px;opacity:0.85;"
+        ".hdr .sub{font-style:italic;font-size:17px;opacity:0.85;"
         "font-weight:normal}"
-        "#fswrap.fs .hdr{font-size:15px;line-height:1.4}"
-        "#fswrap.fs .hdr .sub{font-size:13px}"
+        "#fswrap.fs .hdr{font-size:28px;line-height:1.35}"
+        "#fswrap.fs .hdr .sub{font-size:21px}"
         ".ctl{font:13px monospace;margin:8px 0}"
         "input[type=range]{width:70%}"
         "#fswrap.fs{background:#c0c0c0;overflow:auto;"
@@ -340,12 +376,18 @@ def build_scrub_html(frames: dict, hour_axis: list,
         "<span id='hlbl'></span><br>"
         "<input type='range' id='hsl' min='0' max='"
         + str(len(hour_axis) - 1) + "' value='0' step='1'>"
-        "</div><div class='camgrid'>"
+        # `pair` narrows the square when two panels sit side by
+        # side; a single panel keeps the full :root size.
+        "</div><div class='camgrid"
+        + ("" if single else " pair") + "'>"
     )
     for m in order:
         _wrap = " class='zoomwrap'"
         html += ("<div id='cell_" + m + "'>"
-                 "<div class='camlbl'>" + names[m]
+                 # The tiny label duplicated the model name and the
+                 # forecast hour; the header bar below carries both
+                 # properly, so this is now just a spacer.
+                 "<div class='camlbl'>" + ""
                  + " <button class='fsb' data-m='" + m
                  + "' style='font:11px monospace;cursor:pointer;"
                  "margin-left:10px;padding:1px 8px'>&#x26F6; "
@@ -452,9 +494,10 @@ def build_scrub_html(frames: dict, hour_axis: list,
         )
     html += "</script>"
     if single:
-        return html, 140 + 940
+        # +70 for the enlarged two-line header bar above each panel.
+        return html, 150 + 980
     rows = (len(order) + 1) // 2
-    return html, 140 + rows * 660
+    return html, 150 + rows * 860
 
 
 # ---------------------------------------------------------------------------
@@ -696,20 +739,19 @@ if active:
             specs.append((m, cyc, fh))
         return specs, notes
 
+    # HRRR and RRFS only. The other models still exist in
+    # core.hrrr_cam and can be brought back by adding a line here,
+    # but they were not pre-warmed and nobody was scrubbing them, so
+    # every selection was a cold render.
     _VIEW_LABELS = {
-        "All models (2x2)": None,
+        "Both (HRRR + RRFS)": None,
         "HRRR": "hrrr", "RRFS": "rrfs",
-        "REFS mean": "refs_mean",
-        "NAM 3km": "nam_nest",
-        "HRW-ARW": "hiresw_arw", "HRW-FV3": "hiresw_fv3",
     }
     view_choice = st.radio(
         "View", list(_VIEW_LABELS.keys()),
         index=0, horizontal=True, key="cam_view",
         help="Single-model view renders one large panel with "
-             "mouse-wheel zoom and drag-pan (digital zoom of "
-             "the rendered image; the sidebar Zoom slider still "
-             "controls true render detail).",
+             "mouse-wheel zoom and drag-pan.",
     )
     _single_model = _VIEW_LABELS[view_choice]
     hrrr_ext = st.checkbox(
@@ -720,18 +762,19 @@ if active:
              "hours past 18 selects the newest long-range run - "
              "and the whole scrub renders from that single run "
              "for consistency. Hours past 18 aren't prewarmed, "
-             "so they download on demand. NAM 3km (60h) and the "
-             "HiRes Windows pair (48h) always run long, so they "
-             "need no such option.",
+             "so they download on demand.",
     )
 
     def _eff_max_fhr(m, cfg):
         if m == "hrrr" and hrrr_ext:
             return 48
         return cfg["max_fhr"]
+    # Two panels, not four: HRRR and RRFS are the ones that are
+    # pre-warmed and the ones actually used. The HiResW pair stayed
+    # in the grid long after anyone scrubbed them, and every panel is
+    # a render.
     GRID_ORDER = ([_single_model] if _single_model
-                  else ["hrrr", "rrfs", "hiresw_arw",
-                        "hiresw_fv3"])
+                  else ["hrrr", "rrfs"])
 
     if smooth:
         span = min(fhr_hi - fhr_lo, 84)
@@ -950,8 +993,7 @@ else:
                                 use_container_width=True):
             st.session_state["open_hub"] = _hk
     _open_hub = st.session_state.get("open_hub", "KJFK")
-    _OPEN_ORDER = ["hrrr", "rrfs", "hiresw_arw",
-                   "hiresw_fv3"]
+    _OPEN_ORDER = ["hrrr", "rrfs"]
     _warm_frames: dict = {}
     # warm_get returns (png, cycle) and the cycle was being thrown
     # away at got[0]. It is what the pinned overlay needs to say
