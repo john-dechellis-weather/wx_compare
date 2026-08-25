@@ -117,10 +117,18 @@ def build_scrub_html(frames: dict, hour_axis: list,
         "<style>"
         ".camgrid{display:grid;grid-template-columns:"
         + _cols + ";gap:6px}"
-        ".camgrid img{width:100%;border:1px solid #888}"
-        ".zoomwrap{overflow:hidden;cursor:grab}"
-        ".zoomwrap img{transform-origin:0 0;user-select:none;"
-        "-webkit-user-drag:none}"
+        # The frame is a 10x10 degree SQUARE. width:100% in a wide
+        # container makes it taller than the component, and
+        # overflow:hidden then clips the bottom — which is why the
+        # default view showed a wide short slice instead of the whole
+        # map. Fitting by HEIGHT and centring shows all of it.
+        ".camgrid img{max-width:100%;max-height:100%;"
+        "object-fit:contain;display:block;margin:0 auto;"
+        "border:1px solid #888}"
+        ".zoomwrap{overflow:hidden;cursor:grab;height:100%;"
+        "display:flex;align-items:center;justify-content:center}"
+        ".zoomwrap img{transform-origin:center center;"
+        "user-select:none;-webkit-user-drag:none}"
         ".camlbl{font:bold 13px monospace;margin:2px 0}"
         ".ctl{font:13px monospace;margin:8px 0}"
         "input[type=range]{width:70%}"
@@ -178,9 +186,11 @@ def build_scrub_html(frames: dict, hour_axis: list,
         )
     html += "</script>"
     if single:
-        return html, 140 + 720
+        # Square frame, so the component must be roughly as tall as
+        # it is wide or the fit above has nothing to work with.
+        return html, 140 + 820
     rows = (len(order) + 1) // 2
-    return html, 140 + rows * 560
+    return html, 140 + rows * 640
 
 
 PRODUCTS = {
@@ -220,7 +230,15 @@ with st.sidebar:
         help="REFS runs 00/06/12/18Z to 60h. Full-run spans "
              "allowed; warmed hub products load instantly.",
     )
-    zoom = st.slider("Zoom (degrees)", 1.0, 6.0, 2.5, 0.5)
+    # 2.5 deg matches WARM_ZOOM, which is what the warm store is
+    # rendered at — moving off it silently disables instant open,
+    # because the page tests `abs(zoom - WARM_ZOOM) < 0.01` before
+    # reading the store. The frame itself covers +-5 deg
+    # (RENDER_FACTOR 2), and the CSS above now shows all of it, so
+    # the default already IS the whole map.
+    zoom = st.slider("Zoom (degrees)", 1.0, 6.0, 2.5, 0.5,
+                     help="2.5 uses the pre-warmed frames and opens "
+                          "instantly. Other values render on demand.")
     # Display width as a percentage of the column. Default 70 rather
     # than full width: the ensemble opens as a grid of members, and
     # at 100% the first row alone fills the window so nothing else is

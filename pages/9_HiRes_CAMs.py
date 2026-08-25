@@ -736,9 +736,12 @@ if active:
         if m == "hrrr" and hrrr_ext:
             return 48
         return cfg["max_fhr"]
+    # Two panels, not four: HRRR and RRFS are the ones that are
+    # pre-warmed and the ones actually used. The HiResW pair stayed
+    # in the grid long after anyone scrubbed them, and every panel is
+    # a render.
     GRID_ORDER = ([_single_model] if _single_model
-                  else ["hrrr", "rrfs", "hiresw_arw",
-                        "hiresw_fv3"])
+                  else ["hrrr", "rrfs"])
 
     if smooth:
         span = min(fhr_hi - fhr_lo, 84)
@@ -957,8 +960,7 @@ else:
                                 use_container_width=True):
             st.session_state["open_hub"] = _hk
     _open_hub = st.session_state.get("open_hub", "KJFK")
-    _OPEN_ORDER = ["hrrr", "rrfs", "hiresw_arw",
-                   "hiresw_fv3"]
+    _OPEN_ORDER = ["hrrr", "rrfs"]
     _warm_frames: dict = {}
     # warm_get returns (png, cycle) and the cycle was being thrown
     # away at got[0]. It is what the pinned overlay needs to say
