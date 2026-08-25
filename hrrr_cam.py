@@ -968,7 +968,11 @@ def render_field(
     # matplotlib TITLE area scrolls out of view as soon as you zoom —
     # which is exactly when you most need to know which run you are
     # looking at.
-    if headline:
+    # Headline is drawn by the PAGE now, in an HTML bar above the
+    # map, so it stays visible at any zoom. Baking it into the image
+    # meant it scrolled away exactly when it was needed. Kept behind
+    # a flag for anyone rendering a frame outside the scrubber.
+    if headline and os.environ.get("CAM_INMAP_TITLE", "off") == "on":
         ax.text(0.5, 0.985, headline, transform=ax.transAxes,
                 ha="center", va="top", fontsize=9, fontweight="bold",
                 color="#101010", zorder=12,
@@ -980,7 +984,8 @@ def render_field(
         # the map nearly edge-to-edge and park a slim horizontal
         # colorbar under it, so hub-zoomed views show map, not
         # a monster legend (observed live at 6x magnification)
-        ax.set_title(title, fontsize=8, pad=2)
+        if os.environ.get("CAM_INMAP_TITLE", "off") == "on":
+            ax.set_title(title, fontsize=8, pad=2)
         cb = plt.colorbar(
             mesh, ax=ax, orientation="horizontal",
             fraction=0.030, pad=0.015, aspect=55,
@@ -991,7 +996,8 @@ def render_field(
         fig.subplots_adjust(left=0.015, right=0.985,
                             top=0.955, bottom=0.075)
     else:
-        ax.set_title(title, fontsize=10)
+        if os.environ.get("CAM_INMAP_TITLE", "off") == "on":
+            ax.set_title(title, fontsize=10)
         plt.colorbar(mesh, ax=ax, pad=0.02, shrink=0.85,
                      label=PRODUCT_LABELS.get(product, product))
     # NOTE: no bbox_inches="tight" - crops the GeoAxes (see core.radar).

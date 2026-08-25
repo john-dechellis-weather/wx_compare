@@ -90,6 +90,29 @@ WARM_PRODUCT = "REFD"
 # Raise CAM_WARM_MAX_FHR only after the warmer log shows headroom.
 WARM_MAX = {"hrrr": 18, "rrfs": 84, "nam_nest": 60,
             "hiresw_arw": 48, "hiresw_fv3": 48}
+# f24 for EVERY job, CAMs and REFS alike. Measured duty cycle at this
+# cap, each model against its own cadence:
+#
+#     hrrr        1 h cycle   95 frames   26%   <- hourly, dominates
+#     rrfs        3 h        125          12%
+#     nam_nest    6 h        125           6%
+#     hiresw_arw  6 h        125           6%
+#     hiresw_fv3  6 h        125           6%
+#     REFS x4     6 h        500          23%
+#                                        ----
+#                                         79%
+#
+# That leaves headroom for the CONUS map, which is the page that
+# must never be slow. Uncapped REFS alone is 56% and pushes the
+# total past 100%, at which point the warmer never catches up and
+# the store stays empty — which is what had been happening.
+#
+# Hours past f24 render on demand at a few seconds each. Page 11 now
+# USES partial coverage rather than ignoring the store when the last
+# requested hour is not warm.
+#
+# Raise CAM_WARM_MAX_FHR only after the warmer log shows the store
+# filling and page 3 still opening fast.
 WARM_CAP_FHR = int(os.environ.get("CAM_WARM_MAX_FHR", "24"))
 
 
@@ -104,8 +127,16 @@ WARM_HOURS = list(range(0, max(WARM_MAX.values()) + 1))
 # manifest skips work until IT publishes a new cycle - HRRR churns
 # hourly, NAM 6-hourly, the HRW pair only 00/12Z - so after the
 # one-time fill (~10-15 min) steady-state cost is modest.
-WARM_MODELS = ["hrrr", "rrfs", "nam_nest",
-               "hiresw_arw", "hiresw_fv3"]
+# HRRR and RRFS only. The HiResW pair and NAM were warmed too, which
+# meant five models competing for the same CPU as the CONUS map for
+# panels nobody was scrubbing. Two models at f0-24 is 38% duty
+# instead of 55%, and it is what the 4-panel view actually needs.
+#
+# The others still RENDER on demand — they are in MODELS and remain
+# selectable — they just are not pre-warmed.
+WARM_MODELS = [m.strip() for m in
+               os.environ.get("CAM_WARM_MODELS", "hrrr,rrfs").split(",")
+               if m.strip()]
 # Warm JOBS: a job is "model" (legacy, product=WARM_PRODUCT) or
 # "model@PRODUCT". REFS jobs warm the flagship ensemble products
 # so hub loads scrub instantly, same as the deterministic grid.
@@ -127,6 +158,43 @@ def _job(key: str) -> tuple:
         return m, p
     return key, WARM_PRODUCT
 CHECK_INTERVAL_S = 600
+
+# ---------------------------------------------------------------------------
+# Traffic-aware backoff
+# ---------------------------------------------------------------------------
+# A fixed yield between frames is blind: it pauses just as much at
+# 03Z with nobody on the site as it does while someone is waiting for
+# the CONUS map. This makes the warmer aware of actual requests.
+#
+# Pages call note_request() as they start rendering. Before each
+# frame the warmer checks how long ago that was, and if the site is
+# in use it waits — up to a bounded number of times, so a page on a
+# 2-minute auto-refresh cannot starve the warmer forever.
+#
+# It cannot fix the underlying problem, which is that matplotlib
+# holds the GIL and Python threads therefore cannot truly run in
+# parallel. The real fix is a separate PROCESS. This gets most of
+# the benefit for none of the memory.
+_LAST_REQUEST = [0.0]
+QUIET_S = float(os.environ.get("CAM_WARM_QUIET_S", "4"))
+MAX_BACKOFF_S = float(os.environ.get("CAM_WARM_MAX_BACKOFF_S", "25"))
+
+
+def note_request() -> None:
+    """Called by pages on render. Cheap enough for every rerun."""
+    _LAST_REQUEST[0] = time.time()
+
+
+def _wait_for_quiet() -> float:
+    """Block while the site is in use. Returns seconds waited."""
+    waited = 0.0
+    while waited < MAX_BACKOFF_S:
+        since = time.time() - _LAST_REQUEST[0]
+        if since >= QUIET_S:
+            return waited
+        time.sleep(0.5)
+        waited += 0.5
+    return waited
 
 _started = False
 _lock = threading.Lock()
@@ -333,6 +401,9 @@ def _warm_model(cache_root: Path, key: str, log) -> None:
             _frame_path(cache_root, key, cycle_iso, icao,
                         h).write_bytes(png)
             n_ok += 1
+            # Yield to anyone actually using the site before starting
+            # the next frame.
+            _wait_for_quiet()
             if _yield_s:
                 time.sleep(_yield_s)
             del png, vals, lats, lons
@@ -414,3 +485,87 @@ def ensure_warmer_started(cache_root: Path) -> None:
         )
         t.start()
         _started = True
+
+# ---------------------------------------------------------------------------
+# Serving frames as URLs instead of inline bytes
+# ---------------------------------------------------------------------------
+# The CAM page base64s every frame into the HTML. That costs three
+# ways at once: +33% from the encoding, the browser cannot cache any
+# of it because inline data has no URL, and Streamlit re-ships the
+# WHOLE payload on every rerun — every slider move, every checkbox.
+# Measured at ~77 MB per page view before WebP, which exhausted a
+# 25 GB monthly bandwidth allowance in about 330 views.
+#
+# Publishing each frame as a file under static/ turns them into
+# cacheable resources: the HTML drops to kilobytes, a rerun re-sends
+# nothing, and scrubbing back through hours already seen costs zero.
+#
+# The warm store stays authoritative and lives on the PERSISTENT
+# disk. static/ is inside the app directory, which is wiped on every
+# deploy — so these are disposable copies, recreated on demand from
+# the store. That is the right way round: losing them costs a file
+# copy, losing the store costs hours of rendering.
+
+
+def publish_frame(cache_root: Path, static_dir, model: str, icao: str,
+                  fhr: int):
+    """Copy a warm frame into static/ and return (name, cycle_iso).
+
+    Returns (None, None) when the frame is not warm. Idempotent —
+    an existing copy is reused, so the cost after the first call is
+    one stat().
+    """
+    import shutil
+
+    man = _read_manifest(cache_root, model)
+    cycle_iso = man.get("cycle")
+    if not cycle_iso:
+        return None, None
+    if fhr not in warm_hours(model):
+        return None, None
+    src = _frame_path(cache_root, model, cycle_iso, icao.upper(), fhr)
+    if not src.exists():
+        return None, None
+    tag = str(cycle_iso).replace(":", "").replace("-", "").replace(
+        "+", "")[:13]
+    # Cycle is IN the filename, so a new run publishes new URLs and
+    # the browser never serves a stale frame from cache.
+    name = (f"cam_{model}_{tag}_{icao.upper()}"
+            f"_f{fhr:02d}{src.suffix}")
+    dest = Path(static_dir) / name
+    if not dest.exists():
+        try:
+            Path(static_dir).mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dest)
+        except OSError:
+            return None, None
+    return name, cycle_iso
+
+
+def prune_published(static_dir, keep_cycles: int = 2):
+    """Drop published frames from older cycles.
+
+    static/ is ephemeral but not unbounded — a busy day of hourly
+    HRRR cycles would accumulate thousands of files between deploys.
+    """
+    from collections import defaultdict
+
+    d = Path(static_dir)
+    if not d.exists():
+        return 0
+    by_model = defaultdict(set)
+    for f in d.glob("cam_*_*"):
+        parts = f.name.split("_")
+        if len(parts) >= 4:
+            by_model[parts[1]].add(parts[2])
+    dropped = 0
+    for model, cycles in by_model.items():
+        for old in sorted(cycles, reverse=True)[keep_cycles:]:
+            for f in d.glob(f"cam_{model}_{old}_*"):
+                try:
+                    f.unlink()
+                    dropped += 1
+                except OSError:
+                    pass
+    return dropped
+
