@@ -1178,6 +1178,66 @@ import os as _os_ko
 KEEP_OTHERS = _os_ko.environ.get("JBU_KEEP_OTHERS", "off").lower() == "on"
 
 
+
+# ---------------------------------------------------------------------------
+# Fleet positions, refreshed off the render path
+# ---------------------------------------------------------------------------
+# The map fragment reruns every 120 s and cached_fleet has a 90 s
+# TTL, so the cache had ALWAYS expired by the time the fragment ran —
+# meaning every single beat did a full 17-tile ADS-B sweep inside the
+# fragment, blocking the map for as long as it took. That is the grey
+# flash on a timer.
+#
+# Same shape as every other external call on this page now: a
+# background thread keeps the last good result, the render reads
+# whatever is there. Positions are at most one beat old, which for
+# aircraft on a 2-minute refresh is invisible.
+_FLEET = {"res": None, "bucket": None, "busy": False,
+          "err": None, "tb": None}
+# How long the FIRST render may wait for positions. Only ever paid
+# once per process; after that the background thread is always a beat
+# ahead.
+FIRST_WAIT_S = float(_os_ko.environ.get("JBU_FLEET_FIRST_WAIT", "8"))
+
+
+def _fleet_refresh(bucket: str):
+    if _FLEET["busy"]:
+        return
+    _FLEET["busy"] = True
+    try:
+        res = cached_fleet(bucket)
+        _FLEET.update({"res": res, "bucket": bucket,
+                       "err": None, "tb": None})
+    except Exception as exc:
+        import traceback as _tbf
+        _FLEET.update({"err": f"{type(exc).__name__}: {exc}",
+                       "tb": _tbf.format_exc()})
+    finally:
+        _FLEET["busy"] = False
+
+
+def fleet_now(bucket: str):
+    """(result, err, tb). Kicks a refresh if stale.
+
+    Blocks ONLY on the very first call of the process, and only up
+    to FIRST_WAIT_S — otherwise the first person through the door
+    gets an empty map, which is worse than a short wait. Every
+    subsequent call returns immediately with the last good result.
+    """
+    import threading as _th
+    import time as _t
+
+    if _FLEET["bucket"] != bucket and not _FLEET["busy"]:
+        _th.Thread(target=_fleet_refresh, args=(bucket,),
+                   daemon=True).start()
+    if _FLEET["res"] is None:
+        deadline = _t.time() + FIRST_WAIT_S
+        while _FLEET["res"] is None and _FLEET["err"] is None \
+                and _t.time() < deadline:
+            _t.sleep(0.25)
+    return _FLEET["res"], _FLEET["err"], _FLEET["tb"]
+
+
 @st.cache_data(ttl=90, show_spinner=False, max_entries=2)
 def cached_fleet(bucket: str):
     """All airborne JBU over CONUS.
@@ -1882,9 +1942,9 @@ if run_button:
             show_cs = st.checkbox(
                 "Flight numbers", value=True, key="show_cs_f",
             )
-        # Live positions: refetch the fleet on each heartbeat
-        # (90s cache; the 4-lane sweep runs inside the fragment
-        # when it expires, so aircraft advance every beat)
+        # Live positions from the background refresher. The fragment
+        # NEVER waits on the sweep — it draws the last good result
+        # and a fresh one arrives for the next beat.
         _fb = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
         # fleet MUST be bound before the try. It was not, so any
         # exception inside cached_fleet was swallowed by a bare
@@ -1894,15 +1954,10 @@ if run_button:
         fleet = []
         fleet_other = []
         _fleet_err = _fleet_tb = None
-        try:
-            _lres = cached_fleet(_fb)
-            if _lres is not None:
-                fleet = _lres[0]
-                fleet_other = _lres[6] if len(_lres) > 6 else []
-        except Exception as _fe:
-            import traceback as _tb_f
-            _fleet_err = f"{type(_fe).__name__}: {_fe}"
-            _fleet_tb = _tb_f.format_exc()
+        _lres, _fleet_err, _fleet_tb = fleet_now(_fb)
+        if _lres is not None:
+            fleet = _lres[0]
+            fleet_other = _lres[6] if len(_lres) > 6 else []
         if _fleet_err:
             st.warning(
                 f"Fleet positions unavailable - {_fleet_err}. "
