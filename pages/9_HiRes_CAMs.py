@@ -304,10 +304,18 @@ def build_scrub_html(frames: dict, hour_axis: list,
         "<style>"
         ".camgrid{display:grid;grid-template-columns:"
         + _cols + ";gap:6px}"
-        ".camgrid img{width:100%;border:1px solid #888}"
-        ".zoomwrap{overflow:hidden;cursor:grab;"
-        "aspect-ratio:1/1;background:#fff}"
-        ".zoomwrap img{transform-origin:0 0;user-select:none;"
+        # Fit by HEIGHT. aspect-ratio:1/1 looked right but makes the
+        # wrapper as TALL as the container is WIDE — 2300 px in a
+        # wide window — which the fixed component height then clips.
+        # A fixed height with object-fit:contain shows the whole
+        # square frame at any container width, letterboxed sideways.
+        ".camgrid img{border:1px solid #888}"
+        ".zoomwrap{overflow:hidden;cursor:grab;width:100%;"
+        "height:700px;display:flex;align-items:center;"
+        "justify-content:center;background:#fff}"
+        ".zoomwrap img{max-width:100%;max-height:100%;width:auto;"
+        "height:100%;object-fit:contain;"
+        "transform-origin:center center;user-select:none;"
         "-webkit-user-drag:none}"
         ".camlbl{font:bold 13px monospace;margin:2px 0}"
         # Pinned to the VIEWPORT of the zoom wrapper, not to the
@@ -462,9 +470,9 @@ def build_scrub_html(frames: dict, hour_axis: list,
     html += "</script>"
     if single:
         # +70 for the enlarged two-line header bar above each panel.
-        return html, 210 + 940
+        return html, 130 + 700
     rows = (len(order) + 1) // 2
-    return html, 140 + rows * 730
+    return html, 150 + rows * 700
 
 
 # ---------------------------------------------------------------------------

@@ -117,21 +117,21 @@ def build_scrub_html(frames: dict, hour_axis: list,
         "<style>"
         ".camgrid{display:grid;grid-template-columns:"
         + _cols + ";gap:6px}"
-        # The frame is a 10x10 degree SQUARE. width:100% in a wide
-        # container makes it taller than the component, and
-        # overflow:hidden then clips the bottom — which is why the
-        # default view showed a wide short slice instead of the whole
-        # map. Fitting by HEIGHT and centring shows all of it.
-        # The frame is a 10x10 degree SQUARE. The earlier fix set
-        # object-fit on `.camgrid img`, but the image sits inside
-        # `.zoomwrap`, whose own rule won — so the bottom was still
-        # clipped. aspect-ratio on the WRAPPER is what actually
-        # reserves square space; the img then fits inside it.
+        # Fit by HEIGHT, not aspect-ratio.
+        #
+        # aspect-ratio:1/1 was the previous attempt and it made the
+        # clipping worse: the container is ~2300 px wide, so a square
+        # wrapper became 2300 px TALL, far past the component height,
+        # and the iframe cut it off. Pinning the wrapper to a fixed
+        # height and letting object-fit:contain letterbox the square
+        # horizontally shows the WHOLE 10x10 degree frame, every
+        # time, at any container width.
         ".camgrid img{border:1px solid #888}"
         ".zoomwrap{overflow:hidden;cursor:grab;width:100%;"
-        "aspect-ratio:1/1;display:flex;align-items:center;"
-        "justify-content:center}"
-        ".zoomwrap img{width:100%;height:100%;object-fit:contain;"
+        "height:820px;display:flex;align-items:center;"
+        "justify-content:center;background:#fff}"
+        ".zoomwrap img{max-width:100%;max-height:100%;"
+        "width:auto;height:100%;object-fit:contain;"
         "transform-origin:center center;user-select:none;"
         "-webkit-user-drag:none}"
         ".camlbl{font:bold 13px monospace;margin:2px 0}"
@@ -191,13 +191,10 @@ def build_scrub_html(frames: dict, hour_axis: list,
         )
     html += "</script>"
     if single:
-        # Square frame, so the component must be roughly as tall as
-        # it is wide or the fit above has nothing to work with.
-        # Square wrapper: the component has to be at least as tall
-        # as the panel is wide, or the iframe scrolls instead.
-        return html, 210 + 900
+        # 820 px of map + slider, label and padding.
+        return html, 130 + 820
     rows = (len(order) + 1) // 2
-    return html, 140 + rows * 770
+    return html, 140 + rows * 620
 
 
 PRODUCTS = {
