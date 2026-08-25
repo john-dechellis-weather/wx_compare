@@ -310,9 +310,17 @@ def build_scrub_html(frames: dict, hour_axis: list,
         # A fixed height with object-fit:contain shows the whole
         # square frame at any container width, letterboxed sideways.
         ".camgrid img{border:1px solid #888}"
-        ".zoomwrap{overflow:hidden;cursor:grab;width:100%;"
-        "height:700px;display:flex;align-items:center;"
-        "justify-content:center;background:#fff}"
+        # SQUARE viewport, not full width. The frame is 10x10
+        # degrees; stretching the wrapper across a 2300 px window
+        # left enormous white margins either side and squeezed the
+        # map into a short band. Sizing the wrapper to the frame's
+        # own shape uses the space for map instead of padding.
+        # min() so a narrow window still fits.
+        ".camgrid img{border:1px solid #888}"
+        ".zoomwrap{overflow:hidden;cursor:grab;"
+        "width:min(700px,100%);height:700px;margin:0 auto;"
+        "display:flex;align-items:center;justify-content:center;"
+        "background:#fff}"
         ".zoomwrap img{max-width:100%;max-height:100%;width:auto;"
         "height:100%;object-fit:contain;"
         "transform-origin:center center;user-select:none;"
@@ -472,7 +480,7 @@ def build_scrub_html(frames: dict, hour_axis: list,
         # +70 for the enlarged two-line header bar above each panel.
         return html, 130 + 700
     rows = (len(order) + 1) // 2
-    return html, 150 + rows * 700
+    return html, 150 + rows * 740
 
 
 # ---------------------------------------------------------------------------
