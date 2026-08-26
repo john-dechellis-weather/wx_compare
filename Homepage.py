@@ -104,14 +104,16 @@ try:
 except Exception as _exc:
     _warm_notes.append(f"CAM warmer FAILED: {type(_exc).__name__}: {_exc}")
 
-# The CAM-overlay and radar warmers were started here for the N90
-# Airspace page, which is no longer in the navigation. Both imports
-# are gone rather than merely disabled: an import of core.radar_l2
-# pulls in pyart, numpy and matplotlib on EVERY page load, which is
-# real memory and startup time for a page nobody can reach.
+# The CAM-overlay and radar warmers are deliberately NOT started
+# here, even though the N90 page is listed again. Importing
+# core.radar_l2 pulls in pyart, numpy and matplotlib on EVERY page
+# load — real memory and startup time charged to every visitor for
+# a page most of them never open. Page 13 starts them itself when
+# it loads, which puts the cost where it belongs.
 #
-# core/cam_overlay.py and core/radar_l2.py are untouched. Restoring
-# the N90 page means restoring its nav entry and these two blocks.
+# Turning them on globally is OVL_WARMER=on and L2_WARMER=on, but
+# check the CONUS map stays fast first: the three warmers running
+# together is what caused the 502s on 8/24.
 
 
 def _home():
@@ -175,15 +177,19 @@ PAGES = {
         st.Page("pages/8_JBU_Flight_Tracker.py",
                 title="JBU Flight Tracker"),
     ],
-    # N90 Airspace removed from navigation. The page file stays in
-    # pages/ and still works if reached directly, but it is not
-    # listed, so nothing it imports is loaded and none of its
-    # warmers or fetchers can start. Streamlit only executes a page
-    # when it is selected — the cost of an unlisted page is the disk
-    # it sits on.
+    # N90 Airspace. Listed again, but its two warmers are NOT
+    # started from here — see the note in the warmer block above.
+    # The page still imports core.radar_l2 (and therefore pyart and
+    # cartopy) when it is opened, which is fine: Streamlit only
+    # executes a page when it is selected, so that cost lands on
+    # whoever opens it rather than on every request to every page.
     #
-    # To bring it back: restore this block. Everything else about the
-    # page is unchanged.
+    # Radar on this page needs a manual "Build radar loop"; the CAM
+    # overlay needs OVL_WARMER=on. Both are off by default.
+    "Airspace": [
+        st.Page("pages/13_N90_Airspace.py",
+                title="N90 Airspace"),
+    ],
     "Experimental": [
         st.Page("pages/12_L2_Radar_Lab.py",
                 title="L2 Radar Lab"),
