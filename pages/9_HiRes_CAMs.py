@@ -53,6 +53,7 @@ CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 # frames for each new model cycle so hub views serve instantly.
 from core.cam_warm import (
     CONUS_CENTER, CONUS_KEY, CONUS_ZOOM,
+    CAM_PRODUCTS as _WARM_PRODUCTS,
     HUBS as WARM_HUBS, HUB_LABELS as _HUB_LABELS,
     WARM_HOURS, WARM_PRODUCT, WARM_ZOOM,
     ensure_warmer_started, warm_get, warm_hours, warm_report,
@@ -847,8 +848,12 @@ if active:
 
         # Pull any prewarmed frames first; only the rest download.
         warm_ok_s = (
+            # Every product is warmed now, not just WARM_PRODUCT.
+            # This gate used to pin the warm path to reflectivity,
+            # so ceiling and visibility rendered on demand even
+            # when their frames were sitting on disk.
             (not conus_view) and icao in WARM_HUBS
-            and product == WARM_PRODUCT
+            and product in _WARM_PRODUCTS
             and abs(zoom - WARM_ZOOM) < 0.01
         )
         if warm_ok_s:
@@ -856,9 +861,13 @@ if active:
             for m, cyc, h in plan:
                 got = None
                 try:
-                    if h in warm_hours(m):
-                        got = warm_get(CACHE_ROOT, m,
-                                       icao, h)
+                    # Ask for the SELECTED product. Passing a bare
+                    # model defaults to reflectivity, which is why
+                    # ceiling and visibility were re-rendering with
+                    # warm frames on disk.
+                    _jk = f"{m}@{product}"
+                    if h in warm_hours(_jk):
+                        got = warm_get(CACHE_ROOT, _jk, icao, h)
                 except Exception:
                     got = None
                 if got:
@@ -956,7 +965,7 @@ if active:
         # Warm-store eligibility: hub airport, warm product/zoom,
         # in-range hour.
         warm_ok = (
-            icao in WARM_HUBS and product == WARM_PRODUCT
+            icao in WARM_HUBS and product in _WARM_PRODUCTS
             and abs(zoom - WARM_ZOOM) < 0.01
         )
         grid = {}
@@ -965,7 +974,9 @@ if active:
         if warm_ok:
             still = []
             for m, cyc, fh in remaining:
-                got = warm_get(CACHE_ROOT, m, icao, fh)                     if fh in WARM_HOURS else None
+                _jk2 = f"{m}@{product}"
+                got = (warm_get(CACHE_ROOT, _jk2, icao, fh)
+                       if fh in warm_hours(_jk2) else None)
                 if got:
                     grid[m] = got[0]
                     warm_hits.append(m)
