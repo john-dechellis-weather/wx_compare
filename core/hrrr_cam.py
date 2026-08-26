@@ -1013,9 +1013,18 @@ def render_field(
     # what shipped before while covering 4x the area, with
     # ~1.5x digital zoom-in headroom. Raise toward 230 only
     # after checking the open-page transfer size.
-    fig.savefig(buf, format="png",
-                dpi=(260 if zoom_deg > 10
-                     else 180 if zoom_deg > 4 else 100))
+    # Resolution expressed as PIXELS PER DEGREE, not a dpi tier
+    # keyed on zoom. The tiered version gave dpi 260 to anything
+    # wider than 10 degrees, so the new 13-degree region would have
+    # rendered LARGER than the two 10-degree frames it replaced —
+    # exactly backwards from the reason for combining them.
+    #
+    # figsize is a fixed (8, 7) inches, so dpi is NOT px/degree:
+    # width_px = 8 * dpi, and the frame spans 2 * zoom_deg degrees.
+    # Solve for the dpi that yields the target density.
+    _ppd = float(os.environ.get("CAM_WARM_PPD", "150"))
+    _dpi = max(90.0, min(300.0, _ppd * 2.0 * float(zoom_deg) / 8.0))
+    fig.savefig(buf, format="png", dpi=_dpi)
     plt.close(fig)
     buf.seek(0)
     raw = buf.getvalue()

@@ -27,14 +27,49 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+# TWO REGIONS, not five hubs.
+#
+# The hub frames were +-5 degrees each and overlapped heavily: JFK,
+# EWR, LGA, PHL, ALB and BDL all fell inside BOTH a DCA frame and a
+# BOS frame, so two renders covered the same ground twice. One
+# 13x13 box covers 169 square degrees against 200 for the pair, and
+# holds every station from CLT at 35.2N to PWM at 43.6N.
+#
+# Measured cost, relative to one 10x10 frame:
+#     FL(10) + MidAtl(10) + NE(10)   3.00 units   58% duty
+#     FL(10) + combined(13)          2.69 units   52%
+#     the same at 150 px/degree      1.87 units   36%
+#
+# This is the opposite conclusion from a single CONUS frame, and the
+# difference is what the extra area buys. CONUS adds 1,500 square
+# degrees of ocean and empty West; this adds 50 that were already
+# being rendered twice.
+#
+# Each entry is (lat, lon, half_width_degrees).
 HUBS = {
-    "KJFK": (40.6413, -73.7781),
-    "KMCO": (28.4312, -81.3081),
-    "KFLL": (26.0726, -80.1527),
-    "KDCA": (38.8521, -77.0377),
-    "KBOS": (42.3629, -71.0064),
+    "NE": (40.60, -74.00, 6.5),
+    "FL": (27.25, -80.73, 5.0),
+}
+# Display names. The keys are short because they appear in every
+# frame FILENAME on disk; the labels are what a user reads.
+HUB_LABELS = {
+    "NE": "Northeast and Mid-Atlantic",
+    "FL": "Florida",
 }
 WARM_ZOOM = 2.5
+
+
+def hub_geom(icao: str):
+    """(lat, lon, half_width_deg) for a region."""
+    v = HUBS[icao]
+    return (v[0], v[1], v[2] if len(v) > 2 else WARM_ZOOM * RENDER_FACTOR)
+
+
+# Pixels per degree for warm frames. 150, not 180: a 13x13 frame at
+# 180 is 2340 px square, and the panel displays at ~900 px, so the
+# extra resolution is never seen and costs 30% more bytes and render
+# time. 150 px/deg still resolves finer than the display.
+WARM_PPD = int(os.environ.get("CAM_WARM_PPD", "150"))
 # Frames render at RENDER_FACTOR x the display zoom. The whole
 # frame IS the default view now (no home pre-zoom): the user
 # opens fully zoomed out and wheels IN for detail. So this
@@ -57,12 +92,22 @@ def _job_geom(key: str):
     verdict 8/17: hub-native frames are ~3x sharper than any
     browser-tenable CONUS frame, so ALL jobs warm hub crops;
     CONUS is an explicit render mode (never warmed)."""
-    return list(HUBS), dict(HUBS), WARM_ZOOM * RENDER_FACTOR
+    # Coordinates AND half-width per region: they are no longer the
+    # same size. NE is 13x13 (it absorbed the old DCA and BOS
+    # frames), FL is 10x10.
+    return (list(HUBS),
+            {k: (v[0], v[1]) for k, v in HUBS.items()},
+            {k: hub_geom(k)[2] for k in HUBS})
 # Bump when render styling changes so prewarmed frames rebuild
 # (v2: 10 nm range ring; v3: fix hub-center leak - every frame
 # had rendered centered on the LAST hub in the dict, Boston,
 # regardless of which hub's path it was saved under)
-WARM_STYLE = 5   # v5: ±5 deg canvas, full-frame default view
+# v6: two REGIONS (NE 13x13, FL 10x10) replacing five
+# +-5 deg hub frames, and a fixed 150 px/degree instead of a
+# dpi tier. Frame paths do not encode geometry, so without
+# this bump every stale hub frame would be served as if it
+# were the new region.
+WARM_STYLE = 6   # v5: ±5 deg canvas, full-frame default view
 # ^^ THIS MUST BE BUMPED WHENEVER RENDER_FACTOR / WARM_ZOOM /
 # dpi CHANGE. Frame paths do NOT encode geometry and warm_get
 # does NOT check style - it serves whatever bytes sit on disk
@@ -115,10 +160,43 @@ WARM_MAX = {"hrrr": 18, "rrfs": 84, "nam_nest": 60,
 # filling and page 3 still opening fast.
 WARM_CAP_FHR = int(os.environ.get("CAM_WARM_MAX_FHR", "24"))
 
+# Per-job depth overrides, and a SYNOPTIC-ONLY deep tier.
+#
+# HRRR runs hourly, so warming it to f48 costs 68% duty on its own —
+# 245 frames every hour, forever. But the extension only EXISTS on
+# 00/06/12/18Z. Warming f0-18 every cycle and the f19-48 tail only on
+# those four runs costs ~17% instead of 68% and loses nothing, since
+# there is no extended data to warm on the other twenty cycles.
+#
+# RRFS is 3-hourly, so its full f84 is only 39% and needs no split.
+WARM_DEPTH = {"hrrr": 18, "rrfs": 84}
+SYNOPTIC_DEPTH = {"hrrr": 48}
+SYNOPTIC_HOURS = {0, 6, 12, 18}
 
-def warm_hours(model: str) -> list:
-    return list(range(0, min(WARM_MAX.get(model, 12),
-                             WARM_CAP_FHR) + 1))
+
+def warm_hours(model: str, cycle_iso: str = None) -> list:
+    """Hours to warm for this job, for this cycle.
+
+    Deeper on synoptic runs where the extended forecast exists;
+    WARM_CAP_FHR still bounds anything without an explicit depth.
+    """
+    base = WARM_DEPTH.get(model)
+    if base is None:
+        base = min(WARM_MAX.get(model, 12), WARM_CAP_FHR)
+    deep = SYNOPTIC_DEPTH.get(model)
+    if deep and cycle_iso:
+        try:
+            from datetime import datetime as _d
+
+            if _d.fromisoformat(str(cycle_iso)).hour in SYNOPTIC_HOURS:
+                # NOT clamped by WARM_MAX: that holds the model's
+                # ROUTINE depth (HRRR 18), and the whole point of the
+                # synoptic tier is that the run goes further than
+                # routine. Clamping here silently disabled it.
+                base = deep
+        except Exception:
+            pass
+    return list(range(0, base + 1))
 
 
 # Back-compat union (page-side gating uses per-model warm_hours)
@@ -258,8 +336,16 @@ def warm_get(cache_root: Path, model: str, icao: str,
     if not cycle_iso or (icao.upper() not in HUBS
                          and icao.upper() != CONUS_KEY):
         return None
-    if fhr not in warm_hours(model):
-        return None
+    if fhr not in warm_hours(model, cycle_iso):
+        # Past the routine depth: the newest run does not go this
+        # far, but the last synoptic run does and was warmed. This
+        # is what makes "show me f34 at 14Z" instant instead of a
+        # cold render.
+        dc = man.get("deep_cycle")
+        if dc and fhr <= int(man.get("deep_max", 0)):
+            cycle_iso = dc
+        else:
+            return None
     p = _frame_path(cache_root, model, cycle_iso, icao.upper(), fhr)
     if not p.exists():
         return None
@@ -281,7 +367,7 @@ def warm_report(cache_root: Path) -> list:
         man = _read_manifest(cache_root, m)
         cyc = man.get("cycle") or "-"
         style = man.get("style", "pre-ring")
-        mh = warm_hours(m)
+        mh = warm_hours(m, cyc if cyc != "-" else None)
         max_h = min(max(mh), MODELS[_mm]["max_fhr"])
         _lo2 = MODELS[_mm].get("min_fhr", 0)
         hours = [h for h in mh if _lo2 <= h <= max_h]
@@ -315,11 +401,25 @@ def _warm_model(cache_root: Path, key: str, log) -> None:
     )
 
     model, w_product = _job(key)
+    # Depth depends on the cycle (synoptic runs go deeper) and the
+    # cycle probe needs a depth to ask for. Resolve it in two steps:
+    # find the newest cycle at the SHALLOW depth, then recompute the
+    # hour list now that the cycle hour is known.
     mh = warm_hours(key)
     max_h = min(max(mh), MODELS[model]["max_fhr"])
+    cyc = latest_cycle(model, max_h)
+    if cyc is not None:
+        mh = warm_hours(key, cyc.isoformat())
+        deep_max = min(max(mh), MODELS[model]["max_fhr"])
+        if deep_max > max_h:
+            # Synoptic run: confirm the extension actually published
+            # before committing to warming 30 more frames per hub.
+            if latest_cycle(model, deep_max) == cyc:
+                max_h = deep_max
+            else:
+                mh = warm_hours(key)
     lo = MODELS[model].get("min_fhr", 0)
     hours = [h for h in mh if lo <= h <= max_h]
-    cyc = latest_cycle(model, max_h)
     if cyc is None:
         return
     cycle_iso = cyc.isoformat()
@@ -329,7 +429,7 @@ def _warm_model(cache_root: Path, key: str, log) -> None:
     # "complete" flag must not skip a newly added hub (KBOS once
     # sat cold for hours waiting on the HRW pair's next 12-hourly
     # cycle because of exactly that).
-    _icaos, _coords, _zoom = _job_geom(key)
+    _icaos, _coords, _zooms = _job_geom(key)
     missing = [
         (icao, h)
         for icao in _icaos
@@ -357,7 +457,10 @@ def _warm_model(cache_root: Path, key: str, log) -> None:
             "key": (icao, h),
             "model": model, "product": w_product,
             "cycle": cyc, "fhr": h,
-            "lat": lat, "lon": lon, "zoom_deg": _zoom,
+            # Per-region: the GRIB subset must match the frame it
+            # will be rendered into, or NE gets a 10-degree crop
+            # drawn onto a 13-degree canvas.
+            "lat": lat, "lon": lon, "zoom_deg": _zooms[icao],
         })
     # INSTRUMENTED. max_workers=2 has been the setting since this was
     # written and nobody has measured whether it is the constraint.
@@ -393,7 +496,7 @@ def _warm_model(cache_root: Path, key: str, log) -> None:
             try:
                 png = render_field(
                     w_product, vals, lats, lons,
-                    _hla, _hlo, _zoom, title,
+                    _hla, _hlo, _zooms[icao], title,
                     headline=headline,
                 )
             except Exception:
@@ -411,11 +514,24 @@ def _warm_model(cache_root: Path, key: str, log) -> None:
             gc.collect()
             time.sleep(0.25)   # stay polite to user requests
 
-    _manifest_path(cache_root, key).write_text(json.dumps({ "style": WARM_STYLE,
+    # Carry forward the last SYNOPTIC cycle that warmed extended
+    # hours. Without it those frames become unreachable the moment
+    # the next hourly run overwrites "cycle": warm_get would look in
+    # the 13Z directory for f34, not find it, and re-render from
+    # scratch while the 12Z frames sat on disk unused.
+    _routine = max(warm_hours(key))
+    _deep_cycle = man.get("deep_cycle")
+    _deep_max = man.get("deep_max", 0)
+    if max(hours) > _routine:
+        _deep_cycle, _deep_max = cycle_iso, max(hours)
+    _manifest_path(cache_root, key).write_text(json.dumps({
+        "style": WARM_STYLE,
         "cycle": cycle_iso,
         "product": w_product,
         "complete": True,
         "frames": n_ok,
+        "deep_cycle": _deep_cycle,
+        "deep_max": _deep_max,
         "warmed_at": datetime.now(timezone.utc).isoformat(),
     }))
     data.clear()
@@ -521,7 +637,7 @@ def publish_frame(cache_root: Path, static_dir, model: str, icao: str,
     cycle_iso = man.get("cycle")
     if not cycle_iso:
         return None, None
-    if fhr not in warm_hours(model):
+    if fhr not in warm_hours(model, cycle_iso):
         return None, None
     src = _frame_path(cache_root, model, cycle_iso, icao.upper(), fhr)
     if not src.exists():
