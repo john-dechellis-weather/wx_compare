@@ -173,7 +173,8 @@ WARM_CAP_FHR = int(os.environ.get("CAM_WARM_MAX_FHR", "24"))
 # there is no extended data to warm on the other twenty cycles.
 #
 # RRFS is 3-hourly, so its full f84 is only 39% and needs no split.
-WARM_DEPTH = {"hrrr": 18, "rrfs": 84}
+WARM_DEPTH = {"hrrr": 18, "rrfs": 84,
+              "refs_pmmn": 60, "refs_prob": 60}
 SYNOPTIC_DEPTH = {"hrrr": 48}
 SYNOPTIC_HOURS = {0, 6, 12, 18}
 
@@ -184,10 +185,15 @@ def warm_hours(model: str, cycle_iso: str = None) -> list:
     Deeper on synoptic runs where the extended forecast exists;
     WARM_CAP_FHR still bounds anything without an explicit depth.
     """
-    base = WARM_DEPTH.get(model)
+    # `model` may be a JOB KEY like "hrrr@VIS". Depth is a property
+    # of the MODEL, not the product — without this split every
+    # non-reflectivity job silently fell back to the 12-hour default.
+    mkey = model.split("@", 1)[0] if "@" in str(model) else model
+    base = WARM_DEPTH.get(mkey)
     if base is None:
-        base = min(WARM_MAX.get(model, 12), WARM_CAP_FHR)
-    deep = SYNOPTIC_DEPTH.get(model)
+        base = min(WARM_MAX.get(model, WARM_MAX.get(mkey, 12)),
+                   WARM_CAP_FHR)
+    deep = SYNOPTIC_DEPTH.get(mkey)
     if deep and cycle_iso:
         try:
             from datetime import datetime as _d
@@ -228,7 +234,15 @@ REFS_WARM_JOBS = [
     "refs_prob@PROB_VIS1",
     "refs_prob@PROB_REFC40",
 ]
-WARM_JOBS = WARM_MODELS + REFS_WARM_JOBS
+# Every aviation product, not just reflectivity. This was one
+# product because contourf cost ~10 s a frame and six products did
+# not fit; core.cam_fast renders in ~0.5 s, so all six are ~11% duty
+# including REFS. CAM_WARM_PRODUCTS trims it without a deploy.
+CAM_PRODUCTS = [p.strip() for p in os.environ.get(
+    "CAM_WARM_PRODUCTS",
+    "REFD,REFC,RETOP,VIS,CEIL,GUST").split(",") if p.strip()]
+WARM_JOBS = [f"{m}@{p}" for m in WARM_MODELS for p in CAM_PRODUCTS]
+WARM_JOBS += REFS_WARM_JOBS
 for _j in REFS_WARM_JOBS:
     WARM_MAX[_j] = 60   # full REFS run - hub scrubs instant to f60
 
@@ -335,6 +349,12 @@ def warm_get(cache_root: Path, model: str, icao: str,
              fhr: int) -> Optional[tuple[bytes, str]]:
     """Pre-rendered frame if one exists for the model's warmed cycle.
     Returns (png_bytes, cycle_iso) or None."""
+    # Callers may pass a bare model ("hrrr") or a full job key
+    # ("hrrr@VIS"). Manifests are per JOB now that every product is
+    # warmed, so default the product rather than make every call
+    # site build the key.
+    if "@" not in model:
+        model = f"{model}@{WARM_PRODUCT}"
     man = _read_manifest(cache_root, model)
     cycle_iso = man.get("cycle")
     if not cycle_iso or (icao.upper() not in HUBS
@@ -391,9 +411,14 @@ def warm_report(cache_root: Path) -> list:
 
 
 def warm_status(cache_root: Path) -> dict:
-    """{model: cycle_iso or None} for the page caption."""
+    """{model: cycle_iso or None} for the page caption.
+
+    Reports against the PRIMARY product's job — every product of a
+    model warms from the same cycle, so one is representative.
+    """
     return {
-        m: _read_manifest(cache_root, m).get("cycle")
+        m: _read_manifest(
+            cache_root, f"{m}@{WARM_PRODUCT}").get("cycle")
         for m in WARM_MODELS
     }
 
@@ -656,6 +681,8 @@ def publish_frame(cache_root: Path, static_dir, model: str, icao: str,
     """
     import shutil
 
+    if "@" not in model:
+        model = f"{model}@{WARM_PRODUCT}"
     man = _read_manifest(cache_root, model)
     cycle_iso = man.get("cycle")
     if not cycle_iso:

@@ -45,35 +45,101 @@ import io
 import os
 from pathlib import Path
 
-# Palettes mirror core.hrrr_cam so a fast frame and a matplotlib
-# frame are indistinguishable. Bounds are the band edges; colours
-# fill between them, with the last colour used above the top bound.
+# Palettes mirror core.hrrr_cam EXACTLY, including the unit
+# conversions and masking, because a fast frame and a matplotlib
+# frame must be indistinguishable — they are served from the same
+# store and a user cannot tell which path produced one.
+#
+# Each entry:
+#   bounds      band edges in DISPLAY units (after scale)
+#   colors      one per band; the last also covers "above top"
+#   metpy       colortable name to use instead of `colors`
+#   scale       multiply raw values by this to reach display units
+#   below       values under this draw nothing
+#   above       values over this draw nothing
+#
+# Visibility and ceiling are INVERTED relative to reflectivity: low
+# values are the significant ones, nothing is masked at the bottom,
+# and ceiling masks the TOP (no ceiling = nothing to draw).
 PALETTES = {
-    "REFD": (list(range(5, 80, 5)),
-             ["#04E9E7", "#019FF4", "#0300F4", "#02FD02", "#01C501",
-              "#008E00", "#FDF802", "#E5BC00", "#FD9500", "#FD0000",
-              "#D40000", "#BC0000", "#F800FD", "#9854C6"]),
-    "REFC": (list(range(5, 80, 5)),
-             ["#04E9E7", "#019FF4", "#0300F4", "#02FD02", "#01C501",
-              "#008E00", "#FDF802", "#E5BC00", "#FD9500", "#FD0000",
-              "#D40000", "#BC0000", "#F800FD", "#9854C6"]),
+    "REFD": {"bounds": list(range(5, 80, 5)), "metpy": "NWSReflectivity",
+             "below": 5.0},
+    "REFC": {"bounds": list(range(5, 80, 5)), "metpy": "NWSReflectivity",
+             "below": 5.0},
+    "RETOP": {"bounds": [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50,
+                         55, 60, 70],
+              "colors": ["#C8C8C8", "#9BD4F5", "#4FA8E8", "#2E6FDB",
+                         "#22B14C", "#7CD934", "#FFF200", "#FFC90E",
+                         "#FF7F27", "#ED1C24", "#B21E28", "#A349A4",
+                         "#6F2DA8"],
+              "scale": 1.0 / 304.8, "below": 0.0},
+    "VIS": {"bounds": [0, 0.5, 1, 2, 3, 5, 7, 10],
+            "colors": ["#FF80FF", "#FF4040", "#FF9900", "#FFFF00",
+                       "#B0E000", "#60C060", "#E8E8E8"],
+            "scale": 1.0 / 1609.34},
+    "CEIL": {"bounds": [0, 2, 4, 10, 20, 30, 50, 100, 300],
+             "colors": ["#FF80FF", "#FF4040", "#FF9900", "#FFFF00",
+                        "#B0E000", "#60C060", "#A8D8A8", "#E8E8E8"],
+             "scale": 3.28084 / 100.0, "above": 300.0},
+    "GUST": {"bounds": [0, 10, 15, 20, 25, 30, 35, 40, 50, 65],
+             "colors": ["#E8E8E8", "#B0E0FF", "#60B0E0", "#FFFF00",
+                        "#FFC90E", "#FF9900", "#FF4040", "#B21E28",
+                        "#A349A4"],
+             "scale": 1.943844},
 }
-# Where the field means "nothing to draw" rather than a low value.
-FLOOR = {"REFD": 5.0, "REFC": 5.0}
+# REFS probability fields share one ramp.
+for _pk in ("PROB_CIG1000", "PROB_VIS1", "PROB_REFC40", "PROB"):
+    PALETTES[_pk] = {
+        "bounds": [5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+        "colors": ["#d1e9f7", "#8fcbe8", "#54a6d6", "#4bb84b",
+                   "#a4d64b", "#f5e642", "#f5a742", "#ec5f27",
+                   "#c81e1e", "#8b0f5e"],
+        "below": 5.0,
+    }
+
+_LUT_CACHE = {}
 
 _INDEX_CACHE = {}      # (key) -> flat index array
 _BASEMAP_MEM = {}      # (key) -> RGBA Image
 
 
-def _rgba(hex_colors):
+def _lut_for(product: str):
+    """RGBA lookup table, index 0 = transparent.
+
+    Reflectivity uses metpy's NWSReflectivity table — the SAME one
+    core.hrrr_cam uses — rather than a hardcoded copy, so the two
+    renderers cannot drift apart. Falls back to an equivalent hex
+    ramp if metpy is unavailable.
+    """
     import numpy as np
 
-    lut = np.zeros((len(hex_colors) + 2, 4), dtype="uint8")
-    for i, h in enumerate(hex_colors):
+    hit = _LUT_CACHE.get(product)
+    if hit is not None:
+        return hit
+    spec = PALETTES[product]
+    cols = spec.get("colors")
+    if spec.get("metpy"):
+        try:
+            from metpy.plots import colortables
+
+            _n, cmap = colortables.get_with_steps(spec["metpy"], 5, 5)
+            cols = [
+                "#%02X%02X%02X" % tuple(
+                    int(round(c * 255)) for c in cmap(i)[:3])
+                for i in range(cmap.N)
+            ]
+        except Exception:
+            cols = ["#04E9E7", "#019FF4", "#0300F4", "#02FD02",
+                    "#01C501", "#008E00", "#FDF802", "#E5BC00",
+                    "#FD9500", "#FD0000", "#D40000", "#BC0000",
+                    "#F800FD", "#9854C6"]
+    lut = np.zeros((len(cols) + 2, 4), dtype="uint8")
+    for i, h in enumerate(cols):
         h = h.lstrip("#")
         lut[i + 1] = (int(h[0:2], 16), int(h[2:4], 16),
                       int(h[4:6], 16), 255)
-    lut[-1] = lut[-2]          # above the top bound
+    lut[-1] = lut[-2]
+    _LUT_CACHE[product] = lut
     return lut
 
 
@@ -192,9 +258,9 @@ def render_fast(product: str, vals, lats, lons, center_lat: float,
 
     if product not in PALETTES:
         raise ValueError(f"no fast palette for {product}")
-    bounds, colors = PALETTES[product]
-    lut = _rgba(colors)
-    floor = FLOOR.get(product, bounds[0])
+    spec = PALETTES[product]
+    bounds = spec["bounds"]
+    lut = _lut_for(product)
 
     extent = (center_lon - zoom_deg, center_lat - zoom_deg,
               center_lon + zoom_deg, center_lat + zoom_deg)
@@ -203,16 +269,39 @@ def render_fast(product: str, vals, lats, lons, center_lat: float,
 
     src = np.asarray(vals, dtype="float32").ravel()
     g = src[idx].reshape(height, width)
+    # Convert to DISPLAY units before anything else: the bounds and
+    # the masks are both expressed in them (kft, statute miles,
+    # hundreds of feet, knots).
+    scale = float(spec.get("scale", 1.0))
+    if scale != 1.0:
+        g = g * scale
+
+    # Build the "draw nothing" mask BEFORE smoothing, or the filter
+    # drags masked values into neighbouring pixels — a ceiling of
+    # 30,000 ft bleeding into a 200 ft cell would be a dangerous
+    # artefact, not a cosmetic one.
+    blank = ~np.isfinite(g)
+    if "below" in spec:
+        blank |= g < float(spec["below"])
+    if "above" in spec:
+        blank |= g > float(spec["above"])
+
     if smooth:
-        # Nearest-neighbour resampling leaves stair-steps at the
-        # source cell edges. A light gaussian before quantising is
-        # what makes this look like contourf rather than a mesh, and
-        # costs a fraction of what contouring did.
-        g = ndi.gaussian_filter(np.nan_to_num(g, nan=floor - 99.0),
-                                smooth)
-    band = np.digitize(g, bounds).astype("uint8")
-    band[~np.isfinite(g)] = 0
-    band[g < floor] = 0
+        filled = np.where(blank, np.nan, g)
+        # Smooth the field and the coverage together, then divide:
+        # this is a nan-aware blur, so masked cells contribute
+        # nothing instead of pulling values toward zero.
+        w0 = (~blank).astype("float32")
+        num = ndi.gaussian_filter(np.nan_to_num(filled, nan=0.0),
+                                  smooth)
+        den = ndi.gaussian_filter(w0, smooth)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            g = np.where(den > 0.02, num / np.maximum(den, 1e-6), np.nan)
+        blank = ~np.isfinite(g) | (den <= 0.02)
+
+    band = np.digitize(np.nan_to_num(g, nan=-1e9),
+                       bounds).astype("uint8")
+    band[blank] = 0
     data_im = Image.fromarray(lut[band], mode="RGBA")
 
     base = basemap(grid_key.split("|")[0], extent, width, height,
