@@ -107,7 +107,11 @@ def _job_geom(key: str):
 # dpi tier. Frame paths do not encode geometry, so without
 # this bump every stale hub frame would be served as if it
 # were the new region.
-WARM_STYLE = 6   # v5: ±5 deg canvas, full-frame default view
+# v7: composite fast renderer (core.cam_fast) — cached
+# basemap plus a LUT-coloured data layer instead of contourf.
+# Visually close but not byte-identical, and the title is no
+# longer baked in, so old frames must not be mixed with new.
+WARM_STYLE = 7   # v5: ±5 deg canvas, full-frame default view
 # ^^ THIS MUST BE BUMPED WHENEVER RENDER_FACTOR / WARM_ZOOM /
 # dpi CHANGE. Frame paths do NOT encode geometry and warm_get
 # does NOT check style - it serves whatever bytes sit on disk
@@ -396,6 +400,7 @@ def warm_status(cache_root: Path) -> dict:
 
 def _warm_model(cache_root: Path, key: str, log) -> None:
     """Warm one job (model or model@product) for its newest cycle."""
+    from core import cam_fast as _CF
     from core.hrrr_cam import (
         MODELS, latest_cycle, parallel_fetch_decode, render_field,
     )
@@ -494,12 +499,30 @@ def _warm_model(cache_root: Path, key: str, log) -> None:
             headline = (f"{MODELS[model]['label']} "
                         f"{cyc:%d %b %Y  %H}Z run")
             try:
-                png = render_field(
-                    w_product, vals, lats, lons,
-                    _hla, _hlo, _zooms[icao], title,
-                    headline=headline,
-                )
-            except Exception:
+                # FAST PATH. core.cam_fast composites a colourised
+                # data layer onto a cached basemap instead of
+                # contouring: measured 6.74 s -> 0.46 s per frame on
+                # a 13-degree region, 14.6x, with smoother edges.
+                # Falls back to the matplotlib path for any product
+                # it has no palette for, and CAM_FAST=off reverts
+                # everything without a deploy.
+                if _CF.supports(w_product):
+                    png = _CF.render_fast(
+                        w_product, vals, lats, lons,
+                        _hla, _hlo, _zooms[icao],
+                        grid_key=f"{icao}|{model}",
+                        ppd=WARM_PPD,
+                        cache_dir=str(_warm_dir(cache_root)),
+                    )
+                else:
+                    png = render_field(
+                        w_product, vals, lats, lons,
+                        _hla, _hlo, _zooms[icao], title,
+                        headline=headline,
+                    )
+            except Exception as _rexc:
+                log(f"{key} {icao} f{h:02d} render failed: "
+                    f"{type(_rexc).__name__}: {_rexc}")
                 continue
             _frame_path(cache_root, key, cycle_iso, icao,
                         h).write_bytes(png)
