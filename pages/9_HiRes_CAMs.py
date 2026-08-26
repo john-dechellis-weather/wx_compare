@@ -272,8 +272,21 @@ def build_scrub_html(frames: dict, hour_axis: list,
     # a baked-in label cannot.
     from datetime import datetime as _dt, timedelta as _tdd
     heads = {}
+    # Fall back to the warm manifest if the caller did not pass a
+    # cycle. Two call sites feed this and one of them was arriving
+    # empty, which silently degraded the headline to "HRRR f10" —
+    # the one piece of information the user cannot get anywhere else
+    # on the page. Looking it up here removes the dependency on
+    # whichever caller is in play.
+    _fallback = {}
+    try:
+        from core.cam_warm import warm_status as _ws
+
+        _fallback = _ws(CACHE_ROOT) or {}
+    except Exception:
+        pass
     for m in order:
-        ci = (cycles or {}).get(m)
+        ci = (cycles or {}).get(m) or _fallback.get(m)
         row = []
         for h in hour_axis:
             c = None
@@ -284,17 +297,14 @@ def build_scrub_html(frames: dict, hour_axis: list,
                     c = None
             if c is not None:
                 v = c + _tdd(hours=h)
-                # Everything the map used to carry INSIDE the image
-                # now lives here, above it, so it survives any zoom.
-                # Split on \x1f: [prefix, bold valid, italic product].
+                # "HRRR valid 23Z 8-25". Split on \x1f:
+                # [prefix, bold valid, italic product].
                 row.append(
-                    f"{names_run(m)} (Init {c:%H}Z) f{h:02d}  Valid: "
-                    f"\x1f{v:%H}Z {v:%a} {v.month}-{v.day}\x1f"
+                    f"{names_run(m)} valid "
+                    f"\x1f{v:%H}Z {v.month}-{v.day}\x1f"
                     f"{_prod_label}")
             else:
-                # No cycle known — still name the hour and product
-                # rather than falling back to a bare label.
-                row.append(f"{names_run(m)}  f{h:02d}\x1f\x1f"
+                row.append(f"{names_run(m)}\x1ff{h:02d}\x1f"
                            f"{_prod_label}")
         heads[m] = row
     order = [m for m in order if m in model_arrays]
@@ -302,6 +312,10 @@ def build_scrub_html(frames: dict, hour_axis: list,
     _cols = "1fr" if single else "1fr 1fr"
     html = (
         "<style>"
+        # Square side, set per view: one big panel fills
+        # the screen; two side by side each get less.
+        ":root{--sq:980px}"
+        ".camgrid.pair{--sq:820px}"
         ".camgrid{display:grid;grid-template-columns:"
         + _cols + ";gap:6px}"
         # Fit by HEIGHT. aspect-ratio:1/1 looked right but makes the
@@ -318,11 +332,11 @@ def build_scrub_html(frames: dict, hour_axis: list,
         # min() so a narrow window still fits.
         ".camgrid img{border:1px solid #888}"
         ".zoomwrap{overflow:hidden;cursor:grab;"
-        "width:min(700px,100%);height:700px;margin:0 auto;"
-        "display:flex;align-items:center;justify-content:center;"
-        "background:#fff}"
-        ".zoomwrap img{max-width:100%;max-height:100%;width:auto;"
-        "height:100%;object-fit:contain;"
+        "width:min(var(--sq),100%);height:var(--sq);"
+        "margin:0 auto;display:flex;align-items:center;"
+        "justify-content:center;background:#fff}"
+        ".zoomwrap img{max-width:100%;max-height:100%;"
+        "width:auto;height:100%;object-fit:contain;"
         "transform-origin:center center;user-select:none;"
         "-webkit-user-drag:none}"
         ".camlbl{font:bold 13px monospace;margin:2px 0}"
@@ -332,7 +346,10 @@ def build_scrub_html(frames: dict, hour_axis: list,
         # zoom wrapper means it can never cover weather, and because
         # the wrapper scrolls underneath it the bar stays visible at
         # any zoom — which is the whole point.
-        ".hdr{display:block;width:100%;box-sizing:border-box;"
+        # Width follows the square so the bar and the map share an
+        # edge instead of the bar running the whole column.
+        ".hdr{display:block;width:min(var(--sq),100%);"
+        "margin:0 auto;box-sizing:border-box;"
         "background:#F2F2EE;border:1px solid #111;border-bottom:none;"
         "border-radius:4px 4px 0 0;padding:6px 10px;text-align:center;"
         # 22px, not 12. The in-map title box it replaces rendered
@@ -365,12 +382,18 @@ def build_scrub_html(frames: dict, hour_axis: list,
         "<span id='hlbl'></span><br>"
         "<input type='range' id='hsl' min='0' max='"
         + str(len(hour_axis) - 1) + "' value='0' step='1'>"
-        "</div><div class='camgrid'>"
+        # `pair` narrows the square when two panels sit side by
+        # side; a single panel keeps the full :root size.
+        "</div><div class='camgrid"
+        + ("" if single else " pair") + "'>"
     )
     for m in order:
         _wrap = " class='zoomwrap'"
         html += ("<div id='cell_" + m + "'>"
-                 "<div class='camlbl'>" + names[m]
+                 # The tiny label duplicated the model name and the
+                 # forecast hour; the header bar below carries both
+                 # properly, so this is now just a spacer.
+                 "<div class='camlbl'>" + ""
                  + " <button class='fsb' data-m='" + m
                  + "' style='font:11px monospace;cursor:pointer;"
                  "margin-left:10px;padding:1px 8px'>&#x26F6; "
@@ -478,9 +501,9 @@ def build_scrub_html(frames: dict, hour_axis: list,
     html += "</script>"
     if single:
         # +70 for the enlarged two-line header bar above each panel.
-        return html, 130 + 700
+        return html, 150 + 980
     rows = (len(order) + 1) // 2
-    return html, 150 + rows * 740
+    return html, 150 + rows * 860
 
 
 # ---------------------------------------------------------------------------
@@ -595,12 +618,16 @@ with st.sidebar:
              "server, so rebuilding later is fast.",
     )
     if smooth:
+        # Default 0-24, which is exactly what the warmer keeps on
+        # disk (CAM_WARM_MAX_FHR). Opening on 0-84 meant most of the
+        # requested range was NOT warm, so the page rendered on
+        # demand and the store went unused — the slowest possible
+        # default on a page built around pre-warming.
         fhr_lo, fhr_hi = st.slider(
-            "Preload hours", 0, 84, (0, 84),
-            help="All hours in this range are fetched upfront. "
-             "Full 84-hour spans allowed; very deep 2x2 "
-             "loads (300+ frames) can tax the browser - "
-             "single-model views stay light.",
+            "Preload hours", 0, 84, (0, 24),
+            help="0-24 is pre-warmed and loads from disk instantly. "
+                 "Beyond 24 renders on demand, a few seconds per "
+                 "frame.",
         )
     else:
         fhr_all = st.slider(

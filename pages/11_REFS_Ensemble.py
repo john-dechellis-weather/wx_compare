@@ -115,6 +115,10 @@ def build_scrub_html(frames: dict, hour_axis: list,
     _cols = "1fr" if single else "1fr 1fr"
     html = (
         "<style>"
+        # Square side, set per view: one big panel fills
+        # the screen; two side by side each get less.
+        ":root{--sq:980px}"
+        ".camgrid.pair{--sq:980px}"
         ".camgrid{display:grid;grid-template-columns:"
         + _cols + ";gap:6px}"
         # Fit by HEIGHT, not aspect-ratio.
@@ -135,11 +139,11 @@ def build_scrub_html(frames: dict, hour_axis: list,
         # min() so a narrow window still fits.
         ".camgrid img{border:1px solid #888}"
         ".zoomwrap{overflow:hidden;cursor:grab;"
-        "width:min(900px,100%);height:900px;margin:0 auto;"
-        "display:flex;align-items:center;justify-content:center;"
-        "background:#fff}"
-        ".zoomwrap img{max-width:100%;max-height:100%;width:auto;"
-        "height:100%;object-fit:contain;"
+        "width:min(var(--sq),100%);height:var(--sq);"
+        "margin:0 auto;display:flex;align-items:center;"
+        "justify-content:center;background:#fff}"
+        ".zoomwrap img{max-width:100%;max-height:100%;"
+        "width:auto;height:100%;object-fit:contain;"
         "transform-origin:center center;user-select:none;"
         "-webkit-user-drag:none}"
         ".camlbl{font:bold 13px monospace;margin:2px 0}"
@@ -150,7 +154,10 @@ def build_scrub_html(frames: dict, hour_axis: list,
         "<span id='hlbl'></span><br>"
         "<input type='range' id='hsl' min='0' max='"
         + str(len(hour_axis) - 1) + "' value='0' step='1'>"
-        "</div><div class='camgrid'>"
+        # `pair` narrows the square when two panels sit side by
+        # side; a single panel keeps the full :root size.
+        "</div><div class='camgrid"
+        + ("" if single else " pair") + "'>"
     )
     for m in order:
         _wrap = " class='zoomwrap'" if single else ""
@@ -200,9 +207,9 @@ def build_scrub_html(frames: dict, hour_axis: list,
     html += "</script>"
     if single:
         # 820 px of map + slider, label and padding.
-        return html, 130 + 900
+        return html, 150 + 980
     rows = (len(order) + 1) // 2
-    return html, 150 + rows * 940
+    return html, 150 + rows * 1020
 
 
 PRODUCTS = {
