@@ -53,7 +53,8 @@ CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 # frames for each new model cycle so hub views serve instantly.
 from core.cam_warm import (
     CONUS_CENTER, CONUS_KEY, CONUS_ZOOM,
-    HUBS as WARM_HUBS, WARM_HOURS, WARM_PRODUCT, WARM_ZOOM,
+    HUBS as WARM_HUBS, HUB_LABELS as _HUB_LABELS,
+    WARM_HOURS, WARM_PRODUCT, WARM_ZOOM,
     ensure_warmer_started, warm_get, warm_hours, warm_report,
     warm_status,
 )
@@ -678,10 +679,18 @@ if active:
     # across opens, which once trapped the page on a single hub
     # (the welcome branch's switcher became unreachable). One tap
     # now swaps stations from anywhere.
+    # Two regions now, so the buttons get real names and real
+    # width. The old labels stripped the leading K off an ICAO,
+    # which made sense for KJFK and not for a region.
+    st.markdown(
+        "<style>div[data-testid='stHorizontalBlock'] button{"
+        "font-size:17px;font-weight:600;padding:0.6rem 1rem}"
+        "</style>", unsafe_allow_html=True)
     _sw_cols = st.columns(len(WARM_HUBS))
     for _i, _hk in enumerate(WARM_HUBS):
-        _lbl = ("* " + _hk[1:]
-                if _hk == active else _hk[1:])
+        _lbl = _HUB_LABELS.get(_hk, _hk)
+        if _hk == active:
+            _lbl = "\u25cf  " + _lbl
         if _sw_cols[_i].button(_lbl, key=f"sw_{_hk}",
                                use_container_width=True):
             st.session_state["cam_icao"] = _hk
@@ -765,11 +774,13 @@ if active:
     )
     _single_model = _VIEW_LABELS[view_choice]
     hrrr_ext = st.checkbox(
-        "HRRR long-range (latest 00/06/12/18Z run, to 48h)",
+        "HRRR long-range \u2014 last 00/06/12/18Z run, to f48",
         value=False, key="hrrr_ext",
-        help="HRRR runs hourly to 18h, but the four synoptic "
-             "cycles extend to 48h. With this on, requesting "
-             "hours past 18 selects the newest long-range run - "
+        help="HRRR runs hourly to f18; the four synoptic cycles "
+             "extend to f48. With this on, hours past 18 come from "
+             "the newest long-range run, and those frames are "
+             "PRE-WARMED, so f34 at 14Z loads from disk rather than "
+             "rendering. "
              "and the whole scrub renders from that single run "
              "for consistency. Hours past 18 aren't prewarmed, "
              "so they download on demand.",
@@ -1002,7 +1013,7 @@ else:
         if _hub_cols[_i].button(_hk[1:], key=f"open_{_hk}",
                                 use_container_width=True):
             st.session_state["open_hub"] = _hk
-    _open_hub = st.session_state.get("open_hub", "KJFK")
+    _open_hub = st.session_state.get("open_hub", "NE")
     _OPEN_ORDER = ["hrrr", "rrfs"]
     _warm_frames: dict = {}
     # warm_get returns (png, cycle) and the cycle was being thrown
@@ -1050,14 +1061,17 @@ else:
     _n_warm = sum(len(v) for v in _warm_frames.values())
     if _n_warm >= 6:
         st.info(
-            f"**{_open_hub}** | 1km Reflectivity | prewarmed - "
+            f"**{_HUB_LABELS.get(_open_hub, _open_hub)}** | "
+            f"1km Reflectivity | prewarmed - "
             f"scrub instantly, or set up a custom view in the "
             f"sidebar and click **Render**."
         )
         _axis = sorted({h for v in _warm_frames.values()
                         for h in v})
         from core.cam_warm import RENDER_FACTOR as _RF
-        _hla2, _hlo2 = WARM_HUBS[_open_hub]
+        # HUBS entries are (lat, lon, half_width) now, not pairs.
+        _hg = WARM_HUBS[_open_hub]
+        _hla2, _hlo2 = _hg[0], _hg[1]
         # warm_get returns (png, cycle); _warm_cycles is populated
         # alongside _warm_frames when the store is read.
         _html, _hgt = build_scrub_html(
@@ -1066,7 +1080,9 @@ else:
             urls=_warm_urls,
             product_key=WARM_PRODUCT,
             home=None,   # open on the whole ±5 deg frame
-            conus=(_hla2, _hlo2, WARM_ZOOM * _RF),
+            # Per-region half-width, not the old shared constant.
+            conus=(_hla2, _hlo2,
+                   _hg[2] if len(_hg) > 2 else WARM_ZOOM * _RF),
             axcal=st.session_state.get("_axcal"),
         )
         _sc2 = st.session_state.get("panel_scale_v", 85)
