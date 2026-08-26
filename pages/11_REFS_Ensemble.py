@@ -37,7 +37,8 @@ from core.cam_warm import note_request as _note_req
 _note_req()
 
 from core.cam_warm import (
-    HUBS as REFS_HUBS, WARM_ZOOM, ensure_warmer_started,
+    HUBS as REFS_HUBS, HUB_LABELS as _HUB_LABELS,
+    WARM_ZOOM, ensure_warmer_started,
     warm_cycle, warm_get, warm_hours,
 )
 from core.hrrr_cam import MODELS
@@ -280,34 +281,48 @@ active = st.session_state.get("refs_icao")
 
 if not active:
     st.info("Pick a hub or enter an ICAO, then Render.")
+    st.markdown(
+        "<style>div[data-testid='stHorizontalBlock'] button{"
+        "font-size:17px;font-weight:600;padding:0.6rem 1rem}"
+        "</style>", unsafe_allow_html=True)
     _c = st.columns(len(REFS_HUBS))
     for _i, _hk in enumerate(REFS_HUBS):
-        if _c[_i].button(_hk[1:], key=f"w_{_hk}",
-                         width=int(360 * st.session_state.get(
-                             "refs_scale_v", 70) / 100)):
+        # Full region name, not _hk[1:] — that stripped the leading
+        # K off an ICAO and turns "NE" into "E".
+        if _c[_i].button(_HUB_LABELS.get(_hk, _hk), key=f"w_{_hk}",
+                         use_container_width=True):
             st.session_state["refs_icao"] = _hk
             st.rerun()
 else:
     _sw = st.columns(len(REFS_HUBS))
     for _i, _hk in enumerate(REFS_HUBS):
-        _lbl = ("* " + _hk[1:]) if _hk == active else _hk[1:]
+        _lbl = _HUB_LABELS.get(_hk, _hk)
+        if _hk == active:
+            _lbl = "\u25cf  " + _lbl
         if _sw[_i].button(_lbl, key=f"sw_{_hk}",
-                          width=int(360 * st.session_state.get(
-                              "refs_scale_v", 70) / 100)):
+                          use_container_width=True):
             st.session_state["refs_icao"] = _hk
             st.rerun()
 
     icao = active
     model, field = PRODUCTS[prod_label]
-    coords = cached_station_coords(icao)
-    if coords is None:
-        st.error(f"Cannot resolve coordinates for {icao}.")
-        st.stop()
-    clat, clon = coords
+    # Region keys ("NE", "FL") are not ICAOs — the station resolver
+    # cannot find them. Take the centre from HUBS instead.
+    if icao in REFS_HUBS:
+        _g = REFS_HUBS[icao]
+        clat, clon = _g[0], _g[1]
+        _region_half = _g[2] if len(_g) > 2 else None
+    else:
+        coords = cached_station_coords(icao)
+        if coords is None:
+            st.error(f"Cannot resolve coordinates for {icao}.")
+            st.stop()
+        clat, clon = coords
+        _region_half = None
     now = datetime.now(timezone.utc)
     bucket10 = now.strftime("%Y%m%d%H") + str(now.minute // 10)
 
-    st.info(f"**{icao}** | {prod_label}")
+    st.info(f"**{_HUB_LABELS.get(icao, icao)}** | {prod_label}")
 
     span = min(fhr_hi - fhr_lo, 60)
     _lo = MODELS[model].get("min_fhr", 0)

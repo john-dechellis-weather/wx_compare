@@ -700,22 +700,38 @@ if active:
     now = datetime.now(timezone.utc)
     bucket10 = now.strftime("%Y%m%d%H") + str(now.minute // 10)
 
-    coords = cached_station_coords(icao)
-    if coords is None:
-        st.error(f"Cannot resolve coordinates for {icao}.")
-        st.stop()
-    clat, clon = coords
+    # A REGION key is not an ICAO. The switcher now yields "NE" and
+    # "FL", and handing those to the station resolver produced
+    # "Cannot resolve coordinates for NE" — it was looking for an
+    # airport. Regions carry their own centre and half-width, so
+    # take them from HUBS and skip the lookup entirely.
     from core.cam_warm import RENDER_FACTOR
+
+    _is_region = icao in WARM_HUBS
+    if _is_region:
+        _g = WARM_HUBS[icao]
+        clat, clon = _g[0], _g[1]
+        _region_half = _g[2] if len(_g) > 2 else zoom * RENDER_FACTOR
+    else:
+        coords = cached_station_coords(icao)
+        if coords is None:
+            st.error(f"Cannot resolve coordinates for {icao}.")
+            st.stop()
+        clat, clon = coords
+        _region_half = None
     if conus_view:
         rlat, rlon = CONUS_CENTER
         rzoom = CONUS_ZOOM
     else:
         rlat, rlon = round(clat, 2), round(clon, 2)
-        rzoom = zoom * RENDER_FACTOR
+        # Region frames warm at their OWN half-width; using
+        # zoom * RENDER_FACTOR here would ask for a 10-degree crop
+        # of a 13-degree region and never match the warm frame.
+        rzoom = _region_half or (zoom * RENDER_FACTOR)
 
     product = PRODUCT_KEY[product_label]
 
-    st.info(f"**{icao}** | {product_label}")
+    st.info(f"**{_HUB_LABELS.get(icao, icao)}** | {product_label}")
 
     from core.hrrr_cam import MODELS
 
@@ -1010,7 +1026,10 @@ else:
     _hub_keys = list(WARM_HUBS)
     _hub_cols = st.columns(len(_hub_keys))
     for _i, _hk in enumerate(_hub_keys):
-        if _hub_cols[_i].button(_hk[1:], key=f"open_{_hk}",
+        # Full region name. _hk[1:] was an ICAO habit — it turned
+        # "KJFK" into "JFK" and turns "NE" into "E".
+        if _hub_cols[_i].button(_HUB_LABELS.get(_hk, _hk),
+                                key=f"open_{_hk}",
                                 use_container_width=True):
             st.session_state["open_hub"] = _hk
     _open_hub = st.session_state.get("open_hub", "NE")
