@@ -266,7 +266,29 @@ def build_scrub_html(frames: dict, hour_axis: list,
                 u if u else (_data_uri(png) if png else None)
             )
         model_arrays[m] = arr
+    # Slider label is the VALID TIME, not a forecast hour.
+    #
+    # The axis is now shared across models, so "f06" would be
+    # ambiguous — it is f06 for the newest run and f08 for one two
+    # hours behind. The clock time is the same for both, which is
+    # the whole point of aligning them.
     labels = [f"f{h:02d}" for h in hour_axis]
+    try:
+        from datetime import datetime as _dl, timedelta as _tl
+
+        _bc = None
+        for _v in (cycles or {}).values():
+            if _v:
+                _bc = _dl.fromisoformat(str(_v))
+                break
+        if _bc is not None:
+            labels = [f"{(_bc + _tl(hours=h)):%H}Z "
+                      f"{(_bc + _tl(hours=h)):%a} "
+                      f"{(_bc + _tl(hours=h)).month}-"
+                      f"{(_bc + _tl(hours=h)).day}"
+                      for h in hour_axis]
+    except Exception:
+        pass
     # Run and valid time per model per hour, for the pinned overlay.
     # The headline baked into each PNG sits at the top of the CANVAS,
     # so zooming scrolls it out of view — which is exactly when you
@@ -1138,23 +1160,58 @@ else:
                  or os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
     _static_dir = Path(__file__).resolve().parent.parent / "static"
     try:
-        from core.cam_warm import publish_frame, prune_published
+        from datetime import datetime as _dtm
+
+        from core.cam_warm import (publish_frame, prune_published,
+                                   warm_cycle)
+
+        # VALID-TIME ALIGNMENT on the instant-open path too.
+        #
+        # This is the path most people actually see, and it was
+        # keying frames by each model's OWN forecast hour with no
+        # alignment — so a 20Z HRRR f00 sat beside an 18Z RRFS f00,
+        # two hours apart while both were labelled f00.
+        #
+        # Resolve each warmed cycle first, anchor the axis on the
+        # NEWEST, and offset the older model so both land on the
+        # same clock. RRFS f02 is what matches HRRR f00 when RRFS is
+        # two hours behind.
+        _wc = {}
+        for _m in _OPEN_ORDER:
+            try:
+                _c = warm_cycle(CACHE_ROOT, f"{_m}@{WARM_PRODUCT}")
+                if _c:
+                    _wc[_m] = _dtm.fromisoformat(str(_c))
+            except Exception:
+                pass
+        _base = max(_wc.values()) if _wc else None
+        _off = {_m: int(round((_base - _c).total_seconds() / 3600.0))
+                for _m, _c in _wc.items()} if _base else {}
 
         for _m in _OPEN_ORDER:
-            for _h in warm_hours(_m):
+            _o = _off.get(_m, 0)
+            _mh = warm_hours(_m)
+            for _ax in _mh:
+                # _ax is the shared axis position; _h is the hour
+                # THIS model must render to reach that valid time.
+                _h = _ax + _o
+                if _h not in _mh:
+                    continue
                 _nm, _cy = (publish_frame(CACHE_ROOT, _static_dir,
                                           _m, _open_hub, _h)
                             if _base_url else (None, None))
                 if _nm:
-                    _warm_urls.setdefault(_m, {})[_h] = (
+                    _warm_urls.setdefault(_m, {})[_ax] = (
                         f"{_base_url}/app/static/{_nm}")
-                    _warm_frames.setdefault(_m, {})[_h] = b""
-                    _warm_cycles.setdefault(_m, _cy)
+                    _warm_frames.setdefault(_m, {})[_ax] = b""
+                    _warm_cycles.setdefault(
+                        _m, _base.isoformat() if _base else _cy)
                     continue
                 got = warm_get(CACHE_ROOT, _m, _open_hub, _h)
                 if got:
-                    _warm_frames.setdefault(_m, {})[_h] = got[0]
-                    _warm_cycles.setdefault(_m, got[1])
+                    _warm_frames.setdefault(_m, {})[_ax] = got[0]
+                    _warm_cycles.setdefault(
+                        _m, _base.isoformat() if _base else got[1])
         try:
             prune_published(_static_dir)
         except Exception:
