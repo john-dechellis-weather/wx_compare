@@ -29,6 +29,8 @@ COLUMNS = [
     "wind_speed_kt",     # knots, float, NaN if missing
     "wind_dir_deg",      # degrees true (0-360), float, NaN if missing or variable
     "wind_gust_kt",      # knots, float, NaN if no gust reported
+    "temp_f",            # degrees F, float, NaN if missing
+    "dewpoint_f",        # degrees F, float, NaN if missing
     "source_file",       # provenance: filename or URL fragment
 ]
 
@@ -53,6 +55,11 @@ class ForecastRecord:
     wind_speed_kt: Optional[float] = None
     wind_dir_deg: Optional[float] = None
     wind_gust_kt: Optional[float] = None
+    # Temperature and dewpoint in FAHRENHEIT, which is what the MOS
+    # bulletins carry. Storing the bulletin's own units avoids a
+    # conversion that would then be undone for display.
+    temp_f: Optional[float] = None
+    dewpoint_f: Optional[float] = None
     source_file: str = ""
 
 
@@ -86,6 +93,8 @@ def _enforce_dtypes(df: pd.DataFrame) -> pd.DataFrame:
             "wind_speed_kt": "float64",
             "wind_dir_deg": "float64",
             "wind_gust_kt": "float64",
+            "temp_f": "float64",
+            "dewpoint_f": "float64",
             "source_file": "string",
         })
     df = df.copy()
@@ -102,5 +111,8 @@ def _enforce_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     df["wind_speed_kt"] = pd.to_numeric(df["wind_speed_kt"], errors="coerce")
     df["wind_dir_deg"] = pd.to_numeric(df["wind_dir_deg"], errors="coerce")
     df["wind_gust_kt"] = pd.to_numeric(df["wind_gust_kt"], errors="coerce")
+    df["temp_f"] = pd.to_numeric(df["temp_f"], errors="coerce")
+    df["dewpoint_f"] = pd.to_numeric(df["dewpoint_f"],
+                                     errors="coerce")
     df["source_file"] = df["source_file"].astype("string")
     return df
