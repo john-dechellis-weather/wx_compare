@@ -1869,9 +1869,30 @@ if run_button:
 
         # No custom city layer: the light basemap already labels
         # major cities at these zooms (ours doubled them)
+        # Controls FIRST. This row used to sit ~130 lines below the
+        # layer list, so `radar_on` was read before it existed —
+        # "name 'radar_on' is not defined". A control has to be
+        # declared before anything reads it.
+        _ctl = st.columns([1.0, 1.2, 1.4, 2.4], gap="small")
+        with _ctl[0]:
+            show_cs = st.checkbox(
+                "Flight numbers", value=True, key="show_cs_f",
+            )
+        with _ctl[1]:
+            # Reads a PRE-WARMED frame off disk. No fetch, no
+            # decode, no wait — toggling this costs a layer append.
+            radar_on = st.checkbox(
+                "Radar", value=True, key="mrms_on",
+                help="MRMS merged reflectivity, 1 km national "
+                     "mosaic, ~2-minute updates.",
+            )
+        with _ctl[2]:
+            radar_op = st.slider(
+                "Radar opacity", 0.0, 1.0, 0.55, 0.05,
+                key="mrms_op", label_visibility="collapsed",
+            )
+
         layers = []
-        # Radar UNDER everything: aircraft, breach dots and rings
-        # must stay readable through heavy echo.
         if radar_on:
             try:
                 from core import mrms as _MR
@@ -1929,6 +1950,8 @@ if run_button:
                 _radar_note = f" Radar unavailable ({_rexc})."
         else:
             _radar_note = ""
+        # Radar UNDER everything: aircraft, breach dots and rings
+        # must stay readable through heavy echo.
         if fills:
             # Solid core: current METAR breach (trouble NOW)
             layers.append(pdk.Layer(
@@ -1996,24 +2019,6 @@ if run_button:
         # behind by that removal and raised IndexError on every load:
         # one column, index 1. Narrow column so the checkbox does not
         # stretch across the page.
-        _ctl = st.columns([1.0, 1.2, 1.4, 2.4], gap="small")
-        with _ctl[0]:
-            show_cs = st.checkbox(
-                "Flight numbers", value=True, key="show_cs_f",
-            )
-        with _ctl[1]:
-            # Reads a PRE-WARMED frame off disk. No fetch, no
-            # decode, no wait — toggling this costs a layer append.
-            radar_on = st.checkbox(
-                "Radar", value=True, key="mrms_on",
-                help="MRMS merged reflectivity, 1 km national "
-                     "mosaic, ~2-minute updates.",
-            )
-        with _ctl[2]:
-            radar_op = st.slider(
-                "Radar opacity", 0.0, 1.0, 0.55, 0.05,
-                key="mrms_op", label_visibility="collapsed",
-            )
         # Live positions from the background refresher. The fragment
         # NEVER waits on the sweep — it draws the last good result
         # and a fresh one arrives for the next beat.
