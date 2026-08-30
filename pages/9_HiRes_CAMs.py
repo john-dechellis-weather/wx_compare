@@ -179,13 +179,13 @@ def _render_chunk(pchunk, data, frames, errs, prog,
                   done, total, product, rlat, rlon, rzoom):
     from core.hrrr_cam import MODELS, render_field
     from datetime import datetime as _dt, timedelta as _td2
-    for j, (m, cyc, h) in enumerate(pchunk):
+    for j, (m, cyc, h, ax) in enumerate(pchunk):
         prog.progress(
             min(0.99, (done + j + 1) / max(total, 1)),
             text=f"Rendering {MODELS[m]['label']} f{h:02d} "
                  f"({done + j + 1}/{total})",
         )
-        res = data.get((m, h))
+        res = data.get((m, ax))
         if isinstance(res, Exception) or res is None:
             if isinstance(res, Exception):
                 errs.setdefault(
@@ -209,8 +209,9 @@ def _render_chunk(pchunk, data, frames, errs, prog,
                 m, f"render f{h:02d}: "
                    f"{type(_re).__name__}: {_re}"[:200])
             continue
-        frames.setdefault(m, {})[h] = png
-        data[(m, h)] = None
+        # AXIS position, not the model's forecast hour.
+        frames.setdefault(m, {})[ax] = png
+        data[(m, ax)] = None
 
 
 def _data_uri(b: bytes) -> str:
@@ -803,10 +804,24 @@ if active:
              "so they download on demand.",
     )
 
+    rrfs_ext = st.checkbox(
+        "RRFS long-range \u2014 latest run out to f84",
+        value=False, key="rrfs_ext",
+        help="RRFS extends to 84 hours. Those frames are warmed to "
+             "the same depth, so the scrub loads from disk rather "
+             "than rendering.",
+    )
+
     def _eff_max_fhr(m, cfg):
         if m == "hrrr" and hrrr_ext:
             return 48
-        return cfg["max_fhr"]
+        if m == "rrfs" and rrfs_ext:
+            return 84
+        # Without the long-range toggles, cap at the routine depth
+        # the warmer keeps. Offering hours that are never warm makes
+        # the page render on demand for a range nobody asked to wait
+        # for.
+        return min(cfg["max_fhr"], 24)
     # Two panels, not four: HRRR and RRFS are the ones that are
     # pre-warmed and the ones actually used. The HiResW pair stayed
     # in the grid long after anyone scrubbed them, and every panel is
@@ -827,24 +842,72 @@ if active:
         from core.hrrr_cam import parallel_fetch_decode, render_field
         from datetime import timedelta as _td
 
-        plan = []      # (model, cycle_iso, hour)
+        # VALID-TIME ALIGNMENT.
+        #
+        # Every model used to render the same FORECAST HOUR with its
+        # own cycle, so a 20Z HRRR f02 (valid 22Z) sat beside an 18Z
+        # RRFS f02 (valid 20Z) — two panels labelled the same and
+        # showing different times, which is worse than showing
+        # nothing.
+        #
+        # The axis is now VALID TIME, anchored on the NEWEST cycle
+        # among the active models. Each model then renders whichever
+        # of its own forecast hours lands on that time: the newest
+        # run uses f00, f01, ...; an older run uses f02, f03, ... to
+        # reach the same clock.
+        #
+        # `plan` carries both — the model's own hour to fetch, and
+        # the axis position to file it under.
+        _cycles = {}
         for m in active_models:
-            cfg = MODELS[m]
-            mh = [h for h in hours if h <= _eff_max_fhr(m, cfg)]
-            if not mh:
-                skipped.append(f"{cfg['label']}: range beyond its max")
-                continue
-            cycle_iso = cached_model_cycle(m, mh[-1], bucket10)
-            if cycle_iso is None:
+            # Probe for a cycle that REACHES the deepest hour this
+            # model will be asked for. Probing f01 always returns the
+            # newest run — which for HRRR long-range is an hourly
+            # cycle that stops at f18, so every hour past 18 would
+            # come back empty. Asking for the deep hour finds the
+            # synoptic run that actually has it.
+            _probe = max(1, min(max(hours),
+                                _eff_max_fhr(m, MODELS[m])))
+            _ci = cached_model_cycle(m, _probe, bucket10)
+            if _ci is None:
                 pd = MODELS[m].get("_probe_diag") or {}
                 extra = ("; probes: " + "; ".join(
                     list(pd.values())[:3]) if pd else "")
                 skipped.append(
-                    f"{cfg['label']}: no cycle found{extra}"
-                )
+                    f"{MODELS[m]['label']}: no cycle found{extra}")
                 continue
-            for h in mh:
-                plan.append((m, cycle_iso, h))
+            try:
+                _cycles[m] = datetime.fromisoformat(_ci)
+            except Exception:
+                skipped.append(f"{MODELS[m]['label']}: bad cycle {_ci}")
+
+        plan = []      # (model, cycle_iso, model_fhr, axis_h)
+        base_cycle = None
+        if _cycles:
+            # Anchor on the newest run. Anchoring on the oldest would
+            # make the newest model start at a forecast hour it has
+            # already passed.
+            base_cycle = max(_cycles.values())
+            for m, c in _cycles.items():
+                cfg = MODELS[m]
+                off = int(round(
+                    (base_cycle - c).total_seconds() / 3600.0))
+                lo = cfg.get("min_fhr", 0)
+                hi = _eff_max_fhr(m, cfg)
+                got_any = False
+                for ax in hours:
+                    fh = ax + off
+                    if lo <= fh <= hi:
+                        plan.append((m, c.isoformat(), fh, ax))
+                        got_any = True
+                if not got_any:
+                    skipped.append(
+                        f"{cfg['label']}: {c:%HZ} run does not reach "
+                        f"this window")
+                elif off:
+                    skipped.append(
+                        f"{cfg['label']}: {c:%HZ} run, offset "
+                        f"+{off}h to match valid times")
 
         # Pull any prewarmed frames first; only the rest download.
         warm_ok_s = (
@@ -858,7 +921,7 @@ if active:
         )
         if warm_ok_s:
             still_plan = []
-            for m, cyc, h in plan:
+            for m, cyc, h, ax in plan:
                 got = None
                 try:
                     # Ask for the SELECTED product. Passing a bare
@@ -871,9 +934,12 @@ if active:
                 except Exception:
                     got = None
                 if got:
-                    frames.setdefault(m, {})[h] = got[0]
+                    # Filed under the AXIS position, not the model's
+                    # own forecast hour — that is what makes the two
+                    # panels show the same valid time.
+                    frames.setdefault(m, {})[ax] = got[0]
                 else:
-                    still_plan.append((m, cyc, h))
+                    still_plan.append((m, cyc, h, ax))
             if len(still_plan) < len(plan):
                 st.caption(
                     f"{len(plan) - len(still_plan)} prewarmed frames "
@@ -884,13 +950,16 @@ if active:
         prog = st.progress(
             0.0, text=f"Downloading {len(plan)} fields in parallel..."
         )
+        # `key` carries the AXIS position so the renderer files the
+        # result where the scrubber expects it, while `fhr` stays the
+        # model's own hour for the fetch.
         tasks = [{
-            "key": (m, h),
+            "key": (m, ax),
             "model": m, "product": product,
             "cycle": datetime.fromisoformat(cyc), "fhr": h,
             "lat": rlat, "lon": rlon,
             "zoom_deg": rzoom,
-        } for m, cyc, h in plan]
+        } for m, cyc, h, ax in plan]
         # Chunked pipeline: fetch a slice, render it, FREE it -
         # peak memory is bounded by the chunk, not the preload.
         # (Holding all decoded CONUS frames at once OOM-killed
@@ -926,9 +995,17 @@ if active:
         else:
             # Cycle per model, so the pinned overlay can show the
             # run AND the valid time of whichever frame is showing.
+            # Every panel gets the SAME cycle for its header — the
+            # base the valid-time axis is anchored on. Passing each
+            # model's own cycle would put a different valid time
+            # under each panel, which is the confusion this whole
+            # change removes. Each model's own init is shown
+            # separately in the "skipped" notes when it differs.
             _cyc_by_model = {}
-            for _m, _ci, _h in plan:
-                _cyc_by_model.setdefault(_m, _ci)
+            _base_iso = (base_cycle.isoformat() if base_cycle
+                         else None)
+            for _m, _ci, _h, _ax in plan:
+                _cyc_by_model.setdefault(_m, _base_iso or _ci)
             html, hgt = build_scrub_html(
                 frames, hours, GRID_ORDER,
                 single=bool(_single_model),
