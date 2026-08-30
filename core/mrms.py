@@ -65,6 +65,14 @@ COLORS = [
     (0xF8, 0x00, 0xFD), (0x98, 0x54, 0xC6), (0xFD, 0xFD, 0xFD),
 ]
 DBZ_MIN = float(os.environ.get("MRMS_DBZ_MIN", "5"))
+# Alpha baked into the PALETTE, not left to the layer's opacity prop.
+#
+# BitmapLayer opacity was set to 0.5 and the radar still drew fully
+# saturated — city labels vanished under it. Rather than keep
+# guessing at how deck.gl handles the prop through pydeck's JSON,
+# the transparency is put where it cannot be ignored: in the pixels.
+# The layer prop stays at 1.0 so the two do not multiply.
+ALPHA = int(os.environ.get("MRMS_ALPHA", "128"))
 # 1 keeps the native 0.01 deg grid. 2 halves it to ~2 km — still
 # finer than the ArcGIS export ever was, at a quarter the pixels.
 DECIMATE = int(os.environ.get("MRMS_DECIMATE", "1"))
@@ -140,7 +148,7 @@ def palette():
 
     lut = np.zeros((len(LEVELS) + 1, 4), dtype="uint8")
     for i, (r, g, b) in enumerate(COLORS):
-        lut[i + 1] = (r, g, b, 255)
+        lut[i + 1] = (r, g, b, ALPHA)
     return lut
 
 
@@ -160,6 +168,8 @@ SMOOTH = float(os.environ.get("MRMS_SMOOTH", "0.8"))
 # Measured at 2x: 14000x7000, 200 px/degree, 13 s, ~4.6 MB across 8
 # chunks. Set MRMS_UPSAMPLE=1 to disable.
 UPSAMPLE = int(os.environ.get("MRMS_UPSAMPLE", "2"))
+# Blur applied AFTER upsampling, in fine-grid pixels.
+FINE_SMOOTH = float(os.environ.get("MRMS_FINE_SMOOTH", "1.6"))
 
 
 def band_index(vals):
@@ -202,6 +212,21 @@ def band_index(vals):
         # values above the peak, which on a radar display means
         # inventing intensity that was never observed.
         vals = ndi.zoom(vals, UPSAMPLE, order=1)
+        # A second, gentle pass on the FINE grid. Interpolation
+        # alone still leaves the colour-band boundaries following
+        # the coarse cell structure; blurring after the upsample
+        # turns those boundaries into curves, which is what removes
+        # the last of the square edges at high zoom.
+        if FINE_SMOOTH:
+            ok2 = np.isfinite(vals)
+            num2 = ndi.gaussian_filter(
+                np.where(ok2, vals, 0.0).astype("float32"),
+                FINE_SMOOTH)
+            den2 = ndi.gaussian_filter(ok2.astype("float32"),
+                                       FINE_SMOOTH)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                vals = np.where(den2 > 0.05,
+                                num2 / np.maximum(den2, 1e-6), np.nan)
     idx = np.digitize(np.nan_to_num(vals, nan=-999.0),
                       LEVELS).astype("uint8")
     idx[~np.isfinite(vals)] = 0
@@ -308,6 +333,23 @@ def render_chunks(vals, outdir, stamp: str) -> list:
 
 
 
+# Bump when the rendered output changes in any visible way.
+RENDER_STYLE = int(os.environ.get("MRMS_RENDER_STYLE", "2"))
+
+
+def _style_ok(outdir, stamp: str) -> bool:
+    """True if chunks on disk were made by the current style."""
+    import json as _json
+
+    try:
+        man = _json.loads(
+            (Path(outdir) / f"mrmsc_{stamp}.json").read_text())
+        return (isinstance(man, dict)
+                and man.get("style") == RENDER_STYLE)
+    except Exception:
+        return False
+
+
 def frame_name(stamp: str) -> str:
     return f"mrms_{stamp}.webp"
 
@@ -329,7 +371,13 @@ def build(outdir) -> tuple:
     fname, stamp = got
     name = frame_name(stamp)
     dest = Path(outdir) / name
-    if (Path(outdir) / f"mrmsc_{stamp}.json").exists():
+    # STYLE-KEYED cache check. Without the style in the key, chunks
+    # rendered by an older palette or resolution are served forever
+    # for a stamp already on disk — which is why blocky, fully
+    # opaque frames survived the switch to upsampling and baked
+    # alpha. Bump RENDER_STYLE whenever the output changes.
+    if (Path(outdir) /
+            f"mrmsc_{stamp}.json").exists() and _style_ok(outdir, stamp):
         return name, "cached"
     r = requests.get(f"{BASE}/{fname}", timeout=90,
                      headers={"User-Agent": "bluemet.org"})
@@ -347,7 +395,7 @@ def build(outdir) -> tuple:
     # Manifest LAST: `newest` reads it, so writing it earlier could
     # hand the page a set of chunks still being written.
     (Path(outdir) / f"mrmsc_{stamp}.json").write_text(
-        _json.dumps(chunks))
+        _json.dumps({"style": RENDER_STYLE, "chunks": chunks}))
     return name, (f"{nx * UPSAMPLE}x{ny * UPSAMPLE}, "
                   f"{len(chunks)} chunks, {_cb / 1024:.0f} KB, "
                   f"{time.time() - t0:.0f}s")
@@ -439,7 +487,12 @@ def newest(outdir):
         return None, None
     m = re.search(r"mrmsc_(\d{8}-\d{6})\.json", hits[-1].name)
     try:
-        return _json.loads(hits[-1].read_text()), (m.group(1)
-                                                   if m else None)
+        man = _json.loads(hits[-1].read_text())
+        # Old manifests were a bare list; new ones are a dict with a
+        # style. Accept both so a deploy does not blank the radar.
+        chunks = man.get("chunks") if isinstance(man, dict) else man
+        if isinstance(man, dict) and man.get("style") != RENDER_STYLE:
+            return None, None      # stale style: warmer will replace
+        return chunks, (m.group(1) if m else None)
     except Exception:
         return None, None
