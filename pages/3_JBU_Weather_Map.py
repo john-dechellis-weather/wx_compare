@@ -1870,6 +1870,65 @@ if run_button:
         # No custom city layer: the light basemap already labels
         # major cities at these zooms (ours doubled them)
         layers = []
+        # Radar UNDER everything: aircraft, breach dots and rings
+        # must stay readable through heavy echo.
+        if radar_on:
+            try:
+                from core import mrms as _MR
+                from core import mrms_tiles as _MT
+
+                _sd = _Path(__file__).resolve().parent.parent / "static"
+                _rbase = (_os_ko.environ.get("RENDER_EXTERNAL_URL")
+                          or _os_ko.environ.get("PUBLIC_BASE_URL")
+                          or "").rstrip("/")
+                _tstamp = _MT.newest(_sd / "mrmstiles")
+                if _tstamp and _rbase:
+                    # TILES. A TileLayer requests only what is on
+                    # screen at the zoom being viewed, so resolution
+                    # is constant instead of a single raster being
+                    # stretched 15x at terminal-area zoom.
+                    #
+                    # Missing tiles are the ones with no echo — they
+                    # are never written, and deck.gl treats the 404
+                    # as "nothing here", which is both correct and
+                    # free.
+                    layers.append(pdk.Layer(
+                        "TileLayer",
+                        data=(f"{_rbase}/app/static/mrmstiles/"
+                              f"{_tstamp}/{{z}}/{{x}}/{{y}}.webp"),
+                        min_zoom=_MT.Z_MIN, max_zoom=_MT.Z_MAX,
+                        tile_size=256, opacity=float(radar_op),
+                        # Above Z_MAX deck.gl re-uses the deepest
+                        # tiles and scales them. MRMS is a 1 km grid,
+                        # so there is no more detail to fetch — every
+                        # product interpolates past this point.
+                        extent=[-130.0, 20.0, -60.0, 55.0],
+                        pickable=False,
+                    ))
+                    _radar_note = (
+                        f" Radar: MRMS 1 km merged reflectivity, "
+                        f"{_tstamp[9:11]}:{_tstamp[11:13]}Z.")
+                elif _rbase:
+                    # Pyramid not ready: fall back to the flat frame
+                    # so the map still shows radar while warming.
+                    _rn, _rs = _MR.newest(_sd)
+                    if _rn:
+                        layers.append(pdk.Layer(
+                            "BitmapLayer", data=None,
+                            image=f"{_rbase}/app/static/{_rn}",
+                            bounds=_MR.BOUNDS,
+                            opacity=float(radar_op)))
+                        _radar_note = (" Radar: MRMS 1 km "
+                                       "(single frame; tiles warming).")
+                    else:
+                        _radar_note = (" Radar: warming, first scan "
+                                       "appears within a few minutes.")
+                else:
+                    _radar_note = " Radar: RENDER_EXTERNAL_URL unset."
+            except Exception as _rexc:
+                _radar_note = f" Radar unavailable ({_rexc})."
+        else:
+            _radar_note = ""
         if fills:
             # Solid core: current METAR breach (trouble NOW)
             layers.append(pdk.Layer(
@@ -1937,10 +1996,23 @@ if run_button:
         # behind by that removal and raised IndexError on every load:
         # one column, index 1. Narrow column so the checkbox does not
         # stretch across the page.
-        _ctl = st.columns([1.0, 3.0], gap="small")
+        _ctl = st.columns([1.0, 1.2, 1.4, 2.4], gap="small")
         with _ctl[0]:
             show_cs = st.checkbox(
                 "Flight numbers", value=True, key="show_cs_f",
+            )
+        with _ctl[1]:
+            # Reads a PRE-WARMED frame off disk. No fetch, no
+            # decode, no wait — toggling this costs a layer append.
+            radar_on = st.checkbox(
+                "Radar", value=True, key="mrms_on",
+                help="MRMS merged reflectivity, 1 km national "
+                     "mosaic, ~2-minute updates.",
+            )
+        with _ctl[2]:
+            radar_op = st.slider(
+                "Radar opacity", 0.0, 1.0, 0.55, 0.05,
+                key="mrms_op", label_visibility="collapsed",
             )
         # Live positions from the background refresher. The fragment
         # NEVER waits on the sweep — it draws the last good result
@@ -2115,8 +2187,9 @@ if run_button:
             map_style="light",
             tooltip={"html": "<b>{tip}</b>"},
         )
-        _rad = (" Map auto-refreshes every 2 min; aircraft "
-                "positions update each refresh.")
+        _rad = (_radar_note
+                + " Map auto-refreshes every 2 min; aircraft "
+                  "positions update each refresh.")
         # Claimed BEFORE the chart so it paints while deck.gl builds,
         # and cleared immediately after.
         _map_notice = st.empty()
