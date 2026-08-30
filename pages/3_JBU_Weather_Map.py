@@ -1948,10 +1948,6 @@ if run_button:
                 key="mrms_op", label_visibility="collapsed",
             )
 
-        # Bound before the branch that sets it: the dedupe runs
-        # inside `if fleet:`, and the caption below reads it
-        # unconditionally.
-        _n_dupe = 0
         layers = []
         if radar_on:
             # One BitmapLayer per CHUNK.
@@ -2054,6 +2050,16 @@ if run_button:
 
     @st.fragment(run_every="120s")
     def _map_fragment():
+        # Bound at the TOP OF THE FUNCTION, not outside it.
+        #
+        # `_n_dupe` is assigned further down inside `if fleet:`,
+        # which makes it LOCAL to this function for its whole body.
+        # An initialisation in the enclosing scope is therefore
+        # invisible here, and reading it when `if fleet:` did not run
+        # raises UnboundLocalError rather than falling back to the
+        # outer value. Same trap applies to anything else the caption
+        # reads unconditionally.
+        _n_dupe = 0
         import pydeck as pdk
         # ONE control left on this page: flight numbers. Radar,
         # Class B, other traffic and N90 fixes have all been removed
