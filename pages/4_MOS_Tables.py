@@ -314,12 +314,17 @@ def build_generic_table(df_m, table_label, show_viscig=True):
     # Temperature above the wind block: it is the field most often
     # scanned first, and the colour ladder makes it the fastest row
     # to read at a glance.
-    for _lab, _col in (("TMP", "tmp_f"), ("DPT", "dpt_f")):
+    # TMP is coloured; DPT is not. Dewpoint shares the temperature
+    # scale but not its meaning — a 15 F dewpoint is unremarkable and
+    # would light up blue on a ladder built for air temperature,
+    # putting alarm colours on a row that is rarely the concern.
+    for _lab, _col, _color in (("TMP", "tmp_f", True),
+                               ("DPT", "dpt_f", False)):
         if _col not in df_m.columns:
             continue
         cells = [make_th(_lab, is_row_label=True)]
         for _t in df_m[_col]:
-            _c = temp_bg(_t)
+            _c = temp_bg(_t) if _color else None
             cells.append(make_cell(fmt_temp(_t), _c[0], _c[1])
                          if _c else make_cell(fmt_temp(_t)))
         rows_html.append("<tr>" + "".join(cells) + "</tr>")
@@ -526,21 +531,23 @@ if run_button:
             lamp_cig_cells.append(make_cell(fmt_cig(c, u)))
     lamp_cig_row = "<tr>" + "".join(lamp_cig_cells) + "</tr>"
 
-    def _temp_row(label, series):
+    def _temp_row(label, series, color=True):
         cells = [make_th(label, is_row_label=True)]
         for _t in series:
-            _c = temp_bg(_t)
+            _c = temp_bg(_t) if color else None
             cells.append(make_cell(fmt_temp(_t), _c[0], _c[1])
                          if _c else make_cell(fmt_temp(_t)))
         return "<tr>" + "".join(cells) + "</tr>"
 
     nbm_tmp_row = _temp_row("NBM TMP", df_c["NBM_tmp_f"]) \
         if "NBM_tmp_f" in df_c.columns else ""
-    nbm_dpt_row = _temp_row("NBM DPT", df_c["NBM_dpt_f"]) \
+    nbm_dpt_row = _temp_row("NBM DPT", df_c["NBM_dpt_f"],
+                            color=False) \
         if "NBM_dpt_f" in df_c.columns else ""
     lamp_tmp_row = _temp_row("LAMP TMP", df_c["LAMP_tmp_f"]) \
         if "LAMP_tmp_f" in df_c.columns else ""
-    lamp_dpt_row = _temp_row("LAMP DPT", df_c["LAMP_dpt_f"]) \
+    lamp_dpt_row = _temp_row("LAMP DPT", df_c["LAMP_dpt_f"],
+                             color=False) \
         if "LAMP_dpt_f" in df_c.columns else ""
 
     # Wind rows — direction / sustained / gust, per model.

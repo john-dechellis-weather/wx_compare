@@ -1929,7 +1929,9 @@ if run_button:
         # layer list, so `radar_on` was read before it existed —
         # "name 'radar_on' is not defined". A control has to be
         # declared before anything reads it.
-        _ctl = st.columns([1.0, 1.2, 1.4, 2.4], gap="small")
+        # Two controls: flight numbers and radar. The third column
+        # is a spacer so neither stretches across the page.
+        _ctl = st.columns([1.0, 1.0, 4.0], gap="small")
         with _ctl[0]:
             show_cs = st.checkbox(
                 "Flight numbers", value=True, key="show_cs_f",
@@ -1942,24 +1944,15 @@ if run_button:
                 help="MRMS merged reflectivity, 1 km national "
                      "mosaic, ~2-minute updates.",
             )
-        with _ctl[2]:
-            # DISCRETE, not a slider.
-            #
-            # pydeck cannot change a layer property client-side, so
-            # any widget change reruns the fragment and rebuilds the
-            # whole deck. A slider fires on every drag step, so one
-            # adjustment cost a dozen full re-renders and the map
-            # flashed the whole way. A radio fires once per choice.
-            #
-            # Three values is also all this control needs: the
-            # question is whether radar sits under the traffic,
-            # beside it, or over it.
-            _OP = {"Light": 0.35, "Medium": 0.55, "Heavy": 0.8}
-            radar_op = _OP[st.radio(
-                "Radar opacity", list(_OP), index=1, horizontal=True,
-                key="mrms_op",
-            )]
-
+        # FIXED opacity, no widget.
+        #
+        # pydeck cannot change a layer property client-side, so every
+        # opacity control rebuilt the whole deck — a slider did it on
+        # each drag step, a radio once per click. Opacity is a
+        # set-once preference rather than something adjusted while
+        # watching weather, so it is a constant here and an env var
+        # for tuning without a deploy.
+        radar_op = float(_os_ko.environ.get("JBU_RADAR_OPACITY", "0.5"))
         layers = []
         if radar_on:
             # One BitmapLayer per CHUNK.
