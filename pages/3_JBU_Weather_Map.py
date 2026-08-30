@@ -1197,7 +1197,11 @@ _FLEET = {"res": None, "bucket": None, "busy": False,
 # How long the FIRST render may wait for positions. Only ever paid
 # once per process; after that the background thread is always a beat
 # ahead.
-FIRST_WAIT_S = float(_os_ko.environ.get("JBU_FLEET_FIRST_WAIT", "8"))
+# 20 s, not 8. The sweep is 17 tiles paced across two lanes with
+# retries; 8 s cut it off often enough that the map drew with no
+# aircraft and waited 120 s for the next beat. Only ever paid once
+# per process, and only if the module-level kick has not finished.
+FIRST_WAIT_S = float(_os_ko.environ.get("JBU_FLEET_FIRST_WAIT", "20"))
 
 
 
@@ -1317,6 +1321,28 @@ def _fleet_refresh(bucket: str):
                        "tb": _tbf.format_exc()})
     finally:
         _FLEET["busy"] = False
+
+
+def _kick_fleet_now():
+    """Start a sweep at MODULE LOAD, before anything renders.
+
+    The refresher used to start on the first fragment run, so the
+    first render raced it: the sweep paces 17 tiles across two lanes
+    with 0.25 s between calls plus retries on rate limits, which
+    regularly beat the 8 s wait. When it did, the map drew with an
+    EMPTY fleet and the next attempt was 120 s away — aircraft
+    simply missing for two minutes.
+
+    Starting here gives the sweep a head start over page setup,
+    METAR parsing and layer construction.
+    """
+    import threading as _th
+    from datetime import datetime as _d, timezone as _tz
+
+    b = _d.now(_tz.utc).strftime("%Y%m%d%H%M")
+    if _FLEET["bucket"] != b and not _FLEET["busy"]:
+        _th.Thread(target=_fleet_refresh, args=(b,),
+                   daemon=True).start()
 
 
 def fleet_now(bucket: str):
@@ -1622,6 +1648,12 @@ def _kick_prefetch():
 
 
 _kick_prefetch()
+# Fleet sweep starts HERE, at module load, so it overlaps page
+# setup instead of racing the first render.
+try:
+    _kick_fleet_now()
+except Exception:
+    pass
 
 st.caption(
     f"Scans TAFs from {len(JETBLUE_ICAOS)} JetBlue destinations and flags "
@@ -2175,6 +2207,19 @@ if run_button:
             )
             with st.expander("Fleet fetch traceback"):
                 st.code(_fleet_tb or "", language="text")
+        if not fleet and not _fleet_err:
+            # An empty fleet layer is indistinguishable from "no
+            # aircraft airborne", which is never true. Say so.
+            st.markdown(
+                "<div style='background:#FFF3B0;"
+                "border:2px solid #B38600;border-radius:6px;"
+                "padding:8px 12px;margin:6px 0;text-align:center;"
+                "font-size:18px;font-weight:700;color:#5A4300;'>"
+                "Aircraft positions loading\u2026 "
+                "<span style='font-size:14px;font-weight:400'>"
+                "the ADS-B sweep is still running. Traffic will "
+                "appear on the next refresh.</span></div>",
+                unsafe_allow_html=True)
         if fleet:
             fleet_disp = []
             gnd_disp = []
@@ -2387,21 +2432,17 @@ if run_button:
         # the previous render stays on screen underneath — which is
         # why aircraft appeared twice, at their old and new
         # positions, the longer the page stayed open.
-        # Rendered into a PERSISTENT PLACEHOLDER, not called
-        # directly.
+        # Plain call, positional identity.
         #
-        # `key=` on st.pydeck_chart only affects element identity
-        # when selection is enabled; with on_select="ignore" a
-        # fragment rerun could still append a new chart rather than
-        # replace the old one, leaving the previous render stacked
-        # underneath — which is why the same aircraft appeared two
-        # and three times, further apart the longer the page stayed
-        # open. Writing into a placeholder held in session state
-        # replaces its contents by definition.
-        if "_map_slot" not in st.session_state:
-            st.session_state["_map_slot"] = st.empty()
-        st.session_state["_map_slot"].pydeck_chart(
-            deck, height=map_height)
+        # A previous attempt stored st.empty() in session_state and
+        # wrote into it on later runs. That does not work: a
+        # DeltaGenerator captured in one script run points at a
+        # container that no longer exists on the next, so the write
+        # silently goes nowhere and the map never appears. Streamlit
+        # elements are identified by POSITION in the script, so
+        # calling pydeck_chart at the same point each run already
+        # replaces the previous chart.
+        st.pydeck_chart(deck, height=map_height)
         _map_notice.empty()
         st.session_state["_map_drawn_once"] = True
         st.caption(
