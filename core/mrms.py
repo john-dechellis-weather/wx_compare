@@ -144,6 +144,9 @@ def palette():
     return lut
 
 
+SMOOTH = float(os.environ.get("MRMS_SMOOTH", "0.8"))
+
+
 def band_index(vals):
     """dBZ grid -> palette INDEX array (uint8).
 
@@ -156,6 +159,26 @@ def band_index(vals):
 
     if DECIMATE > 1:
         vals = vals[::DECIMATE, ::DECIMATE]
+    # Light blur BEFORE quantising. One CONUS raster is scaled by
+    # the browser, so at zoom past the data's own 1 km resolution
+    # the cells would otherwise show as hard squares. Smoothing the
+    # FIELD rather than the image keeps the colour bands honest —
+    # blurring after quantising would invent intermediate colours
+    # that correspond to no dBZ value.
+    #
+    # The blur is coverage-aware: masked cells contribute nothing
+    # instead of dragging edges toward zero, which would eat away
+    # the rim of every echo.
+    if SMOOTH:
+        from scipy import ndimage as ndi
+
+        ok = np.isfinite(vals) & (vals >= DBZ_MIN)
+        num = ndi.gaussian_filter(
+            np.where(ok, vals, 0.0).astype("float32"), SMOOTH)
+        den = ndi.gaussian_filter(ok.astype("float32"), SMOOTH)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            vals = np.where(den > 0.05, num / np.maximum(den, 1e-6),
+                            np.nan)
     idx = np.digitize(np.nan_to_num(vals, nan=-999.0),
                       LEVELS).astype("uint8")
     idx[~np.isfinite(vals)] = 0
@@ -170,13 +193,65 @@ def colorize(vals):
     return palette()[band_index(vals)]
 
 
+# CONUS is 7000 px wide, and WebGL's MAX_TEXTURE_SIZE is 4096 on a
+# lot of integrated graphics. Over that limit the texture silently
+# fails to upload and the layer draws NOTHING — the map looks fine,
+# the caption says the frame loaded, and there is no error anywhere.
+#
+# Splitting into a grid keeps every piece well under the cap while
+# preserving full resolution. Each piece becomes its own BitmapLayer
+# with its own bounds, which pydeck can express — unlike a TileLayer,
+# which needs a JS callback it cannot serialise.
+CHUNKS_X = int(os.environ.get("MRMS_CHUNKS_X", "2"))
+CHUNKS_Y = int(os.environ.get("MRMS_CHUNKS_Y", "2"))
+
+
 def render(vals, dest: Path) -> Path:
+    """Whole-CONUS single image. Kept for non-map uses."""
     from PIL import Image
 
     im = Image.fromarray(colorize(vals), mode="RGBA")
     dest.parent.mkdir(parents=True, exist_ok=True)
     im.save(dest, "WEBP", quality=WEBP_Q, method=4)
     return dest
+
+
+def render_chunks(vals, outdir, stamp: str) -> list:
+    """Grid of tiles. Returns [{name, bounds}, ...].
+
+    Bounds are computed from the SLICE, not assumed, so an odd
+    division that leaves a remainder row or column still lands in
+    the right place on the map.
+    """
+    from PIL import Image
+
+    rgba = colorize(vals)
+    rows, cols = rgba.shape[0], rgba.shape[1]
+    w, s, e, n = BOUNDS
+    out = []
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    for iy in range(CHUNKS_Y):
+        y0 = rows * iy // CHUNKS_Y
+        y1 = rows * (iy + 1) // CHUNKS_Y
+        for ix in range(CHUNKS_X):
+            x0 = cols * ix // CHUNKS_X
+            x1 = cols * (ix + 1) // CHUNKS_X
+            sub = rgba[y0:y1, x0:x1]
+            if not sub[..., 3].any():
+                continue          # nothing to draw in this piece
+            name = f"mrmsc_{stamp}_{ix}{iy}.webp"
+            Image.fromarray(sub, mode="RGBA").save(
+                outdir / name, "WEBP", quality=WEBP_Q, method=4)
+            # Image rows run north to south, so y0 is the NORTH edge.
+            out.append({
+                "name": name,
+                "bounds": [w + (e - w) * x0 / cols,
+                           n - (n - s) * y1 / rows,
+                           w + (e - w) * x1 / cols,
+                           n - (n - s) * y0 / rows],
+            })
+    return out
 
 
 def frame_name(stamp: str) -> str:
@@ -202,16 +277,26 @@ def build(outdir) -> tuple:
     t0 = time.time()
     vals = decode(r.content)
     ny, nx = vals.shape
-    render(vals, dest)
-    note = (f"{nx}x{ny} native, "
-            f"{dest.stat().st_size / 1024:.0f} KB")
+    chunks = render_chunks(vals, outdir, stamp)
+    import json as _json
+
+    (Path(outdir) / f"mrmsc_{stamp}.json").write_text(
+        _json.dumps(chunks))
+    _cb = sum((Path(outdir) / c["name"]).stat().st_size
+              for c in chunks)
+    note = (f"{nx}x{ny} native, {len(chunks)} chunks, "
+            f"{_cb / 1024:.0f} KB")
 
     # Tile pyramid. This is what makes zooming hold its resolution:
     # a single raster is correct at one zoom and stretched at every
     # other. Empty tiles are skipped, and since ~94% of CONUS has no
     # echo at any moment, a typical scan writes a few hundred tiles
     # rather than the 2,400 the grid would suggest.
-    if os.environ.get("MRMS_TILES", "on").lower() != "off":
+    # Default OFF: the pyramid cannot be served through pydeck
+    # (TileLayer needs a JS callback), so writing thousands of
+    # tiles every scan buys nothing until a custom deck.gl
+    # component exists. MRMS_TILES=on re-enables it.
+    if os.environ.get("MRMS_TILES", "off").lower() == "on":
         try:
             from core import mrms_tiles as _T
 
@@ -261,8 +346,23 @@ def _daemon(outdir):
                 if name:
                     if note != "cached":
                         _log(outdir, f"{name}: {note}")
-                    olds = sorted(Path(outdir).glob("mrms_*.webp"))
-                    for old in olds[:-KEEP]:
+                    for pat, k in (("mrms_*.webp", KEEP),
+                                   ("mrmsc_*.json", KEEP)):
+                        for old in sorted(Path(outdir).glob(pat))[:-k]:
+                            st_ = re.search(r"(\d{8}-\d{6})", old.name)
+                            if st_:
+                                for c in Path(outdir).glob(
+                                        f"mrmsc_{st_.group(1)}_*.webp"):
+                                    try:
+                                        c.unlink()
+                                    except OSError:
+                                        pass
+                            try:
+                                old.unlink()
+                            except OSError:
+                                pass
+                    olds = []
+                    for old in olds[:-KEEP] if olds else []:
                         try:
                             old.unlink()
                         except OSError:
@@ -288,10 +388,18 @@ def ensure_mrms_warmer(outdir) -> None:
 
 
 def newest(outdir):
-    """(name, stamp) of the newest rendered frame, or (None, None)."""
-    hits = sorted(Path(outdir).glob("mrms_*.webp"))
+    """(chunks, stamp) for the newest scan, or (None, None).
+
+    `chunks` is [{name, bounds}, ...] — one BitmapLayer each.
+    """
+    import json as _json
+
+    hits = sorted(Path(outdir).glob("mrmsc_*.json"))
     if not hits:
         return None, None
-    n = hits[-1].name
-    m = re.search(r"mrms_(\d{8}-\d{6})", n)
-    return n, (m.group(1) if m else None)
+    m = re.search(r"mrmsc_(\d{8}-\d{6})\.json", hits[-1].name)
+    try:
+        return _json.loads(hits[-1].read_text()), (m.group(1)
+                                                   if m else None)
+    except Exception:
+        return None, None
