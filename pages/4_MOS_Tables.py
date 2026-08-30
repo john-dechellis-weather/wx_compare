@@ -64,6 +64,10 @@ def cached_mos_tables(icao: str, cycle_iso: str) -> pd.DataFrame:
             "LAMP_wind_dir": _safe(l, "wind_dir_deg"),
             "LAMP_wind_spd": _safe(l, "wind_speed_kt"),
             "LAMP_wind_gst": _safe(l, "wind_gust_kt"),
+            "NBM_tmp_f": _safe(n, "temp_f"),
+            "NBM_dpt_f": _safe(n, "dewpoint_f"),
+            "LAMP_tmp_f": _safe(l, "temp_f"),
+            "LAMP_dpt_f": _safe(l, "dewpoint_f"),
         })
     return pd.DataFrame(rows)
 
@@ -102,6 +106,8 @@ def cached_extended_tables(icao: str, cycle_iso: str):
                 "wdr": r.get("wind_dir_deg"),
                 "wsp": r.get("wind_speed_kt"),
                 "gst": r.get("wind_gust_kt"),
+                "tmp_f": r.get("temp_f"),
+                "dpt_f": r.get("dewpoint_f"),
             })
         return pd.DataFrame(rows)
 
@@ -179,6 +185,40 @@ def cig_bg(c, u):
     if c <= 2000: return ("#FF9900", "#000000")  # orange
     if c < 3000: return ("#FFFF00", "#000000")   # yellow
     return None
+
+
+def temp_bg(t):
+    """Background for a temperature in F, or None for benign values.
+
+    Cold and hot are separate ladders that both run from mild to
+    extreme, so the eye reads severity the same way in either
+    direction. Checked coldest-first and hottest-first because the
+    bands are open-ended at each end.
+
+    White text on the dark ends: purple and magenta are too dark for
+    black to stay legible at 10 px.
+    """
+    if t is None or pd.isna(t):
+        return None
+    if t < 10:
+        return ("#8B00C8", "#FFFFFF")    # purple
+    if t < 20:
+        return ("#0033CC", "#FFFFFF")    # blue
+    if t < 32:
+        return ("#9FD4F5", "#000000")    # light blue
+    if t > 110:
+        return ("#FF00FF", "#000000")    # magenta
+    if t > 100:
+        return ("#FF2020", "#FFFFFF")    # red
+    if t > 90:
+        return ("#FFFF00", "#000000")    # yellow
+    return None
+
+
+def fmt_temp(t):
+    if t is None or pd.isna(t):
+        return "-"
+    return f"{int(round(t))}"
 
 
 def fmt_wdr(dr):
@@ -269,6 +309,19 @@ def build_generic_table(df_m, table_label, show_viscig=True):
             colors = cig_bg(c, u)
             cells.append(make_cell(fmt_cig(c, u), colors[0], colors[1])
                          if colors else make_cell(fmt_cig(c, u)))
+        rows_html.append("<tr>" + "".join(cells) + "</tr>")
+
+    # Temperature above the wind block: it is the field most often
+    # scanned first, and the colour ladder makes it the fastest row
+    # to read at a glance.
+    for _lab, _col in (("TMP", "tmp_f"), ("DPT", "dpt_f")):
+        if _col not in df_m.columns:
+            continue
+        cells = [make_th(_lab, is_row_label=True)]
+        for _t in df_m[_col]:
+            _c = temp_bg(_t)
+            cells.append(make_cell(fmt_temp(_t), _c[0], _c[1])
+                         if _c else make_cell(fmt_temp(_t)))
         rows_html.append("<tr>" + "".join(cells) + "</tr>")
 
     rows_html.append(build_wind_row("WDR", df_m["wdr"], fmt=fmt_wdr))
@@ -473,6 +526,23 @@ if run_button:
             lamp_cig_cells.append(make_cell(fmt_cig(c, u)))
     lamp_cig_row = "<tr>" + "".join(lamp_cig_cells) + "</tr>"
 
+    def _temp_row(label, series):
+        cells = [make_th(label, is_row_label=True)]
+        for _t in series:
+            _c = temp_bg(_t)
+            cells.append(make_cell(fmt_temp(_t), _c[0], _c[1])
+                         if _c else make_cell(fmt_temp(_t)))
+        return "<tr>" + "".join(cells) + "</tr>"
+
+    nbm_tmp_row = _temp_row("NBM TMP", df_c["NBM_tmp_f"]) \
+        if "NBM_tmp_f" in df_c.columns else ""
+    nbm_dpt_row = _temp_row("NBM DPT", df_c["NBM_dpt_f"]) \
+        if "NBM_dpt_f" in df_c.columns else ""
+    lamp_tmp_row = _temp_row("LAMP TMP", df_c["LAMP_tmp_f"]) \
+        if "LAMP_tmp_f" in df_c.columns else ""
+    lamp_dpt_row = _temp_row("LAMP DPT", df_c["LAMP_dpt_f"]) \
+        if "LAMP_dpt_f" in df_c.columns else ""
+
     # Wind rows — direction / sustained / gust, per model.
     # WSP colored by sustained speed; GST colored by gust; WDR plain.
     nbm_wdr_row = build_wind_row("NBM WDR", df_c["NBM_wind_dir"], fmt=fmt_wdr)
@@ -505,6 +575,7 @@ if run_button:
         + '<table style="border-collapse:collapse;margin:0;">'
         + f'<thead>{header_row}</thead>'
         + f'<tbody>{fhr_row}{nbm_vis_row}{nbm_cig_row}'
+        + f'{nbm_tmp_row}{nbm_dpt_row}'
         + f'{nbm_wdr_row}{nbm_wsp_row}{nbm_gst_row}</tbody>'
         + '</table></div>'
         + _wrap_open.format(margin="")
@@ -512,6 +583,7 @@ if run_button:
         + '<table style="border-collapse:collapse;margin:0;">'
         + f'<thead>{header_row}</thead>'
         + f'<tbody>{fhr_row}{lamp_vis_row}{lamp_cig_row}'
+        + f'{lamp_tmp_row}{lamp_dpt_row}'
         + f'{lamp_wdr_row}{lamp_wsp_row}{lamp_gst_row}</tbody>'
         + '</table></div>'
     )
