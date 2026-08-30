@@ -1200,6 +1200,58 @@ _FLEET = {"res": None, "bucket": None, "busy": False,
 FIRST_WAIT_S = float(_os_ko.environ.get("JBU_FLEET_FIRST_WAIT", "8"))
 
 
+
+# ---------------------------------------------------------------------------
+# Position history
+# ---------------------------------------------------------------------------
+# One icon per aircraft at its CURRENT position, and a trail of dots
+# behind it for where it has been. That is the honest way to show
+# movement: a second icon at an old position looks like a second
+# aircraft, which is exactly the confusion this replaces.
+#
+# History lives at module scope, so it survives fragment reruns and
+# is shared across sessions — everyone looking at the map sees the
+# same trails rather than each building their own.
+_TRACKS: dict = {}
+TRAIL_MAX = int(_os_ko.environ.get("JBU_TRAIL_POINTS", "12"))
+TRAIL_TTL_S = float(_os_ko.environ.get("JBU_TRAIL_TTL_S", "3600"))
+
+
+def _note_positions(rows):
+    """Append current positions and drop stale aircraft."""
+    import time as _t
+
+    now = _t.time()
+    for r in rows or []:
+        cs = r.get("cs")
+        la, lo = r.get("lat"), r.get("lon")
+        if not cs or la is None or lo is None:
+            continue
+        h = _TRACKS.setdefault(cs, [])
+        # Only record real movement. Without this, a parked aircraft
+        # accumulates a dozen dots in one spot and reads as a smudge.
+        if h and abs(h[-1][0] - lo) < 0.002 and abs(h[-1][1] - la) < 0.002:
+            h[-1] = (lo, la, now)
+            continue
+        h.append((lo, la, now))
+        if len(h) > TRAIL_MAX:
+            del h[:-TRAIL_MAX]
+    # An aircraft that lands or leaves coverage should not leave a
+    # trail hanging on the map forever.
+    for cs in [k for k, v in _TRACKS.items()
+               if not v or now - v[-1][2] > TRAIL_TTL_S]:
+        _TRACKS.pop(cs, None)
+
+
+def _trail_rows():
+    """Previous positions only — the newest is where the icon is."""
+    out = []
+    for cs, h in _TRACKS.items():
+        for lo, la, _ts in h[:-1]:
+            out.append({"position": [lo, la], "cs": cs})
+    return out
+
+
 def _fleet_refresh(bucket: str):
     if _FLEET["busy"]:
         return
@@ -1208,6 +1260,10 @@ def _fleet_refresh(bucket: str):
         res = cached_fleet(bucket)
         _FLEET.update({"res": res, "bucket": bucket,
                        "err": None, "tb": None})
+        try:
+            _note_positions(res[0] if res else [])
+        except Exception:
+            pass          # trails are decoration; never break the fleet
     except Exception as exc:
         import traceback as _tbf
         _FLEET.update({"err": f"{type(exc).__name__}: {exc}",
@@ -1892,66 +1948,57 @@ if run_button:
                 key="mrms_op", label_visibility="collapsed",
             )
 
+        # Bound before the branch that sets it: the dedupe runs
+        # inside `if fleet:`, and the caption below reads it
+        # unconditionally.
+        _n_dupe = 0
         layers = []
         if radar_on:
+            # One BitmapLayer per CHUNK.
+            #
+            # A single 7000 px CONUS image exceeds WebGL's
+            # MAX_TEXTURE_SIZE, which is 4096 on a lot of integrated
+            # graphics. Over the cap the texture silently fails to
+            # upload and the layer draws nothing — no error, caption
+            # still says the frame loaded. That is what "radar shows
+            # nothing" was.
+            #
+            # A TileLayer would be the textbook answer, but deck.gl
+            # needs a renderSubLayers CALLBACK to draw raster tiles
+            # and pydeck cannot serialise a JS function; adding one
+            # kills the whole deck. A handful of BitmapLayers is the
+            # same idea expressed in JSON.
             try:
                 from core import mrms as _MR
-                from core import mrms_tiles as _MT
 
                 _sd = _Path(__file__).resolve().parent.parent / "static"
                 _rbase = (_os_ko.environ.get("RENDER_EXTERNAL_URL")
                           or _os_ko.environ.get("PUBLIC_BASE_URL")
                           or "").rstrip("/")
-                _tstamp = _MT.newest(_sd / "mrmstiles")
-                if _tstamp and _rbase:
-                    # TILES. A TileLayer requests only what is on
-                    # screen at the zoom being viewed, so resolution
-                    # is constant instead of a single raster being
-                    # stretched 15x at terminal-area zoom.
-                    #
-                    # Missing tiles are the ones with no echo — they
-                    # are never written, and deck.gl treats the 404
-                    # as "nothing here", which is both correct and
-                    # free.
-                    layers.append(pdk.Layer(
-                        "TileLayer",
-                        data=(f"{_rbase}/app/static/mrmstiles/"
-                              f"{_tstamp}/{{z}}/{{x}}/{{y}}.webp"),
-                        min_zoom=_MT.Z_MIN, max_zoom=_MT.Z_MAX,
-                        tile_size=256, opacity=float(radar_op),
-                        # Above Z_MAX deck.gl re-uses the deepest
-                        # tiles and scales them. MRMS is a 1 km grid,
-                        # so there is no more detail to fetch — every
-                        # product interpolates past this point.
-                        extent=[-130.0, 20.0, -60.0, 55.0],
-                        pickable=False,
-                    ))
-                    _radar_note = (
-                        f" Radar: MRMS 1 km merged reflectivity, "
-                        f"{_tstamp[9:11]}:{_tstamp[11:13]}Z.")
-                elif _rbase:
-                    # Pyramid not ready: fall back to the flat frame
-                    # so the map still shows radar while warming.
-                    _rn, _rs = _MR.newest(_sd)
-                    if _rn:
+                _chunks, _rs = _MR.newest(_sd)
+                if _chunks and _rbase:
+                    for _c in _chunks:
                         layers.append(pdk.Layer(
                             "BitmapLayer", data=None,
-                            image=f"{_rbase}/app/static/{_rn}",
-                            bounds=_MR.BOUNDS,
-                            opacity=float(radar_op)))
-                        _radar_note = (" Radar: MRMS 1 km "
-                                       "(single frame; tiles warming).")
-                    else:
-                        _radar_note = (" Radar: warming, first scan "
-                                       "appears within a few minutes.")
-                else:
+                            image=f"{_rbase}/app/static/{_c['name']}",
+                            bounds=_c["bounds"],
+                            opacity=float(radar_op),
+                        ))
+                    _radar_note = (
+                        f" Radar: MRMS 1 km merged reflectivity"
+                        + (f", {_rs[9:11]}:{_rs[11:13]}Z." if _rs
+                           else ".")
+                    )
+                elif not _rbase:
                     _radar_note = " Radar: RENDER_EXTERNAL_URL unset."
+                else:
+                    _radar_note = (" Radar: warming, first scan "
+                                   "appears within a few minutes.")
             except Exception as _rexc:
                 _radar_note = f" Radar unavailable ({_rexc})."
         else:
             _radar_note = ""
-        # Radar UNDER everything: aircraft, breach dots and rings
-        # must stay readable through heavy echo.
+
         if fills:
             # Solid core: current METAR breach (trouble NOW)
             layers.append(pdk.Layer(
@@ -2146,12 +2193,47 @@ if run_button:
                     (fleet_disp if n < 2
                      else gnd_disp).append(e[0])
 
-            # Other operators, drawn UNDER the fleet: half size,
-            # light grey body, yellow outline. Half size and a
-            # desaturated fill are what keep a hundred foreign
-            # aircraft from competing with the eleven that matter,
-            # while the yellow edge keeps them visible against both
-            # the light basemap and radar fill.
+            # Defensive dedupe by callsign. The sweep already keys
+            # on callsign, so this should be a no-op — but a
+            # duplicate icon is indistinguishable from a second
+            # aircraft to whoever is reading the map, and the cost
+            # of being sure is one dict comprehension.
+            def _dedupe(rows):
+                out = {}
+                for r in rows:
+                    k = r.get("cs")
+                    if k and k not in out:
+                        out[k] = r
+                return list(out.values())
+
+            _n_before = len(fleet_disp) + len(gnd_disp)
+            fleet_disp = _dedupe(fleet_disp)
+            gnd_disp = _dedupe(gnd_disp)
+            _n_dupe = _n_before - len(fleet_disp) - len(gnd_disp)
+
+            # TRACK TRAILS, under the icons. Previous positions as
+            # small dots; the icon marks only where the aircraft is
+            # NOW. Drawn first so a trail never sits on top of an
+            # aircraft symbol.
+            #
+            # Radius in METERS, not pixels: a trail should shrink as
+            # you zoom out, the way the track itself does, rather
+            # than staying a constant blob and swamping the map at
+            # continental zoom.
+            try:
+                _trail = _trail_rows()
+            except Exception:
+                _trail = []
+            if _trail:
+                layers.append(pdk.Layer(
+                    "ScatterplotLayer", data=_trail,
+                    get_position="position",
+                    get_radius=2600, radius_units="meters",
+                    radius_min_pixels=1, radius_max_pixels=3,
+                    get_fill_color=[0, 90, 220, 130],
+                    stroked=False, pickable=False,
+                ))
+
             layers.append(pdk.Layer(
                 "IconLayer", data=fleet_disp,
                 get_position="[lon, lat]",
@@ -2192,7 +2274,9 @@ if run_button:
             map_style="light",
             tooltip={"html": "<b>{tip}</b>"},
         )
-        _rad = (_radar_note
+        _rad_dupe = (f" {_n_dupe} duplicate rows removed."
+                     if _n_dupe else "")
+        _rad = (_rad_dupe + _radar_note
                 + " Map auto-refreshes every 2 min; aircraft "
                   "positions update each refresh.")
         # Claimed BEFORE the chart so it paints while deck.gl builds,
@@ -2203,7 +2287,12 @@ if run_button:
             "font-weight:700;margin:10px 0'>"
             "Flight map rendering\u2026</p>",
             unsafe_allow_html=True)
-        st.pydeck_chart(deck, height=map_height)
+        # STABLE KEY. Without one, a fragment rerun can create a NEW
+        # chart element rather than replacing the existing one, and
+        # the previous render stays on screen underneath — which is
+        # why aircraft appeared twice, at their old and new
+        # positions, the longer the page stayed open.
+        st.pydeck_chart(deck, height=map_height, key="conus_map")
         _map_notice.empty()
         st.caption(
             "Solid dot = METAR breach NOW; ring = TAF "
