@@ -1952,7 +1952,10 @@ if run_button:
         # set-once preference rather than something adjusted while
         # watching weather, so it is a constant here and an env var
         # for tuning without a deploy.
-        radar_op = float(_os_ko.environ.get("JBU_RADAR_OPACITY", "0.5"))
+        # 1.0 here: transparency is baked into the palette alpha in
+        # core.mrms (MRMS_ALPHA). Setting it in both places would
+        # multiply them and wash the radar out entirely.
+        radar_op = 1.0
         layers = []
         if radar_on:
             # One BitmapLayer per CHUNK.
@@ -1993,9 +1996,34 @@ if run_button:
                 elif not _rbase:
                     _radar_note = " Radar: RENDER_EXTERNAL_URL unset."
                 else:
+                    # Highly visible, because a blank radar layer is
+                    # otherwise indistinguishable from clear skies —
+                    # the single most dangerous ambiguity on this
+                    # page. Say plainly that data is missing rather
+                    # than letting an empty map imply "no weather".
+                    st.markdown(
+                        "<div style='background:#FFF3B0;"
+                        "border:2px solid #B38600;border-radius:6px;"
+                        "padding:10px 14px;margin:6px 0;"
+                        "text-align:center;font-size:20px;"
+                        "font-weight:700;color:#5A4300;'>"
+                        "MRMS radar rendering\u2026 "
+                        "<span style='font-size:15px;font-weight:400'>"
+                        "first national scan takes a few minutes "
+                        "after a restart. The map is NOT showing "
+                        "radar right now.</span></div>",
+                        unsafe_allow_html=True)
                     _radar_note = (" Radar: warming, first scan "
                                    "appears within a few minutes.")
             except Exception as _rexc:
+                st.markdown(
+                    "<div style='background:#FFD9D9;"
+                    "border:2px solid #B30000;border-radius:6px;"
+                    "padding:10px 14px;margin:6px 0;"
+                    "text-align:center;font-size:19px;"
+                    "font-weight:700;color:#7A0000;'>"
+                    f"Radar unavailable \u2014 {_rexc}</div>",
+                    unsafe_allow_html=True)
                 _radar_note = f" Radar unavailable ({_rexc})."
         else:
             _radar_note = ""
