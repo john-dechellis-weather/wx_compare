@@ -72,7 +72,7 @@ DBZ_MIN = float(os.environ.get("MRMS_DBZ_MIN", "5"))
 # guessing at how deck.gl handles the prop through pydeck's JSON,
 # the transparency is put where it cannot be ignored: in the pixels.
 # The layer prop stays at 1.0 so the two do not multiply.
-ALPHA = int(os.environ.get("MRMS_ALPHA", "128"))
+ALPHA = int(os.environ.get("MRMS_ALPHA", "102"))
 # 1 keeps the native 0.01 deg grid. 2 halves it to ~2 km — still
 # finer than the ArcGIS export ever was, at a quarter the pixels.
 DECIMATE = int(os.environ.get("MRMS_DECIMATE", "1"))
@@ -167,9 +167,22 @@ SMOOTH = float(os.environ.get("MRMS_SMOOTH", "0.8"))
 #
 # Measured at 2x: 14000x7000, 200 px/degree, 13 s, ~4.6 MB across 8
 # chunks. Set MRMS_UPSAMPLE=1 to disable.
-UPSAMPLE = int(os.environ.get("MRMS_UPSAMPLE", "2"))
+UPSAMPLE = int(os.environ.get("MRMS_UPSAMPLE", "4"))
 # Blur applied AFTER upsampling, in fine-grid pixels.
-FINE_SMOOTH = float(os.environ.get("MRMS_FINE_SMOOTH", "1.6"))
+# Measured 8/30 on a synthetic convective field, peak 60 dBZ:
+#
+#     upsample  blur   peak kept   loss
+#         2x    1.6        58      1.8   <- edges still stepped
+#         2x    4.0        54      6.0
+#         2x    6.0        49     10.7   <- cores erased
+#         4x    4.0        58      2.4   <- smooth AND intact
+#
+# Blur is measured in FINE pixels, so the same sigma erodes less at
+# higher upsample. That is the whole reason to raise resolution
+# rather than raise the blur: heavy smoothing at 2x flattened a
+# 60 dBZ core to 49, which on a radar display is not a cosmetic
+# trade — it erases the cell someone needed to see.
+FINE_SMOOTH = float(os.environ.get("MRMS_FINE_SMOOTH", "4.0"))
 
 
 def band_index(vals):
@@ -252,8 +265,10 @@ def colorize(vals):
 # which needs a JS callback it cannot serialise.
 # 4x2 at UPSAMPLE=2 gives 3500x3500 pieces — under the 4096 cap
 # that a 2x2 split would blow through at 7000x3500.
-CHUNKS_X = int(os.environ.get("MRMS_CHUNKS_X", "4"))
-CHUNKS_Y = int(os.environ.get("MRMS_CHUNKS_Y", "2"))
+# 8x4 at UPSAMPLE=4: source slices are 875x875, output 3500x3500 —
+# under the 4096 WebGL cap. Fewer chunks would blow through it.
+CHUNKS_X = int(os.environ.get("MRMS_CHUNKS_X", "8"))
+CHUNKS_Y = int(os.environ.get("MRMS_CHUNKS_Y", "4"))
 
 
 def render(vals, dest: Path) -> Path:
@@ -286,7 +301,10 @@ def render_chunks(vals, outdir, stamp: str) -> list:
     lut = palette()
     rows, cols = vals.shape
     w, s_, e, n = BOUNDS
-    margin = 4 if UPSAMPLE > 1 else 0
+    # Margin in SOURCE cells, sized to cover the blur radius so a
+    # chunk edge has real neighbours to smooth against. Too small
+    # and every seam shows a faint line.
+    margin = int(max(4, FINE_SMOOTH)) if UPSAMPLE > 1 else 0
     out = []
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -334,7 +352,7 @@ def render_chunks(vals, outdir, stamp: str) -> list:
 
 
 # Bump when the rendered output changes in any visible way.
-RENDER_STYLE = int(os.environ.get("MRMS_RENDER_STYLE", "2"))
+RENDER_STYLE = int(os.environ.get("MRMS_RENDER_STYLE", "4"))
 
 
 def _style_ok(outdir, stamp: str) -> bool:
