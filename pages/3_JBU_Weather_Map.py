@@ -1943,10 +1943,22 @@ if run_button:
                      "mosaic, ~2-minute updates.",
             )
         with _ctl[2]:
-            radar_op = st.slider(
-                "Radar opacity", 0.0, 1.0, 0.55, 0.05,
-                key="mrms_op", label_visibility="collapsed",
-            )
+            # DISCRETE, not a slider.
+            #
+            # pydeck cannot change a layer property client-side, so
+            # any widget change reruns the fragment and rebuilds the
+            # whole deck. A slider fires on every drag step, so one
+            # adjustment cost a dozen full re-renders and the map
+            # flashed the whole way. A radio fires once per choice.
+            #
+            # Three values is also all this control needs: the
+            # question is whether radar sits under the traffic,
+            # beside it, or over it.
+            _OP = {"Light": 0.35, "Medium": 0.55, "Heavy": 0.8}
+            radar_op = _OP[st.radio(
+                "Radar opacity", list(_OP), index=1, horizontal=True,
+                key="mrms_op",
+            )]
 
         layers = []
         if radar_on:
@@ -2285,14 +2297,19 @@ if run_button:
         _rad = (_rad_dupe + _radar_note
                 + " Map auto-refreshes every 2 min; aircraft "
                   "positions update each refresh.")
-        # Claimed BEFORE the chart so it paints while deck.gl builds,
-        # and cleared immediately after.
+        # Claimed before the chart so it paints while deck.gl builds.
+        # Only on the FIRST render of a session. A control toggle
+        # rebuilds the deck from cached data in a moment, and
+        # flashing "rendering" over it turns a brief redraw into a
+        # visible interruption. The notice exists for the cold open,
+        # where the wait is real.
         _map_notice = st.empty()
-        _map_notice.markdown(
-            "<p style='text-align:center;font-size:22px;"
-            "font-weight:700;margin:10px 0'>"
-            "Flight map rendering\u2026</p>",
-            unsafe_allow_html=True)
+        if not st.session_state.get("_map_drawn_once"):
+            _map_notice.markdown(
+                "<p style='text-align:center;font-size:22px;"
+                "font-weight:700;margin:10px 0'>"
+                "Flight map rendering\u2026</p>",
+                unsafe_allow_html=True)
         # STABLE KEY. Without one, a fragment rerun can create a NEW
         # chart element rather than replacing the existing one, and
         # the previous render stays on screen underneath — which is
@@ -2300,6 +2317,7 @@ if run_button:
         # positions, the longer the page stayed open.
         st.pydeck_chart(deck, height=map_height, key="conus_map")
         _map_notice.empty()
+        st.session_state["_map_drawn_once"] = True
         st.caption(
             "Solid dot = METAR breach NOW; ring = TAF "
             "forecast (concentric = both); orange TS above = "
