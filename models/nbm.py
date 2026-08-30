@@ -286,15 +286,29 @@ def _parse_block(
     wdr_row = _extract_row(block, "WDR")
     wsp_row = _extract_row(block, "WSP")
     gst_row = _extract_row(block, "GST")
+    # TMP and DPT are plain degrees F in the bulletin — no scaling,
+    # unlike VIS (tenths of miles) or CIG (hundreds of feet).
+    tmp_row = _extract_row(block, "TMP")
+    dpt_row = _extract_row(block, "DPT")
     vis_fields = _slice_fields(vis_row, n_hours) if vis_row else [""] * n_hours
     cig_fields = _slice_fields(cig_row, n_hours) if cig_row else [""] * n_hours
     wdr_fields = _slice_fields(wdr_row, n_hours) if wdr_row else [""] * n_hours
     wsp_fields = _slice_fields(wsp_row, n_hours) if wsp_row else [""] * n_hours
     gst_fields = _slice_fields(gst_row, n_hours) if gst_row else [""] * n_hours
+    tmp_fields = _slice_fields(tmp_row, n_hours) if tmp_row else [""] * n_hours
+    dpt_fields = _slice_fields(dpt_row, n_hours) if dpt_row else [""] * n_hours
 
     records: list[ForecastRecord] = []
     for i, vt in enumerate(valid_times):
         fhour = int(round((vt - header_dt).total_seconds() / 3600))
+
+        # TMP and DPT are already degrees F; a missing field parses
+        # to None and stays None rather than becoming a zero, which
+        # would read as a hard freeze.
+        temp_f = (_parse_int_field(tmp_fields[i])
+                  if i < len(tmp_fields) else None)
+        dewpoint_f = (_parse_int_field(dpt_fields[i])
+                      if i < len(dpt_fields) else None)
 
         # VIS: 1/10ths of miles. So 100 -> 10.0 sm, 5 -> 0.5 sm.
         vis_raw = _parse_int_field(vis_fields[i]) if i < len(vis_fields) else None
@@ -338,6 +352,8 @@ def _parse_block(
             wind_dir_deg=wind_dir_deg,
             wind_speed_kt=wind_speed_kt,
             wind_gust_kt=wind_gust_kt,
+            temp_f=temp_f,
+            dewpoint_f=dewpoint_f,
             source_file=source_file,
         ))
     return records

@@ -190,6 +190,21 @@ def _slice_fields(line: str, n_expected: int) -> list[str]:
     return fields
 
 
+def _tmp_at(fields, i):
+    """Degrees F at index i, or None. TMP/DPT are unscaled in the
+    bulletin, so a missing field must stay None — a zero would read
+    as a hard freeze."""
+    if i >= len(fields):
+        return None
+    raw = (fields[i] or "").strip()
+    if not raw:
+        return None
+    try:
+        return float(int(raw))
+    except ValueError:
+        return None
+
+
 def _extract_row(block: str, label: str) -> Optional[str]:
     """Find the row whose first non-space token is `label`."""
     for line in block.splitlines():
@@ -246,10 +261,14 @@ def _parse_station_block(
     cig_row = _extract_row(block, "CIG")
     wdr_row = _extract_row(block, "WDR")
     wsp_row = _extract_row(block, "WSP")
+    tmp_row = _extract_row(block, "TMP")
+    dpt_row = _extract_row(block, "DPT")
     vis_fields = _slice_fields(vis_row, n_hours) if vis_row else [""] * n_hours
     cig_fields = _slice_fields(cig_row, n_hours) if cig_row else [""] * n_hours
     wdr_fields = _slice_fields(wdr_row, n_hours) if wdr_row else [""] * n_hours
     wsp_fields = _slice_fields(wsp_row, n_hours) if wsp_row else [""] * n_hours
+    tmp_fields = _slice_fields(tmp_row, n_hours) if tmp_row else [""] * n_hours
+    dpt_fields = _slice_fields(dpt_row, n_hours) if dpt_row else [""] * n_hours
 
     records: list[ForecastRecord] = []
     for i, vt in enumerate(valid_times):
@@ -303,6 +322,8 @@ def _parse_station_block(
             wind_dir_deg=wdr_deg,
             wind_speed_kt=wsp_kt,
             wind_gust_kt=None,  # LAMP doesn't publish gust
+            temp_f=_tmp_at(tmp_fields, i),
+            dewpoint_f=_tmp_at(dpt_fields, i),
             source_file=source_file,
         ))
     return records
