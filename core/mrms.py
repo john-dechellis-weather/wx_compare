@@ -145,6 +145,21 @@ def palette():
 
 
 SMOOTH = float(os.environ.get("MRMS_SMOOTH", "0.8"))
+# Interpolate the field onto a finer grid BEFORE quantising.
+#
+# A blur alone softens the edges but the underlying grid is still
+# 1 km, so zoomed in you see soft SQUARES instead of sharp ones.
+# Upsampling interpolates BETWEEN cells, so the colour bands follow
+# a smooth surface and the map holds up to roughly 20x zoom instead
+# of 10x.
+#
+# Bilinear on the FIELD, not on the image: interpolating colours
+# after quantising would produce shades that correspond to no dBZ
+# value at all.
+#
+# Measured at 2x: 14000x7000, 200 px/degree, 13 s, ~4.6 MB across 8
+# chunks. Set MRMS_UPSAMPLE=1 to disable.
+UPSAMPLE = int(os.environ.get("MRMS_UPSAMPLE", "2"))
 
 
 def band_index(vals):
@@ -179,6 +194,14 @@ def band_index(vals):
         with np.errstate(invalid="ignore", divide="ignore"):
             vals = np.where(den > 0.05, num / np.maximum(den, 1e-6),
                             np.nan)
+    if UPSAMPLE > 1:
+        from scipy import ndimage as ndi
+
+        # order=1 is bilinear. Higher orders overshoot at sharp
+        # gradients — a spline through a reflectivity edge invents
+        # values above the peak, which on a radar display means
+        # inventing intensity that was never observed.
+        vals = ndi.zoom(vals, UPSAMPLE, order=1)
     idx = np.digitize(np.nan_to_num(vals, nan=-999.0),
                       LEVELS).astype("uint8")
     idx[~np.isfinite(vals)] = 0
@@ -202,7 +225,9 @@ def colorize(vals):
 # preserving full resolution. Each piece becomes its own BitmapLayer
 # with its own bounds, which pydeck can express — unlike a TileLayer,
 # which needs a JS callback it cannot serialise.
-CHUNKS_X = int(os.environ.get("MRMS_CHUNKS_X", "2"))
+# 4x2 at UPSAMPLE=2 gives 3500x3500 pieces — under the 4096 cap
+# that a 2x2 split would blow through at 7000x3500.
+CHUNKS_X = int(os.environ.get("MRMS_CHUNKS_X", "4"))
 CHUNKS_Y = int(os.environ.get("MRMS_CHUNKS_Y", "2"))
 
 
@@ -219,39 +244,68 @@ def render(vals, dest: Path) -> Path:
 def render_chunks(vals, outdir, stamp: str) -> list:
     """Grid of tiles. Returns [{name, bounds}, ...].
 
-    Bounds are computed from the SLICE, not assumed, so an odd
-    division that leaves a remainder row or column still lands in
-    the right place on the map.
-    """
-    from PIL import Image
+    Upsamples and colourises PER CHUNK, never globally. Doing the
+    whole CONUS grid at once peaked at 2.7 GB — above the warmer's
+    own memory ceiling, so it would have skipped every pass. One
+    chunk at a time holds peak to about a tenth of that.
 
-    rgba = colorize(vals)
-    rows, cols = rgba.shape[0], rgba.shape[1]
-    w, s, e, n = BOUNDS
+    Slices carry a small MARGIN of source cells that is trimmed
+    after interpolation. Without it, ndi.zoom has no neighbours at a
+    slice edge and clamps, leaving a visible seam every time two
+    chunks meet.
+    """
+    import numpy as np
+    from PIL import Image
+    from scipy import ndimage as ndi
+
+    lut = palette()
+    rows, cols = vals.shape
+    w, s_, e, n = BOUNDS
+    margin = 4 if UPSAMPLE > 1 else 0
     out = []
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
+
     for iy in range(CHUNKS_Y):
         y0 = rows * iy // CHUNKS_Y
         y1 = rows * (iy + 1) // CHUNKS_Y
         for ix in range(CHUNKS_X):
             x0 = cols * ix // CHUNKS_X
             x1 = cols * (ix + 1) // CHUNKS_X
-            sub = rgba[y0:y1, x0:x1]
-            if not sub[..., 3].any():
-                continue          # nothing to draw in this piece
+            my0, my1 = max(0, y0 - margin), min(rows, y1 + margin)
+            mx0, mx1 = max(0, x0 - margin), min(cols, x1 + margin)
+            sub = vals[my0:my1, mx0:mx1]
+            if not np.isfinite(sub).any():
+                continue
+            if not (np.nan_to_num(sub, nan=-999.0) >= DBZ_MIN).any():
+                continue
+
+            band = band_index(sub)
+            if UPSAMPLE > 1:
+                # Trim the margin AFTER interpolation, in upsampled
+                # pixels.
+                t0 = (y0 - my0) * UPSAMPLE
+                t1 = band.shape[0] - (my1 - y1) * UPSAMPLE
+                l0 = (x0 - mx0) * UPSAMPLE
+                l1 = band.shape[1] - (mx1 - x1) * UPSAMPLE
+                band = band[t0:t1, l0:l1]
+            if not band.any():
+                continue
+
             name = f"mrmsc_{stamp}_{ix}{iy}.webp"
-            Image.fromarray(sub, mode="RGBA").save(
+            Image.fromarray(lut[band], mode="RGBA").save(
                 outdir / name, "WEBP", quality=WEBP_Q, method=4)
+            del band
             # Image rows run north to south, so y0 is the NORTH edge.
             out.append({
                 "name": name,
                 "bounds": [w + (e - w) * x0 / cols,
-                           n - (n - s) * y1 / rows,
+                           n - (n - s_) * y1 / rows,
                            w + (e - w) * x1 / cols,
-                           n - (n - s) * y0 / rows],
+                           n - (n - s_) * y0 / rows],
             })
     return out
+
 
 
 def frame_name(stamp: str) -> str:
@@ -259,7 +313,14 @@ def frame_name(stamp: str) -> str:
 
 
 def build(outdir) -> tuple:
-    """Fetch, decode and render the newest scan. (name, note)."""
+    """Fetch, decode and render the newest scan. (name, note).
+
+    Writes CHUNKS for the map and a single whole-CONUS frame for any
+    non-map use. The chunk manifest is written last, so `newest`
+    cannot return a set that is still being produced.
+    """
+    import json as _json
+
     import requests
 
     got = latest_file()
@@ -268,7 +329,7 @@ def build(outdir) -> tuple:
     fname, stamp = got
     name = frame_name(stamp)
     dest = Path(outdir) / name
-    if dest.exists():
+    if (Path(outdir) / f"mrmsc_{stamp}.json").exists():
         return name, "cached"
     r = requests.get(f"{BASE}/{fname}", timeout=90,
                      headers={"User-Agent": "bluemet.org"})
@@ -278,39 +339,18 @@ def build(outdir) -> tuple:
     vals = decode(r.content)
     ny, nx = vals.shape
     chunks = render_chunks(vals, outdir, stamp)
-    import json as _json
-
-    (Path(outdir) / f"mrmsc_{stamp}.json").write_text(
-        _json.dumps(chunks))
+    del vals
+    if not chunks:
+        return name, f"{nx}x{ny}, no echo anywhere"
     _cb = sum((Path(outdir) / c["name"]).stat().st_size
               for c in chunks)
-    note = (f"{nx}x{ny} native, {len(chunks)} chunks, "
-            f"{_cb / 1024:.0f} KB")
-
-    # Tile pyramid. This is what makes zooming hold its resolution:
-    # a single raster is correct at one zoom and stretched at every
-    # other. Empty tiles are skipped, and since ~94% of CONUS has no
-    # echo at any moment, a typical scan writes a few hundred tiles
-    # rather than the 2,400 the grid would suggest.
-    # Default OFF: the pyramid cannot be served through pydeck
-    # (TileLayer needs a JS callback), so writing thousands of
-    # tiles every scan buys nothing until a custom deck.gl
-    # component exists. MRMS_TILES=on re-enables it.
-    if os.environ.get("MRMS_TILES", "off").lower() == "on":
-        try:
-            from core import mrms_tiles as _T
-
-            tdir = Path(outdir) / "mrmstiles"
-            st = _T.build_pyramid(band_index(vals), palette(),
-                                  tdir, stamp)
-            _T.mark_done(tdir, stamp)
-            _T.prune(tdir, keep=int(os.environ.get("MRMS_TILE_KEEP", "2")))
-            note += (f", {st['written']} tiles "
-                     f"({st['bytes'] / 1e6:.1f} MB)")
-        except Exception as exc:
-            note += f", TILES FAILED: {type(exc).__name__}: {exc}"
-    del vals
-    return name, note + f", {time.time() - t0:.0f}s"
+    # Manifest LAST: `newest` reads it, so writing it earlier could
+    # hand the page a set of chunks still being written.
+    (Path(outdir) / f"mrmsc_{stamp}.json").write_text(
+        _json.dumps(chunks))
+    return name, (f"{nx * UPSAMPLE}x{ny * UPSAMPLE}, "
+                  f"{len(chunks)} chunks, {_cb / 1024:.0f} KB, "
+                  f"{time.time() - t0:.0f}s")
 
 
 # ---------------------------------------------------------------------------
