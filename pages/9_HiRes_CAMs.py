@@ -231,6 +231,7 @@ def build_scrub_html(frames: dict, hour_axis: list,
                      order: list, single: bool = False,
                      home=None, conus=None,
                      axcal=None, cycles: dict = None,
+                     base_cycle_iso: str = None,
                      product_key: str = "", urls: dict = None) -> tuple:
     """Client-side shared-slider grid from {model: {fhr: png}}.
     Returns (html, height). Used by smooth-scrub mode AND the
@@ -277,10 +278,13 @@ def build_scrub_html(frames: dict, hour_axis: list,
         from datetime import datetime as _dl, timedelta as _tl
 
         _bc = None
-        for _v in (cycles or {}).values():
-            if _v:
-                _bc = _dl.fromisoformat(str(_v))
-                break
+        if base_cycle_iso:
+            _bc = _dl.fromisoformat(str(base_cycle_iso))
+        else:
+            for _v in (cycles or {}).values():
+                if _v:
+                    _bc = _dl.fromisoformat(str(_v))
+                    break
         if _bc is not None:
             labels = [f"{(_bc + _tl(hours=h)):%H}Z "
                       f"{(_bc + _tl(hours=h)):%a} "
@@ -311,7 +315,15 @@ def build_scrub_html(frames: dict, hour_axis: list,
     except Exception:
         pass
     for m in order:
-        ci = (cycles or {}).get(m) or _fallback.get(m)
+        # ONE cycle for every panel when a base is given.
+        #
+        # Per-model cycles were reaching here and putting a
+        # different valid time under each panel — "HRRR valid 21Z"
+        # next to "RRFS valid 18Z" — even though the frames
+        # themselves were correctly offset. The axis is shared, so
+        # the valid time MUST be shared; taking it per model made it
+        # possible for them to disagree, and they did.
+        ci = base_cycle_iso or (cycles or {}).get(m) or _fallback.get(m)
         row = []
         for h in hour_axis:
             c = None
@@ -1032,6 +1044,7 @@ if active:
                 frames, hours, GRID_ORDER,
                 single=bool(_single_model),
                 cycles=_cyc_by_model,
+                base_cycle_iso=_base_iso,
                 product_key=product,
                 # home=None -> HOME is null in the JS, so the
                 # panel opens at scale 1 with the ENTIRE
@@ -1278,6 +1291,7 @@ else:
         _html, _hgt = build_scrub_html(
             _warm_frames, _axis, _OPEN_ORDER,
             cycles=_warm_cycles,
+            base_cycle_iso=(_base.isoformat() if _base else None),
             urls=_warm_urls,
             product_key=WARM_PRODUCT,
             home=None,   # open on the whole ±5 deg frame
