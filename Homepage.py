@@ -104,6 +104,20 @@ try:
 except Exception as _exc:
     _warm_notes.append(f"CAM warmer FAILED: {type(_exc).__name__}: {_exc}")
 
+# MRMS national mosaic for the CONUS map. Cheap: one 150 KB frame
+# every ~150 s, rendered with numpy rather than matplotlib, and it
+# skips a pass if memory is tight. Started here because the CONUS
+# map must never wait on it.
+try:
+    from core.mrms import ensure_mrms_warmer
+
+    _static_mrms = Path(__file__).resolve().parent / "static"
+    ensure_mrms_warmer(_static_mrms)
+    _warm_notes.append("MRMS warmer started (1 km national mosaic)")
+except Exception as _exc:
+    _warm_notes.append(f"MRMS warmer FAILED: "
+                       f"{type(_exc).__name__}: {_exc}")
+
 # The CAM-overlay and radar warmers were started here for the N90
 # Airspace page, which is no longer in the navigation. Both imports
 # are gone rather than merely disabled: an import of core.radar_l2
