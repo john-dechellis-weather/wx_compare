@@ -57,13 +57,55 @@ BOUNDS = [-130.0, 20.0, -60.0, 55.0]
 # Same AWIPS ramp as the CAM overlays, so a forecast frame and an
 # observation frame read identically.
 LEVELS = list(range(5, 80, 5))
+# AWIPS reflectivity ramp, with the three lowest bands recoloured
+# and a per-band alpha ramp.
+#
+# THE PROBLEM: the JetBlue icon is #005ADC. Measured colour distance
+# from it to the standard AWIPS low end:
+#
+#     5-10 dBZ  #04E9E7   143
+#    10-15 dBZ  #019FF4    73   <- nearly identical to the icon
+#    15-20 dBZ  #0300F4    93
+#    20-25 dBZ  #02FD02   272   (green: no conflict)
+#
+# So drizzle and light rain — the least important returns on the
+# map — were erasing the most important symbols on it.
+#
+# THE FIX, two parts. The low bands move to desaturated grey-teal,
+# which stays legible as "something is there" without competing with
+# a saturated blue aircraft. And ALPHA RISES WITH INTENSITY, so light
+# returns are faint and cores are solid. That is the honest
+# weighting anyway: a 55 dBZ core should dominate the picture and a
+# 12 dBZ return should not.
+#
+# Everything from 20 dBZ up is the unmodified AWIPS ramp, so the
+# scheme still reads the way a forecaster expects.
 COLORS = [
-    (0x04, 0xE9, 0xE7), (0x01, 0x9F, 0xF4), (0x03, 0x00, 0xF4),
-    (0x02, 0xFD, 0x02), (0x01, 0xC5, 0x01), (0x00, 0x8E, 0x00),
-    (0xFD, 0xF8, 0x02), (0xE5, 0xBC, 0x00), (0xFD, 0x95, 0x00),
-    (0xFD, 0x00, 0x00), (0xD4, 0x00, 0x00), (0xBC, 0x00, 0x00),
-    (0xF8, 0x00, 0xFD), (0x98, 0x54, 0xC6), (0xFD, 0xFD, 0xFD),
+    (0x9E, 0xC8, 0xC8),   #  5-10  desaturated grey-teal
+    (0x74, 0xB0, 0xBE),   # 10-15
+    (0x4E, 0x94, 0xB4),   # 15-20
+    (0x02, 0xFD, 0x02),   # 20-25  AWIPS green from here on
+    (0x01, 0xC5, 0x01),   # 25-30
+    (0x00, 0x8E, 0x00),   # 30-35
+    (0xFD, 0xF8, 0x02),   # 35-40
+    (0xE5, 0xBC, 0x00),   # 40-45
+    (0xFD, 0x95, 0x00),   # 45-50
+    (0xFD, 0x00, 0x00),   # 50-55
+    (0xD4, 0x00, 0x00),   # 55-60
+    (0xBC, 0x00, 0x00),   # 60-65
+    (0xF8, 0x00, 0xFD),   # 65-70
+    (0x98, 0x54, 0xC6),   # 70-75
+    (0xFD, 0xFD, 0xFD),   # 75+
 ]
+# Alpha per band, low to high. Light returns recede; cores read
+# solidly. Scaled by MRMS_ALPHA so the existing control still works.
+# Runs past 1.0 at the top and is clamped, so a 55 dBZ core is
+# nearly solid while drizzle sits near 20%. A flat alpha made
+# everything equally translucent, which flattered nothing: light
+# rain still hid aircraft and cores looked weak.
+ALPHA_RAMP = [0.30, 0.40, 0.50, 0.65, 0.78, 0.90,
+              1.00, 1.10, 1.20, 1.32, 1.38, 1.42,
+              1.45, 1.45, 1.45]
 DBZ_MIN = float(os.environ.get("MRMS_DBZ_MIN", "5"))
 # Alpha baked into the PALETTE, not left to the layer's opacity prop.
 #
@@ -72,7 +114,11 @@ DBZ_MIN = float(os.environ.get("MRMS_DBZ_MIN", "5"))
 # guessing at how deck.gl handles the prop through pydeck's JSON,
 # the transparency is put where it cannot be ignored: in the pixels.
 # The layer prop stays at 1.0 so the two do not multiply.
-ALPHA = int(os.environ.get("MRMS_ALPHA", "102"))
+# Raised back to 170 now that ALPHA_RAMP recedes the low bands.
+# A flat 102 made everything faint; the ramp lets weak echo drop to
+# ~22% while a core sits near 67%, which is the distribution that
+# actually helps — faint drizzle, solid cores.
+ALPHA = int(os.environ.get("MRMS_ALPHA", "170"))
 # 1 keeps the native 0.01 deg grid. 2 halves it to ~2 km — still
 # finer than the ArcGIS export ever was, at a quarter the pixels.
 DECIMATE = int(os.environ.get("MRMS_DECIMATE", "1"))
@@ -148,7 +194,8 @@ def palette():
 
     lut = np.zeros((len(LEVELS) + 1, 4), dtype="uint8")
     for i, (r, g, b) in enumerate(COLORS):
-        lut[i + 1] = (r, g, b, ALPHA)
+        a = int(round(ALPHA * ALPHA_RAMP[min(i, len(ALPHA_RAMP) - 1)]))
+        lut[i + 1] = (r, g, b, max(0, min(255, a)))
     return lut
 
 
@@ -352,7 +399,7 @@ def render_chunks(vals, outdir, stamp: str) -> list:
 
 
 # Bump when the rendered output changes in any visible way.
-RENDER_STYLE = int(os.environ.get("MRMS_RENDER_STYLE", "4"))
+RENDER_STYLE = int(os.environ.get("MRMS_RENDER_STYLE", "5"))
 
 
 def _style_ok(outdir, stamp: str) -> bool:
