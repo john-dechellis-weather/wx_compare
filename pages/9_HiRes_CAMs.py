@@ -1160,7 +1160,7 @@ else:
                  or os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
     _static_dir = Path(__file__).resolve().parent.parent / "static"
     try:
-        from datetime import datetime as _dtm
+        from datetime import datetime as _dtm, timezone as _tzm
 
         from core.cam_warm import (publish_frame, prune_published,
                                    warm_cycle)
@@ -1178,15 +1178,50 @@ else:
         # two hours behind.
         _wc = {}
         for _m in _OPEN_ORDER:
+            _c = None
             try:
                 _c = warm_cycle(CACHE_ROOT, f"{_m}@{WARM_PRODUCT}")
-                if _c:
-                    _wc[_m] = _dtm.fromisoformat(str(_c))
             except Exception:
-                pass
+                _c = None
+            if not _c:
+                # Fall back to a live probe. Without this, a model
+                # whose manifest is missing gets no offset at all
+                # and is silently left unaligned — which looks
+                # identical to "the feature does not work".
+                try:
+                    _nb = _dtm.now(_tzm.utc)
+                    _c = cached_model_cycle(
+                        _m, 1,
+                        _nb.strftime("%Y%m%d%H") + str(_nb.minute // 10))
+                except Exception:
+                    _c = None
+            if _c:
+                try:
+                    _wc[_m] = _dtm.fromisoformat(str(_c))
+                except Exception:
+                    pass
         _base = max(_wc.values()) if _wc else None
         _off = {_m: int(round((_base - _c).total_seconds() / 3600.0))
                 for _m, _c in _wc.items()} if _base else {}
+        # If a model has no manifest its offset defaults to 0 and it
+        # is silently NOT aligned — the exact failure that looks
+        # like "alignment does nothing". Say which models were
+        # resolved and what shift each got, so a missing manifest is
+        # visible instead of quietly wrong.
+        _align_note = ""
+        if _base:
+            _parts = []
+            for _m in _OPEN_ORDER:
+                if _m in _wc:
+                    _parts.append(
+                        f"{MODELS[_m]['label']} {_wc[_m]:%HZ}"
+                        + (f" +{_off[_m]}h" if _off[_m] else ""))
+                else:
+                    _parts.append(
+                        f"{MODELS[_m]['label']} NO WARM CYCLE "
+                        f"\u2014 not aligned")
+            _align_note = (f"Valid-time aligned to {_base:%HZ} "
+                           f"\u2014 " + " | ".join(_parts))
 
         for _m in _OPEN_ORDER:
             _o = _off.get(_m, 0)
@@ -1238,6 +1273,8 @@ else:
         _hla2, _hlo2 = _hg[0], _hg[1]
         # warm_get returns (png, cycle); _warm_cycles is populated
         # alongside _warm_frames when the store is read.
+        if _align_note:
+            st.caption(_align_note)
         _html, _hgt = build_scrub_html(
             _warm_frames, _axis, _OPEN_ORDER,
             cycles=_warm_cycles,
