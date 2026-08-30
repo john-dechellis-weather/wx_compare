@@ -1243,12 +1243,59 @@ def _note_positions(rows):
         _TRACKS.pop(cs, None)
 
 
-def _trail_rows():
-    """Previous positions only — the newest is where the icon is."""
+def _trail_paths(dash_nm=2.0, gap_nm=1.6):
+    """Dashed track from first known position to the current one.
+
+    deck.gl's PathLayer cannot draw dashes without PathStyleExtension,
+    which is a JS class pydeck has no way to serialise. So the dashes
+    are built as GEOMETRY here: walk the polyline and emit a short
+    path for every "on" interval, skipping the gaps.
+
+    Lengths are in nautical miles rather than pixels, so the dash
+    pattern is fixed to the ground and does not turn into a solid
+    line when you zoom out.
+    """
+    import math as _m
+
     out = []
     for cs, h in _TRACKS.items():
-        for lo, la, _ts in h[:-1]:
-            out.append({"position": [lo, la], "cs": cs})
+        if len(h) < 2:
+            continue
+        pts = [(lo, la) for lo, la, _ts in h]
+        # cumulative distance so dashes are evenly spaced along the
+        # track rather than per segment, which would bunch them up
+        # wherever positions arrived close together
+        seg = []
+        carry = 0.0
+        on = True
+        cur = [pts[0]]
+        for (lo0, la0), (lo1, la1) in zip(pts, pts[1:]):
+            dx = (lo1 - lo0) * _m.cos(_m.radians((la0 + la1) / 2))
+            d = 60.0 * _m.hypot(la1 - la0, dx)
+            if d <= 0:
+                continue
+            t = 0.0
+            while t < d:
+                want = (dash_nm if on else gap_nm) - carry
+                step = min(want, d - t)
+                f0 = (t + step) / d
+                px = (lo0 + (lo1 - lo0) * f0,
+                      la0 + (la1 - la0) * f0)
+                if on:
+                    cur.append(px)
+                if step >= want:
+                    if on and len(cur) > 1:
+                        seg.append(list(cur))
+                    on = not on
+                    cur = [px]
+                    carry = 0.0
+                else:
+                    carry += step
+                t += step
+        if on and len(cur) > 1:
+            seg.append(list(cur))
+        for pth in seg:
+            out.append({"path": [[x, y] for x, y in pth], "cs": cs})
     return out
 
 
@@ -2260,17 +2307,21 @@ if run_button:
             # than staying a constant blob and swamping the map at
             # continental zoom.
             try:
-                _trail = _trail_rows()
+                _trail = _trail_paths()
             except Exception:
                 _trail = []
             if _trail:
+                # Dashed track, under the icons. One icon per
+                # aircraft at its CURRENT position; everything
+                # behind it is a line, so a track can never be
+                # mistaken for a second aircraft.
                 layers.append(pdk.Layer(
-                    "ScatterplotLayer", data=_trail,
-                    get_position="position",
-                    get_radius=2600, radius_units="meters",
-                    radius_min_pixels=1, radius_max_pixels=3,
-                    get_fill_color=[0, 90, 220, 130],
-                    stroked=False, pickable=False,
+                    "PathLayer", data=_trail,
+                    get_path="path",
+                    get_color=[0, 90, 220, 150],
+                    get_width=2.0, width_units="pixels",
+                    width_min_pixels=1, width_max_pixels=3,
+                    pickable=False,
                 ))
 
             layers.append(pdk.Layer(
@@ -2336,7 +2387,21 @@ if run_button:
         # the previous render stays on screen underneath — which is
         # why aircraft appeared twice, at their old and new
         # positions, the longer the page stayed open.
-        st.pydeck_chart(deck, height=map_height, key="conus_map")
+        # Rendered into a PERSISTENT PLACEHOLDER, not called
+        # directly.
+        #
+        # `key=` on st.pydeck_chart only affects element identity
+        # when selection is enabled; with on_select="ignore" a
+        # fragment rerun could still append a new chart rather than
+        # replace the old one, leaving the previous render stacked
+        # underneath — which is why the same aircraft appeared two
+        # and three times, further apart the longer the page stayed
+        # open. Writing into a placeholder held in session state
+        # replaces its contents by definition.
+        if "_map_slot" not in st.session_state:
+            st.session_state["_map_slot"] = st.empty()
+        st.session_state["_map_slot"].pydeck_chart(
+            deck, height=map_height)
         _map_notice.empty()
         st.session_state["_map_drawn_once"] = True
         st.caption(
