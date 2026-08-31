@@ -78,6 +78,15 @@ class CeilingAlert:
     icao: str
     min_ceiling_ft: int        # lowest ceiling in the window
     worst_period_label: str
+    # All IFR-ceiling period windows as (start_iso, end_iso) pairs,
+    # for ETA-vs-TAF overlap tests. VisAlert gained this when the
+    # windows feature was added and CeilingAlert was missed, so every
+    # station with a ceiling alert raised
+    # "unexpected keyword argument 'windows'" and was dropped from
+    # the board entirely — 11 stations on 8/31.
+    #
+    # Defaulted, so objects already in the cache stay loadable.
+    windows: tuple = ()
 
 @dataclass
 class TsraAlert:
