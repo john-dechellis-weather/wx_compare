@@ -2172,6 +2172,11 @@ if run_button:
         # outer value. Same trap applies to anything else the caption
         # reads unconditionally.
         _n_dupe = 0
+        # Bound here, not inside `if fleet:` — the caption reads it
+        # unconditionally, and a name assigned only inside a branch
+        # is local to the whole function, so the outer value would
+        # be invisible.
+        _seen_cs = {}
         import pydeck as pdk
         # ONE control left on this page: flight numbers. Radar,
         # Class B, other traffic and N90 fixes have all been removed
@@ -2329,17 +2334,30 @@ if run_button:
             # duplicate icon is indistinguishable from a second
             # aircraft to whoever is reading the map, and the cost
             # of being sure is one dict comprehension.
-            def _dedupe(rows):
-                out = {}
-                for r in rows:
-                    k = r.get("cs")
-                    if k and k not in out:
-                        out[k] = r
-                return list(out.values())
-
+            # ONE ICON PER CALLSIGN, enforced across BOTH tiers.
+            #
+            # The previous dedupe ran on each list separately, which
+            # cannot catch a callsign that ends up in both — and two
+            # IconLayers draw them, so it appears twice. Deduping the
+            # COMBINED set makes the invariant structural rather than
+            # a property of the routing above.
+            #
+            # Newest wins on a collision: entries carry altitude and
+            # the sweep is ordered, so the later row is the more
+            # recent fix.
             _n_before = len(fleet_disp) + len(gnd_disp)
-            fleet_disp = _dedupe(fleet_disp)
-            gnd_disp = _dedupe(gnd_disp)
+            _f2, _g2 = [], []
+            for _tier, _src in ((_f2, fleet_disp), (_g2, gnd_disp)):
+                for _r in _src:
+                    _k = _r.get("cs")
+                    if not _k:
+                        _tier.append(_r)      # unlabelled: keep
+                        continue
+                    if _k in _seen_cs:
+                        continue
+                    _seen_cs[_k] = True
+                    _tier.append(_r)
+            fleet_disp, gnd_disp = _f2, _g2
             _n_dupe = _n_before - len(fleet_disp) - len(gnd_disp)
 
             # TRACK TRAILS, under the icons. Previous positions as
@@ -2409,8 +2427,15 @@ if run_button:
             map_style="light",
             tooltip={"html": "<b>{tip}</b>"},
         )
-        _rad_dupe = (f" {_n_dupe} duplicate rows removed."
-                     if _n_dupe else "")
+        # Reported ALWAYS, not only when nonzero. If the counts
+        # agree and aircraft still appear twice on screen, the
+        # duplication is in the RENDERING, not the data — and that
+        # distinction is the thing worth knowing.
+        _rad_dupe = (
+            f" {len(_seen_cs)} aircraft"
+            + (f", {_n_dupe} duplicate rows removed." if _n_dupe
+               else ".")
+        ) if _seen_cs else ""
         _rad = (_rad_dupe + _radar_note
                 + " Map auto-refreshes every 2 min; aircraft "
                   "positions update each refresh.")
