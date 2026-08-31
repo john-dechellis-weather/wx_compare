@@ -1247,59 +1247,33 @@ def _note_positions(rows):
         _TRACKS.pop(cs, None)
 
 
-def _trail_paths(dash_nm=2.0, gap_nm=1.6):
-    """Dashed track from first known position to the current one.
+def _trail_paths():
+    """One polyline per aircraft, oldest fix to current position.
 
-    deck.gl's PathLayer cannot draw dashes without PathStyleExtension,
-    which is a JS class pydeck has no way to serialise. So the dashes
-    are built as GEOMETRY here: walk the polyline and emit a short
-    path for every "on" interval, skipping the gaps.
-
-    Lengths are in nautical miles rather than pixels, so the dash
-    pattern is fixed to the ground and does not turn into a solid
-    line when you zoom out.
+    A continuous thin line rather than dashes. The dashed version
+    built segment geometry by hand — deck.gl cannot dash a PathLayer
+    without an extension pydeck cannot serialise — and at typical fix
+    spacing the dashes read as a broken line rather than a track.
     """
-    import math as _m
-
     out = []
     for cs, h in _TRACKS.items():
         if len(h) < 2:
             continue
-        pts = [(lo, la) for lo, la, _ts in h]
-        # cumulative distance so dashes are evenly spaced along the
-        # track rather than per segment, which would bunch them up
-        # wherever positions arrived close together
-        seg = []
-        carry = 0.0
-        on = True
-        cur = [pts[0]]
-        for (lo0, la0), (lo1, la1) in zip(pts, pts[1:]):
-            dx = (lo1 - lo0) * _m.cos(_m.radians((la0 + la1) / 2))
-            d = 60.0 * _m.hypot(la1 - la0, dx)
-            if d <= 0:
-                continue
-            t = 0.0
-            while t < d:
-                want = (dash_nm if on else gap_nm) - carry
-                step = min(want, d - t)
-                f0 = (t + step) / d
-                px = (lo0 + (lo1 - lo0) * f0,
-                      la0 + (la1 - la0) * f0)
-                if on:
-                    cur.append(px)
-                if step >= want:
-                    if on and len(cur) > 1:
-                        seg.append(list(cur))
-                    on = not on
-                    cur = [px]
-                    carry = 0.0
-                else:
-                    carry += step
-                t += step
-        if on and len(cur) > 1:
-            seg.append(list(cur))
-        for pth in seg:
-            out.append({"path": [[x, y] for x, y in pth], "cs": cs})
+        out.append({"path": [[lo, la] for lo, la, _ts in h],
+                    "cs": cs})
+    return out
+
+
+def _trail_dots():
+    """A dot at every PREVIOUS fix.
+
+    The newest is excluded: that is where the aircraft icon sits, and
+    a dot beneath it only thickens the symbol.
+    """
+    out = []
+    for cs, h in _TRACKS.items():
+        for lo, la, _ts in h[:-1]:
+            out.append({"position": [lo, la], "cs": cs})
     return out
 
 
@@ -1329,12 +1303,9 @@ def _kick_fleet_now():
     The refresher used to start on the first fragment run, so the
     first render raced it: the sweep paces 17 tiles across two lanes
     with 0.25 s between calls plus retries on rate limits, which
-    regularly beat the 8 s wait. When it did, the map drew with an
-    EMPTY fleet and the next attempt was 120 s away — aircraft
-    simply missing for two minutes.
-
-    Starting here gives the sweep a head start over page setup,
-    METAR parsing and layer construction.
+    regularly beat the wait. When it did, the map drew with an EMPTY
+    fleet and the next attempt was 120 s away — aircraft simply
+    missing for two minutes.
     """
     import threading as _th
     from datetime import datetime as _d, timezone as _tz
@@ -2172,6 +2143,11 @@ if run_button:
         # outer value. Same trap applies to anything else the caption
         # reads unconditionally.
         _n_dupe = 0
+        # Bound here, not inside `if fleet:` — the caption reads it
+        # unconditionally, and a name assigned only inside a branch
+        # is local to the whole function, so the outer value would
+        # be invisible.
+        _seen_cs = {}
         import pydeck as pdk
         # ONE control left on this page: flight numbers. Radar,
         # Class B, other traffic and N90 fixes have all been removed
@@ -2329,17 +2305,30 @@ if run_button:
             # duplicate icon is indistinguishable from a second
             # aircraft to whoever is reading the map, and the cost
             # of being sure is one dict comprehension.
-            def _dedupe(rows):
-                out = {}
-                for r in rows:
-                    k = r.get("cs")
-                    if k and k not in out:
-                        out[k] = r
-                return list(out.values())
-
+            # ONE ICON PER CALLSIGN, enforced across BOTH tiers.
+            #
+            # The previous dedupe ran on each list separately, which
+            # cannot catch a callsign that ends up in both — and two
+            # IconLayers draw them, so it appears twice. Deduping the
+            # COMBINED set makes the invariant structural rather than
+            # a property of the routing above.
+            #
+            # Newest wins on a collision: entries carry altitude and
+            # the sweep is ordered, so the later row is the more
+            # recent fix.
             _n_before = len(fleet_disp) + len(gnd_disp)
-            fleet_disp = _dedupe(fleet_disp)
-            gnd_disp = _dedupe(gnd_disp)
+            _f2, _g2 = [], []
+            for _tier, _src in ((_f2, fleet_disp), (_g2, gnd_disp)):
+                for _r in _src:
+                    _k = _r.get("cs")
+                    if not _k:
+                        _tier.append(_r)      # unlabelled: keep
+                        continue
+                    if _k in _seen_cs:
+                        continue
+                    _seen_cs[_k] = True
+                    _tier.append(_r)
+            fleet_disp, gnd_disp = _f2, _g2
             _n_dupe = _n_before - len(fleet_disp) - len(gnd_disp)
 
             # TRACK TRAILS, under the icons. Previous positions as
@@ -2353,20 +2342,29 @@ if run_button:
             # continental zoom.
             try:
                 _trail = _trail_paths()
+                _tdots = _trail_dots()
             except Exception:
-                _trail = []
+                _trail, _tdots = [], []
             if _trail:
-                # Dashed track, under the icons. One icon per
-                # aircraft at its CURRENT position; everything
-                # behind it is a line, so a track can never be
-                # mistaken for a second aircraft.
                 layers.append(pdk.Layer(
                     "PathLayer", data=_trail,
                     get_path="path",
-                    get_color=[0, 90, 220, 150],
-                    get_width=2.0, width_units="pixels",
-                    width_min_pixels=1, width_max_pixels=3,
+                    get_color=[0, 110, 240, 160],
+                    get_width=1.4, width_units="pixels",
+                    width_min_pixels=1, width_max_pixels=2,
                     pickable=False,
+                ))
+            if _tdots:
+                # Radius in PIXELS so dots stay legible at
+                # continental zoom instead of shrinking away. The
+                # line carries the shape; the dots show the sampling.
+                layers.append(pdk.Layer(
+                    "ScatterplotLayer", data=_tdots,
+                    get_position="position",
+                    get_radius=2.2, radius_units="pixels",
+                    radius_min_pixels=2, radius_max_pixels=3,
+                    get_fill_color=[0, 90, 220, 200],
+                    stroked=False, pickable=False,
                 ))
 
             layers.append(pdk.Layer(
@@ -2409,8 +2407,15 @@ if run_button:
             map_style="light",
             tooltip={"html": "<b>{tip}</b>"},
         )
-        _rad_dupe = (f" {_n_dupe} duplicate rows removed."
-                     if _n_dupe else "")
+        # Reported ALWAYS, not only when nonzero. If the counts
+        # agree and aircraft still appear twice on screen, the
+        # duplication is in the RENDERING, not the data — and that
+        # distinction is the thing worth knowing.
+        _rad_dupe = (
+            f" {len(_seen_cs)} aircraft"
+            + (f", {_n_dupe} duplicate rows removed." if _n_dupe
+               else ".")
+        ) if _seen_cs else ""
         _rad = (_rad_dupe + _radar_note
                 + " Map auto-refreshes every 2 min; aircraft "
                   "positions update each refresh.")
