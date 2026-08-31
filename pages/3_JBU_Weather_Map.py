@@ -2144,6 +2144,27 @@ if run_button:
     n_sev_all = sum(1 for r in board_rows if r[0] == 0)
 
     @st.fragment(run_every="120s")
+    def _map_fragment_outer():
+        """Owns its own container.
+
+        THIS is why aircraft accumulated into chains along their
+        flight paths, one set per refresh.
+
+        The fragment was called from inside `with col_m:` — a column
+        created OUTSIDE it. On a run_every rerun Streamlit
+        re-executes only the fragment body, and writes went into that
+        pre-existing container, APPENDING rather than replacing. Every
+        beat added another complete set of icons at the then-current
+        positions, which is exactly the chain pattern: same spacing
+        as the refresh interval, following each track.
+
+        A container created INSIDE the fragment is cleared and
+        rebuilt on every fragment run, because it belongs to the
+        fragment rather than to the page around it.
+        """
+        with st.container():
+            _map_fragment()
+
     def _map_fragment():
         # Bound at the TOP OF THE FUNCTION, not outside it.
         #
@@ -2541,7 +2562,7 @@ if run_button:
                 unsafe_allow_html=True,
             )
         if _deck is not None:
-            _map_fragment()
+            _map_fragment_outer()
         else:
             st.caption(f"Map unavailable: {_map_err}")
 
