@@ -1227,7 +1227,7 @@ def _note_positions(rows):
 
     now = _t.time()
     for r in rows or []:
-        cs = r.get("cs")
+        cs = (r.get("cs") or "").strip().upper()
         la, lo = r.get("lat"), r.get("lon")
         if not cs or la is None or lo is None:
             continue
@@ -1379,7 +1379,14 @@ def cached_fleet(bucket: str):
         ac = j.get("ac") or j.get("aircraft") or []
         out = []
         for p in ac:
-            cs = (p.get("flight") or "").strip()
+            # Strip AND upper-case. ADS-B callsigns are space
+            # padded to eight characters and hosts differ on whether
+            # they trim them, so "JBU2582 " and "JBU2582" arrive from
+            # different tiles as different strings that display
+            # identically. Normalising at the source is what stops
+            # the same aircraft being counted twice everywhere
+            # downstream.
+            cs = (p.get("flight") or "").strip().upper()
             # Other operators are kept now rather than dropped. The
             # sweep already paid for them — they arrive in the same
             # payload — so carrying them costs nothing but a tag, and
@@ -2148,6 +2155,7 @@ if run_button:
         # is local to the whole function, so the outer value would
         # be invisible.
         _seen_cs = {}
+        _dup_dots = []
         import pydeck as pdk
         # ONE control left on this page: flight numbers. Radar,
         # Class B, other traffic and N90 fixes have all been removed
@@ -2305,26 +2313,38 @@ if run_button:
             # duplicate icon is indistinguishable from a second
             # aircraft to whoever is reading the map, and the cost
             # of being sure is one dict comprehension.
-            # ONE ICON PER CALLSIGN, enforced across BOTH tiers.
+            # ONE ICON PER FLIGHT NUMBER. Anything beyond the first
+            # becomes a blue dot.
             #
-            # The previous dedupe ran on each list separately, which
-            # cannot catch a callsign that ends up in both — and two
-            # IconLayers draw them, so it appears twice. Deduping the
-            # COMBINED set makes the invariant structural rather than
-            # a property of the routing above.
+            # The key is NORMALISED — stripped and upper-cased —
+            # because ADS-B callsigns are space-padded to eight
+            # characters. One host returns "JBU2582 " and another
+            # "JBU2582"; they are different dict keys and render
+            # identically, which is why every earlier dedupe passed
+            # them straight through.
             #
-            # Newest wins on a collision: entries carry altitude and
-            # the sweep is ordered, so the later row is the more
-            # recent fix.
+            # Extras are not discarded. They are real observations of
+            # the same aircraft at other positions, so they are drawn
+            # as dots — the same treatment as a track fix, which is
+            # what they effectively are.
+            def _norm(cs):
+                return (cs or "").strip().upper()
+
             _n_before = len(fleet_disp) + len(gnd_disp)
+            _seen_cs = {}
             _f2, _g2 = [], []
+            _dup_dots = []
             for _tier, _src in ((_f2, fleet_disp), (_g2, gnd_disp)):
                 for _r in _src:
-                    _k = _r.get("cs")
+                    _k = _norm(_r.get("cs"))
                     if not _k:
                         _tier.append(_r)      # unlabelled: keep
                         continue
                     if _k in _seen_cs:
+                        _lo, _la = _r.get("lon"), _r.get("lat")
+                        if _lo is not None and _la is not None:
+                            _dup_dots.append(
+                                {"position": [_lo, _la], "cs": _k})
                         continue
                     _seen_cs[_k] = True
                     _tier.append(_r)
@@ -2353,6 +2373,17 @@ if run_button:
                     get_width=1.4, width_units="pixels",
                     width_min_pixels=1, width_max_pixels=2,
                     pickable=False,
+                ))
+            # Extra positions for a flight that appeared more than
+            # once: same visual language as a track fix.
+            if _dup_dots:
+                layers.append(pdk.Layer(
+                    "ScatterplotLayer", data=_dup_dots,
+                    get_position="position",
+                    get_radius=2.6, radius_units="pixels",
+                    radius_min_pixels=2, radius_max_pixels=4,
+                    get_fill_color=[0, 90, 220, 210],
+                    stroked=False, pickable=False,
                 ))
             if _tdots:
                 # Radius in PIXELS so dots stay legible at
