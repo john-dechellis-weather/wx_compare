@@ -1227,7 +1227,12 @@ def _note_positions(rows):
 
     now = _t.time()
     for r in rows or []:
-        cs = (r.get("cs") or "").strip().upper()
+        # Fleet rows key the callsign as "callsign"; the OTHER-traffic
+        # rows use "cs". This read only "cs", so every fleet row was
+        # skipped and _TRACKS stayed permanently empty — which is why
+        # no track line or dots ever appeared, however many fixes had
+        # been collected.
+        cs = (r.get("callsign") or r.get("cs") or "").strip().upper()
         la, lo = r.get("lat"), r.get("lon")
         if not cs or la is None or lo is None:
             continue
@@ -2442,6 +2447,24 @@ if run_button:
         # agree and aircraft still appear twice on screen, the
         # duplication is in the RENDERING, not the data — and that
         # distinction is the thing worth knowing.
+        # LOUD check. If the number of icons drawn does not equal
+        # the number of distinct flight numbers, something upstream
+        # is still producing duplicates and the map is lying about
+        # how many aircraft are airborne. Say it in red rather than
+        # burying it in a caption.
+        try:
+            _icons = len(fleet_disp) + len(gnd_disp)
+        except Exception:
+            _icons = 0
+        if _seen_cs and _icons != len(_seen_cs):
+            st.markdown(
+                "<div style='background:#FFD9D9;border:2px solid "
+                "#B30000;border-radius:6px;padding:8px 12px;"
+                "margin:6px 0;text-align:center;font-size:17px;"
+                "font-weight:700;color:#7A0000;'>"
+                f"{_icons} icons for {len(_seen_cs)} flight numbers "
+                "\u2014 duplicates are NOT being removed.</div>",
+                unsafe_allow_html=True)
         _rad_dupe = (
             f" {len(_seen_cs)} aircraft"
             + (f", {_n_dupe} duplicate rows removed." if _n_dupe
