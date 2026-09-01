@@ -31,6 +31,15 @@ COLUMNS = [
     "wind_gust_kt",      # knots, float, NaN if no gust reported
     "temp_f",            # degrees F, float, NaN if missing
     "dewpoint_f",        # degrees F, float, NaN if missing
+    # NBM flight-category probabilities, percent. From the NBH text
+    # bulletin (all six, hourly) and NBS (IFC/IFV only, 3-hourly).
+    # Statistically calibrated — not a raw ensemble member count.
+    "p_cig_mvfr",        # P(ceiling <= 3000 ft)
+    "p_cig_ifr",         # P(ceiling < 1000 ft)
+    "p_cig_lifr",        # P(ceiling < 500 ft)
+    "p_vis_mvfr",        # P(visibility <= 5 mi)
+    "p_vis_ifr",         # P(visibility < 3 mi)
+    "p_vis_lifr",        # P(visibility < 1 mi)
     "source_file",       # provenance: filename or URL fragment
 ]
 
@@ -60,6 +69,12 @@ class ForecastRecord:
     # conversion that would then be undone for display.
     temp_f: Optional[float] = None
     dewpoint_f: Optional[float] = None
+    p_cig_mvfr: Optional[float] = None
+    p_cig_ifr: Optional[float] = None
+    p_cig_lifr: Optional[float] = None
+    p_vis_mvfr: Optional[float] = None
+    p_vis_ifr: Optional[float] = None
+    p_vis_lifr: Optional[float] = None
     source_file: str = ""
 
 
@@ -95,6 +110,9 @@ def _enforce_dtypes(df: pd.DataFrame) -> pd.DataFrame:
             "wind_gust_kt": "float64",
             "temp_f": "float64",
             "dewpoint_f": "float64",
+            "p_cig_mvfr": "float64", "p_cig_ifr": "float64",
+            "p_cig_lifr": "float64", "p_vis_mvfr": "float64",
+            "p_vis_ifr": "float64", "p_vis_lifr": "float64",
             "source_file": "string",
         })
     df = df.copy()
@@ -114,5 +132,8 @@ def _enforce_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     df["temp_f"] = pd.to_numeric(df["temp_f"], errors="coerce")
     df["dewpoint_f"] = pd.to_numeric(df["dewpoint_f"],
                                      errors="coerce")
+    for _c in ("p_cig_mvfr", "p_cig_ifr", "p_cig_lifr",
+               "p_vis_mvfr", "p_vis_ifr", "p_vis_lifr"):
+        df[_c] = pd.to_numeric(df[_c], errors="coerce")
     df["source_file"] = df["source_file"].astype("string")
     return df
