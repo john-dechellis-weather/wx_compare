@@ -412,6 +412,89 @@ def cached_refs_cycle(bucket: str) -> str | None:
     return c.isoformat() if c else None
 
 
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=24)
+def cached_det_point(model: str, icao: str, cycle_iso: str,
+                     hours: tuple):
+    """{fhr: {cig_hft, vis_sm, wdr_deg, wsp_kt, gst_kt}} or ({}, why)."""
+    from core import refs_point
+    from core.stations import StationResolver
+
+    resolver = StationResolver(cache_dir=CACHE_ROOT / "stations")
+    stn = resolver.resolve(icao)
+    if stn is None:
+        return {}, f"cannot resolve {icao}"
+    try:
+        return refs_point.sample_deterministic(
+            model, stn.lat, stn.lon,
+            datetime.fromisoformat(cycle_iso), list(hours)), None
+    except Exception as exc:
+        return {}, f"{type(exc).__name__}: {exc}"
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def cached_det_cycle(model: str, need_fhr: int, bucket: str):
+    from core.hrrr_cam import latest_cycle
+
+    c = latest_cycle(model, need_fhr)
+    return c.isoformat() if c else None
+
+
+def build_det_point_table(label: str, rows: dict, cycle: datetime,
+                          hours) -> str:
+    """RRFS (or HRRR) point values in the same row layout and colour
+    scheme as the NBM table, so the two read identically."""
+    from datetime import timedelta
+
+    header = [make_th(label, is_row_label=True)]
+    for h in hours:
+        header.append(make_th(f"{(cycle + timedelta(hours=h)):%H}Z"))
+    out = ["<tr>" + "".join(header) + "</tr>"]
+
+    def _row(lab, key, fmt, colour):
+        cells = [make_th(lab, is_row_label=True)]
+        for h in hours:
+            r = rows.get(h, {})
+            v = r.get(key)
+            c = colour(r) if v is not None else None
+            cells.append(make_cell(fmt(v), c[0], c[1]) if c
+                         else make_cell(fmt(v)))
+        return "<tr>" + "".join(cells) + "</tr>"
+
+    def _f_vis(v):
+        return "-" if v is None else (f"{v:g}" if v < 10 else "10+")
+
+    def _f_cig(v):
+        return "UNL" if v is None else f"{int(v):03d}"
+
+    def _f_int(v):
+        return "-" if v is None else str(int(v))
+
+    out.append(_row("VIS", "vis_sm", _f_vis,
+                    lambda r: vis_bg(r.get("vis_sm"))))
+    # cig_bg(c, unlimited): None ceiling means unlimited here.
+    out.append(_row("CIG", "cig_hft", _f_cig,
+                    lambda r: cig_bg(r.get("cig_hft"),
+                                     r.get("cig_hft") is None)))
+    out.append(_row("WDR", "wdr_deg",
+                    lambda v: "-" if v is None else f"{int(v):03d}",
+                    lambda r: None))
+    out.append(_row("WSP", "wsp_kt", _f_int,
+                    lambda r: wind_bg(r.get("wsp_kt"), r.get("gst_kt"))))
+    out.append(_row("GST", "gst_kt", _f_int,
+                    lambda r: gust_bg(r.get("gst_kt"))))
+    return (
+        '<div style="overflow-x:auto;background:#FFFFFF;padding:4px;'
+        'border:2px solid #000000;margin-top:10px;">'
+        '<div style="font-family:Courier New,monospace;font-size:10px;'
+        'font-weight:bold;color:#000000;-webkit-text-fill-color:#000000;'
+        'padding:1px 2px;">'
+        f'{label} point forecast \u2014 {cycle:%HZ} run \u2014 '
+        'nearest 3 km grid cell</div>'
+        '<table style="border-collapse:collapse;margin:0;">'
+        + "".join(out) + "</table></div>"
+    )
+
+
 def build_refs_prob_table(probs: dict, cycle: datetime,
                           hours) -> str:
     """Rows = thresholds, columns = valid hour in Z.
@@ -674,6 +757,33 @@ if run_button:
     )
 
     st.markdown(table_html, unsafe_allow_html=True)
+
+    # RRFS deterministic point forecast, in the NBM row layout.
+    _dp = st.empty()
+    _dp.markdown(
+        "<p style='text-align:center;font-size:18px;font-weight:700;"
+        "margin:8px 0'>Loading RRFS point forecast\u2026</p>",
+        unsafe_allow_html=True)
+    _det_hours = tuple(range(1, 25))
+    _dc = cached_det_cycle(
+        "rrfs", 24,
+        datetime.now(timezone.utc).strftime("%Y%m%d%H")
+        + str(datetime.now(timezone.utc).minute // 10))
+    if _dc:
+        _drows, _derr = cached_det_point("rrfs", icao_input, _dc,
+                                         _det_hours)
+        _dp.empty()
+        if _drows and any(any(v is not None for v in r.values())
+                          for r in _drows.values()):
+            st.markdown(build_det_point_table(
+                "RRFS", _drows, datetime.fromisoformat(_dc),
+                _det_hours), unsafe_allow_html=True)
+        else:
+            st.caption("RRFS point forecast unavailable"
+                       + (f" \u2014 {_derr}" if _derr else "") + ".")
+    else:
+        _dp.empty()
+        st.caption("RRFS point forecast: no complete cycle found.")
 
     # REFS ensemble probabilities, directly under the deterministic
     # tables so the NBM/LAMP categorical CIG/VIS call and the
