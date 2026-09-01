@@ -48,6 +48,12 @@ PRODUCT_PARAMS = {
     "VIS": ({"var_VIS": "on"}, [{"lev_surface": "on"}]),
     "CEIL": ({"var_HGT": "on"}, [{"lev_cloud_ceiling": "on"}]),
     "GUST": ({"var_GUST": "on"}, [{"lev_surface": "on"}]),
+    # 10 m wind components, for the RRFS point table. Speed and
+    # direction are derived from U and V at the station rather than
+    # fetched, so the two are guaranteed to come from the same cell
+    # and the same instant.
+    "UGRD10": ({"var_UGRD": "on"}, [{"lev_10_m_above_ground": "on"}]),
+    "VGRD10": ({"var_VGRD": "on"}, [{"lev_10_m_above_ground": "on"}]),
 }
 
 PRODUCT_LABELS = {
@@ -57,6 +63,8 @@ PRODUCT_LABELS = {
     "VIS": "Visibility (SM)",
     "CEIL": "Ceiling (hundreds ft)",
     "GUST": "10 m Wind Gust (kt)",
+    "UGRD10": "10 m U wind (m/s)",
+    "VGRD10": "10 m V wind (m/s)",
     "PROB_REFC40": "P(Composite Refl >= 40 dBZ)  %",
     "PROB_CIG500": "P(Ceiling < 500 ft)  %",
     "PROB_CIG1000": "P(Ceiling < 1000 ft)  %",
@@ -106,6 +114,8 @@ IDX_MATCHERS = {
     "VIS": [("VIS", "surface")],
     "CEIL": [("HGT", "cloud ceiling")],
     "GUST": [("GUST", "surface")],
+    "UGRD10": [("UGRD", "10 m above ground")],
+    "VGRD10": [("VGRD", "10 m above ground")],
 }
 
 MODELS = {

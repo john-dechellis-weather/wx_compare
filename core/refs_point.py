@@ -97,6 +97,79 @@ def sample(lat: float, lon: float, cycle: datetime, hours,
     return out
 
 
+# ---------------------------------------------------------------------------
+# Deterministic point sampling — RRFS (or HRRR) as a MOS-style table
+# ---------------------------------------------------------------------------
+# Same machinery, different fields. Wind is DERIVED from U and V at
+# the station rather than fetched as speed and direction, so both
+# come from the same cell at the same instant.
+DET_PRODUCTS = ("CEIL", "VIS", "GUST", "UGRD10", "VGRD10")
+
+MS_TO_KT = 1.943844
+M_TO_SM = 1.0 / 1609.344
+M_TO_HFT = 3.28084 / 100.0     # metres -> hundreds of feet
+
+
+def sample_deterministic(model: str, lat: float, lon: float,
+                         cycle: datetime, hours,
+                         max_workers: int = 6) -> dict:
+    """{fhr: {cig_hft, vis_sm, wdr_deg, wsp_kt, gst_kt}} at the station.
+
+    Units match what the NBM table shows, so the two tables read the
+    same way row for row. Ceiling in hundreds of feet with None for
+    unlimited; visibility in statute miles; wind in knots, direction
+    in degrees true.
+    """
+    import math as _m
+
+    from core.hrrr_cam import parallel_fetch_decode
+
+    tasks = [{
+        "key": (p, h), "model": model, "product": p,
+        "cycle": cycle, "fhr": h,
+        "lat": lat, "lon": lon, "zoom_deg": WINDOW_DEG,
+    } for p in DET_PRODUCTS for h in hours]
+    got = parallel_fetch_decode(tasks, max_workers=max_workers)
+    raw = {}
+    for (p, h), res in got.items():
+        if isinstance(res, Exception) or res is None:
+            continue
+        try:
+            vals, lats, lons = res
+            raw.setdefault(h, {})[p] = _nearest(vals, lats, lons,
+                                                 lat, lon)
+        except Exception:
+            continue
+
+    out = {}
+    for h in hours:
+        r = raw.get(h, {})
+        row = {"cig_hft": None, "vis_sm": None, "wdr_deg": None,
+               "wsp_kt": None, "gst_kt": None}
+        c = r.get("CEIL")
+        if c is not None:
+            hft = c * M_TO_HFT
+            # The model encodes "no ceiling" as a very large height.
+            # Above 30,000 ft it is unlimited for every purpose this
+            # table serves; leaving the number in would print 300+
+            # and colour it as if it were a ceiling.
+            row["cig_hft"] = None if hft > 300 else int(round(hft))
+        v = r.get("VIS")
+        if v is not None:
+            row["vis_sm"] = round(min(10.0, v * M_TO_SM), 2)
+        g = r.get("GUST")
+        if g is not None:
+            row["gst_kt"] = int(round(g * MS_TO_KT))
+        u, vv = r.get("UGRD10"), r.get("VGRD10")
+        if u is not None and vv is not None:
+            row["wsp_kt"] = int(round(_m.hypot(u, vv) * MS_TO_KT))
+            # Meteorological convention: direction the wind is FROM.
+            row["wdr_deg"] = int(round(
+                (270.0 - _m.degrees(_m.atan2(vv, u))) % 360.0))
+        out[h] = row
+    return out
+
+
 def cell_style(p) -> tuple | None:
     """(background, text) for a probability, or None for blank.
 
