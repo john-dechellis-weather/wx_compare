@@ -1217,8 +1217,20 @@ FIRST_WAIT_S = float(_os_ko.environ.get("JBU_FLEET_FIRST_WAIT", "20"))
 # is shared across sessions — everyone looking at the map sees the
 # same trails rather than each building their own.
 _TRACKS: dict = {}
-TRAIL_MAX = int(_os_ko.environ.get("JBU_TRAIL_POINTS", "12"))
-TRAIL_TTL_S = float(_os_ko.environ.get("JBU_TRAIL_TTL_S", "3600"))
+# 30 fixes. The fleet refreshes on the 120 s fragment beat, so one
+# fix every two minutes — 12 points was a 24-minute track, which is
+# barely a track. 30 gives an hour, which is long enough to read a
+# turn, a hold, or a reroute around convection.
+#
+# History starts EMPTY after every restart and fills at one point
+# per beat, so a freshly deployed process shows a short trail for
+# the first while. That is not a fault; there is no position history
+# to invent.
+TRAIL_MAX = int(_os_ko.environ.get("JBU_TRAIL_POINTS", "30"))
+# Two hours: longer than the longest trail, so a track is dropped
+# because the aircraft is gone rather than because the trail aged
+# out from under it.
+TRAIL_TTL_S = float(_os_ko.environ.get("JBU_TRAIL_TTL_S", "7200"))
 
 
 def _note_positions(rows):
@@ -2143,28 +2155,6 @@ if run_button:
     # Status strip: the three numbers that summarize the network
     n_sev_all = sum(1 for r in board_rows if r[0] == 0)
 
-    @st.fragment(run_every="120s")
-    def _map_fragment_outer():
-        """Owns its own container.
-
-        THIS is why aircraft accumulated into chains along their
-        flight paths, one set per refresh.
-
-        The fragment was called from inside `with col_m:` — a column
-        created OUTSIDE it. On a run_every rerun Streamlit
-        re-executes only the fragment body, and writes went into that
-        pre-existing container, APPENDING rather than replacing. Every
-        beat added another complete set of icons at the then-current
-        positions, which is exactly the chain pattern: same spacing
-        as the refresh interval, following each track.
-
-        A container created INSIDE the fragment is cleared and
-        rebuilt on every fragment run, because it belongs to the
-        fragment rather than to the page around it.
-        """
-        with st.container():
-            _map_fragment()
-
     def _map_fragment():
         # Bound at the TOP OF THE FUNCTION, not outside it.
         #
@@ -2536,35 +2526,51 @@ if run_button:
         )
 
 
-    # Board + key left; METAR table with the MAP directly under
-    # it right - the map fills the column, width auto-fitting
-    # the window
-    col_b, col_m = st.columns([1, 2.6], gap="small")
-    with col_b:
-        if board_rows:
-            st.markdown(render_status_board(board_rows),
-                        unsafe_allow_html=True)
-        else:
-            st.markdown(_no_alerts(), unsafe_allow_html=True)
-        st.markdown(_legend_html(), unsafe_allow_html=True)
-    with col_m:
-        if metar_rows:
-            st.markdown(render_metar_table(metar_rows),
-                        unsafe_allow_html=True)
-        else:
-            st.markdown(
-                '<div style="background:#FFFFFF; border:1px '
-                'solid #000; display:inline-block; '
-                'padding:4px 14px; margin-bottom:6px; '
-                'color:#000; -webkit-text-fill-color:#000; '
-                f'font-family:{_FONT}; font-size:11px;">'
-                "NO METARs AT/BEYOND THRESHOLDS</div>",
-                unsafe_allow_html=True,
-            )
-        if _deck is not None:
-            _map_fragment_outer()
-        else:
-            st.caption(f"Map unavailable: {_map_err}")
+    # The fragment OWNS the whole two-column layout.
+    #
+    # Third attempt at this, and the previous two failed for the same
+    # underlying reason. A run_every fragment replaces only what IT
+    # created; anything it writes into a container built by the page
+    # around it is APPENDED. So calling the map from inside a
+    # `with col_m:` created outside the fragment stacked a fresh set
+    # of icons every 120 s — the chains along each flight path — and
+    # wrapping the call in st.container() inside the fragment did not
+    # help, because the enclosing column still belonged to the page.
+    #
+    # Creating the columns INSIDE the fragment makes the entire block
+    # the fragment's own output, so a rerun clears and rebuilds all
+    # of it. Redrawing the board and METAR table costs nothing: both
+    # are pre-rendered HTML strings by this point.
+    @st.fragment(run_every="120s")
+    def _page_body():
+        col_b, col_m = st.columns([1, 2.6], gap="small")
+        with col_b:
+            if board_rows:
+                st.markdown(render_status_board(board_rows),
+                            unsafe_allow_html=True)
+            else:
+                st.markdown(_no_alerts(), unsafe_allow_html=True)
+            st.markdown(_legend_html(), unsafe_allow_html=True)
+        with col_m:
+            if metar_rows:
+                st.markdown(render_metar_table(metar_rows),
+                            unsafe_allow_html=True)
+            else:
+                st.markdown(
+                    '<div style="background:#FFFFFF; border:1px '
+                    'solid #000; display:inline-block; '
+                    'padding:4px 14px; margin-bottom:6px; '
+                    'color:#000; -webkit-text-fill-color:#000; '
+                    f'font-family:{_FONT}; font-size:11px;">'
+                    "NO METARs AT/BEYOND THRESHOLDS</div>",
+                    unsafe_allow_html=True,
+                )
+            if _deck is not None:
+                _map_fragment()
+            else:
+                st.caption(f"Map unavailable: {_map_err}")
+
+    _page_body()
 
     if tile_fails:
         with st.expander(
