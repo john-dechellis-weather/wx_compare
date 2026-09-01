@@ -66,6 +66,12 @@ def cached_mos_tables(icao: str, cycle_iso: str) -> pd.DataFrame:
             "LAMP_wind_gst": _safe(l, "wind_gust_kt"),
             "NBM_tmp_f": _safe(n, "temp_f"),
             "NBM_dpt_f": _safe(n, "dewpoint_f"),
+            "NBM_p_cig_mvfr": _safe(n, "p_cig_mvfr"),
+            "NBM_p_cig_ifr": _safe(n, "p_cig_ifr"),
+            "NBM_p_cig_lifr": _safe(n, "p_cig_lifr"),
+            "NBM_p_vis_mvfr": _safe(n, "p_vis_mvfr"),
+            "NBM_p_vis_ifr": _safe(n, "p_vis_ifr"),
+            "NBM_p_vis_lifr": _safe(n, "p_vis_lifr"),
             "LAMP_tmp_f": _safe(l, "temp_f"),
             "LAMP_dpt_f": _safe(l, "dewpoint_f"),
         })
@@ -108,6 +114,12 @@ def cached_extended_tables(icao: str, cycle_iso: str):
                 "gst": r.get("wind_gust_kt"),
                 "tmp_f": r.get("temp_f"),
                 "dpt_f": r.get("dewpoint_f"),
+                "p_cig_mvfr": r.get("p_cig_mvfr"),
+                "p_cig_ifr": r.get("p_cig_ifr"),
+                "p_cig_lifr": r.get("p_cig_lifr"),
+                "p_vis_mvfr": r.get("p_vis_mvfr"),
+                "p_vis_ifr": r.get("p_vis_ifr"),
+                "p_vis_lifr": r.get("p_vis_lifr"),
             })
         return pd.DataFrame(rows)
 
@@ -471,10 +483,15 @@ def build_det_point_table(label: str, rows: dict, cycle: datetime,
 
     out.append(_row("VIS", "vis_sm", _f_vis,
                     lambda r: vis_bg(r.get("vis_sm"))))
-    # cig_bg(c, unlimited): None ceiling means unlimited here.
+    # cig_bg takes FEET — its first tier is `c < 400`. The row
+    # stores hundreds of feet for display, so a 1,000 ft ceiling
+    # arrived as 10 and every cell went pink. Convert before
+    # colouring; the printed value stays in hundreds.
     out.append(_row("CIG", "cig_hft", _f_cig,
-                    lambda r: cig_bg(r.get("cig_hft"),
-                                     r.get("cig_hft") is None)))
+                    lambda r: cig_bg(
+                        None if r.get("cig_hft") is None
+                        else r["cig_hft"] * 100,
+                        r.get("cig_hft") is None)))
     out.append(_row("WDR", "wdr_deg",
                     lambda v: "-" if v is None else f"{int(v):03d}",
                     lambda r: None))
@@ -492,6 +509,115 @@ def build_det_point_table(label: str, rows: dict, cycle: datetime,
         'nearest 3 km grid cell</div>'
         '<table style="border-collapse:collapse;margin:0;">'
         + "".join(out) + "</table></div>"
+    )
+
+
+NBM_PROB_ROWS = [
+    ("NBM_p_cig_mvfr", "P(CIG \u2264 3000 ft) MVFR"),
+    ("NBM_p_cig_ifr", "P(CIG < 1000 ft) IFR"),
+    ("NBM_p_cig_lifr", "P(CIG < 500 ft) LIFR"),
+    ("NBM_p_vis_mvfr", "P(VIS \u2264 5 sm) MVFR"),
+    ("NBM_p_vis_ifr", "P(VIS < 3 sm) IFR"),
+    ("NBM_p_vis_lifr", "P(VIS < 1 sm) LIFR"),
+]
+
+
+def section(title: str) -> None:
+    """Rule + subtitle between table groups.
+
+    Four groups now share one page and read very differently — a
+    calibrated probability, a raw ensemble count and a single model's
+    diagnostic all look like the same grid of numbers. The heading
+    is what says which is which.
+    """
+    st.markdown(
+        '<div style="border-top:2px solid #000;margin:18px 0 6px;"></div>'
+        '<div style="font-family:Courier New,monospace;font-size:13px;'
+        'font-weight:bold;color:#000;-webkit-text-fill-color:#000;'
+        f'margin-bottom:6px;">{escape(title)}</div>',
+        unsafe_allow_html=True)
+
+
+def render_point_table(model: str, label: str, icao: str) -> None:
+    """Fetch, cache and draw one model's point forecast table.
+
+    Shared by RRFS and HRRR so the two are guaranteed to be built,
+    cached and coloured identically.
+    """
+    _ph = st.empty()
+    _ph.markdown(
+        "<p style='text-align:center;font-size:18px;font-weight:700;"
+        f"margin:8px 0'>Loading {escape(label)} point forecast\u2026</p>",
+        unsafe_allow_html=True)
+    hours = tuple(range(1, 25))
+    now = datetime.now(timezone.utc)
+    cyc = cached_det_cycle(
+        model, 24, now.strftime("%Y%m%d%H") + str(now.minute // 10))
+    if not cyc:
+        _ph.empty()
+        st.caption(f"{label} point forecast: no complete cycle found.")
+        return
+    rows, err = cached_det_point(model, icao, cyc, hours)
+    _ph.empty()
+    if rows and any(any(v is not None for v in r.values())
+                    for r in rows.values()):
+        st.markdown(build_det_point_table(
+            label, rows, datetime.fromisoformat(cyc), hours),
+            unsafe_allow_html=True)
+    else:
+        st.caption(f"{label} point forecast unavailable"
+                   + (f" \u2014 {err}" if err else "") + ".")
+
+
+def build_nbm_prob_table(df_m, cycle: datetime) -> str:
+    """NBM flight-category probabilities from the NBH/NBS bulletins.
+
+    These are the MVC/IFC/LIC and MVV/IFV/LIV rows — statistically
+    calibrated by MDL, not a raw ensemble member count, which makes
+    them the most trustworthy probabilities on this page. NBH carries
+    all six hourly to f25; NBS carries only the IFR pair past that,
+    so the MVFR and LIFR rows go blank after the handoff. That is the
+    bulletin's coverage, not a parse failure.
+    """
+    from core import refs_point
+
+    if df_m is None or len(df_m) == 0:
+        return ""
+    if not any(c in df_m.columns for c, _ in NBM_PROB_ROWS):
+        return ""
+    hours = list(df_m["fhr"]) if "fhr" in df_m.columns else None
+    header = [make_th("NBM PROB", is_row_label=True)]
+    for i in range(len(df_m)):
+        vt = (df_m["valid_time"].iloc[i]
+              if "valid_time" in df_m.columns else None)
+        header.append(make_th(f"{vt:%H}Z" if vt is not None
+                              else f"f{hours[i]:02d}"))
+    out = ["<tr>" + "".join(header) + "</tr>"]
+    for col, label in NBM_PROB_ROWS:
+        if col not in df_m.columns:
+            continue
+        cells = [make_th(label, is_row_label=True)]
+        for v in df_m[col]:
+            p = None if v is None or pd.isna(v) else int(round(v))
+            c = refs_point.cell_style(p)
+            txt = "-" if p is None else str(p)
+            cells.append(make_cell(txt, c[0], c[1]) if c
+                         else make_cell(txt))
+        out.append("<tr>" + "".join(cells) + "</tr>")
+    return (
+        '<div style="overflow-x:auto;background:#FFFFFF;padding:4px;'
+        'border:2px solid #000000;margin-top:10px;">'
+        '<div style="font-family:Courier New,monospace;font-size:10px;'
+        'font-weight:bold;color:#000000;-webkit-text-fill-color:#000000;'
+        'padding:1px 2px;">'
+        f'NBM flight-category probability (%) \u2014 {cycle:%HZ} run '
+        '\u2014 MDL calibrated</div>'
+        '<table style="border-collapse:collapse;margin:0;">'
+        + "".join(out) + "</table>"
+        '<div style="font-family:Courier New,monospace;font-size:8px;'
+        'color:#333;-webkit-text-fill-color:#333;padding:3px 2px 0;">'
+        "MVFR/LIFR rows are hourly to f25 (NBH); only the IFR pair "
+        "continues 3-hourly (NBS).</div></div>"
     )
 
 
@@ -629,6 +755,9 @@ if run_button:
         st.warning("No data in overlap window.")
         st.stop()
 
+    # ---- 1. Hourly deterministic MOS ----
+    section("Hourly NBM and GFS LAMP MOS")
+
     # Build table row by row as raw HTML strings
     times = df_c["valid_time"].tolist()
     fhrs = df_c["fhr"].tolist()
@@ -758,37 +887,17 @@ if run_button:
 
     st.markdown(table_html, unsafe_allow_html=True)
 
-    # RRFS deterministic point forecast, in the NBM row layout.
-    _dp = st.empty()
-    _dp.markdown(
-        "<p style='text-align:center;font-size:18px;font-weight:700;"
-        "margin:8px 0'>Loading RRFS point forecast\u2026</p>",
-        unsafe_allow_html=True)
-    _det_hours = tuple(range(1, 25))
-    _dc = cached_det_cycle(
-        "rrfs", 24,
-        datetime.now(timezone.utc).strftime("%Y%m%d%H")
-        + str(datetime.now(timezone.utc).minute // 10))
-    if _dc:
-        _drows, _derr = cached_det_point("rrfs", icao_input, _dc,
-                                         _det_hours)
-        _dp.empty()
-        if _drows and any(any(v is not None for v in r.values())
-                          for r in _drows.values()):
-            st.markdown(build_det_point_table(
-                "RRFS", _drows, datetime.fromisoformat(_dc),
-                _det_hours), unsafe_allow_html=True)
-        else:
-            st.caption("RRFS point forecast unavailable"
-                       + (f" \u2014 {_derr}" if _derr else "") + ".")
-    else:
-        _dp.empty()
-        st.caption("RRFS point forecast: no complete cycle found.")
+    # ---- 2. Probability matrix: NBM calibrated + REFS ensemble ----
+    section("REFS and NBM Flight Probability Matrix")
+    try:
+        _nbm_prob_html = build_nbm_prob_table(
+            df_c, datetime.fromisoformat(cycle_iso))
+    except Exception as _npe:
+        _nbm_prob_html = ""
+        st.caption(f"NBM probabilities unavailable \u2014 {_npe}")
+    if _nbm_prob_html:
+        st.markdown(_nbm_prob_html, unsafe_allow_html=True)
 
-    # REFS ensemble probabilities, directly under the deterministic
-    # tables so the NBM/LAMP categorical CIG/VIS call and the
-    # ensemble probability sit on one page and disagreements are
-    # visible at a glance.
     _rp = st.empty()
     _rp.markdown(
         "<p style='text-align:center;font-size:18px;font-weight:700;"
@@ -806,13 +915,21 @@ if run_button:
                 _probs, datetime.fromisoformat(_rc), _refs_hours),
                 unsafe_allow_html=True)
         else:
-            st.caption(f"REFS probabilities unavailable"
+            st.caption("REFS probabilities unavailable"
                        + (f" \u2014 {_rerr}" if _rerr else "") + ".")
     else:
         _rp.empty()
         st.caption("REFS probabilities: no complete cycle found.")
 
-    # Extended tables: NBS (3-hourly) + NBE (12-hourly, wind only)
+    # ---- 3. Point forecasts: RRFS and HRRR ----
+    section("RRFS and HRRR Point Forecast")
+    render_point_table("rrfs", "RRFS", icao_input)
+    render_point_table("hrrr", "HRRR", icao_input)
+
+    # ---- 4. Medium to long range ----
+    section("Medium to Long Range NBM")
+
+    # Extended tables: NBS (3-hourly) + NBE (12-hourly, wind + T/Td)
     with st.spinner("Fetching NBS + NBE..."):
         try:
             nbs_df, nbe_df = cached_extended_tables(icao_input, cycle_iso)
@@ -831,7 +948,7 @@ if run_button:
     if len(nbe_df):
         st.markdown(
             build_generic_table(
-                nbe_df, "NBE (12-hourly \u00b7 wind only \u2014 "
+                nbe_df, "NBE (12-hourly \u00b7 T/Td and wind \u2014 "
                 "VIS/CIG not produced at extended range)",
                 show_viscig=False,
             ),
