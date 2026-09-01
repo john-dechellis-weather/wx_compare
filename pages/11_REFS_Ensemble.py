@@ -87,7 +87,9 @@ def _data_uri(b: bytes) -> str:
 
 
 def build_scrub_html(frames: dict, hour_axis: list,
-                     order: list, single: bool = False) -> tuple:
+                     order: list, single: bool = False,
+                     base_cycle_iso: str = None,
+                     product_label: str = "") -> tuple:
     """Client-side shared-slider grid from {model: {fhr: png}}.
     Returns (html, height). Used by smooth-scrub mode AND the
     instant-open warm path."""
@@ -110,9 +112,49 @@ def build_scrub_html(frames: dict, hour_axis: list,
                 _data_uri(png) if png else None
             )
         model_arrays[m] = arr
-    labels = [f"f{h:02d}" for h in hour_axis]
+    # Header text per model per frame, and a slider label that reads
+    # as a VALID TIME rather than a forecast hour.
+    #
+    # Ported from the CAMs page for the same reason it exists there:
+    # a title baked into the image sits at the top of the CANVAS, so
+    # it scrolls out of view the moment you zoom — which is exactly
+    # when you need to know what you are looking at. An HTML bar
+    # above the map stays put at any zoom.
+    from datetime import datetime as _dl, timedelta as _tl
+
+    _bc = None
+    if base_cycle_iso:
+        try:
+            _bc = _dl.fromisoformat(str(base_cycle_iso))
+        except Exception:
+            _bc = None
+    if _bc is not None:
+        labels = [f"{(_bc + _tl(hours=h)):%H}Z "
+                  f"{(_bc + _tl(hours=h)):%a} "
+                  f"{(_bc + _tl(hours=h)).month}-"
+                  f"{(_bc + _tl(hours=h)).day}"
+                  for h in hour_axis]
+    else:
+        labels = [f"f{h:02d}" for h in hour_axis]
+    # \x1f separates [prefix, bold valid, italic product] — a
+    # character the text can never contain, unlike a pipe or dash
+    # which a product label might legitimately use.
     order = [m for m in order if m in model_arrays]
     names = {m: MODELS[m]["label"] for m in order}
+
+    heads = {}
+    for m in order:
+        row = []
+        for h in hour_axis:
+            if _bc is not None:
+                v = _bc + _tl(hours=h)
+                row.append(f"{names[m]} valid "
+                           f"\x1f{v:%H}Z {v.month}-{v.day}\x1f"
+                           f"{product_label}")
+            else:
+                row.append(f"{names[m]}\x1ff{h:02d}\x1f"
+                           f"{product_label}")
+        heads[m] = row
     _cols = "1fr" if single else "1fr 1fr"
     html = (
         "<style>"
@@ -147,6 +189,20 @@ def build_scrub_html(frames: dict, hour_axis: list,
         "width:auto;height:100%;object-fit:contain;"
         "transform-origin:center center;user-select:none;"
         "-webkit-user-drag:none}"
+        # Header BAR above the map, not a box on it. Sitting
+        # outside the zoom wrapper means it can never cover weather,
+        # and because the wrapper scrolls underneath it the bar
+        # stays visible at any zoom — the whole point.
+        ".hdr{display:block;width:min(var(--sq),100%);"
+        "margin:0 auto;box-sizing:border-box;"
+        "background:#F2F2EE;border:1px solid #111;border-bottom:none;"
+        "border-radius:4px 4px 0 0;padding:6px 10px;text-align:center;"
+        "font:normal 22px/1.3 monospace;color:#111}"
+        ".hdr .vt{font-weight:bold}"
+        ".hdr .sub{font-style:italic;font-size:17px;opacity:0.85;"
+        "font-weight:normal}"
+        # No full-screen wrapper on this page, so no #fswrap rule —
+        # it would target an element that never exists here.
         ".camlbl{font:bold 13px monospace;margin:2px 0}"
         ".ctl{font:13px monospace;margin:8px 0}"
         "input[type=range]{width:70%}"
@@ -162,16 +218,24 @@ def build_scrub_html(frames: dict, hour_axis: list,
     )
     for m in order:
         _wrap = " class='zoomwrap'" if single else ""
-        html += ("<div><div class='camlbl'>" + names[m]
+        html += ("<div><div class='hdr' id='hdr_" + m + "'></div>"
+                 + "<div class='camlbl'>" + ""
                  + "</div><div" + _wrap + "><img id='img_"
                  + m + "'></div></div>")
     html += "</div><script>"
     html += "const D=" + _json.dumps(model_arrays) + ";"
     html += "const L=" + _json.dumps(labels) + ";"
+    html += "const H=" + _json.dumps(heads) + ";"
     html += (
         "const sl=document.getElementById('hsl');"
         "function upd(){const i=+sl.value;"
         "document.getElementById('hlbl').textContent=L[i];"
+        "for(const m in H){const hd="
+        "document.getElementById('hdr_'+m);"
+        "if(hd){const t=(H[m][i]||'').split('\\x1f');"
+        "hd.innerHTML=(t[0]||'')"
+        "+(t[1]?\"<span class='vt'>\"+t[1]+'</span>':'')"
+        "+(t[2]?\"<br><span class='sub'>\"+t[2]+'</span>':'');}}"
         "for(const m in D){const el="
         "document.getElementById('img_'+m);"
         "if(D[m][i]){el.src=D[m][i];el.style.display='';}"
@@ -208,9 +272,10 @@ def build_scrub_html(frames: dict, hour_axis: list,
     html += "</script>"
     if single:
         # 820 px of map + slider, label and padding.
-        return html, 150 + 980
+        # +70 for the two-line header bar above the panel.
+        return html, 220 + 980
     rows = (len(order) + 1) // 2
-    return html, 150 + rows * 1020
+    return html, 150 + rows * 1090
 
 
 PRODUCTS = {
@@ -422,7 +487,9 @@ else:
 
     got_hours = sorted(frames[model].keys())
     html, hgt = build_scrub_html(frames, got_hours, [model],
-                                 single=True)
+                                 single=True,
+                                 base_cycle_iso=cycle_iso,
+                                 product_label=prod_label)
     streamlit.components.v1.html(html, height=hgt)
     with st.expander("File inventory (what this REFS file "
                      "contains)"):
