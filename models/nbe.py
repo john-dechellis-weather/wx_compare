@@ -8,7 +8,7 @@ Format differs from NBH/NBS in three ways this parser handles:
      (no UTC-walking across many midnights).
 
 NBE does NOT produce VIS or CIG. Records carry wind only
-(WDR / WSP / GST); visibility and ceiling fields are left None.
+(WDR / WSP / GST) plus TMP / DPT; visibility and ceiling are left None.
 """
 from __future__ import annotations
 
@@ -152,6 +152,12 @@ def _parse_nbe_block(
     wdr = take("WDR")
     wsp = take("WSP")
     gst = take("GST")
+    # TMP and DPT are plain degrees F in NBE, same as NBH/NBS. The
+    # bulletin's missing marker is -99, which _to_int passes through;
+    # anything below -98 is treated as missing rather than printed
+    # as a real (and alarming) temperature.
+    tmp = [None if v is None or v < -98 else v for v in take("TMP")]
+    dpt = [None if v is None or v < -98 else v for v in take("DPT")]
 
     records: list[ForecastRecord] = []
     for i, fh in enumerate(fhrs):
@@ -170,6 +176,8 @@ def _parse_nbe_block(
             wind_dir_deg=float(wdr[i]) * 10.0 if wdr[i] is not None else None,
             wind_speed_kt=float(wsp[i]) if wsp[i] is not None else None,
             wind_gust_kt=float(gst[i]) if gst[i] is not None else None,
+            temp_f=float(tmp[i]) if tmp[i] is not None else None,
+            dewpoint_f=float(dpt[i]) if dpt[i] is not None else None,
             source_file=source_file,
         ))
     return records

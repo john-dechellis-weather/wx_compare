@@ -290,6 +290,12 @@ def _parse_block(
     # unlike VIS (tenths of miles) or CIG (hundreds of feet).
     tmp_row = _extract_row(block, "TMP")
     dpt_row = _extract_row(block, "DPT")
+    # Flight-category probabilities, percent. NBH carries all six;
+    # NBS carries IFC and IFV only, so the other four come back None
+    # for hours past the NBH/NBS handoff — which is correct, not a
+    # parse failure.
+    _prob_rows = {k: _extract_row(block, k)
+                  for k in ("MVC", "IFC", "LIC", "MVV", "IFV", "LIV")}
     vis_fields = _slice_fields(vis_row, n_hours) if vis_row else [""] * n_hours
     cig_fields = _slice_fields(cig_row, n_hours) if cig_row else [""] * n_hours
     wdr_fields = _slice_fields(wdr_row, n_hours) if wdr_row else [""] * n_hours
@@ -297,6 +303,8 @@ def _parse_block(
     gst_fields = _slice_fields(gst_row, n_hours) if gst_row else [""] * n_hours
     tmp_fields = _slice_fields(tmp_row, n_hours) if tmp_row else [""] * n_hours
     dpt_fields = _slice_fields(dpt_row, n_hours) if dpt_row else [""] * n_hours
+    _prob_fields = {k: (_slice_fields(r, n_hours) if r else [""] * n_hours)
+                    for k, r in _prob_rows.items()}
 
     records: list[ForecastRecord] = []
     for i, vt in enumerate(valid_times):
@@ -309,6 +317,15 @@ def _parse_block(
                   if i < len(tmp_fields) else None)
         dewpoint_f = (_parse_int_field(dpt_fields[i])
                       if i < len(dpt_fields) else None)
+
+        def _pct(k):
+            f = _prob_fields[k]
+            v = _parse_int_field(f[i]) if i < len(f) else None
+            # -99 is the bulletin's missing marker; clamp anything
+            # else to a percentage.
+            if v is None or v < 0:
+                return None
+            return float(min(100, v))
 
         # VIS: 1/10ths of miles. So 100 -> 10.0 sm, 5 -> 0.5 sm.
         vis_raw = _parse_int_field(vis_fields[i]) if i < len(vis_fields) else None
@@ -354,6 +371,12 @@ def _parse_block(
             wind_gust_kt=wind_gust_kt,
             temp_f=temp_f,
             dewpoint_f=dewpoint_f,
+            p_cig_mvfr=_pct("MVC"),
+            p_cig_ifr=_pct("IFC"),
+            p_cig_lifr=_pct("LIC"),
+            p_vis_mvfr=_pct("MVV"),
+            p_vis_ifr=_pct("IFV"),
+            p_vis_lifr=_pct("LIV"),
             source_file=source_file,
         ))
     return records
