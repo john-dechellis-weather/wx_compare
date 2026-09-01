@@ -377,6 +377,84 @@ def build_summary(df):
     return f"⚠ Next low-condition period starts at **{t:%m/%d %HZ}** (f+{int(f['fhr'])})"
 
 
+# ---------------------------------------------------------------------------
+# REFS ensemble probabilities at the station
+# ---------------------------------------------------------------------------
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=24)
+def cached_refs_probs(icao: str, cycle_iso: str, hours: tuple):
+    """{product: {fhr: pct}}, or ({}, reason) on failure.
+
+    Cached per station and cycle: the first open costs ~144 small
+    idx-range fetches through the parallel fetcher; every later open
+    on the same cycle is instant.
+    """
+    from core import refs_point
+    from core.stations import StationResolver
+
+    resolver = StationResolver(cache_dir=CACHE_ROOT / "stations")
+    stn = resolver.resolve(icao)
+    if stn is None:
+        return {}, f"cannot resolve {icao}"
+    cycle = datetime.fromisoformat(cycle_iso)
+    try:
+        return refs_point.sample(stn.lat, stn.lon, cycle,
+                                 list(hours)), None
+    except Exception as exc:
+        return {}, f"{type(exc).__name__}: {exc}"
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def cached_refs_cycle(bucket: str) -> str | None:
+    """Newest REFS prob cycle that reaches f24."""
+    from core.hrrr_cam import latest_cycle
+
+    c = latest_cycle("refs_prob", 24)
+    return c.isoformat() if c else None
+
+
+def build_refs_prob_table(probs: dict, cycle: datetime,
+                          hours) -> str:
+    """Rows = thresholds, columns = valid hour in Z.
+
+    Coloured by PROBABILITY rather than by severity, so reading down
+    a column shows the shape of the distribution: high for <2000 ft
+    and low for <500 ft says stratus is likely but how low is
+    uncertain.
+    """
+    from datetime import timedelta
+
+    from core import refs_point
+
+    header = [make_th("REFS PROB", is_row_label=True)]
+    for h in hours:
+        header.append(make_th(f"{(cycle + timedelta(hours=h)):%H}Z"))
+    rows = ["<tr>" + "".join(header) + "</tr>"]
+    for key, label in refs_point.THRESHOLDS:
+        cells = [make_th(label, is_row_label=True)]
+        col = probs.get(key, {})
+        for h in hours:
+            v = col.get(h)
+            c = refs_point.cell_style(v)
+            txt = "-" if v is None else str(v)
+            cells.append(make_cell(txt, c[0], c[1]) if c
+                         else make_cell(txt))
+        rows.append("<tr>" + "".join(cells) + "</tr>")
+    return (
+        '<div style="overflow-x:auto;background:#FFFFFF;padding:4px;'
+        'border:2px solid #000000;margin-top:10px;">'
+        '<div style="font-family:Courier New,monospace;font-size:10px;'
+        'font-weight:bold;color:#000000;-webkit-text-fill-color:#000000;'
+        'padding:1px 2px;">'
+        f'REFS ensemble probability (%) \u2014 {cycle:%HZ} run</div>'
+        '<table style="border-collapse:collapse;margin:0;">'
+        + "".join(rows) + "</table>"
+        '<div style="font-family:Courier New,monospace;font-size:8px;'
+        'color:#333;-webkit-text-fill-color:#333;padding:3px 2px 0;">'
+        "\u226570 red | 50\u201369 orange | 30\u201349 yellow | "
+        "10\u201329 pale | &lt;10 blank</div></div>"
+    )
+
+
 def make_cell(text, bg="#FFFFFF", fg="#000000"):
     """Return a <td>: white/black by default; tier colors pass a bg.
     plain color + -webkit-text-fill-color, NO important flags: the Streamlit sanitizer strips inline declarations containing them; text-fill-color wins the paint step regardless."""
@@ -596,6 +674,33 @@ if run_button:
     )
 
     st.markdown(table_html, unsafe_allow_html=True)
+
+    # REFS ensemble probabilities, directly under the deterministic
+    # tables so the NBM/LAMP categorical CIG/VIS call and the
+    # ensemble probability sit on one page and disagreements are
+    # visible at a glance.
+    _rp = st.empty()
+    _rp.markdown(
+        "<p style='text-align:center;font-size:18px;font-weight:700;"
+        "margin:8px 0'>Loading REFS probabilities\u2026</p>",
+        unsafe_allow_html=True)
+    _refs_hours = tuple(range(1, 25))
+    _rc = cached_refs_cycle(
+        datetime.now(timezone.utc).strftime("%Y%m%d%H")
+        + str(datetime.now(timezone.utc).minute // 10))
+    if _rc:
+        _probs, _rerr = cached_refs_probs(icao_input, _rc, _refs_hours)
+        _rp.empty()
+        if _probs and any(_probs.values()):
+            st.markdown(build_refs_prob_table(
+                _probs, datetime.fromisoformat(_rc), _refs_hours),
+                unsafe_allow_html=True)
+        else:
+            st.caption(f"REFS probabilities unavailable"
+                       + (f" \u2014 {_rerr}" if _rerr else "") + ".")
+    else:
+        _rp.empty()
+        st.caption("REFS probabilities: no complete cycle found.")
 
     # Extended tables: NBS (3-hourly) + NBE (12-hourly, wind only)
     with st.spinner("Fetching NBS + NBE..."):
