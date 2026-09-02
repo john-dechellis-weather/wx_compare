@@ -2095,11 +2095,43 @@ if run_button or _auto:
                 from core import mrms as _MR
 
                 _sd = _Path(__file__).resolve().parent.parent / "static"
-                _rbase = (_os_ko.environ.get("RENDER_EXTERNAL_URL")
-                          or _os_ko.environ.get("PUBLIC_BASE_URL")
-                          or "").rstrip("/")
+                # THE ORIGIN THE BROWSER IS ON, not the one Render
+                # reports. RENDER_EXTERNAL_URL is the *.onrender.com
+                # hostname; people reach the site as bluemet.org. An
+                # image from a different origin is cross-origin, and
+                # WebGL refuses to use a cross-origin image as a
+                # texture without CORS headers — the layer draws
+                # NOTHING, silently, until something changes the
+                # timing. The request's own Host header is the origin
+                # that will always be same-origin.
+                _rbase = ""
+                try:
+                    _host = st.context.headers.get("Host", "")
+                    if _host:
+                        _proto = st.context.headers.get(
+                            "X-Forwarded-Proto", "https")
+                        _rbase = f"{_proto}://{_host}"
+                except Exception:
+                    _rbase = ""
+                if not _rbase:
+                    _rbase = (_os_ko.environ.get("RENDER_EXTERNAL_URL")
+                              or _os_ko.environ.get("PUBLIC_BASE_URL")
+                              or "").rstrip("/")
                 _chunks, _rs = _MR.newest(_sd)
                 if _chunks and _rbase:
+                    # PRELOAD. deck.gl fetches each BitmapLayer image
+                    # asynchronously after the deck mounts, and on a
+                    # cold load the first request for a 3500 px WebP
+                    # can lose the race with the initial draw. A
+                    # preload hint starts the fetch the moment the
+                    # page parses, so by the time deck.gl asks the
+                    # image is already in the browser cache.
+                    st.markdown(
+                        "".join(
+                            f"<link rel='preload' as='image' "
+                            f"href='{_rbase}/app/static/{_c['name']}'>"
+                            for _c in _chunks),
+                        unsafe_allow_html=True)
                     for _c in _chunks:
                         layers.append(pdk.Layer(
                             "BitmapLayer", data=None,
