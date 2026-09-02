@@ -2276,6 +2276,18 @@ if run_button or _auto:
         # ones — the colour says what the visibility already implies.
         # Blue was also the aircraft colour, which put a dot and an
         # icon in the same hue for two different meanings.
+        # Label distances, in screen pixels, from the station centre.
+        #
+        # CLEAR station: label sits just above the green dot.
+        # ALERTING station: label sits below the marker at TWICE the
+        # ring clearance — a ring with a TS mark above it and a fill
+        # inside is already three things in one spot, and a label
+        # tight against it made four. Pushing it out is what keeps
+        # the name readable as a name rather than as part of the
+        # symbol.
+        CLEAR_LABEL_PX = 5      # above the dot
+        ALERT_LABEL_PX = 42     # below the marker (was 21)
+
         # Stations with a marker get their label UNDER the marker
         # (below); the green dot's label above would otherwise sit
         # over the ring and read as part of it.
@@ -2315,7 +2327,7 @@ if run_button or _auto:
                 get_color=[0, 120, 50, 200],
                 get_text_anchor='"middle"',
                 get_alignment_baseline='"bottom"',
-                get_pixel_offset=[0, -5],
+                get_pixel_offset=[0, -CLEAR_LABEL_PX],
                 pickable=False,
             ))
 
@@ -2330,12 +2342,10 @@ if run_button or _auto:
                 stroked=True, get_line_color=[0, 0, 0],
                 line_width_min_pixels=1, pickable=True,
             ))
-        # Identifier UNDER a marked station. The TS mark sits 20 px
-        # above the ring centre; this sits below it, 5 px clear of
-        # the ring edge (max radius 16 px, so 21 px down to the top
-        # of the text). One label per marked station, whichever of
-        # fill or ring it has — dedupe on position so a station with
-        # both does not get two.
+        # Identifier UNDER a marked station, ALERT_LABEL_PX below the
+        # centre. One label per marked station, whichever of fill or
+        # ring it has — dedupe on position so a station with both
+        # does not get two.
         _seen_lbl = set()
         _mark_labels = []
         for r in (rings or []) + (fills or []):
@@ -2354,7 +2364,7 @@ if run_button or _auto:
                 get_color=[20, 20, 20, 230],
                 get_text_anchor='"middle"',
                 get_alignment_baseline='"top"',
-                get_pixel_offset=[0, 21],
+                get_pixel_offset=[0, ALERT_LABEL_PX],
                 pickable=False,
             ))
 
