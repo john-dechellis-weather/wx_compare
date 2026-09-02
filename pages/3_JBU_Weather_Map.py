@@ -2182,6 +2182,26 @@ if run_button or _auto:
         else:
             _radar_note = ""
 
+        # EVERY JetBlue station as a small blue dot, drawn FIRST so
+        # any METAR fill or TAF ring at the same place sits on top of
+        # it and simply covers it. Without this, a station with no
+        # alert is invisible on the map — you cannot tell "clear" from
+        # "not a JetBlue city" at a glance.
+        _city_dots = [
+            {"lon": v[1], "lat": v[0], "icao": k}
+            for k, v in (coords or {}).items()
+            if v and v[0] is not None and v[1] is not None
+        ]
+        if _city_dots:
+            layers.append(pdk.Layer(
+                "ScatterplotLayer", data=_city_dots,
+                get_position="[lon, lat]",
+                get_fill_color=[0, 90, 220, 220],
+                get_radius=9000,
+                radius_min_pixels=2, radius_max_pixels=5,
+                stroked=False, pickable=False,
+            ))
+
         if fills:
             # Solid core: current METAR breach (trouble NOW)
             layers.append(pdk.Layer(
