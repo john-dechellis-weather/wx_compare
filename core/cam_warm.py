@@ -623,11 +623,28 @@ def _warm_model(cache_root: Path, key: str, log) -> None:
         f"render {_t_render:.0f}s ({_t_render / _n:.1f}s/frame) | "
         f"{'FETCH-bound' if _t_fetch > _t_render else 'RENDER-bound'}")
 
-    # Prune older cycle dirs for this model (keep the newest 2)
+    # Prune older cycle dirs for this job: keep the newest 2, AND
+    # the deep cycle.
+    #
+    # HRRR runs hourly but only reaches f48 on synoptic cycles. The
+    # manifest records that run as deep_cycle so f19-48 stay
+    # reachable — but the pruner was keeping only the newest two
+    # directories, so the 12Z f48 run was deleted the moment 14Z
+    # landed. The manifest still pointed at it; the files were gone;
+    # every hour past f18 came back empty two hours after the deep
+    # run finished. Protecting the deep directory is what makes "the
+    # last full run is always warm" actually true.
     mdir = _warm_dir(cache_root) / key.replace("@", "__")
     if mdir.exists():
         dirs = sorted(d for d in mdir.iterdir() if d.is_dir())
+        _protect = set()
+        if _deep_cycle:
+            # Same transform _frame_path uses for directory names.
+            _protect.add(str(_deep_cycle).replace(":", "")
+                         .replace("+", ""))
         for d in dirs[:-2]:
+            if d.name in _protect:
+                continue
             for f in d.iterdir():
                 try:
                     f.unlink()
