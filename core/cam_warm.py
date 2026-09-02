@@ -240,7 +240,13 @@ REFS_WARM_JOBS = [
 # including REFS. CAM_WARM_PRODUCTS trims it without a deploy.
 CAM_PRODUCTS = [p.strip() for p in os.environ.get(
     "CAM_WARM_PRODUCTS",
-    "REFD,REFC,RETOP,VIS,CEIL,GUST").split(",") if p.strip()]
+    "REFD,REFC,RETOP,VIS,CEIL,GUST,UGRD10,VGRD10").split(",")
+    if p.strip()]
+# UGRD10/VGRD10 are fetched so the point store can sample wind at
+# every airport, but they are never rendered — a wind component is
+# not a map anyone views. The fetch is what costs; the render is
+# what is skipped.
+SAMPLE_ONLY_PRODUCTS = {"UGRD10", "VGRD10"}
 WARM_JOBS = [f"{m}@{p}" for m in WARM_MODELS for p in CAM_PRODUCTS]
 WARM_JOBS += REFS_WARM_JOBS
 for _j in REFS_WARM_JOBS:
@@ -426,6 +432,7 @@ def warm_status(cache_root: Path) -> dict:
 def _warm_model(cache_root: Path, key: str, log) -> None:
     """Warm one job (model or model@product) for its newest cycle."""
     from core import cam_fast as _CF
+    from core import point_store as _PS
     from core.hrrr_cam import (
         MODELS, latest_cycle, parallel_fetch_decode, render_field,
     )
@@ -518,6 +525,27 @@ def _warm_model(cache_root: Path, key: str, log) -> None:
             if isinstance(res, Exception) or res is None:
                 continue
             vals, lats, lons = res
+
+            # POINT STORE. The decoded array is in hand; sampling
+            # every airport inside it is one nearest-cell lookup per
+            # station and no extra fetch. This is what makes the MOS
+            # page's RRFS/HRRR tables instant for the 29 stations
+            # inside the warm regions.
+            if w_product in _PS.POINT_PRODUCTS:
+                try:
+                    from core.hrrr_cam import JBU_STATIONS as _JS
+
+                    _PS.record(cache_root, model, w_product,
+                               cyc.isoformat(), h, vals, lats, lons,
+                               _JS)
+                except Exception:
+                    pass
+            if w_product in SAMPLE_ONLY_PRODUCTS:
+                # Nothing to draw. Count it and move on.
+                n_ok += 1
+                del vals, lats, lons
+                continue
+
             valid = cyc + timedelta(hours=h)
             title = (f"{MODELS[model]['label']}  "
                      f"valid {valid:%m/%d %H}Z")
