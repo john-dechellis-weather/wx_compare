@@ -1270,7 +1270,11 @@ _TRACKS: dict = _tracks_state()
 # per beat, so a freshly deployed process shows a short trail for
 # the first while. That is not a fault; there is no position history
 # to invent.
-TRAIL_MAX = int(_os_ko.environ.get("JBU_TRAIL_POINTS", "30"))
+# 10 fixes: at one per 2-minute beat that is 20 minutes, ~150 nm
+# at cruise. Enough to show heading and the recent path; short
+# enough that the Northeast does not fill with lines. 15 if you
+# want to watch a hold or a reroute develop.
+TRAIL_MAX = int(_os_ko.environ.get("JBU_TRAIL_POINTS", "10"))
 # Two hours: longer than the longest trail, so a track is dropped
 # because the aircraft is gone rather than because the trail aged
 # out from under it.
@@ -1279,6 +1283,7 @@ TRAIL_TTL_S = float(_os_ko.environ.get("JBU_TRAIL_TTL_S", "7200"))
 
 def _note_positions(rows):
     """Append current positions and drop stale aircraft."""
+    import math
     import time as _t
 
     now = _t.time()
@@ -1298,6 +1303,22 @@ def _note_positions(rows):
         if h and abs(h[-1][0] - lo) < 0.002 and abs(h[-1][1] - la) < 0.002:
             h[-1] = (lo, la, now)
             continue
+        # BREAK THE TRACK ON AN IMPOSSIBLE JUMP. A flight number is
+        # reused: JBU1534 lands in Boston and a few hours later a
+        # different aircraft departs San Francisco as JBU1534. Within
+        # the TTL the tracker joined them with one straight line
+        # across the country. Nothing flies 200 nm between two
+        # sweeps, so a jump that large is a new flight: start over.
+        if h:
+            _plo, _pla, _pts = h[-1]
+            _dx = (lo - _plo) * math.cos(math.radians((la + _pla) / 2))
+            _nm = 60.0 * math.hypot(la - _pla, _dx)
+            _dt_min = max((now - _pts) / 60.0, 1.0)
+            # 200 nm floor, or whatever 700 kt would cover in the
+            # elapsed time — generous for a jet, impossible for a
+            # callsign that is really two flights.
+            if _nm > max(200.0, 700.0 * _dt_min / 60.0):
+                del h[:]
         h.append((lo, la, now))
         if len(h) > TRAIL_MAX:
             del h[:-TRAIL_MAX]
@@ -1308,33 +1329,51 @@ def _note_positions(rows):
         _TRACKS.pop(cs, None)
 
 
-def _trail_paths():
-    """One polyline per aircraft, oldest fix to current position.
+def _trail_paths(dash_nm: float = 3.0, gap_nm: float = 2.0):
+    """Dashed track from oldest fix to current position, as GEOMETRY.
 
-    A continuous thin line rather than dashes. The dashed version
-    built segment geometry by hand — deck.gl cannot dash a PathLayer
-    without an extension pydeck cannot serialise — and at typical fix
-    spacing the dashes read as a broken line rather than a track.
+    deck.gl's PathLayer cannot dash without PathStyleExtension, which
+    is a JS class pydeck cannot serialise. So the dashes are built
+    here: walk the polyline by distance and emit a short path for
+    every "on" interval, skipping the gaps. Lengths in nautical
+    miles rather than pixels, so the pattern is fixed to the ground
+    and does not collapse into a solid line when zoomed out.
     """
+    import math as _m
+
     out = []
     for cs, h in _TRACKS.items():
         if len(h) < 2:
             continue
-        out.append({"path": [[lo, la] for lo, la, _ts in h],
-                    "cs": cs})
-    return out
-
-
-def _trail_dots():
-    """A dot at every PREVIOUS fix.
-
-    The newest is excluded: that is where the aircraft icon sits, and
-    a dot beneath it only thickens the symbol.
-    """
-    out = []
-    for cs, h in _TRACKS.items():
-        for lo, la, _ts in h[:-1]:
-            out.append({"position": [lo, la], "cs": cs})
+        pts = [(lo, la) for lo, la, _ts in h]
+        on = True
+        carry = 0.0
+        cur = [pts[0]]
+        for (lo0, la0), (lo1, la1) in zip(pts, pts[1:]):
+            dx = (lo1 - lo0) * _m.cos(_m.radians((la0 + la1) / 2))
+            d = 60.0 * _m.hypot(la1 - la0, dx)
+            if d <= 0:
+                continue
+            t = 0.0
+            while t < d:
+                want = (dash_nm if on else gap_nm) - carry
+                step = min(want, d - t)
+                f = (t + step) / d
+                px = (lo0 + (lo1 - lo0) * f, la0 + (la1 - la0) * f)
+                if on:
+                    cur.append(px)
+                if step >= want:
+                    if on and len(cur) > 1:
+                        out.append({"path": [[x, y] for x, y in cur],
+                                    "cs": cs})
+                    on = not on
+                    cur = [px]
+                    carry = 0.0
+                else:
+                    carry += step
+                t += step
+        if on and len(cur) > 1:
+            out.append({"path": [[x, y] for x, y in cur], "cs": cs})
     return out
 
 
@@ -2584,18 +2623,19 @@ if run_button or _auto:
             # continental zoom.
             try:
                 _trail = _trail_paths()
-                _tdots = _trail_dots()
             except Exception:
-                _trail, _tdots = [], []
+                _trail = []
             if _trail:
+                # Thin dashed track, under the icons.
                 layers.append(pdk.Layer(
                     "PathLayer", data=_trail,
                     get_path="path",
-                    get_color=[0, 110, 240, 160],
-                    get_width=1.4, width_units="pixels",
-                    width_min_pixels=1, width_max_pixels=2,
+                    get_color=[0, 110, 240, 170],
+                    get_width=1.0, width_units="pixels",
+                    width_min_pixels=1, width_max_pixels=1,
                     pickable=False,
                 ))
+
             # Extra positions for a flight that appeared more than
             # once: same visual language as a track fix.
             if _dup_dots:
@@ -2607,19 +2647,6 @@ if run_button or _auto:
                     get_fill_color=[0, 90, 220, 210],
                     stroked=False, pickable=False,
                 ))
-            if _tdots:
-                # Radius in PIXELS so dots stay legible at
-                # continental zoom instead of shrinking away. The
-                # line carries the shape; the dots show the sampling.
-                layers.append(pdk.Layer(
-                    "ScatterplotLayer", data=_tdots,
-                    get_position="position",
-                    get_radius=2.2, radius_units="pixels",
-                    radius_min_pixels=2, radius_max_pixels=3,
-                    get_fill_color=[0, 90, 220, 200],
-                    stroked=False, pickable=False,
-                ))
-
             layers.append(pdk.Layer(
                 "IconLayer", data=fleet_disp,
                 get_position="[lon, lat]",
@@ -2809,14 +2836,25 @@ if run_button or _auto:
     # the websocket stays up; and there is no sandbox to fight.
     _reload_s = int(_os_ko.environ.get("JBU_MAP_RELOAD_S", "120"))
 
+    # The fragment body executes on EVERY full run as well as on its
+    # timer, so "rerun unless this is the first run" was an infinite
+    # loop: full run -> fragment -> st.rerun -> full run -> ... The
+    # page was greyed out almost constantly because it never stopped
+    # rerunning.
+    #
+    # Distinguish the two by TIME, not by count. A full run stamps
+    # the clock just before the fragment runs, so on that run the
+    # elapsed time is ~0 and the fragment does nothing. When the
+    # timer wakes it 120 s later the elapsed time is ~120 and it
+    # reruns the app.
+    import time as _tm
+
+    st.session_state["_last_full_run"] = _tm.time()
+
     @st.fragment(run_every=f"{_reload_s}s")
     def _refresh_tick():
-        # The fragment runs once at page load and then on the
-        # schedule. The first run must NOT rerun the app, or the
-        # page would loop; only the timed wake-ups do.
-        n = st.session_state.get("_map_tick", 0)
-        st.session_state["_map_tick"] = n + 1
-        if n > 0:
+        elapsed = _tm.time() - st.session_state.get("_last_full_run", 0)
+        if elapsed >= _reload_s - 5:
             st.rerun(scope="app")
 
     _refresh_tick()
