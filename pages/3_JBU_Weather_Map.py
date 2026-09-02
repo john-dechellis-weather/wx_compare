@@ -750,6 +750,20 @@ def _legend_html() -> str:
                ring_sw("#F2C200", "#EE7700"),
                "TS in TAF and METAR")
     )
+    # The green station dot: JetBlue city with NO alert. Listed
+    # last because it is what the absence of every marker above
+    # means — a marker covers the dot, so a visible dot is a clear
+    # station.
+    city_sec = (
+        f'<div style="{row}">'
+        '<svg width="18" height="18" viewBox="0 0 18 18" '
+        'style="flex:none">'
+        '<circle cx="9" cy="10" r="3.2" fill="#00963C"/>'
+        '<text x="9" y="5.5" text-anchor="middle" font-size="5" '
+        'font-family="monospace" fill="#007832">JFK</text></svg>'
+        f'<span style="{txt}">JBU station, no alerts '
+        '(a marker covers it when there are)</span></div>'
+    )
     return (
         # width:100% + box-sizing so the MAP KEY and the alert
         # table above it are the same width in the left column
@@ -761,7 +775,7 @@ def _legend_html() -> str:
         "font-size:clamp(10px, 0.85vw, 13px); "
         'font-weight:bold; text-decoration:underline; '
         'margin-bottom:2px;">MAP KEY</div>'
-        + diagram + planes + rings_sec + "</div>"
+        + diagram + planes + rings_sec + city_sec + "</div>"
     )
 
 
@@ -2182,11 +2196,17 @@ if run_button or _auto:
         else:
             _radar_note = ""
 
-        # EVERY JetBlue station as a small blue dot, drawn FIRST so
+        # EVERY JetBlue station as a small GREEN dot, drawn FIRST so
         # any METAR fill or TAF ring at the same place sits on top of
-        # it and simply covers it. Without this, a station with no
-        # alert is invisible on the map — you cannot tell "clear" from
-        # "not a JetBlue city" at a glance.
+        # it and simply covers it.
+        #
+        # Green, not blue: the dot means "JetBlue city, no alert",
+        # and green is what "no alert" reads as everywhere else on
+        # this map. A station that IS alerting gets covered by a
+        # coloured marker, so the only dots you can see are the good
+        # ones — the colour says what the visibility already implies.
+        # Blue was also the aircraft colour, which put a dot and an
+        # icon in the same hue for two different meanings.
         _city_dots = [
             # Three-letter identifier: "DEN" not "KDEN". The K is
             # noise on a map that only shows US stations, and at
@@ -2200,12 +2220,12 @@ if run_button or _auto:
             layers.append(pdk.Layer(
                 "ScatterplotLayer", data=_city_dots,
                 get_position="[lon, lat]",
-                get_fill_color=[0, 90, 220, 220],
+                get_fill_color=[0, 150, 60, 230],
                 get_radius=9000,
                 radius_min_pixels=2, radius_max_pixels=5,
                 stroked=False, pickable=False,
             ))
-            # Identifier just above the dot. 7 px and a muted blue,
+            # Identifier just above the dot. 7 px and a muted green,
             # deliberately faint: legible when you lean in, a
             # smudge at continental zoom so it never competes with
             # a flight number or a TS mark. Drawn here, under the
@@ -2216,7 +2236,7 @@ if run_button or _auto:
                 get_position="[lon, lat]",
                 get_text="id3",
                 get_size=7,
-                get_color=[0, 70, 180, 170],
+                get_color=[0, 120, 50, 190],
                 get_text_anchor='"middle"',
                 get_alignment_baseline='"bottom"',
                 get_pixel_offset=[0, -5],
