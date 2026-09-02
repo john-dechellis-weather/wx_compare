@@ -872,7 +872,9 @@ def build_map_markers(board_rows, metar_rows, coords,
         if t:
             parts.append(f"TAF: {t['txt']}")
         tip = f"{icao} | " + " | ".join(parts)
-        base = {"lat": la, "lon": lo, "tip": tip}
+        base = {"lat": la, "lon": lo, "tip": tip,
+                "id3": icao[1:] if (len(icao) == 4
+                                    and icao.startswith("K")) else icao}
         if m and m["fill"]:
             fills.append({**base,
                           "color": _rgb(m["fill"]) + [235]})
@@ -1206,8 +1208,31 @@ KEEP_OTHERS = _os_ko.environ.get("JBU_KEEP_OTHERS", "off").lower() == "on"
 # background thread keeps the last good result, the render reads
 # whatever is there. Positions are at most one beat old, which for
 # aircraft on a 2-minute refresh is invisible.
-_FLEET = {"res": None, "bucket": None, "busy": False,
-          "err": None, "tb": None}
+# PROCESS-LIFETIME STATE, held by st.cache_resource.
+#
+# Streamlit re-executes this page script on every run. A plain
+# module-level dict is REBUILT each time, so anything stored in it
+# lives exactly one run. That was invisible while the map refreshed
+# via a fragment — a fragment rerun does not re-execute the module —
+# and became two bugs the moment it switched to a whole-app rerun:
+#
+#   * _TRACKS reset to empty every run, so position history never
+#     accumulated and no track was ever drawn;
+#   * _FLEET["res"] reset to None every run, so fleet_now() blocked
+#     up to FIRST_WAIT_S waiting for a sweep on EVERY rerun — the
+#     page dimmed grey for twenty seconds every two minutes.
+#
+# cache_resource returns the same object across runs and across
+# sessions for the life of the process, which is what a background
+# thread's shared state needs to be. The dict is mutated in place;
+# never reassign it.
+@st.cache_resource(show_spinner=False)
+def _fleet_state() -> dict:
+    return {"res": None, "bucket": None, "busy": False,
+            "err": None, "tb": None}
+
+
+_FLEET = _fleet_state()
 # How long the FIRST render may wait for positions. Only ever paid
 # once per process; after that the background thread is always a beat
 # ahead.
@@ -1230,7 +1255,12 @@ FIRST_WAIT_S = float(_os_ko.environ.get("JBU_FLEET_FIRST_WAIT", "20"))
 # History lives at module scope, so it survives fragment reruns and
 # is shared across sessions — everyone looking at the map sees the
 # same trails rather than each building their own.
-_TRACKS: dict = {}
+@st.cache_resource(show_spinner=False)
+def _tracks_state() -> dict:
+    return {}
+
+
+_TRACKS: dict = _tracks_state()
 # 30 fixes. The fleet refreshes on the 120 s fragment beat, so one
 # fix every two minutes — 12 points was a 24-minute track, which is
 # barely a track. 30 gives an hour, which is long enough to read a
@@ -2207,15 +2237,22 @@ if run_button or _auto:
         # ones — the colour says what the visibility already implies.
         # Blue was also the aircraft colour, which put a dot and an
         # icon in the same hue for two different meanings.
+        # Stations with a marker get their label UNDER the marker
+        # (below); the green dot's label above would otherwise sit
+        # over the ring and read as part of it.
+        _marked = {(round(r["lat"], 3), round(r["lon"], 3))
+                   for r in (fills or []) + (rings or [])}
         _city_dots = [
             # Three-letter identifier: "DEN" not "KDEN". The K is
-            # noise on a map that only shows US stations, and at
-            # 7 px every character counts.
+            # noise on a map that only shows US stations.
             {"lon": v[1], "lat": v[0], "icao": k,
              "id3": k[1:] if len(k) == 4 and k.startswith("K") else k}
             for k, v in (coords or {}).items()
             if v and v[0] is not None and v[1] is not None
         ]
+        _clear_labels = [d for d in _city_dots
+                         if (round(d["lat"], 3), round(d["lon"], 3))
+                         not in _marked]
         if _city_dots:
             layers.append(pdk.Layer(
                 "ScatterplotLayer", data=_city_dots,
@@ -2232,11 +2269,11 @@ if run_button or _auto:
             # METAR markers, for the same reason as the dot — an
             # alert should cover it, not sit beside it.
             layers.append(pdk.Layer(
-                "TextLayer", data=_city_dots,
+                "TextLayer", data=_clear_labels,
                 get_position="[lon, lat]",
                 get_text="id3",
-                get_size=7,
-                get_color=[0, 120, 50, 190],
+                get_size=9,
+                get_color=[0, 120, 50, 200],
                 get_text_anchor='"middle"',
                 get_alignment_baseline='"bottom"',
                 get_pixel_offset=[0, -5],
@@ -2254,6 +2291,34 @@ if run_button or _auto:
                 stroked=True, get_line_color=[0, 0, 0],
                 line_width_min_pixels=1, pickable=True,
             ))
+        # Identifier UNDER a marked station. The TS mark sits 20 px
+        # above the ring centre; this sits below it, 5 px clear of
+        # the ring edge (max radius 16 px, so 21 px down to the top
+        # of the text). One label per marked station, whichever of
+        # fill or ring it has — dedupe on position so a station with
+        # both does not get two.
+        _seen_lbl = set()
+        _mark_labels = []
+        for r in (rings or []) + (fills or []):
+            k = (round(r["lat"], 3), round(r["lon"], 3))
+            if k in _seen_lbl or not r.get("id3"):
+                continue
+            _seen_lbl.add(k)
+            _mark_labels.append({"lon": r["lon"], "lat": r["lat"],
+                                 "id3": r["id3"]})
+        if _mark_labels:
+            layers.append(pdk.Layer(
+                "TextLayer", data=_mark_labels,
+                get_position="[lon, lat]",
+                get_text="id3",
+                get_size=10,
+                get_color=[20, 20, 20, 230],
+                get_text_anchor='"middle"',
+                get_alignment_baseline='"top"',
+                get_pixel_offset=[0, 21],
+                pickable=False,
+            ))
+
         if rings:
             # Hollow ring: TAF forecast breach, concentric
             # around the METAR dot when both apply
