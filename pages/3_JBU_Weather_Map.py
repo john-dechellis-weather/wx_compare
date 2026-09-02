@@ -1730,12 +1730,29 @@ with st.sidebar:
         "Refresh alerts", type="primary", use_container_width=True
     )
 
+# THE AUTO-REFRESH MUST SURVIVE THE RELOAD.
+#
+# The page body below is gated on the button. A browser reload is a
+# fresh script run with no button press, so the map reloaded onto
+# "click Refresh alerts" with nothing drawn — the map "disappeared"
+# every cycle. Session state does not survive a reload; a query
+# parameter does. The reload sets ?auto=1 and this treats it as a
+# press. The button is still the way to apply changed thresholds.
+_auto = st.query_params.get("auto") == "1"
+if run_button:
+    # A real press also sets the flag, so the auto-refresh that
+    # follows it keeps the page in its run state.
+    try:
+        st.query_params["auto"] = "1"
+    except Exception:
+        pass
+    _auto = True
 
 
 # ---------------------------------------------------------------------------
 # Main content
 # ---------------------------------------------------------------------------
-if run_button:
+if run_button or _auto:
     now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
     window_end = now + timedelta(hours=hours_ahead)
 
@@ -2618,10 +2635,15 @@ if run_button:
     import streamlit.components.v1 as _stc
 
     _reload_s = int(_os_ko.environ.get("JBU_MAP_RELOAD_S", "120"))
+    # Reload WITH ?auto=1 so the run gate above is satisfied on the
+    # fresh script run, rather than location.reload() which drops
+    # the page back to its unrun state.
     _stc.html(
         f"<script>setTimeout(function(){{"
-        f"window.parent.location.reload();}}, {_reload_s * 1000});"
-        f"</script>", height=0)
+        "var u=new URL(window.parent.location.href);"
+        "u.searchParams.set('auto','1');"
+        f"window.parent.location.href=u.toString();}}, "
+        f"{_reload_s * 1000});</script>", height=0)
 
     if tile_fails:
         with st.expander(
