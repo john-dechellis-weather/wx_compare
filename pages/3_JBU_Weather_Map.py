@@ -2541,7 +2541,19 @@ if run_button:
     # the fragment's own output, so a rerun clears and rebuilds all
     # of it. Redrawing the board and METAR table costs nothing: both
     # are pre-rendered HTML strings by this point.
-    @st.fragment(run_every="120s")
+    # NO FRAGMENT. A whole-page rerun instead.
+    #
+    # Three attempts at making a run_every fragment replace its own
+    # output all failed — key on the chart, a placeholder, then
+    # creating the columns inside the fragment. Each still stacked a
+    # fresh set of icons every beat. Whatever the exact mechanism, a
+    # partial rerun can APPEND; a full script run cannot, because
+    # Streamlit rebuilds the page from the top. So the refresh is a
+    # browser reload below, and this is an ordinary function.
+    #
+    # The reload is cheap: fleet comes from the background sweep,
+    # METAR/TAF are cached, and the only real work is deck.gl
+    # drawing.
     def _page_body():
         col_b, col_m = st.columns([1, 2.6], gap="small")
         with col_b:
@@ -2571,6 +2583,17 @@ if run_button:
                 st.caption(f"Map unavailable: {_map_err}")
 
     _page_body()
+
+    # Reload the page on the old fragment's cadence. A browser
+    # reload is the one refresh that provably cannot leave the
+    # previous render on screen.
+    import streamlit.components.v1 as _stc
+
+    _reload_s = int(_os_ko.environ.get("JBU_MAP_RELOAD_S", "120"))
+    _stc.html(
+        f"<script>setTimeout(function(){{"
+        f"window.parent.location.reload();}}, {_reload_s * 1000});"
+        f"</script>", height=0)
 
     if tile_fails:
         with st.expander(
