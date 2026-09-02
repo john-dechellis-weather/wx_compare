@@ -2188,7 +2188,11 @@ if run_button or _auto:
         # alert is invisible on the map — you cannot tell "clear" from
         # "not a JetBlue city" at a glance.
         _city_dots = [
-            {"lon": v[1], "lat": v[0], "icao": k}
+            # Three-letter identifier: "DEN" not "KDEN". The K is
+            # noise on a map that only shows US stations, and at
+            # 7 px every character counts.
+            {"lon": v[1], "lat": v[0], "icao": k,
+             "id3": k[1:] if len(k) == 4 and k.startswith("K") else k}
             for k, v in (coords or {}).items()
             if v and v[0] is not None and v[1] is not None
         ]
@@ -2200,6 +2204,23 @@ if run_button or _auto:
                 get_radius=9000,
                 radius_min_pixels=2, radius_max_pixels=5,
                 stroked=False, pickable=False,
+            ))
+            # Identifier just above the dot. 7 px and a muted blue,
+            # deliberately faint: legible when you lean in, a
+            # smudge at continental zoom so it never competes with
+            # a flight number or a TS mark. Drawn here, under the
+            # METAR markers, for the same reason as the dot — an
+            # alert should cover it, not sit beside it.
+            layers.append(pdk.Layer(
+                "TextLayer", data=_city_dots,
+                get_position="[lon, lat]",
+                get_text="id3",
+                get_size=7,
+                get_color=[0, 70, 180, 170],
+                get_text_anchor='"middle"',
+                get_alignment_baseline='"bottom"',
+                get_pixel_offset=[0, -5],
+                pickable=False,
             ))
 
         if fills:
