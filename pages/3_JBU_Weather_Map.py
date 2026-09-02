@@ -1314,6 +1314,23 @@ def _fleet_refresh(bucket: str):
         _FLEET["busy"] = False
 
 
+# Sweep cadence, in seconds. The bucket below is derived from it, so
+# no number of viewers reloading out of phase can push the sweep
+# faster than this: two people in different MINUTES used to trigger
+# two sweeps, doubling the request rate and drawing 429s.
+FLEET_SWEEP_S = int(_os_ko.environ.get("JBU_FLEET_SWEEP_S", "120"))
+
+
+def _fleet_bucket() -> str:
+    """Cache key that changes once per FLEET_SWEEP_S, not once per
+    minute. This is the only rate limiter the sweep has."""
+    from datetime import datetime as _d, timezone as _tz
+
+    n = _d.now(_tz.utc)
+    slot = (n.hour * 3600 + n.minute * 60 + n.second) // FLEET_SWEEP_S
+    return n.strftime("%Y%m%d") + f"-{slot:04d}"
+
+
 def _kick_fleet_now():
     """Start a sweep at MODULE LOAD, before anything renders.
 
@@ -1327,7 +1344,7 @@ def _kick_fleet_now():
     import threading as _th
     from datetime import datetime as _d, timezone as _tz
 
-    b = _d.now(_tz.utc).strftime("%Y%m%d%H%M")
+    b = _fleet_bucket()
     if _FLEET["bucket"] != b and not _FLEET["busy"]:
         _th.Thread(target=_fleet_refresh, args=(b,),
                    daemon=True).start()
@@ -1435,7 +1452,12 @@ def cached_fleet(bucket: str):
         for tile in tiles:
             res, err = _call(host, tile)
             if res is None and "429" in (err or ""):
-                _time.sleep(1.3)
+                # 4 s, not 1.3. A rate limiter that just refused is
+                # still refusing a second later; the short retry
+                # mostly burned a second request against the same
+                # limit and then failed over to the other host,
+                # which was busy with its own lane.
+                _time.sleep(4.0)
                 res, err = _call(host, tile)
             if res is None:
                 leftovers.append((tile, err))
@@ -1624,7 +1646,13 @@ def _kick_prefetch():
             ThreadPoolExecutor(max_workers=2)
     pool = st.session_state["_prefetch_pool"]
     ctx = get_script_run_ctx()
-    b1 = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+    # SAME bucket as the background refresher. This path used a
+    # per-minute key while the refresher used a two-minute one, so
+    # the two never shared a cache entry and every page load ran
+    # TWO sweeps — one here, one there. Against two hosts that each
+    # rate-limit, that was the difference between clean passes and
+    # tiles failing on both.
+    b1 = _fleet_bucket()
 
     def _fleet_job():
         try:
@@ -1974,7 +2002,7 @@ if run_button:
             board_rows, metar_all, coords, taf_ring
         )
 
-        bucket1 = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+        bucket1 = _fleet_bucket()
         _fres = None
         try:
             _fut = st.session_state.pop("_fleet_future", None)
@@ -2187,7 +2215,7 @@ if run_button:
         # Live positions from the background refresher. The fragment
         # NEVER waits on the sweep — it draws the last good result
         # and a fresh one arrives for the next beat.
-        _fb = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+        _fb = _fleet_bucket()
         # fleet MUST be bound before the try. It was not, so any
         # exception inside cached_fleet was swallowed by a bare
         # except and surfaced three lines down as
