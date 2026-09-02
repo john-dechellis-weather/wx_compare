@@ -1760,7 +1760,8 @@ if run_button or _auto:
 
     st.info(
         f"Window: **{now:%Y-%m-%d %H:%M UTC}** to **{window_end:%H:%M UTC}** "
-        f"(next {hours_ahead}h)"
+        f"(next {hours_ahead}h) \u2014 "
+        "**if MRMS radar does not appear, refresh the page.**"
     )
 
     # METAR fetch overlaps the TAF analysis (independent AWC
