@@ -351,6 +351,37 @@ def warm_cycle(cache_root: Path, key: str):
     return _read_manifest(cache_root, key).get("cycle")
 
 
+def _resolve_frame(cache_root: Path, key: str, fhr: int):
+    """(cycle_iso, fhr) of the warm frame for `fhr` on the newest
+    cycle, shifting into the deep cycle when the newest run does
+    not reach that far. Preserves VALID TIME across the shift.
+
+    One resolver, used by both warm_get and publish_frame, so the
+    two cannot disagree about which frame represents an hour.
+    """
+    man = _read_manifest(cache_root, key)
+    cycle_iso = man.get("cycle")
+    if not cycle_iso:
+        return None, None
+    if fhr in warm_hours(key, cycle_iso):
+        return cycle_iso, fhr
+    dc = man.get("deep_cycle")
+    if not dc:
+        return None, None
+    try:
+        from datetime import datetime as _d
+
+        off = int(round((_d.fromisoformat(cycle_iso)
+                         - _d.fromisoformat(dc)).total_seconds()
+                        / 3600.0))
+    except Exception:
+        return None, None
+    deep_fhr = fhr + off
+    if 0 <= deep_fhr <= int(man.get("deep_max", 0)):
+        return dc, deep_fhr
+    return None, None
+
+
 def warm_get(cache_root: Path, model: str, icao: str,
              fhr: int) -> Optional[tuple[bytes, str]]:
     """Pre-rendered frame if one exists for the model's warmed cycle.
@@ -361,21 +392,11 @@ def warm_get(cache_root: Path, model: str, icao: str,
     # site build the key.
     if "@" not in model:
         model = f"{model}@{WARM_PRODUCT}"
-    man = _read_manifest(cache_root, model)
-    cycle_iso = man.get("cycle")
-    if not cycle_iso or (icao.upper() not in HUBS
-                         and icao.upper() != CONUS_KEY):
+    if icao.upper() not in HUBS and icao.upper() != CONUS_KEY:
         return None
-    if fhr not in warm_hours(model, cycle_iso):
-        # Past the routine depth: the newest run does not go this
-        # far, but the last synoptic run does and was warmed. This
-        # is what makes "show me f34 at 14Z" instant instead of a
-        # cold render.
-        dc = man.get("deep_cycle")
-        if dc and fhr <= int(man.get("deep_max", 0)):
-            cycle_iso = dc
-        else:
-            return None
+    cycle_iso, fhr = _resolve_frame(cache_root, model, fhr)
+    if not cycle_iso:
+        return None
     p = _frame_path(cache_root, model, cycle_iso, icao.upper(), fhr)
     if not p.exists():
         return None
@@ -728,11 +749,8 @@ def publish_frame(cache_root: Path, static_dir, model: str, icao: str,
 
     if "@" not in model:
         model = f"{model}@{WARM_PRODUCT}"
-    man = _read_manifest(cache_root, model)
-    cycle_iso = man.get("cycle")
+    cycle_iso, fhr = _resolve_frame(cache_root, model, fhr)
     if not cycle_iso:
-        return None, None
-    if fhr not in warm_hours(model, cycle_iso):
         return None, None
     src = _frame_path(cache_root, model, cycle_iso, icao.upper(), fhr)
     if not src.exists():
