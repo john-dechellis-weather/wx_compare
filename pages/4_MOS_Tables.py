@@ -539,12 +539,33 @@ def section(title: str) -> None:
 
 
 def render_point_table(model: str, label: str, icao: str) -> None:
-    """Fetch, cache and draw one model's point forecast table.
+    """Draw one model's point forecast: warm store first, live second.
 
-    Shared by RRFS and HRRR so the two are guaranteed to be built,
-    cached and coloured identically.
+    THE STORE. The CAM warmer samples every airport inside its
+    regions while it holds each decoded field, so for those stations
+    the full run — RRFS to f84, HRRR to f48 on synoptic cycles — is
+    on disk before anyone opens this page. Reading it is a JSON load.
+
+    THE FALLBACK. Stations outside the warm regions (22 of 51) still
+    fetch live, 24 hours, exactly as before. The caption says which
+    path was used, because a 24-hour table and an 84-hour table from
+    the same page should not look like the same product.
     """
+    from core import point_store as _PS
+
     _ph = st.empty()
+    cyc_iso, raw = _PS.read(CACHE_ROOT, model, icao)
+    if cyc_iso and raw:
+        rows = _PS.to_display_rows(raw)
+        hours = tuple(sorted(rows))
+        _ph.empty()
+        st.markdown(build_det_point_table(
+            label, rows, datetime.fromisoformat(cyc_iso), hours),
+            unsafe_allow_html=True)
+        st.caption(f"{label}: pre-warmed, f{hours[0]:02d}\u2013"
+                   f"f{hours[-1]:02d} from the {cyc_iso[11:13]}Z run.")
+        return
+
     _ph.markdown(
         "<p style='text-align:center;font-size:18px;font-weight:700;"
         f"margin:8px 0'>Loading {escape(label)} point forecast\u2026</p>",
@@ -564,6 +585,8 @@ def render_point_table(model: str, label: str, icao: str) -> None:
         st.markdown(build_det_point_table(
             label, rows, datetime.fromisoformat(cyc), hours),
             unsafe_allow_html=True)
+        st.caption(f"{label}: fetched live, first 24 h "
+                   f"(station is outside the warm regions).")
     else:
         st.caption(f"{label} point forecast unavailable"
                    + (f" \u2014 {err}" if err else "") + ".")
