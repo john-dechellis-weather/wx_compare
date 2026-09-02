@@ -1342,7 +1342,6 @@ def _kick_fleet_now():
     missing for two minutes.
     """
     import threading as _th
-    from datetime import datetime as _d, timezone as _tz
 
     b = _fleet_bucket()
     if _FLEET["bucket"] != b and not _FLEET["busy"]:
@@ -1738,10 +1737,13 @@ with st.sidebar:
 # every cycle. Session state does not survive a reload; a query
 # parameter does. The reload sets ?auto=1 and this treats it as a
 # press. The button is still the way to apply changed thresholds.
-_auto = st.query_params.get("auto") == "1"
+# A press is remembered in session state so the timed app reruns
+# below keep the page in its run state. The query param is kept as
+# a fallback for a manual browser reload, which starts a new session.
+_auto = (st.session_state.get("_map_ran", False)
+         or st.query_params.get("auto") == "1")
 if run_button:
-    # A real press also sets the flag, so the auto-refresh that
-    # follows it keeps the page in its run state.
+    st.session_state["_map_ran"] = True
     try:
         st.query_params["auto"] = "1"
     except Exception:
@@ -2661,21 +2663,36 @@ if run_button or _auto:
 
     _page_body()
 
-    # Reload the page on the old fragment's cadence. A browser
-    # reload is the one refresh that provably cannot leave the
-    # previous render on screen.
-    import streamlit.components.v1 as _stc
-
+    # WHOLE-APP RERUN ON A TIMER, via Streamlit itself.
+    #
+    # The JS reload never fired: components.html renders in an
+    # iframe sandboxed WITHOUT allow-top-navigation, so a script in
+    # it cannot navigate the parent page. The map simply never
+    # refreshed.
+    #
+    # This uses a run_every fragment for the ONE thing a fragment is
+    # good at — waking up on a schedule — and has it call
+    # st.rerun(scope="app"). That reruns the entire script from the
+    # top, which is exactly what a fragment rerun does NOT do and
+    # exactly what makes stacking impossible: every element is
+    # rebuilt, none is appended.
+    #
+    # Better than a browser reload on every axis: session state
+    # survives, so the sidebar thresholds and the run gate persist;
+    # the websocket stays up; and there is no sandbox to fight.
     _reload_s = int(_os_ko.environ.get("JBU_MAP_RELOAD_S", "120"))
-    # Reload WITH ?auto=1 so the run gate above is satisfied on the
-    # fresh script run, rather than location.reload() which drops
-    # the page back to its unrun state.
-    _stc.html(
-        f"<script>setTimeout(function(){{"
-        "var u=new URL(window.parent.location.href);"
-        "u.searchParams.set('auto','1');"
-        f"window.parent.location.href=u.toString();}}, "
-        f"{_reload_s * 1000});</script>", height=0)
+
+    @st.fragment(run_every=f"{_reload_s}s")
+    def _refresh_tick():
+        # The fragment runs once at page load and then on the
+        # schedule. The first run must NOT rerun the app, or the
+        # page would loop; only the timed wake-ups do.
+        n = st.session_state.get("_map_tick", 0)
+        st.session_state["_map_tick"] = n + 1
+        if n > 0:
+            st.rerun(scope="app")
+
+    _refresh_tick()
 
     if tile_fails:
         with st.expander(
