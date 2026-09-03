@@ -101,6 +101,25 @@ for _pk in ("PROB_CIG1000", "PROB_VIS1", "PROB_REFC40", "PROB"):
 # MIN: coverage below this is blank. FLOOR: coverage is not restored
 # below this, so isolated cells fade at their own size instead of
 # being inflated to full-strength discs.
+# Neighbours per target pixel. 1 = nearest, and that is the RIGHT
+# default for reflectivity. Inverse-distance interpolation (4) was
+# tried and rendered: it draws a lone cell as a LARGER blob with a
+# graded halo, because every pixel whose neighbours include the
+# cell takes a share of its value. Correct for a continuous field,
+# wrong for a field that is mostly isolated single cells. Nearest
+# plus the coverage floor below draws each cell at its own size in
+# its own colour. Left switchable for smooth products.
+REGRID_K = int(os.environ.get("CAM_REGRID_K", "1"))
+# SPECKLE FILTER, off by default because it REMOVES data. When on,
+# connected echo regions smaller than SPECKLE_MIN_CELLS source cells
+# AND weaker than SPECKLE_MAX_DBZ are dropped before rendering.
+# Single-cell RRFS echoes at 5-15 dBZ are model noise with no
+# operational meaning, and this is roughly what sites that look
+# "clean" are doing quietly. A cell above the dBZ cap is never
+# dropped however small — a lone 45 dBZ core is exactly the thing
+# nobody wants filtered.
+SPECKLE_MIN_CELLS = int(os.environ.get("CAM_SPECKLE_MIN_CELLS", "0"))
+SPECKLE_MAX_DBZ = float(os.environ.get("CAM_SPECKLE_MAX_DBZ", "20"))
 COVERAGE_MIN = float(os.environ.get("CAM_COVERAGE_MIN", "0.15"))
 COVERAGE_FLOOR = float(os.environ.get("CAM_COVERAGE_FLOOR", "0.45"))
 
@@ -174,10 +193,21 @@ def regrid_index(key: str, lats, lons, extent, width: int,
     gy = np.linspace(n, s, height)      # image rows run north->south
     GX, GY = np.meshgrid(gx, gy)
     tree = cKDTree(np.column_stack([lo.ravel(), la.ravel()]))
-    _, idx = tree.query(np.column_stack([GX.ravel(), GY.ravel()]),
-                        k=1, workers=-1)
-    _INDEX_CACHE[key] = (idx, (width, height))
-    return idx
+    # REGRID_K neighbours with inverse-distance weights. Default 1
+    # (nearest); see the constant for why interpolation was rejected
+    # for reflectivity. The k=4 path is kept for smooth fields.
+    dist, idx = tree.query(np.column_stack([GX.ravel(), GY.ravel()]),
+                           k=REGRID_K, workers=-1)
+    if REGRID_K == 1:
+        idx = idx.reshape(-1, 1)
+        wts = np.ones_like(idx, dtype="float32")
+    else:
+        # Inverse distance squared; a pixel sitting on a cell centre
+        # gets that cell almost entirely.
+        wts = 1.0 / np.maximum(dist, 1e-9) ** 2
+        wts = (wts / wts.sum(axis=1, keepdims=True)).astype("float32")
+    _INDEX_CACHE[key] = ((idx, wts), (width, height))
+    return idx, wts
 
 
 def basemap(key: str, extent, width: int, height: int,
@@ -272,10 +302,18 @@ def render_fast(product: str, vals, lats, lons, center_lat: float,
     extent = (center_lon - zoom_deg, center_lat - zoom_deg,
               center_lon + zoom_deg, center_lat + zoom_deg)
     width = height = int(2 * zoom_deg * ppd)
-    idx = regrid_index(grid_key, lats, lons, extent, width, height)
+    idx, wts = regrid_index(grid_key, lats, lons, extent, width, height)
 
     src = np.asarray(vals, dtype="float32").ravel()
-    g = src[idx].reshape(height, width)
+    nb = src[idx]                                  # (N, k)
+    ok = np.isfinite(nb)
+    # A missing neighbour drops out and the others take its weight,
+    # so an echo next to a no-data cell is not pulled toward zero.
+    wk = np.where(ok, wts, 0.0)
+    wsum = wk.sum(axis=1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        g = (np.where(ok, nb, 0.0) * wk).sum(axis=1) / wsum
+    g = np.where(wsum > 0, g, np.nan).reshape(height, width)
     # Convert to DISPLAY units before anything else: the bounds and
     # the masks are both expressed in them (kft, statute miles,
     # hundreds of feet, knots).
@@ -292,6 +330,21 @@ def render_fast(product: str, vals, lats, lons, center_lat: float,
         blank |= g < float(spec["below"])
     if "above" in spec:
         blank |= g > float(spec["above"])
+
+    if SPECKLE_MIN_CELLS > 0 and product in ("REFD", "REFC"):
+        # Label connected echo regions on the TARGET grid; a source
+        # cell is ~(ppd*0.027)^2 target pixels, so convert the cell
+        # count to a pixel count once.
+        px_per_cell = max(1.0, (ppd * 0.027) ** 2)
+        lab, nlab = ndi.label(~blank)
+        if nlab:
+            sizes = ndi.sum(~blank, lab, index=np.arange(1, nlab + 1))
+            peaks = ndi.maximum(np.nan_to_num(g, nan=-1e9), lab,
+                                index=np.arange(1, nlab + 1))
+            drop = ((sizes < SPECKLE_MIN_CELLS * px_per_cell)
+                    & (peaks < SPECKLE_MAX_DBZ))
+            if drop.any():
+                blank |= np.isin(lab, np.nonzero(drop)[0] + 1)
 
     if smooth:
         filled = np.where(blank, np.nan, g)
