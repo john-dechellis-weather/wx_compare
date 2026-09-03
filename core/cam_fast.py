@@ -110,16 +110,20 @@ for _pk in ("PROB_CIG1000", "PROB_VIS1", "PROB_REFC40", "PROB"):
 # plus the coverage floor below draws each cell at its own size in
 # its own colour. Left switchable for smooth products.
 REGRID_K = int(os.environ.get("CAM_REGRID_K", "1"))
-# SPECKLE FILTER, off by default because it REMOVES data. When on,
-# connected echo regions smaller than SPECKLE_MIN_CELLS source cells
-# AND weaker than SPECKLE_MAX_DBZ are dropped before rendering.
-# Single-cell RRFS echoes at 5-15 dBZ are model noise with no
-# operational meaning, and this is roughly what sites that look
-# "clean" are doing quietly. A cell above the dBZ cap is never
-# dropped however small — a lone 45 dBZ core is exactly the thing
-# nobody wants filtered.
-SPECKLE_MIN_CELLS = int(os.environ.get("CAM_SPECKLE_MIN_CELLS", "0"))
-SPECKLE_MAX_DBZ = float(os.environ.get("CAM_SPECKLE_MAX_DBZ", "20"))
+# SPECKLE FILTER, ON by default. Connected echo regions smaller than
+# SPECKLE_MIN_CELLS source cells AND with no pixel reaching
+# SPECKLE_MAX_DBZ are dropped before rendering.
+#
+# Set from a real RRFS field on 3 Sep: the clutter was not single
+# 5 dBZ cells but clumps of 2-6 cells at 25-35 dBZ with nothing
+# inside them, so a "2 cells / 20 dBZ" filter removed none of it.
+# 10 cells is ~30 km across; 35 dBZ is the floor of a real
+# convective core. A region fails only if it is BOTH small and
+# weak — a lone 45 dBZ cell is kept however small, and a broad
+# 10 dBZ shield is kept however weak. CAM_SPECKLE_MIN_CELLS=0
+# switches it off.
+SPECKLE_MIN_CELLS = int(os.environ.get("CAM_SPECKLE_MIN_CELLS", "10"))
+SPECKLE_MAX_DBZ = float(os.environ.get("CAM_SPECKLE_MAX_DBZ", "35"))
 COVERAGE_MIN = float(os.environ.get("CAM_COVERAGE_MIN", "0.15"))
 COVERAGE_FLOOR = float(os.environ.get("CAM_COVERAGE_FLOOR", "0.45"))
 
