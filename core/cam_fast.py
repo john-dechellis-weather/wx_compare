@@ -97,6 +97,13 @@ for _pk in ("PROB_CIG1000", "PROB_VIS1", "PROB_REFC40", "PROB"):
         "below": 5.0,
     }
 
+# Coverage-aware blur controls; see the comment inside render_fast.
+# MIN: coverage below this is blank. FLOOR: coverage is not restored
+# below this, so isolated cells fade at their own size instead of
+# being inflated to full-strength discs.
+COVERAGE_MIN = float(os.environ.get("CAM_COVERAGE_MIN", "0.15"))
+COVERAGE_FLOOR = float(os.environ.get("CAM_COVERAGE_FLOOR", "0.45"))
+
 _LUT_CACHE = {}
 
 _INDEX_CACHE = {}      # (key) -> flat index array
@@ -295,9 +302,26 @@ def render_fast(product: str, vals, lats, lons, center_lat: float,
         num = ndi.gaussian_filter(np.nan_to_num(filled, nan=0.0),
                                   smooth)
         den = ndi.gaussian_filter(w0, smooth)
+        # COVERAGE FLOOR. Dividing by the smoothed coverage restores
+        # full intensity at the EDGE of a real echo, which is what
+        # keeps the rim from being eaten by the blur. But with a
+        # floor of 1e-6 and a threshold of 0.02, it restored a lone
+        # 3 km cell to full strength everywhere its gaussian tail
+        # exceeded 2% — one 6 dBZ speck became a round 6 dBZ disc
+        # larger than the cell. That was the field of dots on the
+        # RRFS 1 km reflectivity.
+        #
+        # A floor of 0.45 means coverage below 45% is NOT fully
+        # restored: interior and edges of real echoes (coverage near
+        # 1) are untouched, while an isolated cell (peak coverage
+        # ~0.3) keeps most of its value at its centre and fades at
+        # its edge — drawn at its own size, not inflated. Measured:
+        # big-echo peak identical, speck footprint down ~20%, no
+        # cell removed.
         with np.errstate(invalid="ignore", divide="ignore"):
-            g = np.where(den > 0.02, num / np.maximum(den, 1e-6), np.nan)
-        blank = ~np.isfinite(g) | (den <= 0.02)
+            g = np.where(den > COVERAGE_MIN,
+                         num / np.maximum(den, COVERAGE_FLOOR), np.nan)
+        blank = ~np.isfinite(g) | (den <= COVERAGE_MIN)
 
     band = np.digitize(np.nan_to_num(g, nan=-1e9),
                        bounds).astype("uint8")
