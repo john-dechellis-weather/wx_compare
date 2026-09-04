@@ -363,6 +363,15 @@ def _resolve_frame(cache_root: Path, key: str, fhr: int):
     cycle_iso = man.get("cycle")
     if not cycle_iso:
         return None, None
+    # STYLE CHECK. A manifest written under an older WARM_STYLE
+    # describes frames rendered the old way — pre-stations basemap,
+    # old palette, whatever changed. Serving them as current is why
+    # a style bump appeared to do nothing on the REFS page for an
+    # hour: REFS is the last job in the pass, and its stale frames
+    # were handed out until the warmer finally reached it. Refuse
+    # them; the page falls back to a live render that IS current.
+    if man.get("style") != WARM_STYLE:
+        return None, None
     if fhr in warm_hours(key, cycle_iso):
         return cycle_iso, fhr
     dc = man.get("deep_cycle")
