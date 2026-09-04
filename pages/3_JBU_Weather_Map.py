@@ -1274,7 +1274,7 @@ _TRACKS: dict = _tracks_state()
 # at cruise. Enough to show heading and the recent path; short
 # enough that the Northeast does not fill with lines. 15 if you
 # want to watch a hold or a reroute develop.
-TRAIL_MAX = int(_os_ko.environ.get("JBU_TRAIL_POINTS", "10"))
+TRAIL_MAX = int(_os_ko.environ.get("JBU_TRAIL_POINTS", "20"))
 # Two hours: longer than the longest trail, so a track is dropped
 # because the aircraft is gone rather than because the trail aged
 # out from under it.
@@ -1329,7 +1329,7 @@ def _note_positions(rows):
         _TRACKS.pop(cs, None)
 
 
-def _trail_paths(dash_nm: float = 3.0, gap_nm: float = 2.0):
+def _trail_paths(dash_nm: float = 0.8, gap_nm: float = 0.5):
     """Dashed track from oldest fix to current position, as GEOMETRY.
 
     deck.gl's PathLayer cannot dash without PathStyleExtension, which
@@ -1376,6 +1376,107 @@ def _trail_paths(dash_nm: float = 3.0, gap_nm: float = 2.0):
             out.append({"path": [[x, y] for x, y in cur], "cs": cs})
     return out
 
+
+# ---------------------------------------------------------------------------
+# Holding-pattern detection
+# ---------------------------------------------------------------------------
+# A hold is an aircraft that keeps flying but does not go anywhere:
+# the track is long, the displacement is short, and the heading keeps
+# turning the same way. All three are measured from the position
+# history already kept for the trail, so this costs nothing extra.
+#
+# Fixes arrive every ~2 minutes and a standard hold laps every ~4,
+# so heading alone is too coarse — two fixes per lap can look like
+# anything. Path-to-displacement is the robust signal: over the last
+# HOLD_FIXES fixes, an aircraft in a hold has flown several times
+# further than it has moved.
+HOLD_FIXES = int(_os_ko.environ.get("JBU_HOLD_FIXES", "6"))
+HOLD_MIN_PATH_NM = float(_os_ko.environ.get("JBU_HOLD_MIN_PATH_NM", "15"))
+HOLD_RATIO = float(_os_ko.environ.get("JBU_HOLD_RATIO", "2.5"))
+HOLD_MIN_TURN_DEG = float(_os_ko.environ.get("JBU_HOLD_MIN_TURN", "270"))
+
+
+def _hold_candidates() -> list:
+    """[(callsign, path_nm, disp_nm, turn_deg)] for aircraft that look
+    to be holding, from the trail history."""
+    import math
+
+    out = []
+    for cs, h in _TRACKS.items():
+        if len(h) < HOLD_FIXES:
+            continue
+        pts = [(lo, la) for lo, la, _ts in h[-HOLD_FIXES:]]
+        k = math.cos(math.radians(pts[0][1]))
+
+        def _nm(a, b):
+            return 60.0 * math.hypot(b[1] - a[1], (b[0] - a[0]) * k)
+
+        path = sum(_nm(a, b) for a, b in zip(pts, pts[1:]))
+        # Displacement: how far the aircraft is from where the
+        # window started. Also the SPREAD of the window, so a
+        # racetrack that happens to end near its start does not
+        # read as zero-displacement noise.
+        disp = _nm(pts[0], pts[-1])
+        spread = max(_nm(a, b) for a in pts for b in pts)
+        # Net turning, signed, over the window. A hold turns the
+        # same direction throughout; an S-turn or a dogleg cancels.
+        turn = 0.0
+        prev = None
+        for a, b in zip(pts, pts[1:]):
+            brg = math.degrees(math.atan2((b[0] - a[0]) * k,
+                                          b[1] - a[1]))
+            if prev is not None:
+                d = (brg - prev + 180.0) % 360.0 - 180.0
+                turn += d
+            prev = brg
+        if (path >= HOLD_MIN_PATH_NM
+                and path >= HOLD_RATIO * max(spread, 1.0)
+                and abs(turn) >= HOLD_MIN_TURN_DEG):
+            out.append((cs, path, disp, abs(turn)))
+    return out
+
+# ---------------------------------------------------------------------------
+# Stale-while-revalidate for the run path
+# ---------------------------------------------------------------------------
+# st.cache_data blocks the page when its TTL expires: whoever reruns
+# next pays the full recompute. With a 120 s rerun that is METARs
+# every 2-3 reruns and the 69-station TAF analysis every 7-8 —
+# each a grey page for as long as the fetch takes.
+#
+# This returns the LAST result immediately and, if it is older than
+# ttl, recomputes in a background thread for the NEXT rerun. Only
+# the first call in a process ever waits. Same pattern as the fleet
+# sweep, applied to everything else the page fetches.
+@st.cache_resource(show_spinner=False)
+def _swr_state() -> dict:
+    return {}
+
+
+def _swr(key: str, compute, ttl_s: float):
+    import threading as _th
+    import time as _t
+
+    st_ = _swr_state()
+    ent = st_.get(key)
+    now = _t.time()
+
+    def _run():
+        try:
+            val = compute()
+            st_[key] = {"val": val, "at": _t.time(), "busy": False,
+                        "err": None}
+        except Exception as exc:
+            prev = st_.get(key) or {}
+            st_[key] = {"val": prev.get("val"), "at": prev.get("at", 0),
+                        "busy": False, "err": f"{type(exc).__name__}: {exc}"}
+
+    if ent is None or ent.get("val") is None:
+        _run()                       # first time only: wait
+        return st_[key]["val"], st_[key].get("err")
+    if now - ent["at"] > ttl_s and not ent.get("busy"):
+        ent["busy"] = True
+        _th.Thread(target=_run, daemon=True).start()
+    return ent["val"], ent.get("err")
 
 def _fleet_refresh(bucket: str):
     if _FLEET["busy"]:
@@ -1742,7 +1843,9 @@ def _kick_prefetch():
         except Exception:
             return None
 
-    for name, job in (("_fleet_future", _fleet_job),):
+    # The fleet is owned by the background refresher now; nothing
+    # here submits or waits on a fleet future.
+    for name, job in ():
         fut = pool.submit(job)
         try:
             for t in pool._threads:
@@ -1884,14 +1987,25 @@ if run_button or _auto:
 
     with st.spinner(f"Fetching TAFs for {len(JETBLUE_ICAOS)} stations..."):
         try:
-            results = cached_analyze(
-                icaos_tuple=tuple(JETBLUE_ICAOS),
-                window_start_iso=now.isoformat(),
-                window_end_iso=window_end.isoformat(),
-                vis_threshold_sm=vis_threshold,
-                ceiling_threshold_ft=ceiling_threshold,
-                tsra_enabled=tsra_enabled,
-            )
+            # Stale-while-revalidate: last analysis returned at once,
+            # a fresh one computed in the background when it ages
+            # past 10 minutes. The key carries the thresholds so a
+            # sidebar change still forces its own result.
+            _akey = (f"analyze|{now.isoformat()}|{window_end.isoformat()}|"
+                     f"{vis_threshold}|{ceiling_threshold}|{tsra_enabled}")
+            results, _aerr = _swr(
+                _akey,
+                lambda: cached_analyze(
+                    icaos_tuple=tuple(JETBLUE_ICAOS),
+                    window_start_iso=now.isoformat(),
+                    window_end_iso=window_end.isoformat(),
+                    vis_threshold_sm=vis_threshold,
+                    ceiling_threshold_ft=ceiling_threshold,
+                    tsra_enabled=tsra_enabled,
+                ),
+                ttl_s=600.0)
+            if results is None:
+                raise RuntimeError(_aerr or "analysis unavailable")
         except Exception as e:
             st.error(f"Failed to fetch TAFs: {e}")
             st.stop()
@@ -1905,21 +2019,26 @@ if run_button or _auto:
         # timeout does not make the page more correct, only slower.
         # Two of these back to back could hold the page for 105 s,
         # which is most of the "takes a minute to load".
-        metar_rows = _metar_fut.result(timeout=12)
-    except Exception:
-        metar_rows = None
-    if metar_rows is None:
-        with st.spinner("Fetching current METARs..."):
-            try:
-                metar_rows = cached_current_metars(
-                    icaos_tuple=tuple(JETBLUE_ICAOS),
-                    vis_threshold_sm=vis_threshold,
-                    ceiling_threshold_ft=ceiling_threshold,
-                    wind_threshold_kt=wind_threshold,
-                )
-            except Exception as e:
-                metar_rows = []
-                st.warning(f"METAR fetch failed: {e}")
+        # Stale-while-revalidate, same as the analysis: the last
+        # METAR set at once, a refresh in the background once it is
+        # 4 minutes old. The prefetch future above still warms the
+        # cache but nothing waits on it any more.
+        metar_rows, _merr = _swr(
+            f"metars|{vis_threshold}|{ceiling_threshold}|{wind_threshold}",
+            lambda: cached_current_metars(
+                icaos_tuple=tuple(JETBLUE_ICAOS),
+                vis_threshold_sm=vis_threshold,
+                ceiling_threshold_ft=ceiling_threshold,
+                wind_threshold_kt=wind_threshold,
+            ),
+            ttl_s=240.0)
+        if metar_rows is None:
+            metar_rows = []
+            if _merr:
+                st.warning(f"METAR fetch failed: {_merr}")
+    except Exception as e:
+        metar_rows = []
+        st.warning(f"METAR fetch failed: {e}")
     metar_all = metar_rows
     metar_rows = [r for r in metar_all
                   if r["vis_bad"] or r["cig_bad"] or r["wind_bad"]]
@@ -2105,21 +2224,19 @@ if run_button or _auto:
             board_rows, metar_all, coords, taf_ring
         )
 
+        # NON-BLOCKING. This used to wait up to 20 s on a prefetch
+        # future for the fleet, then fall back to a DIRECT sweep if
+        # the future failed — and because the rerun and the sweep
+        # bucket are aligned, the future was usually a cache miss,
+        # so every 2-minute rerun sat grey for the length of a full
+        # 17-tile sweep. That was the 5-10 s. And the fleet it
+        # waited for was then OVERWRITTEN by fleet_now() below.
+        #
+        # fleet_now() returns the last good sweep instantly and
+        # kicks the next one in the background. Same tuple, so the
+        # tile diagnostics come from it too.
         bucket1 = _fleet_bucket()
-        _fres = None
-        try:
-            _fut = st.session_state.pop("_fleet_future", None)
-            if _fut is not None:
-                _fres = _fut.result(timeout=20)
-        except Exception:
-            _fres = None
-        if _fres is None:
-            # Prefetch missed or failed in its thread - fall back
-            # to fetching directly (slower, never empty-by-bug)
-            try:
-                _fres = cached_fleet(bucket1)
-            except Exception:
-                _fres = None
+        _fres, _fe, _ftb = fleet_now(bucket1)
         if _fres is not None:
             (fleet, ok_tiles, n_tiles, tile_fails,
              tile_stats, rs_diag, fleet_other) = _fres
@@ -2286,7 +2403,7 @@ if run_button or _auto:
         # the name readable as a name rather than as part of the
         # symbol.
         CLEAR_LABEL_PX = 5      # above the dot
-        ALERT_LABEL_PX = 10     # below the marker (was 21)
+        ALERT_LABEL_PX = 42     # below the marker (was 21)
 
         # Stations with a marker get their label UNDER the marker
         # (below); the green dot's label above would otherwise sit
@@ -2462,6 +2579,31 @@ if run_button or _auto:
             )
             with st.expander("Fleet fetch traceback"):
                 st.code(_fleet_tb or "", language="text")
+        # HOLDING ALERT. Big and red, above the map, one line per
+        # aircraft. A hold is a decision point for the SOC — fuel,
+        # diversion, crew time — and it is the one thing on this map
+        # that should interrupt whoever is looking at it.
+        from html import escape
+
+        try:
+            _holds = _hold_candidates()
+        except Exception:
+            _holds = []
+        _hold_cs = {c for c, _p, _d, _t in _holds}
+        if _holds:
+            _lines = "".join(
+                f"<div>\u26a0 <b>{escape(c)}</b> potentially in holding "
+                f"pattern &mdash; {p:.0f} nm flown, {t:.0f}&deg; of turn "
+                f"over the last {HOLD_FIXES * 2} min</div>"
+                for c, p, _d, t in _holds)
+            st.markdown(
+                "<div style='background:#FFD9D9;border:3px solid "
+                "#B30000;border-radius:6px;padding:10px 14px;"
+                "margin:6px 0;font-size:20px;font-weight:700;"
+                "color:#7A0000;line-height:1.5;'>"
+                + _lines + "</div>",
+                unsafe_allow_html=True)
+
         if not fleet and not _fleet_err:
             # An empty fleet layer is indistinguishable from "no
             # aircraft airborne", which is never true. Say so.
