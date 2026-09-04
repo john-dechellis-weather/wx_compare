@@ -753,6 +753,8 @@ JBU_STATIONS = {
 # them without a deploy.
 STATION_DOT_PT = float(os.environ.get("CAM_STATION_DOT_PT", "13"))
 STATION_FONT_PT = float(os.environ.get("CAM_STATION_FONT_PT", "26"))
+# Range ring radius in NAUTICAL miles; 0 disables.
+STATION_RING_NM = float(os.environ.get("CAM_STATION_RING_NM", "10"))
 
 
 def draw_stations(ax, w: float, s: float, e: float, n: float,
@@ -765,8 +767,11 @@ def draw_stations(ax, w: float, s: float, e: float, n: float,
     shows JFK only — LGA and EWR overlap it at every zoom these
     pages use.
     """
+    import math
+
     import cartopy.crs as ccrs
     import matplotlib.patheffects as _pe
+    import numpy as np
 
     if skip is None:
         import os as _os
@@ -783,11 +788,28 @@ def draw_stations(ax, w: float, s: float, e: float, n: float,
         # and 26 pt label on a ~2000 px frame. The first pass at
         # 3 pt / 6.5 pt was invisible at working zoom. Label offset
         # scales with the dot so it clears the edge at any size.
+        # Range ring first, so the dot draws over its centre. A
+        # true circle on the ground: radius in degrees of latitude,
+        # stretched in longitude by 1/cos(lat) so it is not an
+        # ellipse on the map. Thin and translucent — a reference
+        # mark, not a symbol.
+        if STATION_RING_NM > 0:
+            r_lat = STATION_RING_NM / 60.0
+            r_lon = r_lat / max(0.2, math.cos(math.radians(sla)))
+            th = np.linspace(0.0, 2.0 * np.pi, 73)
+            ax.plot(slo + r_lon * np.cos(th), sla + r_lat * np.sin(th),
+                    color="#003B8E", linewidth=0.9, alpha=0.75,
+                    transform=ccrs.PlateCarree(), zorder=6)
         ax.plot(slo, sla, marker="o", markersize=STATION_DOT_PT,
                 markerfacecolor="#005ADC", markeredgecolor="white",
                 markeredgewidth=1.4, linestyle="none",
                 transform=ccrs.PlateCarree(), zorder=7)
-        ax.text(slo, sla + 0.016 * STATION_DOT_PT * (n - s) / 10.0,
+        # Label just clear of the dot: offset is the dot radius plus
+        # a small gap, in degrees, computed from the figure's own
+        # points-per-degree so it stays tight at any size.
+        _pt_per_deg = (ax.figure.get_size_inches()[1] * 72.0) / (n - s)
+        _gap_deg = (STATION_DOT_PT / 2.0 + 3.0) / _pt_per_deg
+        ax.text(slo, sla + _gap_deg,
                 icao[1:] if icao.startswith("K") else icao,
                 fontsize=STATION_FONT_PT, color="#003B8E",
                 fontweight="bold", ha="center", va="bottom",

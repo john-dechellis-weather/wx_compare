@@ -102,7 +102,7 @@ for _pk in ("PROB_CIG1000", "PROB_VIS1", "PROB_REFC40", "PROB"):
 # below this, so isolated cells fade at their own size instead of
 # being inflated to full-strength discs.
 # Bump whenever the basemap's content changes.
-BASEMAP_STYLE = 4
+BASEMAP_STYLE = 5
 
 # Stations NOT drawn on the basemap. New York metro shows JFK only.
 STATION_SKIP = set(
