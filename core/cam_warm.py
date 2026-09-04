@@ -111,7 +111,7 @@ def _job_geom(key: str):
 # basemap plus a LUT-coloured data layer instead of contourf.
 # Visually close but not byte-identical, and the title is no
 # longer baked in, so old frames must not be mixed with new.
-WARM_STYLE = 8   # v8: coverage floor in the blur — no inflated specks
+WARM_STYLE = 9   # v9: stations on the basemap; speckle filter on
 # ^^ THIS MUST BE BUMPED WHENEVER RENDER_FACTOR / WARM_ZOOM /
 # dpi CHANGE. Frame paths do NOT encode geometry and warm_get
 # does NOT check style - it serves whatever bytes sit on disk

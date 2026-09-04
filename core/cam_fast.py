@@ -101,6 +101,14 @@ for _pk in ("PROB_CIG1000", "PROB_VIS1", "PROB_REFC40", "PROB"):
 # MIN: coverage below this is blank. FLOOR: coverage is not restored
 # below this, so isolated cells fade at their own size instead of
 # being inflated to full-strength discs.
+# Bump whenever the basemap's content changes.
+BASEMAP_STYLE = 2
+
+# Stations NOT drawn on the basemap. New York metro shows JFK only.
+STATION_SKIP = set(
+    x.strip().upper() for x in os.environ.get(
+        "CAM_STATION_SKIP", "KLGA,KEWR").split(",") if x.strip())
+
 # Neighbours per target pixel. 1 = nearest, and that is the RIGHT
 # default for reflectivity. Inverse-distance interpolation (4) was
 # tried and rendered: it draws a lone cell as a LARGER blob with a
@@ -231,8 +239,13 @@ def basemap(key: str, extent, width: int, height: int,
         return mem
     path = None
     if cache_dir:
+        # BASEMAP_STYLE is in the key so a change to what the
+        # basemap draws (stations were added 4 Sep) invalidates the
+        # cached PNG. Without it the old basemap is served forever
+        # because the region hash still matches.
         tag = hashlib.md5(
-            f"{key}|{extent}|{width}x{height}".encode()).hexdigest()[:12]
+            f"{key}|{extent}|{width}x{height}|v{BASEMAP_STYLE}|"
+            f"{','.join(sorted(STATION_SKIP))}".encode()).hexdigest()[:12]
         path = Path(cache_dir) / f"basemap_{tag}.png"
         if path.exists():
             try:
@@ -269,6 +282,40 @@ def basemap(key: str, extent, width: int, height: int,
                       zorder=6)
     gl.xlabel_style = {"size": 7, "color": "#555"}
     gl.ylabel_style = {"size": 7, "color": "#555"}
+
+    # JetBlue stations: a blue dot and the three-letter identifier.
+    # Drawn on the BASEMAP so they cost nothing per frame and sit
+    # under the field, which is where a reference mark belongs —
+    # the reflectivity is the subject, the station is the context.
+    #
+    # New York metro shows JFK only. LGA and EWR are inside the
+    # same 3 km cell cluster at every zoom this page uses, and
+    # three overlapping labels read as a smudge.
+    try:
+        from core.hrrr_cam import JBU_STATIONS as _JS
+
+        _skip = STATION_SKIP
+        _pad = 0.15      # keep labels off the frame edge
+        for _icao, (_sla, _slo) in _JS.items():
+            if _icao in _skip:
+                continue
+            if not (w + _pad <= _slo <= e - _pad
+                    and s + _pad <= _sla <= n - _pad):
+                continue
+            ax.plot(_slo, _sla, marker="o", markersize=3.2,
+                    markerfacecolor="#005ADC", markeredgecolor="white",
+                    markeredgewidth=0.6, linestyle="none",
+                    transform=ccrs.PlateCarree(), zorder=7)
+            ax.text(_slo, _sla, _icao[1:] if _icao.startswith("K")
+                    else _icao,
+                    fontsize=6.5, color="#003B8E", fontweight="bold",
+                    ha="center", va="bottom",
+                    transform=ccrs.PlateCarree(), zorder=7,
+                    # nudge up so the text clears the dot
+                    position=(_slo, _sla + 0.04 * (n - s) / 10.0))
+    except Exception:
+        pass          # a basemap without stations is still a basemap
+
     buf = io.BytesIO()
     fig.savefig(buf, format="png", transparent=True, dpi=100)
     plt.close(fig)
