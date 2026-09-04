@@ -38,7 +38,7 @@ _note_req()
 
 from core.cam_warm import (
     HUBS as REFS_HUBS, HUB_LABELS as _HUB_LABELS,
-    WARM_ZOOM, ensure_warmer_started,
+    ensure_warmer_started,
     warm_cycle, warm_get, warm_hours,
 )
 from core.hrrr_cam import MODELS
@@ -321,9 +321,11 @@ with st.sidebar:
     # reading the store. The frame itself covers +-5 deg
     # (RENDER_FACTOR 2), and the CSS above now shows all of it, so
     # the default already IS the whole map.
+    # Kept for non-hub stations only. For the two regions the frame
+    # is always the region's own half-width, matching the warm store.
     zoom = st.slider("Zoom (degrees)", 1.0, 6.0, 2.5, 0.5,
-                     help="2.5 uses the pre-warmed frames and opens "
-                          "instantly. Other values render on demand.")
+                     help="Applies to stations outside the two warmed "
+                          "regions. Region maps use their own extent.")
     # Display width as a percentage of the column. Default 70 rather
     # than full width: the ensemble opens as a grid of members, and
     # at 100% the first row alone fills the window so nothing else is
@@ -399,8 +401,18 @@ else:
         st.stop()
 
     _wk = f"{model}@{field}"
-    _warm_ok = (icao in REFS_HUBS
-                and abs(zoom - WARM_ZOOM) < 0.01)
+    # The warm store is rendered at the REGION half-width — 6.5 deg
+    # for the Northeast, 5.0 for Florida — not the legacy 2.5 deg
+    # WARM_ZOOM from when the store was per-hub. The live render
+    # must use the same value, or a frame drawn on demand covers a
+    # third of the area the warmed one does and station marks look
+    # four times too big against it. Seen live 4 Sep the moment
+    # stale-style frames started being refused.
+    from core.cam_warm import hub_geom as _hub_geom
+
+    _region_zoom = (_hub_geom(icao)[2] if icao in REFS_HUBS
+                    else zoom)
+    _warm_ok = icao in REFS_HUBS
     cycle_iso = None
     if _warm_ok:
         _wc = warm_cycle(CACHE_ROOT, _wk)
@@ -471,7 +483,7 @@ else:
             else:
                 frames[model][h] = cached_refs_frame(
                     model, field, cycle_iso, h,
-                    round(clat, 2), round(clon, 2), zoom)
+                    round(clat, 2), round(clon, 2), _region_zoom)
         except Exception as _re:
             _errs.setdefault(
                 model, f"f{h:02d}: {type(_re).__name__}: "
