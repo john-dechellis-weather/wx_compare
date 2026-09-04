@@ -748,6 +748,56 @@ JBU_STATIONS = {
 }
 
 
+# Station mark sizes in points. Four times the first attempt, which
+# was invisible at working zoom. CAM_STATION_DOT_PT / _FONT_PT tune
+# them without a deploy.
+STATION_DOT_PT = float(os.environ.get("CAM_STATION_DOT_PT", "13"))
+STATION_FONT_PT = float(os.environ.get("CAM_STATION_FONT_PT", "26"))
+
+
+def draw_stations(ax, w: float, s: float, e: float, n: float,
+                  skip=None, pad: float = 0.15) -> int:
+    """JetBlue station dots and identifiers on a cartopy axis.
+
+    Shared by the matplotlib renderer here and the fast composite
+    renderer in cam_fast, so the warmed frames and the live-render
+    fallback show the same marks in the same places. New York metro
+    shows JFK only — LGA and EWR overlap it at every zoom these
+    pages use.
+    """
+    import cartopy.crs as ccrs
+    import matplotlib.patheffects as _pe
+
+    if skip is None:
+        import os as _os
+
+        skip = set(x.strip().upper() for x in _os.environ.get(
+            "CAM_STATION_SKIP", "KLGA,KEWR").split(",") if x.strip())
+    drawn = 0
+    for icao, (sla, slo) in JBU_STATIONS.items():
+        if icao in skip:
+            continue
+        if not (w + pad <= slo <= e - pad and s + pad <= sla <= n - pad):
+            continue
+        # Sized to read on the SOC wall, not a laptop: a 13 pt dot
+        # and 26 pt label on a ~2000 px frame. The first pass at
+        # 3 pt / 6.5 pt was invisible at working zoom. Label offset
+        # scales with the dot so it clears the edge at any size.
+        ax.plot(slo, sla, marker="o", markersize=STATION_DOT_PT,
+                markerfacecolor="#005ADC", markeredgecolor="white",
+                markeredgewidth=1.4, linestyle="none",
+                transform=ccrs.PlateCarree(), zorder=7)
+        ax.text(slo, sla + 0.016 * STATION_DOT_PT * (n - s) / 10.0,
+                icao[1:] if icao.startswith("K") else icao,
+                fontsize=STATION_FONT_PT, color="#003B8E",
+                fontweight="bold", ha="center", va="bottom",
+                transform=ccrs.PlateCarree(), zorder=7,
+                path_effects=[_pe.withStroke(linewidth=2.5,
+                                             foreground="white")])
+        drawn += 1
+    return drawn
+
+
 def render_field(
     product: str,
     vals: np.ndarray,
@@ -894,6 +944,14 @@ def render_field(
         gl.right_labels = False
         gl.xlabel_style = {"size": 8}
     gl.ylabel_style = {"size": 8}
+
+    # Stations on the live-render path too, so a frame drawn on
+    # demand matches a warmed one. get_extent returns (w, e, s, n).
+    try:
+        _w, _e, _s, _n = ax.get_extent(crs=ccrs.PlateCarree())
+        draw_stations(ax, _w, _s, _e, _n)
+    except Exception:
+        pass
 
     # 10 nm range ring around the center site (white dashed with a
     # black understroke so it reads over any reflectivity), plus a

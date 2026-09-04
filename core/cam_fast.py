@@ -102,7 +102,7 @@ for _pk in ("PROB_CIG1000", "PROB_VIS1", "PROB_REFC40", "PROB"):
 # below this, so isolated cells fade at their own size instead of
 # being inflated to full-strength discs.
 # Bump whenever the basemap's content changes.
-BASEMAP_STYLE = 2
+BASEMAP_STYLE = 4
 
 # Stations NOT drawn on the basemap. New York metro shows JFK only.
 STATION_SKIP = set(
@@ -292,27 +292,9 @@ def basemap(key: str, extent, width: int, height: int,
     # same 3 km cell cluster at every zoom this page uses, and
     # three overlapping labels read as a smudge.
     try:
-        from core.hrrr_cam import JBU_STATIONS as _JS
+        from core.hrrr_cam import draw_stations
 
-        _skip = STATION_SKIP
-        _pad = 0.15      # keep labels off the frame edge
-        for _icao, (_sla, _slo) in _JS.items():
-            if _icao in _skip:
-                continue
-            if not (w + _pad <= _slo <= e - _pad
-                    and s + _pad <= _sla <= n - _pad):
-                continue
-            ax.plot(_slo, _sla, marker="o", markersize=3.2,
-                    markerfacecolor="#005ADC", markeredgecolor="white",
-                    markeredgewidth=0.6, linestyle="none",
-                    transform=ccrs.PlateCarree(), zorder=7)
-            ax.text(_slo, _sla, _icao[1:] if _icao.startswith("K")
-                    else _icao,
-                    fontsize=6.5, color="#003B8E", fontweight="bold",
-                    ha="center", va="bottom",
-                    transform=ccrs.PlateCarree(), zorder=7,
-                    # nudge up so the text clears the dot
-                    position=(_slo, _sla + 0.04 * (n - s) / 10.0))
+        draw_stations(ax, w, s, e, n, skip=STATION_SKIP)
     except Exception:
         pass          # a basemap without stations is still a basemap
 
