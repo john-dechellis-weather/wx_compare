@@ -1261,6 +1261,23 @@ def _tracks_state() -> dict:
 
 
 _TRACKS: dict = _tracks_state()
+
+
+@st.cache_resource(show_spinner=False)
+def _turn_state() -> dict:
+    """{callsign: {"acc": signed degrees, "brg": last bearing}}.
+
+    Cumulative signed turning per aircraft, accumulated as fixes
+    arrive. A hold adds ~360 per lap, always the same sign; cruise
+    adds ~0; a course change adds a fraction that never reaches a
+    lap. So laps = |acc| // 360 is a clean count that survives the
+    trail being trimmed to TRAIL_MAX — a hold longer than the trail
+    would otherwise lose its early laps.
+    """
+    return {}
+
+
+_TURN: dict = _turn_state()
 # 30 fixes. The fleet refreshes on the 120 s fragment beat, so one
 # fix every two minutes — 12 points was a 24-minute track, which is
 # barely a track. 30 gives an hour, which is long enough to read a
@@ -1319,6 +1336,26 @@ def _note_positions(rows):
             # callsign that is really two flights.
             if _nm > max(200.0, 700.0 * _dt_min / 60.0):
                 del h[:]
+                _TURN.pop(cs, None)      # new flight: lap count restarts
+        # Cumulative turn for the lap counter. Bearing from the last
+        # fix to this one; the signed difference from the previous
+        # bearing is this leg's turn.
+        if h:
+            _plo, _pla, _ = h[-1]
+            _kk = math.cos(math.radians((la + _pla) / 2))
+            _brg = math.degrees(math.atan2((lo - _plo) * _kk, la - _pla))
+            _ts = _TURN.setdefault(cs, {"acc": 0.0, "brg": None})
+            if _ts["brg"] is not None:
+                _d = (_brg - _ts["brg"] + 180.0) % 360.0 - 180.0
+                # A long straight leg (< 10 deg of turn) after less
+                # than half a lap means the turning was a course
+                # change, not a hold: forget it. Once past half a
+                # lap the count is kept until the flight ends.
+                if abs(_d) < 10.0 and abs(_ts["acc"]) < 180.0:
+                    _ts["acc"] = 0.0
+                else:
+                    _ts["acc"] += _d
+            _ts["brg"] = _brg
         h.append((lo, la, now))
         if len(h) > TRAIL_MAX:
             del h[:-TRAIL_MAX]
@@ -1327,53 +1364,44 @@ def _note_positions(rows):
     for cs in [k for k, v in _TRACKS.items()
                if not v or now - v[-1][2] > TRAIL_TTL_S]:
         _TRACKS.pop(cs, None)
+        _TURN.pop(cs, None)
 
 
-def _trail_paths(dash_nm: float = 0.8, gap_nm: float = 0.5):
-    """Dashed track from oldest fix to current position, as GEOMETRY.
+def _trail_paths(steps: int = 8):
+    """One SMOOTH polyline per aircraft through its recorded fixes.
 
-    deck.gl's PathLayer cannot dash without PathStyleExtension, which
-    is a JS class pydeck cannot serialise. So the dashes are built
-    here: walk the polyline by distance and emit a short path for
-    every "on" interval, skipping the gaps. Lengths in nautical
-    miles rather than pixels, so the pattern is fixed to the ground
-    and does not collapse into a solid line when zoomed out.
+    Fixes land every ~2 minutes, so a straight polyline through them
+    turns a holding racetrack into a diamond and a gentle arc into a
+    dogleg. A Catmull-Rom spline passes through every fix exactly and
+    draws the plausible curved path between them — which, for an
+    aircraft, is much closer to what actually happened than a set of
+    corners. Nothing is invented at the fixes themselves; only the
+    shape between them is inferred.
     """
-    import math as _m
-
     out = []
     for cs, h in _TRACKS.items():
         if len(h) < 2:
             continue
         pts = [(lo, la) for lo, la, _ts in h]
-        on = True
-        carry = 0.0
-        cur = [pts[0]]
-        for (lo0, la0), (lo1, la1) in zip(pts, pts[1:]):
-            dx = (lo1 - lo0) * _m.cos(_m.radians((la0 + la1) / 2))
-            d = 60.0 * _m.hypot(la1 - la0, dx)
-            if d <= 0:
-                continue
-            t = 0.0
-            while t < d:
-                want = (dash_nm if on else gap_nm) - carry
-                step = min(want, d - t)
-                f = (t + step) / d
-                px = (lo0 + (lo1 - lo0) * f, la0 + (la1 - la0) * f)
-                if on:
-                    cur.append(px)
-                if step >= want:
-                    if on and len(cur) > 1:
-                        out.append({"path": [[x, y] for x, y in cur],
-                                    "cs": cs})
-                    on = not on
-                    cur = [px]
-                    carry = 0.0
-                else:
-                    carry += step
-                t += step
-        if on and len(cur) > 1:
-            out.append({"path": [[x, y] for x, y in cur], "cs": cs})
+        if len(pts) == 2:
+            out.append({"path": [[x, y] for x, y in pts], "cs": cs})
+            continue
+        # Pad the ends so the first and last segments get a tangent.
+        P = [pts[0]] + pts + [pts[-1]]
+        path = [list(pts[0])]
+        for i in range(1, len(P) - 2):
+            p0, p1, p2, p3 = P[i - 1], P[i], P[i + 1], P[i + 2]
+            for k in range(1, steps + 1):
+                t = k / steps
+                t2, t3 = t * t, t * t * t
+                x = 0.5 * ((2 * p1[0]) + (-p0[0] + p2[0]) * t
+                           + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2
+                           + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3)
+                y = 0.5 * ((2 * p1[1]) + (-p0[1] + p2[1]) * t
+                           + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2
+                           + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
+                path.append([x, y])
+        out.append({"path": path, "cs": cs})
     return out
 
 
@@ -1432,7 +1460,8 @@ def _hold_candidates() -> list:
         if (path >= HOLD_MIN_PATH_NM
                 and path >= HOLD_RATIO * max(spread, 1.0)
                 and abs(turn) >= HOLD_MIN_TURN_DEG):
-            out.append((cs, path, disp, abs(turn)))
+            laps = int(abs(_TURN.get(cs, {}).get("acc", 0.0)) // 360.0)
+            out.append((cs, path, disp, abs(turn), laps))
     return out
 
 # ---------------------------------------------------------------------------
@@ -2589,13 +2618,14 @@ if run_button or _auto:
             _holds = _hold_candidates()
         except Exception:
             _holds = []
-        _hold_cs = {c for c, _p, _d, _t in _holds}
+        _hold_cs = {c for c, _p, _d, _t, _l in _holds}
         if _holds:
             _lines = "".join(
                 f"<div>\u26a0 <b>{escape(c)}</b> potentially in holding "
-                f"pattern &mdash; {p:.0f} nm flown, {t:.0f}&deg; of turn "
-                f"over the last {HOLD_FIXES * 2} min</div>"
-                for c, p, _d, t in _holds)
+                f"pattern &mdash; "
+                f"<b>{l} lap{'' if l == 1 else 's'}</b> completed, "
+                f"{p:.0f} nm flown over the last {HOLD_FIXES * 2} min</div>"
+                for c, p, _d, t, l in _holds)
             st.markdown(
                 "<div style='background:#FFD9D9;border:3px solid "
                 "#B30000;border-radius:6px;padding:10px 14px;"
@@ -2778,13 +2808,14 @@ if run_button or _auto:
             except Exception:
                 _trail = []
             if _trail:
-                # Thin dashed track, under the icons.
+                # Smooth solid track, under the icons.
                 layers.append(pdk.Layer(
                     "PathLayer", data=_trail,
                     get_path="path",
-                    get_color=[0, 110, 240, 170],
-                    get_width=1.0, width_units="pixels",
-                    width_min_pixels=1, width_max_pixels=1,
+                    get_color=[0, 110, 240, 190],
+                    get_width=1.6, width_units="pixels",
+                    width_min_pixels=1, width_max_pixels=2,
+                    joint_rounded=True, cap_rounded=True,
                     pickable=False,
                 ))
 
