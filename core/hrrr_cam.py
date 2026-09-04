@@ -820,6 +820,37 @@ def draw_stations(ax, w: float, s: float, e: float, n: float,
     return drawn
 
 
+def render_frame(product: str, vals, lats, lons, center_lat: float,
+                 center_lon: float, zoom_deg: float, title: str = "",
+                 grid_key: str = None, cache_root=None) -> bytes:
+    """Render one frame the SAME way the warmer does.
+
+    Live renders used to go through render_field — the legacy
+    matplotlib figure with axes, a colorbar and its own small
+    station labels — while warmed frames came from cam_fast on a
+    full-bleed square. So the moment a page fell back to a live
+    render the map changed size, gained a colorbar, and station
+    marks doubled up. This routes live renders through cam_fast
+    whenever it supports the product, so a live frame and a warmed
+    frame are pixel-for-pixel the same layout.
+    """
+    try:
+        from core import cam_fast as _CF
+
+        if _CF.supports(product):
+            return _CF.render_fast(
+                product, vals, lats, lons, center_lat, center_lon,
+                zoom_deg,
+                grid_key=grid_key or f"{center_lat:.2f},{center_lon:.2f}"
+                                     f"|{zoom_deg:.2f}",
+                cache_dir=(str(cache_root) if cache_root else None),
+            )
+    except Exception:
+        pass
+    return render_field(product, vals, lats, lons, center_lat,
+                        center_lon, zoom_deg, title)
+
+
 def render_field(
     product: str,
     vals: np.ndarray,
@@ -967,13 +998,10 @@ def render_field(
         gl.xlabel_style = {"size": 8}
     gl.ylabel_style = {"size": 8}
 
-    # Stations on the live-render path too, so a frame drawn on
-    # demand matches a warmed one. get_extent returns (w, e, s, n).
-    try:
-        _w, _e, _s, _n = ax.get_extent(crs=ccrs.PlateCarree())
-        draw_stations(ax, _w, _s, _e, _n)
-    except Exception:
-        pass
+    # render_field draws its own small station labels further down;
+    # the large marks live in draw_stations, used by cam_fast. Live
+    # renders reach cam_fast via render_frame, so they are not
+    # doubled here.
 
     # 10 nm range ring around the center site (white dashed with a
     # black understroke so it reads over any reflectivity), plus a
