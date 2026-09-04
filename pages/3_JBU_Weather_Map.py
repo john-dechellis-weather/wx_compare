@@ -1291,7 +1291,10 @@ _TURN: dict = _turn_state()
 # at cruise. Enough to show heading and the recent path; short
 # enough that the Northeast does not fill with lines. 15 if you
 # want to watch a hold or a reroute develop.
-TRAIL_MAX = int(_os_ko.environ.get("JBU_TRAIL_POINTS", "20"))
+# 30 fixes = one hour at the 2-minute sweep. This is what is STORED;
+# how much is DRAWN is the track-length dropdown on the map, so the
+# store always holds enough for the longest option.
+TRAIL_MAX = int(_os_ko.environ.get("JBU_TRAIL_POINTS", "30"))
 # Two hours: longer than the longest trail, so a track is dropped
 # because the aircraft is gone rather than because the trail aged
 # out from under it.
@@ -1367,7 +1370,7 @@ def _note_positions(rows):
         _TURN.pop(cs, None)
 
 
-def _trail_paths(steps: int = 8):
+def _trail_paths(max_age_s: float = 1800.0, steps: int = 8):
     """One SMOOTH polyline per aircraft through its recorded fixes.
 
     Fixes land every ~2 minutes, so a straight polyline through them
@@ -1378,11 +1381,16 @@ def _trail_paths(steps: int = 8):
     corners. Nothing is invented at the fixes themselves; only the
     shape between them is inferred.
     """
+    import time as _t
+
+    cutoff = _t.time() - max_age_s
     out = []
     for cs, h in _TRACKS.items():
-        if len(h) < 2:
+        # Window by TIME, not by count, so "30 minutes" means thirty
+        # minutes even if a sweep was late or missed.
+        pts = [(lo, la) for lo, la, ts in h if ts >= cutoff]
+        if len(pts) < 2:
             continue
-        pts = [(lo, la) for lo, la, _ts in h]
         if len(pts) == 2:
             out.append({"path": [[x, y] for x, y in pts], "cs": cs})
             continue
@@ -2280,9 +2288,9 @@ if run_button or _auto:
         # layer list, so `radar_on` was read before it existed —
         # "name 'radar_on' is not defined". A control has to be
         # declared before anything reads it.
-        # Two controls: flight numbers and radar. The third column
-        # is a spacer so neither stretches across the page.
-        _ctl = st.columns([1.0, 1.0, 4.0], gap="small")
+        # Three controls: flight numbers, radar, track length. The
+        # last column is a spacer so none stretches across the page.
+        _ctl = st.columns([1.0, 1.0, 1.4, 2.6], gap="small")
         with _ctl[0]:
             show_cs = st.checkbox(
                 "Flight numbers", value=True, key="show_cs_f",
@@ -2295,6 +2303,15 @@ if run_button or _auto:
                 help="MRMS merged reflectivity, 1 km national "
                      "mosaic, ~2-minute updates.",
             )
+        with _ctl[2]:
+            _TRACK_OPTS = {"15 min": 900, "30 min": 1800,
+                           "45 min": 2700, "1 hr": 3600}
+            _track_lab = st.selectbox(
+                "Track length", list(_TRACK_OPTS), index=1,
+                key="track_len", label_visibility="collapsed",
+                help="How much position history to draw behind each "
+                     "aircraft.")
+            track_age_s = float(_TRACK_OPTS[_track_lab])
         # FIXED opacity, no widget.
         #
         # pydeck cannot change a layer property client-side, so every
@@ -2804,7 +2821,7 @@ if run_button or _auto:
             # than staying a constant blob and swamping the map at
             # continental zoom.
             try:
-                _trail = _trail_paths()
+                _trail = _trail_paths(max_age_s=track_age_s)
             except Exception:
                 _trail = []
             if _trail:
