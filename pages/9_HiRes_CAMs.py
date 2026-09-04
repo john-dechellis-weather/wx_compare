@@ -107,7 +107,7 @@ def cached_grid_frame(
     concurrently (the slow, parallelizable part), then panels render
     serially. Returns {model: png | error_string}."""
     from core.hrrr_cam import (
-        MODELS, parallel_fetch_decode, render_field,
+        MODELS, parallel_fetch_decode, render_field, render_frame,
     )
     from datetime import timedelta as _td
 
@@ -139,9 +139,10 @@ def cached_grid_frame(
         headline = (f"{MODELS[model]['label']} "
                     f"{cycle:%d %b %Y  %H}Z run")
         try:
-            out[model] = render_field(
+            out[model] = render_frame(
                 product, vals, lats, lons, clat, clon, zoom, title,
-                headline=headline,
+                grid_key=f"{clat:.2f},{clon:.2f},{zoom:.2f}|{model}",
+                cache_root=CACHE_ROOT / "cam_warm",
             )
         except Exception as e:
             out[model] = f"error: {e}"
@@ -157,7 +158,7 @@ def cached_panel(
     """One rendered panel for one model. Keyed on model+cycle+fhr+
     product+region, so new model cycles refresh naturally."""
     from core.hrrr_cam import (
-        fetch_field, decode_field, render_field, MODELS,
+        fetch_field, decode_field, render_field, render_frame, MODELS,
     )
     cycle = datetime.fromisoformat(cycle_iso)
     raw = fetch_field(model, product, cycle, fhr, clat, clon, zoom)
@@ -167,8 +168,10 @@ def cached_panel(
         f"{MODELS[model]['label']} {cycle:%m/%d %H}Z  f{fhr:02d}  "
         f"valid {valid:%m/%d %H}Z"
     )
-    return render_field(
+    return render_frame(
         product, vals, lats, lons, clat, clon, zoom, title,
+        grid_key=f"{clat:.2f},{clon:.2f},{zoom:.2f}|{model}",
+        cache_root=CACHE_ROOT / "cam_warm",
     )
 
 
@@ -177,7 +180,7 @@ _AXCAL = dict(l=0.015, r=0.985, t=0.045, b=0.075)
 
 def _render_chunk(pchunk, data, frames, errs, prog,
                   done, total, product, rlat, rlon, rzoom):
-    from core.hrrr_cam import MODELS, render_field
+    from core.hrrr_cam import MODELS, render_field, render_frame
     from datetime import datetime as _dt, timedelta as _td2
     for j, (m, cyc, h, ax) in enumerate(pchunk):
         prog.progress(
@@ -200,9 +203,11 @@ def _render_chunk(pchunk, data, frames, errs, prog,
             f"valid {valid:%m/%d %H}Z"
         )
         try:
-            png = render_field(
+            png = render_frame(
                 product, vals, lats, lons,
                 rlat, rlon, rzoom, title,
+                grid_key=f"{rlat:.2f},{rlon:.2f},{rzoom:.2f}|{m}",
+                cache_root=CACHE_ROOT / "cam_warm",
             )
         except Exception as _re:
             errs.setdefault(

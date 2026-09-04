@@ -437,7 +437,7 @@ else:
     def cached_refs_frame(model: str, field: str,
                           cycle_iso: str, h: int,
                           la: float, lo: float, zm: float):
-        from core.hrrr_cam import fetch_and_decode, render_field
+        from core.hrrr_cam import fetch_and_decode, render_frame
         cyc = datetime.fromisoformat(cycle_iso)
         vals, lats, lons = fetch_and_decode(
             model, field, cyc, h, la, lo, zm)
@@ -445,8 +445,15 @@ else:
         title = (f"{MODELS[model]['label']} "
                  f"{cyc:%m/%d %H}Z  f{h:02d}  "
                  f"valid {valid:%m/%d %H}Z")
-        return render_field(field, vals, lats, lons,
-                            la, lo, zm, title)
+        # Same renderer as the warmer, so a live frame matches a
+        # warmed one in size, layout and station marks.
+        # grid_key identifies the region AND the model grid; the
+        # centre/zoom are stable per region, so this matches the
+        # warmer's cached basemap and regrid index for the same
+        # place rather than building new ones.
+        return render_frame(field, vals, lats, lons, la, lo, zm, title,
+                            grid_key=f"{la:.2f},{lo:.2f},{zm:.2f}|{model}",
+                            cache_root=CACHE_ROOT / "cam_warm")
 
     prog = st.progress(0.0, text=f"Loading {len(hours)} "
                                  "ensemble frames...")
