@@ -2713,7 +2713,7 @@ if run_button or _auto:
                 "color:#7A0000;'>Holding pattern alert</div>",
                 unsafe_allow_html=True)
             for c, p, _d, t, l, _dts in _shown:
-                _lc, _bc = st.columns([6, 1], gap="small")
+                _lc, _loc, _bc = st.columns([5, 1, 1], gap="small")
                 with _lc:
                     st.markdown(
                         "<div style='background:#FFD9D9;padding:4px 14px;"
@@ -2727,6 +2727,16 @@ if run_button or _auto:
                            if _dts else "")
                         + "</div>",
                         unsafe_allow_html=True)
+                with _loc:
+                    # Locate: centre the map on this aircraft at a
+                    # terminal-area zoom. The view is set at deck
+                    # creation, so the click stores the callsign and
+                    # reruns; the deck below reads it.
+                    if st.button("Locate", key=f"hold_loc_{c}",
+                                 use_container_width=True,
+                                 help="Click to locate aircraft on map"):
+                        st.session_state["_locate_cs"] = c
+                        st.rerun(scope="app")
                 with _bc:
                     if st.button("Clear", key=f"hold_clr_{c}",
                                  use_container_width=True):
@@ -2965,12 +2975,41 @@ if run_button or _auto:
                 ))
 
         layers.extend(_base_layers)
+
+        # VIEW. Default is CONUS. A "Locate" click on the holding
+        # banner stores a callsign; if that aircraft is on the map,
+        # centre on it at a terminal-area zoom and keep doing so on
+        # each rerun until the view is reset — snapping back to
+        # CONUS on the next 2-minute beat would be worse than never
+        # locating at all. The locate also lapses on its own once
+        # the aircraft is gone from the fleet.
+        _view_state = pdk.ViewState(
+            latitude=38.5, longitude=-96.0,
+            zoom=4.3, min_zoom=4.1, max_zoom=11)
+        _loc_cs = st.session_state.get("_locate_cs")
+        if _loc_cs:
+            _tgt = next((d for d in (fleet or [])
+                         if (d.get("callsign") or "").strip().upper()
+                         == _loc_cs), None)
+            if _tgt is not None:
+                _view_state = pdk.ViewState(
+                    latitude=float(_tgt["lat"]),
+                    longitude=float(_tgt["lon"]),
+                    zoom=8.5, min_zoom=4.1, max_zoom=11)
+                _rc1, _rc2 = st.columns([3, 1], gap="small")
+                with _rc1:
+                    st.caption(f"Map centred on **{_loc_cs}**.")
+                with _rc2:
+                    if st.button("Reset map view", key="hold_loc_reset",
+                                 use_container_width=True):
+                        st.session_state.pop("_locate_cs", None)
+                        st.rerun(scope="app")
+            else:
+                st.session_state.pop("_locate_cs", None)
+
         deck = pdk.Deck(
             layers=layers,
-            initial_view_state=pdk.ViewState(
-                latitude=38.5, longitude=-96.0,
-                zoom=4.3, min_zoom=4.1, max_zoom=11,
-            ),
+            initial_view_state=_view_state,
             map_style="light",
             tooltip={"html": "<b>{tip}</b>"},
         )
