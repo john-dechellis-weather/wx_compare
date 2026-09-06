@@ -1358,6 +1358,12 @@ def _note_positions(rows):
                     _ts["acc"] = 0.0
                 else:
                     _ts["acc"] += _d
+                if abs(_d) >= 10.0:
+                    _ts["last_turn_ts"] = now
+                elif now - _ts.get("last_turn_ts", 0.0) > HOLD_CLEAR_S:
+                    # Straight for long enough: the hold is over.
+                    # Reset so the next one counts from zero.
+                    _ts["acc"] = 0.0
             _ts["brg"] = _brg
         h.append((lo, la, now))
         if len(h) > TRAIL_MAX:
@@ -1428,49 +1434,82 @@ def _trail_paths(max_age_s: float = 1800.0, steps: int = 8):
 # further than it has moved.
 HOLD_FIXES = int(_os_ko.environ.get("JBU_HOLD_FIXES", "6"))
 HOLD_MIN_PATH_NM = float(_os_ko.environ.get("JBU_HOLD_MIN_PATH_NM", "15"))
-HOLD_RATIO = float(_os_ko.environ.get("JBU_HOLD_RATIO", "2.5"))
+HOLD_RATIO = float(_os_ko.environ.get("JBU_HOLD_RATIO", "2.0"))
 HOLD_MIN_TURN_DEG = float(_os_ko.environ.get("JBU_HOLD_MIN_TURN", "270"))
+# Cumulative same-direction turn that on its own means "circling".
+# A cruise leg never gets near it; a single 360 for spacing, a
+# go-around, or one lap of any hold all cross it.
+HOLD_ACC_DEG = float(_os_ko.environ.get("JBU_HOLD_ACC_DEG", "300"))
+# The alert clears once the aircraft has flown straight this long.
+HOLD_CLEAR_S = float(_os_ko.environ.get("JBU_HOLD_CLEAR_S", "480"))
 
 
 def _hold_candidates() -> list:
-    """[(callsign, path_nm, disp_nm, turn_deg)] for aircraft that look
-    to be holding, from the trail history."""
-    import math
+    """[(callsign, path_nm, disp_nm, turn_deg, laps)] for aircraft that
+    look to be holding.
 
+    TWO tests, either one flags:
+
+    1. CUMULATIVE TURN. |acc| >= HOLD_ACC_DEG and the aircraft turned
+       within the last HOLD_CLEAR_S. This is the primary signal — a
+       wide, slow loop off Palm Beach (15 nm across, one circuit in
+       16 min) failed the geometry test below because a 12-minute
+       window held less than a full lap, yet its cumulative turn was
+       273 deg, which nothing in cruise ever does.
+
+    2. GEOMETRY, over EVERY window from HOLD_FIXES up to the whole
+       trail: long path, small spread, same-direction turn. Tight
+       racetracks trip this on the short window; wide loops on a
+       longer one.
+    """
+    import math
+    import time as _t
+
+    now = _t.time()
     out = []
     for cs, h in _TRACKS.items():
-        if len(h) < HOLD_FIXES:
+        if len(h) < 3:
             continue
-        pts = [(lo, la) for lo, la, _ts in h[-HOLD_FIXES:]]
-        k = math.cos(math.radians(pts[0][1]))
+        ts = _TURN.get(cs, {})
+        acc = abs(ts.get("acc", 0.0))
+        recent = (now - ts.get("last_turn_ts", 0.0)) <= HOLD_CLEAR_S
+        k = math.cos(math.radians(h[-1][1]))
 
         def _nm(a, b):
             return 60.0 * math.hypot(b[1] - a[1], (b[0] - a[0]) * k)
 
-        path = sum(_nm(a, b) for a, b in zip(pts, pts[1:]))
-        # Displacement: how far the aircraft is from where the
-        # window started. Also the SPREAD of the window, so a
-        # racetrack that happens to end near its start does not
-        # read as zero-displacement noise.
-        disp = _nm(pts[0], pts[-1])
-        spread = max(_nm(a, b) for a in pts for b in pts)
-        # Net turning, signed, over the window. A hold turns the
-        # same direction throughout; an S-turn or a dogleg cancels.
-        turn = 0.0
-        prev = None
-        for a, b in zip(pts, pts[1:]):
-            brg = math.degrees(math.atan2((b[0] - a[0]) * k,
-                                          b[1] - a[1]))
-            if prev is not None:
-                d = (brg - prev + 180.0) % 360.0 - 180.0
-                turn += d
-            prev = brg
-        if (path >= HOLD_MIN_PATH_NM
-                and path >= HOLD_RATIO * max(spread, 1.0)
-                and abs(turn) >= HOLD_MIN_TURN_DEG):
-            laps = int(abs(_TURN.get(cs, {}).get("acc", 0.0)) // 360.0)
-            out.append((cs, path, disp, abs(turn), laps))
+        def _geom(pts):
+            path = sum(_nm(a, b) for a, b in zip(pts, pts[1:]))
+            spread = max(_nm(a, b) for a in pts for b in pts)
+            turn = 0.0
+            prev = None
+            for a, b in zip(pts, pts[1:]):
+                brg = math.degrees(math.atan2((b[0] - a[0]) * k,
+                                              b[1] - a[1]))
+                if prev is not None:
+                    turn += (brg - prev + 180.0) % 360.0 - 180.0
+                prev = brg
+            return path, spread, abs(turn)
+
+        hit = None
+        if acc >= HOLD_ACC_DEG and recent:
+            pts = [(lo, la) for lo, la, _ in h[-max(HOLD_FIXES, 3):]]
+            path, spread, turn = _geom(pts)
+            hit = (path, _nm(pts[0], pts[-1]), max(turn, acc))
+        else:
+            for n in range(HOLD_FIXES, len(h) + 1):
+                pts = [(lo, la) for lo, la, _ in h[-n:]]
+                path, spread, turn = _geom(pts)
+                if (path >= HOLD_MIN_PATH_NM
+                        and path >= HOLD_RATIO * max(spread, 1.0)
+                        and turn >= HOLD_MIN_TURN_DEG):
+                    hit = (path, _nm(pts[0], pts[-1]), turn)
+                    break
+        if hit:
+            laps = int(acc // 360.0)
+            out.append((cs, hit[0], hit[1], hit[2], laps))
     return out
+
 
 # ---------------------------------------------------------------------------
 # Stale-while-revalidate for the run path
@@ -2640,8 +2679,9 @@ if run_button or _auto:
             _lines = "".join(
                 f"<div>\u26a0 <b>{escape(c)}</b> potentially in holding "
                 f"pattern &mdash; "
-                f"<b>{l} lap{'' if l == 1 else 's'}</b> completed, "
-                f"{p:.0f} nm flown over the last {HOLD_FIXES * 2} min</div>"
+                + (f"<b>{l} lap{'' if l == 1 else 's'}</b> completed, "
+                   if l else "<b>circling</b>, ")
+                + f"{p:.0f} nm flown, {t:.0f}&deg; of turn</div>"
                 for c, p, _d, t, l in _holds)
             st.markdown(
                 "<div style='background:#FFD9D9;border:3px solid "
