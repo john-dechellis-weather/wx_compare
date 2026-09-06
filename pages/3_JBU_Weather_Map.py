@@ -2348,12 +2348,17 @@ if run_button or _auto:
             )
         with _ctl[1]:
             # Reads a PRE-WARMED frame off disk. No fetch, no
-            # decode, no wait — toggling this costs a layer append.
-            radar_on = st.checkbox(
-                "Radar", value=True, key="mrms_on",
-                help="MRMS merged reflectivity, 1 km national "
-                     "mosaic, ~2-minute updates.",
-            )
+            # decode, no wait — switching this costs a layer append.
+            _RADAR_OPTS = {"Off": None, "Reflectivity": "REFL",
+                           "Echo tops": "ETOP"}
+            _radar_lab = st.selectbox(
+                "Radar", list(_RADAR_OPTS), index=1, key="mrms_prod",
+                label_visibility="collapsed",
+                help="MRMS 1 km national mosaic, ~2-minute updates. "
+                     "Reflectivity is the merged composite; echo "
+                     "tops is the 18 dBZ top in thousands of feet.")
+            radar_product = _RADAR_OPTS[_radar_lab]
+            radar_on = radar_product is not None
         with _ctl[2]:
             _TRACK_OPTS = {"15 min": 900, "30 min": 1800,
                            "45 min": 2700, "1 hr": 3600}
@@ -2417,15 +2422,12 @@ if run_button or _auto:
                     _rbase = (_os_ko.environ.get("RENDER_EXTERNAL_URL")
                               or _os_ko.environ.get("PUBLIC_BASE_URL")
                               or "").rstrip("/")
-                _chunks, _rs = _MR.newest(_sd)
+                # Newest complete scan of the selected product.
+                _chunks, _rs = _MR.newest(_sd, radar_product)
                 if _chunks and _rbase:
-                    # PRELOAD. deck.gl fetches each BitmapLayer image
-                    # asynchronously after the deck mounts, and on a
-                    # cold load the first request for a 3500 px WebP
-                    # can lose the race with the initial draw. A
-                    # preload hint starts the fetch the moment the
-                    # page parses, so by the time deck.gl asks the
-                    # image is already in the browser cache.
+                    # PRELOAD every chunk so the browser has them
+                    # cached before deck.gl asks — removes the
+                    # first-load race entirely.
                     st.markdown(
                         "".join(
                             f"<link rel='preload' as='image' "
@@ -2439,10 +2441,11 @@ if run_button or _auto:
                             bounds=_c["bounds"],
                             opacity=float(radar_op),
                         ))
+                    _plabel = _MR.PRODUCTS[radar_product]["label"]
                     _radar_note = (
-                        f" Radar: MRMS 1 km merged reflectivity"
-                        + (f", {_rs[9:11]}:{_rs[11:13]}Z." if _rs
-                           else ".")
+                        f" Radar: MRMS 1 km {_plabel.lower()}"
+                        + (f", {_rs[9:11]}:{_rs[11:13]}Z" if _rs else "")
+                        + "."
                     )
                 elif not _rbase:
                     _radar_note = " Radar: RENDER_EXTERNAL_URL unset."
