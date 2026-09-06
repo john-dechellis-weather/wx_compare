@@ -1435,52 +1435,73 @@ def _trail_paths(max_age_s: float = 1800.0, steps: int = 8):
 HOLD_FIXES = int(_os_ko.environ.get("JBU_HOLD_FIXES", "6"))
 HOLD_MIN_PATH_NM = float(_os_ko.environ.get("JBU_HOLD_MIN_PATH_NM", "15"))
 HOLD_RATIO = float(_os_ko.environ.get("JBU_HOLD_RATIO", "2.0"))
+# Three-quarters of an oval. The window must contain at least this
+# much same-direction turn.
 HOLD_MIN_TURN_DEG = float(_os_ko.environ.get("JBU_HOLD_MIN_TURN", "270"))
-# Cumulative same-direction turn that on its own means "circling".
-# A cruise leg never gets near it; a single 360 for spacing, a
-# go-around, or one lap of any hold all cross it.
-HOLD_ACC_DEG = float(_os_ko.environ.get("JBU_HOLD_ACC_DEG", "300"))
-# The alert clears once the aircraft has flown straight this long.
+# A hold is COMPACT. Approach vectoring can accumulate 300+ deg of
+# turn too — downwind, base, final, plus a couple of vectors — but
+# it does so across 30-50 nm. Capping the spread is what separates
+# "circling in one place" from "being turned toward a runway".
+HOLD_MAX_SPREAD_NM = float(_os_ko.environ.get("JBU_HOLD_MAX_SPREAD_NM",
+                                              "22"))
+# Closure: after three-quarters of an oval the aircraft is back near
+# where the window started. End-to-start distance as a fraction of
+# the spread; a vector sequence marches away and fails this.
+HOLD_MAX_CLOSURE = float(_os_ko.environ.get("JBU_HOLD_MAX_CLOSURE", "0.7"))
+# When the DESTINATION is reporting a thunderstorm, holding is the
+# expected outcome and the bar drops: half an oval is enough.
+HOLD_TS_MIN_TURN_DEG = float(_os_ko.environ.get("JBU_HOLD_TS_MIN_TURN",
+                                                "180"))
+# Straight flight this long resets the lap counter.
 HOLD_CLEAR_S = float(_os_ko.environ.get("JBU_HOLD_CLEAR_S", "480"))
 
 
-def _hold_candidates() -> list:
-    """[(callsign, path_nm, disp_nm, turn_deg, laps)] for aircraft that
-    look to be holding.
+def _hold_candidates(dest_by_cs: dict = None,
+                     ts_stations: set = None) -> list:
+    """[(callsign, path_nm, disp_nm, turn_deg, laps, dest_ts)] for
+    aircraft whose recent track is three-quarters of an oval or more.
 
-    TWO tests, either one flags:
+    GEOMETRY ONLY. A cumulative-turn trigger was tried and flagged
+    arrivals being vectored: downwind-base-final plus two vectors is
+    300 deg of turn but it happens across 40 nm and marches toward
+    the runway. A hold is compact and closes on itself. So every
+    window from HOLD_FIXES up to the whole trail must show: enough
+    path, at least three-quarters of a lap of same-direction turn, a
+    spread under HOLD_MAX_SPREAD_NM, and an end point back near the
+    start.
 
-    1. CUMULATIVE TURN. |acc| >= HOLD_ACC_DEG and the aircraft turned
-       within the last HOLD_CLEAR_S. This is the primary signal — a
-       wide, slow loop off Palm Beach (15 nm across, one circuit in
-       16 min) failed the geometry test below because a 12-minute
-       window held less than a full lap, yet its cumulative turn was
-       273 deg, which nothing in cruise ever does.
-
-    2. GEOMETRY, over EVERY window from HOLD_FIXES up to the whole
-       trail: long path, small spread, same-direction turn. Tight
-       racetracks trip this on the short window; wide loops on a
-       longer one.
+    If the aircraft's destination is reporting a thunderstorm, the
+    turn requirement drops to half a lap — holding is the expected
+    outcome there, and an early call is worth more than a late one.
     """
     import math
-    import time as _t
 
-    now = _t.time()
+    dest_by_cs = dest_by_cs or {}
+    ts_stations = ts_stations or set()
     out = []
     for cs, h in _TRACKS.items():
-        if len(h) < 3:
+        if len(h) < HOLD_FIXES:
             continue
-        ts = _TURN.get(cs, {})
-        acc = abs(ts.get("acc", 0.0))
-        recent = (now - ts.get("last_turn_ts", 0.0)) <= HOLD_CLEAR_S
         k = math.cos(math.radians(h[-1][1]))
+        dest = (dest_by_cs.get(cs) or "").upper()
+        dest_ts = dest in ts_stations
+        # Destination reporting TS: half an oval is enough, and the
+        # closure and ratio tests relax with it — half an oval has
+        # not come back round yet, by definition.
+        min_turn = HOLD_TS_MIN_TURN_DEG if dest_ts else HOLD_MIN_TURN_DEG
+        min_ratio = 1.5 if dest_ts else HOLD_RATIO
+        max_close = 1.0 if dest_ts else HOLD_MAX_CLOSURE
 
         def _nm(a, b):
             return 60.0 * math.hypot(b[1] - a[1], (b[0] - a[0]) * k)
 
-        def _geom(pts):
+        hit = None
+        for n in range(HOLD_FIXES, len(h) + 1):
+            pts = [(lo, la) for lo, la, _ in h[-n:]]
             path = sum(_nm(a, b) for a, b in zip(pts, pts[1:]))
             spread = max(_nm(a, b) for a in pts for b in pts)
+            if spread > HOLD_MAX_SPREAD_NM:
+                break                # longer windows only get wider
             turn = 0.0
             prev = None
             for a, b in zip(pts, pts[1:]):
@@ -1489,25 +1510,16 @@ def _hold_candidates() -> list:
                 if prev is not None:
                     turn += (brg - prev + 180.0) % 360.0 - 180.0
                 prev = brg
-            return path, spread, abs(turn)
-
-        hit = None
-        if acc >= HOLD_ACC_DEG and recent:
-            pts = [(lo, la) for lo, la, _ in h[-max(HOLD_FIXES, 3):]]
-            path, spread, turn = _geom(pts)
-            hit = (path, _nm(pts[0], pts[-1]), max(turn, acc))
-        else:
-            for n in range(HOLD_FIXES, len(h) + 1):
-                pts = [(lo, la) for lo, la, _ in h[-n:]]
-                path, spread, turn = _geom(pts)
-                if (path >= HOLD_MIN_PATH_NM
-                        and path >= HOLD_RATIO * max(spread, 1.0)
-                        and turn >= HOLD_MIN_TURN_DEG):
-                    hit = (path, _nm(pts[0], pts[-1]), turn)
-                    break
+            closure = _nm(pts[0], pts[-1]) / max(spread, 1.0)
+            if (path >= HOLD_MIN_PATH_NM
+                    and path >= min_ratio * max(spread, 1.0)
+                    and abs(turn) >= min_turn
+                    and closure <= max_close):
+                hit = (path, _nm(pts[0], pts[-1]), abs(turn))
+                break
         if hit:
-            laps = int(acc // 360.0)
-            out.append((cs, hit[0], hit[1], hit[2], laps))
+            laps = int(abs(_TURN.get(cs, {}).get("acc", 0.0)) // 360.0)
+            out.append((cs, hit[0], hit[1], hit[2], laps, dest_ts))
     return out
 
 
@@ -2670,25 +2682,60 @@ if run_button or _auto:
         # that should interrupt whoever is looking at it.
         from html import escape
 
+        # Destination per callsign and the set of stations whose
+        # METAR is reporting a thunderstorm — the detector relaxes
+        # its turn requirement for an aircraft bound for one.
+        _dest_by_cs = {(d.get("callsign") or "").strip().upper():
+                       (d.get("dest") or "").strip().upper()
+                       for d in (fleet or [])}
+        _ts_stns = {r["icao"] for r in (metar_all or [])
+                    if r.get("ts_now")}
         try:
-            _holds = _hold_candidates()
+            _holds = _hold_candidates(_dest_by_cs, _ts_stns)
         except Exception:
             _holds = []
-        _hold_cs = {c for c, _p, _d, _t, _l in _holds}
-        if _holds:
-            _lines = "".join(
-                f"<div>\u26a0 <b>{escape(c)}</b> potentially in holding "
-                f"pattern &mdash; "
-                + (f"<b>{l} lap{'' if l == 1 else 's'}</b> completed, "
-                   if l else "<b>circling</b>, ")
-                + f"{p:.0f} nm flown, {t:.0f}&deg; of turn</div>"
-                for c, p, _d, t, l in _holds)
+
+        # PER-AIRCRAFT DISMISS. Each alert line has a button; a
+        # dismissed callsign stays out of the banner for THIS viewer
+        # until it stops holding, after which a new hold alerts
+        # again. Session-scoped: one person clearing an alert must
+        # not clear it for the whole SOC.
+        _dismissed = st.session_state.setdefault("_hold_dismissed", set())
+        _live = {c for c, *_ in _holds}
+        _dismissed &= _live          # forget dismissals for ended holds
+        _hold_cs = {c for c, *_ in _holds}
+        _shown = [x for x in _holds if x[0] not in _dismissed]
+        if _shown:
             st.markdown(
                 "<div style='background:#FFD9D9;border:3px solid "
-                "#B30000;border-radius:6px;padding:10px 14px;"
-                "margin:6px 0;font-size:20px;font-weight:700;"
-                "color:#7A0000;line-height:1.5;'>"
-                + _lines + "</div>",
+                "#B30000;border-radius:6px;padding:8px 14px 2px;"
+                "margin:6px 0 0;font-size:20px;font-weight:700;"
+                "color:#7A0000;'>Holding pattern alert</div>",
+                unsafe_allow_html=True)
+            for c, p, _d, t, l, _dts in _shown:
+                _lc, _bc = st.columns([6, 1], gap="small")
+                with _lc:
+                    st.markdown(
+                        "<div style='background:#FFD9D9;padding:4px 14px;"
+                        "font-size:18px;color:#7A0000;line-height:1.5;'>"
+                        f"\u26a0 <b>{escape(c)}</b> potentially in "
+                        f"holding pattern "
+                        + (f"&mdash; <b>{l} lap{'' if l == 1 else 's'}"
+                           f"</b> completed" if l else "&mdash; circling")
+                        + f", {p:.0f} nm flown, {t:.0f}&deg; of turn"
+                        + (" &mdash; <b>destination reporting TS</b>"
+                           if _dts else "")
+                        + "</div>",
+                        unsafe_allow_html=True)
+                with _bc:
+                    if st.button("Clear", key=f"hold_clr_{c}",
+                                 use_container_width=True):
+                        _dismissed.add(c)
+                        st.rerun(scope="app")
+            st.markdown(
+                "<div style='background:#FFD9D9;border:3px solid "
+                "#B30000;border-top:none;border-radius:0 0 6px 6px;"
+                "height:6px;margin:0 0 6px;'></div>",
                 unsafe_allow_html=True)
 
         if not fleet and not _fleet_err:
