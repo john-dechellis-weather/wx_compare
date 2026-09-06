@@ -12,3 +12,5 @@ wx_compare_cache/
 # OS
 .DS_Store
 .streamlit/secrets.toml
+# MRMS chunks and manifests, any product (warmer output)
+static/mrms*
