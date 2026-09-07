@@ -2556,29 +2556,70 @@ if run_button or _auto:
                 _nd3 = _ND3.load(_MAP_CACHE_ROOT)
                 _rts = (_nd3 or {}).get("routes", [])
                 if _rts:
+                    import math as _rm
+
+                    # Colour by route type, as on the enroute chart:
+                    # conventional J routes brown-red, RNAV Q routes
+                    # olive, oceanic L routes slate.
+                    def _rt_color(r):
+                        t = (r.get("type") or "").upper()
+                        if t == "OCEAN":
+                            return [70, 85, 120, 200]
+                        if t == "RNAV" or r["id"].startswith("Q"):
+                            return [110, 110, 30, 200]
+                        return [150, 60, 40, 200]
+
                     _rt_data = [{"path": r["path"], "id": r["id"],
-                                 "oc": r.get("type") == "OCEAN"}
+                                 "color": _rt_color(r)}
                                 for r in _rts if len(r["path"]) > 1]
                     layers.append(pdk.Layer(
                         "PathLayer", data=_rt_data,
-                        get_path="path",
-                        get_color="[oc ? 30 : 70, oc ? 90 : 70, "
-                                  "oc ? 170 : 70, 140]",
-                        get_width=1.0, width_units="pixels",
-                        width_min_pixels=1, width_max_pixels=1,
+                        get_path="path", get_color="color",
+                        get_width=1.2, width_units="pixels",
+                        width_min_pixels=1, width_max_pixels=2,
                         pickable=True,
                     ))
+
+                    # LABELS ALONG THE ROUTE, repeated every ~90 nm
+                    # and rotated to follow the line, the way a chart
+                    # labels an airway. One label at the midpoint was
+                    # unreadable on a long route and useless once you
+                    # had zoomed in past it.
+                    def _rt_labels(path, ident, every_nm=90.0):
+                        out = []
+                        acc = every_nm / 2.0     # first label mid-leg
+                        for (x0, y0), (x1, y1) in zip(path, path[1:]):
+                            k = _rm.cos(_rm.radians((y0 + y1) / 2))
+                            dx, dy = (x1 - x0) * k, (y1 - y0)
+                            leg = 60.0 * _rm.hypot(dx, dy)
+                            if leg <= 0:
+                                continue
+                            ang = _rm.degrees(_rm.atan2(dy, dx))
+                            if ang > 90 or ang < -90:
+                                ang += 180.0        # keep text upright
+                            t = acc
+                            while t < leg:
+                                f = t / leg
+                                out.append({
+                                    "lon": x0 + (x1 - x0) * f,
+                                    "lat": y0 + (y1 - y0) * f,
+                                    "id": ident, "angle": ang % 360.0})
+                                t += every_nm
+                            acc = t - leg
+                        return out
+
                     _rt_lbl = []
                     for r in _rt_data:
-                        m = r["path"][len(r["path"]) // 2]
-                        _rt_lbl.append({"lon": m[0], "lat": m[1],
-                                        "id": r["id"]})
+                        _rt_lbl.extend(_rt_labels(r["path"], r["id"]))
                     layers.append(pdk.Layer(
                         "TextLayer", data=_rt_lbl,
                         get_position="[lon, lat]", get_text="id",
+                        get_angle="angle",
                         get_size=1300, size_units="meters",
                         size_min_pixels=0, size_max_pixels=12,
-                        get_color=[60, 60, 60, 210],
+                        get_color=[60, 60, 60, 220],
+                        background=True,
+                        get_background_color=[255, 255, 255, 200],
                         get_text_anchor='"middle"',
                         get_alignment_baseline='"center"',
                         pickable=False,
@@ -3370,47 +3411,74 @@ if run_button or _auto:
 
     _page_holds, _page_dest_by_cs = _compute_holds()
 
-    def _holding_table_html(holds, dest_by_cs) -> str:
-        """Holding aircraft, one row each, in the map-key styling."""
+    def _render_holding_table(holds, dest_by_cs) -> None:
+        """The holding table under the map key. ALWAYS present: the
+        header row stays and a single italic row says when nothing
+        is holding. Each populated row has a native Clear button, so
+        the table is built as Streamlit columns rather than one HTML
+        block — same look, real buttons."""
         from html import escape as _e
 
-        if not holds:
-            return ""
-        _th = ("font-family:Courier New,monospace;font-size:10px;"
-               "font-weight:bold;border:1px solid #000;padding:2px 6px;"
+        _F = "Courier New,monospace"
+        _th = (f"font:bold 10px {_F};border:1px solid #000;padding:3px 7px;"
                "background:#E8E8E4;text-align:left;")
-        _td = ("font-family:Courier New,monospace;font-size:10px;"
-               "border:1px solid #000;padding:2px 6px;")
-        rows = []
-        for c, p, _d, t, l, dts in sorted(holds, key=lambda x: -x[4]):
-            dest = dest_by_cs.get(c, "") or "\u2014"
-            rows.append(
-                "<tr>"
-                f"<td style='{_td}'><b>{_e(c)}</b></td>"
-                f"<td style='{_td}'>{_e(dest)}"
-                + (" <span style='color:#B30000;font-weight:bold'>TS</span>"
-                   if dts else "") + "</td>"
-                f"<td style='{_td};text-align:right'>"
-                f"{l if l else '<1'}</td>"
-                f"<td style='{_td};text-align:right'>{p:.0f}</td>"
-                f"<td style='{_td};text-align:right'>{t:.0f}&deg;</td>"
-                "</tr>")
-        return (
+        _td = f"font:10px {_F};border:1px solid #000;padding:3px 7px;"
+        _dismissed = st.session_state.setdefault("_hold_dismissed", set())
+        _live = {c for c, *_ in holds}
+        _dismissed &= _live
+        shown = [x for x in holds if x[0] not in _dismissed]
+        shown.sort(key=lambda x: -x[4])
+
+        title = ("\u26a0 Aircraft in holding" if shown
+                 else "Aircraft in holding")
+        color = "#7A0000" if shown else "#333"
+        st.markdown(
             '<div style="background:#FFF;border:2px solid #000;'
-            'padding:6px 8px;margin-top:10px;">'
-            '<div style="font-family:Georgia,serif;font-weight:bold;'
-            'font-size:14px;color:#7A0000;margin-bottom:4px;">'
-            "\u26a0 Aircraft in holding</div>"
-            '<table style="border-collapse:collapse;">'
+            'border-bottom:none;padding:8px 10px 2px;margin-top:10px;">'
+            f'<div style="font:bold 14px Georgia,serif;color:{color};'
+            'margin-bottom:5px;">' + title + "</div>"
+            '<table style="border-collapse:collapse;width:100%;">'
             f"<tr><th style='{_th}'>FLIGHT</th><th style='{_th}'>DEST</th>"
             f"<th style='{_th}'>LAPS</th><th style='{_th}'>NM</th>"
-            f"<th style='{_th}'>TURN</th></tr>"
-            + "".join(rows) + "</table>"
-            '<div style="font-family:Courier New,monospace;font-size:8px;'
-            'color:#333;margin-top:3px;">'
-            f"over the last {HOLD_FIXES * 2} min &middot; TS = destination "
-            "METAR reporting thunderstorm</div></div>"
-        )
+            f"<th style='{_th}'></th></tr>"
+            + ("" if shown else
+               f"<tr><td colspan='5' style='font:italic 10px {_F};"
+               "color:#666;border:1px solid #000;padding:8px 7px;"
+               "text-align:center'>No aircraft currently in a holding "
+               "pattern</td></tr>")
+            + "</table></div>",
+            unsafe_allow_html=True)
+        for c, p, _d, t, l, dts in shown:
+            dest = dest_by_cs.get(c, "") or "\u2014"
+            _r1, _r2 = st.columns([4.2, 1], gap="small")
+            with _r1:
+                st.markdown(
+                    '<div style="background:#FFF;border-left:2px solid '
+                    '#000;padding:0 0 0 10px;">'
+                    '<table style="border-collapse:collapse;width:100%;">'
+                    f"<tr><td style='{_td}'><b>{_e(c)}</b></td>"
+                    f"<td style='{_td}'>{_e(dest)}"
+                    + (" <span style='color:#B30000;font-weight:bold'>TS"
+                       "</span>" if dts else "") + "</td>"
+                    f"<td style='{_td}text-align:right'>{l if l else '<1'}"
+                    f"</td><td style='{_td}text-align:right'>{p:.0f}</td>"
+                    "</tr></table></div>",
+                    unsafe_allow_html=True)
+            with _r2:
+                if st.button("Clear", key=f"hold_tbl_clr_{c}",
+                             use_container_width=True):
+                    _dismissed.add(c)
+                    st.rerun(scope="app")
+        st.markdown(
+            '<div style="background:#FFF;border:2px solid #000;'
+            'border-top:none;padding:2px 10px 8px;margin-bottom:6px;">'
+            f'<div style="font:8px {_F};color:#333;margin-top:4px;">'
+            + (f"over the last {HOLD_FIXES * 2} min &middot; TS = "
+               "destination METAR reporting thunderstorm" if shown else
+               "checked every 2 min &middot; an aircraft appears here "
+               "when its track shows a holding pattern")
+            + "</div></div>",
+            unsafe_allow_html=True)
 
     def _page_body():
         col_b, col_m = st.columns([1, 2.6], gap="small")
@@ -3421,9 +3489,23 @@ if run_button or _auto:
             else:
                 st.markdown(_no_alerts(), unsafe_allow_html=True)
             st.markdown(_legend_html(), unsafe_allow_html=True)
-            _ht = _holding_table_html(_page_holds, _page_dest_by_cs)
-            if _ht:
-                st.markdown(_ht, unsafe_allow_html=True)
+            # BOTTOM-ALIGNED with the map. The key column is a flex
+            # column already; give it a minimum height matching the
+            # map column (METAR strip + map) and push the holding
+            # table to the bottom with margin-top:auto. A keyed
+            # container gives the CSS something to target. The 24 px
+            # is the floor of the gap under the key when the column
+            # is taller than the map.
+            st.markdown(
+                "<style>"
+                "div[data-testid='stColumn']:has(.st-key-hold_box) "
+                "div[data-testid='stVerticalBlock']:first-of-type"
+                f"{{min-height:{int(map_height) + 72}px;}}"
+                ".st-key-hold_box{margin-top:auto;padding-top:24px;}"
+                "</style>",
+                unsafe_allow_html=True)
+            with st.container(key="hold_box"):
+                _render_holding_table(_page_holds, _page_dest_by_cs)
         with col_m:
             if metar_rows:
                 st.markdown(render_metar_table(metar_rows),
