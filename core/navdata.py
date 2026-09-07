@@ -57,6 +57,10 @@ _CYCLE_DAYS = 28
 NAV_TYPES = set(x.strip().upper() for x in os.environ.get(
     "NAVDATA_TYPES", "VOR,VORTAC,VOR/DME,TACAN,DME").split(","))
 
+# ARTCC boundaries to keep. Empty set = all of them.
+ARTCC_IDS = set(x.strip().upper() for x in os.environ.get(
+    "NAVDATA_ARTCC", "ZDC,ZTL,ZJX,ZMA").split(",") if x.strip())
+
 _lock = threading.Lock()
 _started = set()
 
@@ -200,6 +204,77 @@ def parse_hpf(zbytes: bytes, fixes: dict, navs: dict, log=None) -> list:
     return out
 
 
+def parse_arb(zbytes: bytes, want: set = None, log=None) -> list:
+    """[{id, structure, path: [[lon, lat], ...]}] per ARTCC boundary.
+
+    NASR ARB_SEG.csv is one row per boundary POINT, keyed by the
+    ARTCC location id and an altitude structure (HIGH / LOW / BDRY),
+    ordered by a sequence number. HIGH is what an airline map wants
+    — jets are in it — with LOW as a fallback for a centre that
+    publishes only one.
+
+    Some boundaries (ZMA, ZNY, ZAN, ZOA) are more than one closed
+    shape. The legacy format marks the seam with the phrase
+    "TO POINT OF BEGINNING" in the point description; the same text
+    survives in the CSV description column, and a new shape starts
+    at the next point after it.
+    """
+    cols, rows = _read_csv(zbytes, "ARB_SEG")
+    c_id = _find(cols, "LOCATION_ID", ("LOC", "ID"), "ARTCC_ID", "ID")
+    c_str = _find(cols, ("ALT", "STRUCT"), "STRUCTURE", ("ALTITUDE",))
+    c_seq = _find(cols, ("POINT", "SEQ"), "SEQ")
+    c_lat = _find(cols, ("LAT", "DECIMAL"))
+    c_lon = _find(cols, ("LONG", "DECIMAL"), ("LON", "DECIMAL"))
+    c_desc = _find(cols, ("POINT", "DESC"), "DESCRIPTION", "DESC")
+    if log:
+        log(f"ARB columns: id={c_id} struct={c_str} seq={c_seq} "
+            f"lat={c_lat} lon={c_lon} desc={c_desc}")
+    groups = {}
+    for r in rows:
+        aid = (r.get(c_id) or "").strip().upper()
+        if not aid or (want and aid not in want):
+            continue
+        st_ = (r.get(c_str) or "").strip().upper() if c_str else ""
+        la, lo = _num(r.get(c_lat)), _num(r.get(c_lon))
+        if la is None or lo is None:
+            continue
+        seq = _num(r.get(c_seq)) if c_seq else None
+        desc = (r.get(c_desc) or "").upper() if c_desc else ""
+        groups.setdefault((aid, st_), []).append(
+            (seq if seq is not None else len(groups[(aid, st_)]),
+             lo, la, "BEGINNING" in desc))
+    out = []
+    for (aid, st_), pts in groups.items():
+        pts.sort(key=lambda t: t[0])
+        shapes, cur = [], []
+        for _, lo, la, seam in pts:
+            cur.append([lo, la])
+            if seam and len(cur) > 2:
+                shapes.append(cur)
+                cur = []
+        if len(cur) > 2:
+            shapes.append(cur)
+        for sh in shapes:
+            if sh[0] != sh[-1]:
+                sh.append(sh[0])          # close the ring
+            out.append({"id": aid, "structure": st_, "path": sh})
+    return out
+
+
+def pick_boundaries(arbs: list, prefer=("HIGH", "LOW", "BDRY", "")) -> list:
+    """One structure per ARTCC, preferring HIGH."""
+    by = {}
+    for b in arbs:
+        by.setdefault(b["id"], {}).setdefault(b["structure"], []).append(b)
+    out = []
+    for aid, structs in by.items():
+        for p in prefer:
+            if p in structs:
+                out.extend(structs[p])
+                break
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Build and load
 # ---------------------------------------------------------------------------
@@ -210,7 +285,7 @@ def build(cache_root, cycle: date = None, log=None) -> dict:
     cycle = cycle or current_cycle()
     log = log or (lambda m: None)
     got = {}
-    for grp in ("NAV", "FIX", "HPF"):
+    for grp in ("NAV", "FIX", "HPF", "ARB"):
         url = _zip_url(cycle, grp)
         r = requests.get(url, timeout=120,
                          headers={"User-Agent": "bluemet.org"})
@@ -223,11 +298,12 @@ def build(cache_root, cycle: date = None, log=None) -> dict:
     fixes = parse_fix(got["FIX"], log)
     nav_pos = {n["id"]: (n["lat"], n["lon"]) for n in navs}
     holds = parse_hpf(got["HPF"], fixes, nav_pos, log)
+    bounds = pick_boundaries(parse_arb(got["ARB"], ARTCC_IDS or None, log))
     doc = {"cycle": f"{cycle:%Y-%m-%d}",
            "built": datetime.now(timezone.utc).isoformat(),
-           "navaids": navs, "holds": holds,
+           "navaids": navs, "holds": holds, "artcc": bounds,
            "counts": {"navaids": len(navs), "fixes": len(fixes),
-                      "holds": len(holds)}}
+                      "holds": len(holds), "artcc": len(bounds)}}
     p = _cache_path(cache_root, cycle)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
