@@ -70,7 +70,7 @@ ARTCC_IDS = set(x.strip().upper() for x in os.environ.get(
 # cache for a cycle is rebuilt when its stored version is older —
 # without this, a deploy that adds routes or more centres appears to
 # do nothing until the next 28-day cycle.
-DATA_VERSION = 6
+DATA_VERSION = 7
 
 _lock = threading.Lock()
 _started = set()
@@ -486,27 +486,69 @@ ROUTES_GEOJSON = os.environ.get(
 # name changes; a failure falls back to the bundled geometry.
 AIS_ATS_URL = os.environ.get(
     "NAVDATA_AIS_ATS_URL",
-    "https://services6.arcgis.com/ssFJjBXIUyZDrSYZ/arcgis/rest/"
+    "https://services6.arcgis.com/ssFJjBXIUyZDrSYZ/ArcGIS/rest/"
     "services/ATS_Route/FeatureServer/0/query")
+
+
+def _chain_segments(segs: list) -> list:
+    """Join segment polylines end to end into as few paths as possible.
+
+    Greedy: start a chain, then keep appending any segment whose
+    start touches the chain's end (or whose end does, reversed).
+    When nothing touches, start a new chain. Returns paths longest
+    first. Endpoints match to ~100 m; AIS snaps segment ends to the
+    same fix coordinate, so exact-ish matching is enough.
+    """
+    def _same(a, b):
+        return abs(a[0] - b[0]) < 1e-3 and abs(a[1] - b[1]) < 1e-3
+
+    pool = [list(sg) for sg in segs if len(sg) > 1]
+    chains = []
+    while pool:
+        chain = pool.pop(0)
+        grew = True
+        while grew and pool:
+            grew = False
+            for i, sg in enumerate(pool):
+                if _same(chain[-1], sg[0]):
+                    chain.extend(sg[1:]); pool.pop(i); grew = True; break
+                if _same(chain[-1], sg[-1]):
+                    chain.extend(list(reversed(sg))[1:]); pool.pop(i)
+                    grew = True; break
+                if _same(chain[0], sg[-1]):
+                    chain = sg[:-1] + chain; pool.pop(i); grew = True
+                    break
+                if _same(chain[0], sg[0]):
+                    chain = list(reversed(sg))[:-1] + chain; pool.pop(i)
+                    grew = True; break
+        chains.append(chain)
+    chains.sort(key=len, reverse=True)
+    return chains
 
 
 def ais_routes(idents, log=None) -> dict:
     """{ident: [[lon, lat], ...]} from the AIS ATS Route layer, full
-    length. Missing idents are simply absent from the result."""
+    length. Missing idents are simply absent from the result.
+
+    Two things about that layer that bit on first contact: it has
+    Z, so every coordinate is a triple and only the first two values
+    are wanted; and each ROUTE is many features, one per segment
+    between fixes, which have to be chained back into one line.
+    """
     import requests
 
     idents = sorted(set(i for i in idents if i))
     if not idents:
         return {}
-    out = {}
-    # Batches of 25 keep the WHERE clause short enough for a GET.
+    segs = {}
     for i in range(0, len(idents), 25):
         batch = idents[i:i + 25]
         where = "IDENT IN (" + ",".join(f"'{x}'" for x in batch) + ")"
         try:
             r = requests.get(AIS_ATS_URL, params={
-                "where": where, "outFields": "IDENT,TYPE_CODE",
-                "outSR": "4326", "f": "geojson", "resultRecordCount": 2000,
+                "where": where, "outFields": "IDENT",
+                "outSR": "4326", "f": "geojson",
+                "returnZ": "false", "resultRecordCount": 2000,
             }, timeout=60, headers={"User-Agent": "bluemet.org"})
             if r.status_code != 200:
                 if log:
@@ -520,23 +562,27 @@ def ais_routes(idents, log=None) -> dict:
         for f in g.get("features", []):
             ident = (f.get("properties", {}).get("IDENT") or "").upper()
             geom = f.get("geometry") or {}
-            coords = []
+            parts = []
             if geom.get("type") == "LineString":
-                coords = geom["coordinates"]
+                parts = [geom["coordinates"]]
             elif geom.get("type") == "MultiLineString":
-                # Join the parts end to end; AIS splits long routes
-                # into pieces that are contiguous in order.
-                for part in geom["coordinates"]:
-                    coords.extend(part)
-            if ident and len(coords) > 1:
-                pts = [[float(x), float(y)] for x, y in coords]
-                # A route can come back as several features (one per
-                # segment); keep the longest, extend if contiguous.
-                if ident in out and len(out[ident]) >= len(pts):
-                    continue
-                out[ident] = pts
+                parts = geom["coordinates"]
+            for part in parts:
+                pts = [[float(c[0]), float(c[1])] for c in part
+                       if len(c) >= 2]
+                if ident and len(pts) > 1:
+                    segs.setdefault(ident, []).append(pts)
+    out = {}
+    for ident, sg in segs.items():
+        chains = _chain_segments(sg)
+        if chains:
+            # Almost always one chain. If the segments do not all
+            # connect, keep the longest — it is the route; the rest
+            # are usually a disjoint stub at one end.
+            out[ident] = chains[0]
     if log:
-        log(f"AIS ATS: {len(out)} of {len(idents)} idents at full length")
+        log(f"AIS ATS: {len(out)} of {len(idents)} idents at full length "
+            f"({sum(len(v) for v in segs.values())} segments chained)")
     return out
 
 
