@@ -2359,8 +2359,12 @@ if run_button or _auto:
                      "with zoom: invisible at CONUS, readable in a "
                      "terminal area.")
         with _ctl[4]:
+            # OFF by default. At CONUS zoom this is two to four
+            # thousand aircraft and the fleet vanishes under them; it
+            # earns its place zoomed into a terminal area, where seeing
+            # what a JetBlue aircraft is flying among is the point.
             show_others = st.checkbox(
-                "Other airlines", value=True, key="show_others",
+                "Other airlines", value=False, key="show_others",
                 help="Every other airline's aircraft, small and grey, "
                      "under the JetBlue fleet. Hover for the callsign.")
         with _ctl[5]:
@@ -3063,8 +3067,8 @@ if run_button or _auto:
                         "IconLayer", data=_oth,
                         get_position="[lon, lat]",
                         get_icon="icon", get_angle="angle",
-                        get_size=13, size_units="pixels",
-                        size_min_pixels=8, size_max_pixels=16,
+                        get_size=9, size_units="pixels",
+                        size_min_pixels=6, size_max_pixels=12,
                         pickable=True,
                     ))
 
