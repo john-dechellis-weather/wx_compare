@@ -2376,8 +2376,8 @@ if run_button or _auto:
         with _ctl[6]:
             show_routes = st.checkbox(
                 "Routes", value=False, key="show_routes",
-                help="High-altitude J and Q routes at full length from "
-                     "the FAA NASR cycle, plus oceanic L-routes.")
+                help="The 58 ATS routes on the map: 42 domestic J and Q "
+                     "routes and 16 oceanic L-routes, as exported.")
         with _ctl[5]:
             show_centers = st.checkbox(
                 "Centers", value=False, key="show_centers",
