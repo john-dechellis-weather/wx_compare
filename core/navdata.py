@@ -57,9 +57,14 @@ _CYCLE_DAYS = 28
 NAV_TYPES = set(x.strip().upper() for x in os.environ.get(
     "NAVDATA_TYPES", "VOR,VORTAC,VOR/DME,TACAN,DME").split(","))
 
-# ARTCC boundaries to keep. Empty set = all of them.
+# ARTCC boundaries to keep. Default: every CONUS centre. The ARB
+# file also carries Anchorage, Honolulu, Guam and the oceanic FIRs,
+# which stretch a CONUS map to nothing; those are the ones left out.
+# NAVDATA_ARTCC overrides; empty string means all of them.
+_CONUS_ARTCC = ("ZAB,ZAU,ZBW,ZDC,ZDV,ZFW,ZHU,ZID,ZJX,ZKC,ZLA,ZLC,"
+                "ZMA,ZME,ZMP,ZNY,ZOA,ZOB,ZSE,ZTL")
 ARTCC_IDS = set(x.strip().upper() for x in os.environ.get(
-    "NAVDATA_ARTCC", "ZDC,ZTL,ZJX,ZMA").split(",") if x.strip())
+    "NAVDATA_ARTCC", _CONUS_ARTCC).split(",") if x.strip())
 
 _lock = threading.Lock()
 _started = set()
@@ -135,14 +140,15 @@ def parse_nav(zbytes: bytes, log=None) -> list:
     out = []
     for r in rows:
         t = (r.get(c_type) or "").strip().upper()
-        if t not in NAV_TYPES:
-            continue
         la, lo = _num(r.get(c_lat)), _num(r.get(c_lon))
         if la is None or lo is None:
             continue
         out.append({"id": (r.get(c_id) or "").strip().upper(),
                     "type": t, "name": (r.get(c_name) or "").strip(),
-                    "lat": la, "lon": lo})
+                    "lat": la, "lon": lo,
+                    # drawn on the map, or kept only for joining
+                    # airways and holds to a position
+                    "draw": t in NAV_TYPES})
     return out
 
 
@@ -261,6 +267,56 @@ def parse_arb(zbytes: bytes, want: set = None, log=None) -> list:
     return out
 
 
+def parse_awy(zbytes: bytes, fixes: dict, navs: dict, want=None,
+              log=None) -> list:
+    """[{id, type, path: [[lon, lat], ...], fixes: [id, ...]}] — one
+    per airway, full length, from NASR AWY_SEG.csv.
+
+    An airway is a sequence of points, each a fix or a navaid id, in
+    order. Positions come from joining to FIX_BASE and NAV_BASE. A
+    point that cannot be placed is skipped rather than breaking the
+    route; a route with fewer than two placed points is dropped.
+
+    `want` limits to a set of idents (J60, Q409 ...) or a set of
+    prefixes ("J", "Q"). None keeps every airway in the file.
+    """
+    cols, rows = _read_csv(zbytes, "AWY_SEG")
+    c_id = _find(cols, "AWY_ID", ("AWY", "ID"), "AIRWAY")
+    c_seq = _find(cols, ("POINT", "SEQ"), "SEQ")
+    c_pt = _find(cols, ("NAV", "ID"), "FIX_ID", ("FIX", "ID"),
+                 ("POINT", "ID"), "POINT")
+    c_typ = _find(cols, "AWY_TYPE", ("AWY", "TYPE"))
+    if log:
+        log(f"AWY columns: id={c_id} seq={c_seq} point={c_pt} type={c_typ}")
+    want = set(x.upper() for x in want) if want else None
+    groups = {}
+    for r in rows:
+        aid = (r.get(c_id) or "").strip().upper()
+        if not aid:
+            continue
+        if want and aid not in want and not any(
+                aid.startswith(w) and len(w) == 1 for w in want):
+            continue
+        pid = (r.get(c_pt) or "").strip().upper()
+        pos = fixes.get(pid) or navs.get(pid)
+        if not pos:
+            continue
+        seq = _num(r.get(c_seq)) if c_seq else None
+        g = groups.setdefault(aid, {"type": (r.get(c_typ) or "").strip()
+                                    if c_typ else "", "pts": []})
+        g["pts"].append((seq if seq is not None else len(g["pts"]),
+                         pid, pos[1], pos[0]))
+    out = []
+    for aid, g in groups.items():
+        g["pts"].sort(key=lambda t: t[0])
+        if len(g["pts"]) < 2:
+            continue
+        out.append({"id": aid, "type": g["type"],
+                    "path": [[lo, la] for _, _, lo, la in g["pts"]],
+                    "fixes": [pid for _, pid, _, _ in g["pts"]]})
+    return out
+
+
 def pick_boundaries(arbs: list, prefer=("HIGH", "LOW", "BDRY", "")) -> list:
     """One structure per ARTCC, preferring HIGH."""
     by = {}
@@ -285,7 +341,7 @@ def build(cache_root, cycle: date = None, log=None) -> dict:
     cycle = cycle or current_cycle()
     log = log or (lambda m: None)
     got = {}
-    for grp in ("NAV", "FIX", "HPF", "ARB"):
+    for grp in ("NAV", "FIX", "HPF", "ARB", "AWY"):
         url = _zip_url(cycle, grp)
         r = requests.get(url, timeout=120,
                          headers={"User-Agent": "bluemet.org"})
@@ -299,11 +355,26 @@ def build(cache_root, cycle: date = None, log=None) -> dict:
     nav_pos = {n["id"]: (n["lat"], n["lon"]) for n in navs}
     holds = parse_hpf(got["HPF"], fixes, nav_pos, log)
     bounds = pick_boundaries(parse_arb(got["ARB"], ARTCC_IDS or None, log))
+    routes = parse_awy(got["AWY"], fixes, nav_pos, ROUTE_PREFIXES, log)
+    routes += oceanic_routes(log)
+    # Fixes that sit on a drawn route, with positions, for the
+    # middle density setting on the map.
+    on_route = {}
+    for rt in routes:
+        for pid, (lo, la) in zip(rt.get("fixes", []), rt["path"]):
+            if pid and pid not in on_route:
+                on_route[pid] = (la, lo)
+    route_fixes = [{"id": k, "lat": v[0], "lon": v[1]}
+                   for k, v in on_route.items()]
+    navs = [n for n in navs if n.get("draw")]
     doc = {"cycle": f"{cycle:%Y-%m-%d}",
            "built": datetime.now(timezone.utc).isoformat(),
            "navaids": navs, "holds": holds, "artcc": bounds,
+           "routes": routes, "route_fixes": route_fixes,
            "counts": {"navaids": len(navs), "fixes": len(fixes),
-                      "holds": len(holds), "artcc": len(bounds)}}
+                      "holds": len(holds), "artcc": len(bounds),
+                      "routes": len(routes),
+                      "route_fixes": len(route_fixes)}}
     p = _cache_path(cache_root, cycle)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
@@ -311,6 +382,46 @@ def build(cache_root, cycle: date = None, log=None) -> dict:
     os.replace(tmp, p)
     log(f"built {cycle}: {doc['counts']}")
     return doc
+
+
+# Airway prefixes drawn as "major routes". J = high-altitude jet
+# routes, Q = high-altitude RNAV. V (victor) and T are low-altitude
+# and would triple the line count for nothing an airline dispatcher
+# needs.
+ROUTE_PREFIXES = set(x.strip().upper() for x in os.environ.get(
+    "NAVDATA_ROUTES", "J,Q").split(",") if x.strip())
+
+# Oceanic L-routes are not in NASR's AWY group. They come from the
+# FAA AIS Open Data ATS Route layer, exported to GeoJSON and bundled
+# with the repo. Clipped to the western North Atlantic at export.
+OCEANIC_GEOJSON = os.environ.get(
+    "NAVDATA_OCEANIC",
+    str(Path(__file__).resolve().parent.parent / "static"
+        / "oceanic_routes.geojson"))
+
+
+def oceanic_routes(log=None) -> list:
+    try:
+        g = json.loads(Path(OCEANIC_GEOJSON).read_text())
+    except Exception as exc:
+        if log:
+            log(f"oceanic routes: {type(exc).__name__}: {exc}")
+        return []
+    out = []
+    for f in g.get("features", []):
+        pr = f.get("properties", {})
+        if pr.get("family") != "oceanic":
+            continue
+        geom = f.get("geometry", {})
+        if geom.get("type") != "LineString":
+            continue
+        out.append({"id": pr.get("ident", ""), "type": "OCEAN",
+                    "path": [[float(x), float(y)]
+                             for x, y in geom["coordinates"]],
+                    "fixes": []})
+    if log:
+        log(f"oceanic routes: {len(out)} from GeoJSON")
+    return out
 
 
 def _log_to(cache_root):
