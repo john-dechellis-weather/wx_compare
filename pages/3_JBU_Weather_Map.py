@@ -2320,8 +2320,9 @@ if run_button or _auto:
         # layer list, so `radar_on` was read before it existed —
         # "name 'radar_on' is not defined". A control has to be
         # declared before anything reads it.
-        # Six controls. No spacer column any more; six is the width.
-        _ctl = st.columns([1.0, 1.0, 1.2, 0.9, 1.1, 1.0], gap="small")
+        # Seven controls across the top of the map.
+        _ctl = st.columns([1.0, 1.0, 1.1, 1.3, 0.9, 1.0, 0.9],
+                          gap="small")
         with _ctl[0]:
             show_cs = st.checkbox(
                 "Flight numbers", value=True, key="show_cs_f",
@@ -2349,15 +2350,20 @@ if run_button or _auto:
                      "aircraft.")
             track_age_s = float(_TRACK_OPTS[_track_lab])
         with _ctl[3]:
-            # Published holding fixes and VOR-class navaids from the
-            # FAA NASR cycle. Off by default: ~3,000 marks is clutter
-            # at CONUS zoom and useful only when looking at a hold.
-            show_fixes = st.checkbox(
-                "Fixes", value=False, key="show_fixes",
-                help="FAA published holding fixes (diamonds) and "
-                     "VOR/VORTAC navaids (triangles). Labels scale "
-                     "with zoom: invisible at CONUS, readable in a "
-                     "terminal area.")
+            # FIX DENSITY. Each step adds a tier: published holding
+            # fixes are the ones a dispatcher wants first; navaids
+            # next; then every fix on a drawn route. Off is a tier
+            # too, so this replaces the on/off checkbox.
+            _FIX_TIERS = ["Off", "Holds", "Holds + navaids",
+                          "+ Route fixes"]
+            _fix_lab = st.select_slider(
+                "Fixes", options=_FIX_TIERS, value="Off",
+                key="fix_density", label_visibility="collapsed",
+                help="Fix density. Holds: published holding fixes. "
+                     "Then VOR-class navaids. Then every fix on a "
+                     "drawn route. Labels scale with zoom.")
+            fix_tier = _FIX_TIERS.index(_fix_lab)
+            show_fixes = fix_tier > 0
         with _ctl[4]:
             # OFF by default. At CONUS zoom this is two to four
             # thousand aircraft and the fleet vanishes under them; it
@@ -2367,11 +2373,16 @@ if run_button or _auto:
                 "Other airlines", value=False, key="show_others",
                 help="Every other airline's aircraft, small and grey, "
                      "under the JetBlue fleet. Hover for the callsign.")
+        with _ctl[6]:
+            show_routes = st.checkbox(
+                "Routes", value=False, key="show_routes",
+                help="High-altitude J and Q routes at full length from "
+                     "the FAA NASR cycle, plus oceanic L-routes.")
         with _ctl[5]:
             show_centers = st.checkbox(
                 "Centers", value=False, key="show_centers",
-                help="ARTCC boundaries from the FAA NASR cycle (high "
-                     "structure): ZDC, ZTL, ZJX, ZMA.")
+                help="All 20 CONUS ARTCC boundaries from the FAA NASR "
+                     "cycle, high-altitude structure.")
         # FIXED opacity, no widget.
         #
         # pydeck cannot change a layer property client-side, so every
@@ -2533,13 +2544,58 @@ if run_button or _auto:
             except Exception as _ce:
                 st.caption(f"Centers unavailable ({_ce}).")
 
+        # ROUTES: J and Q at full length from NASR, L-routes from the
+        # bundled GeoJSON. Thin, so they read as structure rather than
+        # as something to look at. Label at each route's midpoint at
+        # a size that only resolves when zoomed in.
+        if show_routes:
+            try:
+                from core import navdata as _ND3
+
+                _ND3.ensure(_MAP_CACHE_ROOT)
+                _nd3 = _ND3.load(_MAP_CACHE_ROOT)
+                _rts = (_nd3 or {}).get("routes", [])
+                if _rts:
+                    _rt_data = [{"path": r["path"], "id": r["id"],
+                                 "oc": r.get("type") == "OCEAN"}
+                                for r in _rts if len(r["path"]) > 1]
+                    layers.append(pdk.Layer(
+                        "PathLayer", data=_rt_data,
+                        get_path="path",
+                        get_color="[oc ? 30 : 70, oc ? 90 : 70, "
+                                  "oc ? 170 : 70, 140]",
+                        get_width=1.0, width_units="pixels",
+                        width_min_pixels=1, width_max_pixels=1,
+                        pickable=True,
+                    ))
+                    _rt_lbl = []
+                    for r in _rt_data:
+                        m = r["path"][len(r["path"]) // 2]
+                        _rt_lbl.append({"lon": m[0], "lat": m[1],
+                                        "id": r["id"]})
+                    layers.append(pdk.Layer(
+                        "TextLayer", data=_rt_lbl,
+                        get_position="[lon, lat]", get_text="id",
+                        get_size=1300, size_units="meters",
+                        size_min_pixels=0, size_max_pixels=12,
+                        get_color=[60, 60, 60, 210],
+                        get_text_anchor='"middle"',
+                        get_alignment_baseline='"center"',
+                        pickable=False,
+                    ))
+                elif _nd3 is None:
+                    st.caption("Routes: FAA NASR data downloading for "
+                               "this cycle; appears on the next refresh.")
+            except Exception as _rte:
+                st.caption(f"Routes unavailable ({_rte}).")
+
         # FIXES AND NAVAIDS, under the station dots. Sizes are in
         # METERS so they scale with the map: at CONUS zoom a 1.5 km
         # label is a sub-pixel smudge and the marks are specks; zoomed
         # to a terminal area they are readable. That is the only way
         # to put 3,000 marks on a map without a zoom-dependent layer,
         # which pydeck cannot express.
-        _fix_rows, _nav_rows = [], []
+        _fix_rows, _nav_rows, _rf_rows = [], [], []
         if show_fixes:
             try:
                 from core import navdata as _ND
@@ -2555,10 +2611,19 @@ if run_button or _auto:
                                           + (f" {h['turn']} turns"
                                              if h.get("turn") else ""))}
                                  for h in _nd.get("holds", [])]
-                    _nav_rows = [{"lon": n["lon"], "lat": n["lat"],
-                                  "id": n["id"],
-                                  "tip": f"{n['type']} {n['id']} {n['name']}"}
-                                 for n in _nd.get("navaids", [])]
+                    if fix_tier >= 2:
+                        _nav_rows = [{"lon": n["lon"], "lat": n["lat"],
+                                      "id": n["id"],
+                                      "tip": f"{n['type']} {n['id']} "
+                                             f"{n['name']}"}
+                                     for n in _nd.get("navaids", [])]
+                    if fix_tier >= 3:
+                        # Route fixes that are not already a hold.
+                        _hold_ids = {h["id"] for h in _fix_rows}
+                        _rf_rows = [{"lon": f["lon"], "lat": f["lat"],
+                                     "id": f["id"], "tip": f["id"]}
+                                    for f in _nd.get("route_fixes", [])
+                                    if f["id"] not in _hold_ids]
                 else:
                     st.caption("Fixes: FAA NASR data downloading for "
                                "this cycle; appears on the next refresh.")
@@ -2583,6 +2648,27 @@ if run_button or _auto:
                 get_text_anchor='"middle"',
                 get_alignment_baseline='"top"',
                 get_pixel_offset=[0, 6],
+                pickable=False,
+            ))
+        if _rf_rows:
+            layers.append(pdk.Layer(
+                "ScatterplotLayer", data=_rf_rows,
+                get_position="[lon, lat]",
+                get_fill_color=[110, 110, 110, 170],
+                get_radius=700, radius_units="meters",
+                radius_min_pixels=1, radius_max_pixels=3,
+                stroked=False, pickable=True,
+            ))
+            layers.append(pdk.Layer(
+                "TextLayer", data=_rf_rows,
+                get_position="[lon, lat]",
+                get_text="id",
+                get_size=1100, size_units="meters",
+                size_min_pixels=0, size_max_pixels=11,
+                get_color=[90, 90, 90, 200],
+                get_text_anchor='"middle"',
+                get_alignment_baseline='"top"',
+                get_pixel_offset=[0, 4],
                 pickable=False,
             ))
         if _fix_rows:
