@@ -70,7 +70,7 @@ ARTCC_IDS = set(x.strip().upper() for x in os.environ.get(
 # cache for a cycle is rebuilt when its stored version is older —
 # without this, a deploy that adds routes or more centres appears to
 # do nothing until the next 28-day cycle.
-DATA_VERSION = 3
+DATA_VERSION = 4
 
 _lock = threading.Lock()
 _started = set()
@@ -94,15 +94,20 @@ def _cache_path(cache_root, cycle: date) -> Path:
 # ---------------------------------------------------------------------------
 # Column matching
 # ---------------------------------------------------------------------------
-def _find(cols, *patterns):
+def _find(cols, *patterns, exclude=()):
     """First column whose upper-cased name matches all the given
-    substrings. Returns the ORIGINAL header text."""
+    substrings and none of `exclude`. Returns the ORIGINAL header.
+
+    `exclude` exists because a loose fallback pattern will happily
+    match the wrong column: "POINT" matched POINT_SEQ before it ever
+    reached FROM_POINT, so every airway point id became a sequence
+    number and no route could be placed. Seen live 7 Sep."""
     up = {c.upper().strip(): c for c in cols}
     for pats in patterns:
         if isinstance(pats, str):
             pats = (pats,)
         for u, orig in up.items():
-            if all(p in u for p in pats):
+            if all(p in u for p in pats) and not any(x in u for x in exclude):
                 return orig
     return None
 
@@ -289,11 +294,15 @@ def parse_awy(zbytes: bytes, fixes: dict, navs: dict, want=None,
     cols, rows = _read_csv(zbytes, "AWY_SEG")
     c_id = _find(cols, "AWY_ID", ("AWY", "ID"), "AIRWAY")
     c_seq = _find(cols, ("POINT", "SEQ"), "SEQ")
-    c_pt = _find(cols, ("NAV", "ID"), "FIX_ID", ("FIX", "ID"),
-                 ("POINT", "ID"), "POINT")
+    _no = ("SEQ", "TYPE", "NAME", "CITY", "COURSE", "DIST")
+    c_pt = _find(cols, "FROM_POINT", ("FROM", "PT"), ("POINT", "ID"),
+                 ("NAV", "ID"), "FIX_ID", ("FIX", "ID"), "POINT",
+                 exclude=_no)
+    c_to = _find(cols, "TO_POINT", ("TO", "PT"), exclude=_no)
     c_typ = _find(cols, "AWY_TYPE", ("AWY", "TYPE"))
     if log:
-        log(f"AWY columns: id={c_id} seq={c_seq} point={c_pt} type={c_typ}")
+        log(f"AWY columns: id={c_id} seq={c_seq} point={c_pt} "
+            f"to={c_to} type={c_typ} | all: {list(cols)}")
     want = set(x.upper() for x in want) if want else None
     groups = {}
     for r in rows:
@@ -303,23 +312,48 @@ def parse_awy(zbytes: bytes, fixes: dict, navs: dict, want=None,
         if want and aid not in want and not any(
                 aid.startswith(w) and len(w) == 1 for w in want):
             continue
-        pid = (r.get(c_pt) or "").strip().upper()
-        pos = fixes.get(pid) or navs.get(pid)
-        if not pos:
-            continue
         seq = _num(r.get(c_seq)) if c_seq else None
         g = groups.setdefault(aid, {"type": (r.get(c_typ) or "").strip()
-                                    if c_typ else "", "pts": []})
-        g["pts"].append((seq if seq is not None else len(g["pts"]),
-                         pid, pos[1], pos[0]))
+                                    if c_typ else "", "pts": [],
+                                    "unplaced": 0})
+        pid = (r.get(c_pt) or "").strip().upper()
+        pos = fixes.get(pid) or navs.get(pid)
+        if pos:
+            g["pts"].append((seq if seq is not None else len(g["pts"]),
+                             pid, pos[1], pos[0]))
+        else:
+            g["unplaced"] += 1
+        # Segment files list FROM and TO per row; the final TO point
+        # is not any row's FROM, so add it with a half-step sequence
+        # so it sorts after its own FROM.
+        if c_to:
+            tid = (r.get(c_to) or "").strip().upper()
+            tpos = fixes.get(tid) or navs.get(tid)
+            if tpos:
+                g["pts"].append(((seq if seq is not None
+                                  else len(g["pts"])) + 0.5,
+                                 tid, tpos[1], tpos[0]))
     out = []
+    unplaced = 0
     for aid, g in groups.items():
         g["pts"].sort(key=lambda t: t[0])
-        if len(g["pts"]) < 2:
+        # TO-points duplicate the next row's FROM-point; drop
+        # consecutive repeats so the path has no zero-length legs.
+        pts = []
+        for t in g["pts"]:
+            if not pts or pts[-1][1] != t[1]:
+                pts.append(t)
+        unplaced += g["unplaced"]
+        if len(pts) < 2:
             continue
         out.append({"id": aid, "type": g["type"],
-                    "path": [[lo, la] for _, _, lo, la in g["pts"]],
-                    "fixes": [pid for _, pid, _, _ in g["pts"]]})
+                    "path": [[lo, la] for _, _, lo, la in pts],
+                    "fixes": [pid for _, pid, _, _ in pts]})
+    if log:
+        log(f"AWY: {len(out)} routes placed from {len(groups)} ids; "
+            f"{unplaced} points had no fix/navaid match")
+        if not out and rows:
+            log(f"AWY sample row: {dict(list(rows[0].items())[:8])}")
     return out
 
 
