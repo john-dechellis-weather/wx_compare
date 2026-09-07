@@ -70,7 +70,7 @@ ARTCC_IDS = set(x.strip().upper() for x in os.environ.get(
 # cache for a cycle is rebuilt when its stored version is older —
 # without this, a deploy that adds routes or more centres appears to
 # do nothing until the next 28-day cycle.
-DATA_VERSION = 5
+DATA_VERSION = 6
 
 _lock = threading.Lock()
 _started = set()
@@ -395,7 +395,41 @@ def build(cache_root, cycle: date = None, log=None) -> dict:
     nav_pos = {n["id"]: (n["lat"], n["lon"]) for n in navs}
     holds = parse_hpf(got["HPF"], fixes, nav_pos, log)
     bounds = pick_boundaries(parse_arb(got["ARB"], ARTCC_IDS or None, log))
-    routes = bundled_routes(log)
+    # THE 58 ROUTES, AT FULL LENGTH. The bundled export defines
+    # WHICH routes; the full geometry comes from source:
+    #   domestic J/Q  -> NASR AWY, joined to fix positions
+    #   oceanic L     -> FAA AIS ATS Route layer, by ident
+    # Anything the sources cannot supply keeps its exported (clipped)
+    # geometry, so a network failure degrades to the previous map
+    # rather than to a blank one. The log says which happened.
+    bundled = bundled_routes(log)
+    want_dom = {r["id"] for r in bundled if r["type"] != "OCEAN"}
+    want_oc = {r["id"] for r in bundled if r["type"] == "OCEAN"}
+    full_dom = {r["id"]: r for r in parse_awy(
+        got["AWY"], fixes, nav_pos, want_dom, log)}
+    try:
+        full_oc = ais_routes(want_oc, log)
+    except Exception as exc:
+        log(f"AIS ATS failed: {type(exc).__name__}: {exc}")
+        full_oc = {}
+    routes, seen = [], set()
+    n_full = 0
+    for r in bundled:
+        if r["id"] in seen:
+            continue                 # export split some routes in two
+        seen.add(r["id"])
+        if r["type"] == "OCEAN" and r["id"] in full_oc:
+            routes.append({**r, "path": full_oc[r["id"]]}); n_full += 1
+        elif r["type"] != "OCEAN" and r["id"] in full_dom:
+            routes.append({**r, "path": full_dom[r["id"]]["path"],
+                           "fixes": full_dom[r["id"]]["fixes"]})
+            n_full += 1
+        else:
+            # keep every exported piece of a route that could not be
+            # extended, so nothing that was drawn before vanishes
+            routes.extend(x for x in bundled if x["id"] == r["id"])
+    log(f"routes: {len(seen)} idents, {n_full} at full length, "
+        f"{len(seen) - n_full} kept as exported")
     if ROUTE_PREFIXES:
         routes += parse_awy(got["AWY"], fixes, nav_pos, ROUTE_PREFIXES,
                             log)
@@ -444,6 +478,66 @@ ROUTES_GEOJSON = os.environ.get(
     "NAVDATA_ROUTES_GEOJSON",
     str(Path(__file__).resolve().parent.parent / "static"
         / "map_routes.geojson"))
+
+
+# FAA AIS Open Data, ATS Route feature layer. This is what the
+# bundled export was cut from; querying it by ident returns the
+# same routes at FULL length. Env-overridable in case the service
+# name changes; a failure falls back to the bundled geometry.
+AIS_ATS_URL = os.environ.get(
+    "NAVDATA_AIS_ATS_URL",
+    "https://services6.arcgis.com/ssFJjBXIUyZDrSYZ/arcgis/rest/"
+    "services/ATS_Route/FeatureServer/0/query")
+
+
+def ais_routes(idents, log=None) -> dict:
+    """{ident: [[lon, lat], ...]} from the AIS ATS Route layer, full
+    length. Missing idents are simply absent from the result."""
+    import requests
+
+    idents = sorted(set(i for i in idents if i))
+    if not idents:
+        return {}
+    out = {}
+    # Batches of 25 keep the WHERE clause short enough for a GET.
+    for i in range(0, len(idents), 25):
+        batch = idents[i:i + 25]
+        where = "IDENT IN (" + ",".join(f"'{x}'" for x in batch) + ")"
+        try:
+            r = requests.get(AIS_ATS_URL, params={
+                "where": where, "outFields": "IDENT,TYPE_CODE",
+                "outSR": "4326", "f": "geojson", "resultRecordCount": 2000,
+            }, timeout=60, headers={"User-Agent": "bluemet.org"})
+            if r.status_code != 200:
+                if log:
+                    log(f"AIS ATS: HTTP {r.status_code} for {batch[:3]}...")
+                continue
+            g = r.json()
+        except Exception as exc:
+            if log:
+                log(f"AIS ATS: {type(exc).__name__}: {exc}")
+            continue
+        for f in g.get("features", []):
+            ident = (f.get("properties", {}).get("IDENT") or "").upper()
+            geom = f.get("geometry") or {}
+            coords = []
+            if geom.get("type") == "LineString":
+                coords = geom["coordinates"]
+            elif geom.get("type") == "MultiLineString":
+                # Join the parts end to end; AIS splits long routes
+                # into pieces that are contiguous in order.
+                for part in geom["coordinates"]:
+                    coords.extend(part)
+            if ident and len(coords) > 1:
+                pts = [[float(x), float(y)] for x, y in coords]
+                # A route can come back as several features (one per
+                # segment); keep the longest, extend if contiguous.
+                if ident in out and len(out[ident]) >= len(pts):
+                    continue
+                out[ident] = pts
+    if log:
+        log(f"AIS ATS: {len(out)} of {len(idents)} idents at full length")
+    return out
 
 
 def bundled_routes(log=None) -> list:
