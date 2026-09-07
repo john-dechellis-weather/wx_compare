@@ -3392,9 +3392,11 @@ if run_button or _auto:
             ".st-key-hold_box [data-testid='stMarkdownContainer'] p"
             "{margin:0;}"
             ".st-key-hold_box [data-testid='stVerticalBlock']"
-            "{gap:3px !important;}"
+            "{gap:2px !important;min-height:0 !important;}"
             ".st-key-hold_box [data-testid='stHorizontalBlock']"
             "{gap:4px !important;align-items:center;}"
+            ".st-key-hold_box [data-testid='stElementContainer']"
+            "{margin:0 !important;}"
             ".st-key-hold_box button{"
             f"font:bold 10px {_F} !important;color:#000 !important;"
             "background:#FFF !important;border:1px solid #000 !important;"
@@ -3411,8 +3413,9 @@ if run_button or _auto:
                  else "Aircraft in holding")
         color = "#7A0000" if shown else "#333"
         st.markdown(
-            f'<div style="font:bold 14px Georgia,serif;color:{color};'
-            'margin-bottom:4px;">' + title + "</div>",
+            f'<div style="display:block;font:bold 14px Georgia,serif;'
+            f'color:{color};line-height:20px;padding:0 0 6px;">'
+            + title + "</div>",
             unsafe_allow_html=True)
 
         def _frame(inner):
@@ -3495,12 +3498,14 @@ if run_button or _auto:
             # is taller than the map.
             st.markdown(
                 "<style>"
+                # ONLY the column's own vertical block gets the minimum
+                # height. The earlier selector matched every vertical
+                # block under the column, including the one INSIDE the
+                # holding box, which stretched the box to map height
+                # and pushed its rows to the bottom of it.
                 "div[data-testid='stColumn']:has(.st-key-hold_box) "
-                "div[data-testid='stVerticalBlock']:first-of-type"
+                "div[data-testid='stVerticalBlock']:not(.st-key-hold_box *)"
                 f"{{min-height:{int(map_height) + 72}px;}}"
-                # The box is pushed to the column's bottom; the column's
-                # own row gap (~16 px) is the floor of the space under
-                # the key when the column is taller than the map.
                 ".st-key-hold_box{margin-top:auto !important;}"
                 "</style>",
                 unsafe_allow_html=True)
