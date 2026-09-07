@@ -2935,69 +2935,8 @@ if run_button or _auto:
             )
             with st.expander("Fleet fetch traceback"):
                 st.code(_fleet_tb or "", language="text")
-        # HOLDING ALERT. Big and red, above the map, one line per
-        # aircraft. A hold is a decision point for the SOC — fuel,
-        # diversion, crew time — and it is the one thing on this map
-        # that should interrupt whoever is looking at it.
-        from html import escape
-
-        # Computed once at page level (see _compute_holds below) so
-        # the table under the map key and this banner agree.
-        _holds = _page_holds
-        _dest_by_cs = _page_dest_by_cs
-
-        # PER-AIRCRAFT DISMISS. Each alert line has a button; a
-        # dismissed callsign stays out of the banner for THIS viewer
-        # until it stops holding, after which a new hold alerts
-        # again. Session-scoped: one person clearing an alert must
-        # not clear it for the whole SOC.
-        _dismissed = st.session_state.setdefault("_hold_dismissed", set())
-        _live = {c for c, *_ in _holds}
-        _dismissed &= _live          # forget dismissals for ended holds
-        _hold_cs = {c for c, *_ in _holds}
-        _shown = [x for x in _holds if x[0] not in _dismissed]
-        if _shown:
-            st.markdown(
-                "<div style='background:#FFD9D9;border:3px solid "
-                "#B30000;border-radius:6px;padding:8px 14px 2px;"
-                "margin:6px 0 0;font-size:20px;font-weight:700;"
-                "color:#7A0000;'>Holding pattern alert</div>",
-                unsafe_allow_html=True)
-            for c, p, _d, t, l, _dts in _shown:
-                _lc, _loc, _bc = st.columns([5, 1, 1], gap="small")
-                with _lc:
-                    st.markdown(
-                        "<div style='background:#FFD9D9;padding:4px 14px;"
-                        "font-size:18px;color:#7A0000;line-height:1.5;'>"
-                        f"\u26a0 <b>{escape(c)}</b> potentially in "
-                        f"holding pattern "
-                        + (f"&mdash; <b>{l} lap{'' if l == 1 else 's'}"
-                           f"</b> completed" if l else "&mdash; circling")
-                        + f", {p:.0f} nm flown, {t:.0f}&deg; of turn"
-                        + (" &mdash; <b>destination reporting TS</b>"
-                           if _dts else "")
-                        + "</div>",
-                        unsafe_allow_html=True)
-                with _loc:
-                    # Locate: centre the map on this aircraft at a
-                    # terminal-area zoom. The view is set at deck
-                    # creation, so the click stores the callsign and
-                    # reruns; the deck below reads it.
-                    if st.button("Locate", key=f"hold_loc_{c}",
-                                 use_container_width=True,
-                                 help="Click to locate aircraft on map"):
-                        st.session_state["_locate_cs"] = c
-                        st.rerun(scope="app")
-                with _bc:
-                    if st.button("Clear", key=f"hold_clr_{c}",
-                                 use_container_width=True):
-                        _dismissed.add(c)
-                        st.rerun(scope="app")
-            st.markdown(
-                "<div style='background:#FFD9D9;border:3px solid "
-                "#B30000;border-top:none;border-radius:0 0 6px 6px;"
-                "height:6px;margin:0 0 6px;'></div>",
-                unsafe_allow_html=True)
+        # Holding alerts live in the table under the map key; the
+        # banner that used to sit here was removed 7 Sep.
 
         if not fleet and not _fleet_err:
             # An empty fleet layer is indistinguishable from "no
@@ -3414,15 +3353,18 @@ if run_button or _auto:
     def _render_holding_table(holds, dest_by_cs) -> None:
         """The holding table under the map key. ALWAYS present: the
         header row stays and a single italic row says when nothing
-        is holding. Each populated row has a native Clear button, so
-        the table is built as Streamlit columns rather than one HTML
-        block — same look, real buttons."""
+        is holding. Each populated row carries the full alert line
+        — laps, distance, turn, destination TS — and native Locate
+        and Clear buttons. Built as Streamlit columns so the buttons
+        are real; every cell sets its own colour because the page
+        theme otherwise renders table text near-white."""
         from html import escape as _e
 
         _F = "Courier New,monospace"
-        _th = (f"font:bold 10px {_F};border:1px solid #000;padding:3px 7px;"
-               "background:#E8E8E4;text-align:left;")
-        _td = f"font:10px {_F};border:1px solid #000;padding:3px 7px;"
+        _th = (f"font:bold 10px {_F};color:#000;border:1px solid #000;"
+               "padding:3px 7px;background:#E8E8E4;text-align:left;")
+        _td = (f"font:10px {_F};color:#000;border:1px solid #000;"
+               "padding:3px 7px;background:#FFF;")
         _dismissed = st.session_state.setdefault("_hold_dismissed", set())
         _live = {c for c, *_ in holds}
         _dismissed &= _live
@@ -3432,25 +3374,25 @@ if run_button or _auto:
         title = ("\u26a0 Aircraft in holding" if shown
                  else "Aircraft in holding")
         color = "#7A0000" if shown else "#333"
+        hdr = "".join(f"<th style='{_th}'>{h}</th>"
+                      for h in ("FLIGHT", "DEST", "LAPS", "NM", "TURN"))
         st.markdown(
             '<div style="background:#FFF;border:2px solid #000;'
             'border-bottom:none;padding:8px 10px 2px;margin-top:10px;">'
             f'<div style="font:bold 14px Georgia,serif;color:{color};'
             'margin-bottom:5px;">' + title + "</div>"
             '<table style="border-collapse:collapse;width:100%;">'
-            f"<tr><th style='{_th}'>FLIGHT</th><th style='{_th}'>DEST</th>"
-            f"<th style='{_th}'>LAPS</th><th style='{_th}'>NM</th>"
-            f"<th style='{_th}'></th></tr>"
+            f"<tr>{hdr}</tr>"
             + ("" if shown else
                f"<tr><td colspan='5' style='font:italic 10px {_F};"
                "color:#666;border:1px solid #000;padding:8px 7px;"
-               "text-align:center'>No aircraft currently in a holding "
-               "pattern</td></tr>")
+               "background:#FFF;text-align:center'>No aircraft "
+               "currently in a holding pattern</td></tr>")
             + "</table></div>",
             unsafe_allow_html=True)
         for c, p, _d, t, l, dts in shown:
             dest = dest_by_cs.get(c, "") or "\u2014"
-            _r1, _r2 = st.columns([4.2, 1], gap="small")
+            _r1, _r2, _r3 = st.columns([4.4, 1, 1], gap="small")
             with _r1:
                 st.markdown(
                     '<div style="background:#FFF;border-left:2px solid '
@@ -3460,11 +3402,19 @@ if run_button or _auto:
                     f"<td style='{_td}'>{_e(dest)}"
                     + (" <span style='color:#B30000;font-weight:bold'>TS"
                        "</span>" if dts else "") + "</td>"
-                    f"<td style='{_td}text-align:right'>{l if l else '<1'}"
-                    f"</td><td style='{_td}text-align:right'>{p:.0f}</td>"
+                    f"<td style='{_td}text-align:right'>"
+                    f"{l if l else 'circling'}</td>"
+                    f"<td style='{_td}text-align:right'>{p:.0f}</td>"
+                    f"<td style='{_td}text-align:right'>{t:.0f}&deg;</td>"
                     "</tr></table></div>",
                     unsafe_allow_html=True)
             with _r2:
+                if st.button("Locate", key=f"hold_tbl_loc_{c}",
+                             use_container_width=True,
+                             help="Centre the map on this aircraft"):
+                    st.session_state["_locate_cs"] = c
+                    st.rerun(scope="app")
+            with _r3:
                 if st.button("Clear", key=f"hold_tbl_clr_{c}",
                              use_container_width=True):
                     _dismissed.add(c)
@@ -3474,7 +3424,8 @@ if run_button or _auto:
             'border-top:none;padding:2px 10px 8px;margin-bottom:6px;">'
             f'<div style="font:8px {_F};color:#333;margin-top:4px;">'
             + (f"over the last {HOLD_FIXES * 2} min &middot; TS = "
-               "destination METAR reporting thunderstorm" if shown else
+               "destination METAR reporting thunderstorm &middot; "
+               "circling = less than one full lap so far" if shown else
                "checked every 2 min &middot; an aircraft appears here "
                "when its track shows a holding pattern")
             + "</div></div>",
