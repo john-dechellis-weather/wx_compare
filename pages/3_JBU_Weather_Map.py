@@ -3351,63 +3351,111 @@ if run_button or _auto:
     _page_holds, _page_dest_by_cs = _compute_holds()
 
     def _render_holding_table(holds, dest_by_cs) -> None:
-        """The holding table under the map key. ALWAYS present: the
-        header row stays and a single italic row says when nothing
-        is holding. Each populated row carries the full alert line
-        — laps, distance, turn, destination TS — and native Locate
-        and Clear buttons. Built as Streamlit columns so the buttons
-        are real; every cell sets its own colour because the page
-        theme otherwise renders table text near-white."""
+        """The holding table under the map key. ALWAYS present.
+
+        Header and every row use the SAME column split and the same
+        fixed cell widths (table-layout:fixed with percentage
+        <col>s), so cells line up down the table even though each
+        row is its own element. Buttons are restyled through CSS
+        scoped to this container so they read as part of the table
+        — flat, bordered, monospace — instead of the theme's dark
+        pills, which were unreadable against it.
+        """
         from html import escape as _e
 
         _F = "Courier New,monospace"
+        _split = [4.6, 0.9, 0.9]
+        _cols = ("<colgroup><col style='width:24%'><col style='width:26%'>"
+                 "<col style='width:16%'><col style='width:16%'>"
+                 "<col style='width:18%'></colgroup>")
+        _tbl = ("border-collapse:collapse;table-layout:fixed;width:100%;"
+                "margin:0;")
         _th = (f"font:bold 10px {_F};color:#000;border:1px solid #000;"
-               "padding:3px 7px;background:#E8E8E4;text-align:left;")
+               "padding:4px 7px;background:#E8E8E4;text-align:left;"
+               "white-space:nowrap;overflow:hidden;")
         _td = (f"font:10px {_F};color:#000;border:1px solid #000;"
-               "padding:3px 7px;background:#FFF;")
+               "padding:4px 7px;background:#FFF;white-space:nowrap;"
+               "overflow:hidden;")
         _dismissed = st.session_state.setdefault("_hold_dismissed", set())
         _live = {c for c, *_ in holds}
         _dismissed &= _live
         shown = [x for x in holds if x[0] not in _dismissed]
         shown.sort(key=lambda x: -x[4])
 
+        st.markdown(
+            "<style>"
+            # The container IS the box: white, bordered, padded. Every
+            # piece inside is then plain, and no seam shows between
+            # rows or beside the buttons.
+            ".st-key-hold_box{background:#FFF;border:2px solid #000;"
+            "padding:8px 10px;}"
+            ".st-key-hold_box [data-testid='stMarkdownContainer'] p"
+            "{margin:0;}"
+            ".st-key-hold_box [data-testid='stVerticalBlock']"
+            "{gap:3px !important;}"
+            ".st-key-hold_box [data-testid='stHorizontalBlock']"
+            "{gap:4px !important;align-items:center;}"
+            ".st-key-hold_box button{"
+            f"font:bold 10px {_F} !important;color:#000 !important;"
+            "background:#FFF !important;border:1px solid #000 !important;"
+            "border-radius:0 !important;min-height:0 !important;"
+            "height:26px !important;padding:0 6px !important;"
+            "margin:0 !important;line-height:1 !important;}"
+            ".st-key-hold_box button:hover{background:#E8E8E4 !important;}"
+            ".st-key-hold_box button p{font:inherit !important;"
+            "color:inherit !important;}"
+            "</style>",
+            unsafe_allow_html=True)
+
         title = ("\u26a0 Aircraft in holding" if shown
                  else "Aircraft in holding")
         color = "#7A0000" if shown else "#333"
-        hdr = "".join(f"<th style='{_th}'>{h}</th>"
-                      for h in ("FLIGHT", "DEST", "LAPS", "NM", "TURN"))
         st.markdown(
-            '<div style="background:#FFF;border:2px solid #000;'
-            'border-bottom:none;padding:8px 10px 2px;margin-top:10px;">'
             f'<div style="font:bold 14px Georgia,serif;color:{color};'
-            'margin-bottom:5px;">' + title + "</div>"
-            '<table style="border-collapse:collapse;width:100%;">'
-            f"<tr>{hdr}</tr>"
-            + ("" if shown else
-               f"<tr><td colspan='5' style='font:italic 10px {_F};"
-               "color:#666;border:1px solid #000;padding:8px 7px;"
-               "background:#FFF;text-align:center'>No aircraft "
-               "currently in a holding pattern</td></tr>")
-            + "</table></div>",
+            'margin-bottom:4px;">' + title + "</div>",
             unsafe_allow_html=True)
+
+        def _frame(inner):
+            return inner
+
+        # header row on the same split as the data rows
+        _h1, _h2, _h3 = st.columns(_split, gap="small")
+        with _h1:
+            st.markdown(_frame(
+                f"<table style='{_tbl}'>{_cols}<tr>"
+                + "".join(f"<th style='{_th}'>{h}</th>"
+                          for h in ("FLIGHT", "DEST", "LAPS", "NM", "TURN"))
+                + "</tr></table>"), unsafe_allow_html=True)
+        for _hc in (_h2, _h3):
+            with _hc:
+                st.markdown("<div style='height:26px;'></div>",
+                            unsafe_allow_html=True)
+
+        if not shown:
+            _e1, _e2, _e3 = st.columns(_split, gap="small")
+            with _e1:
+                st.markdown(_frame(
+                    f"<table style='{_tbl}'><tr><td style='{_td}"
+                    "text-align:center;color:#666;font-style:italic;"
+                    "white-space:normal;'>No aircraft currently in a "
+                    "holding pattern</td></tr></table>"),
+                    unsafe_allow_html=True)
         for c, p, _d, t, l, dts in shown:
             dest = dest_by_cs.get(c, "") or "\u2014"
-            _r1, _r2, _r3 = st.columns([4.4, 1, 1], gap="small")
+            _r1, _r2, _r3 = st.columns(_split, gap="small")
             with _r1:
-                st.markdown(
-                    '<div style="background:#FFF;border-left:2px solid '
-                    '#000;padding:0 0 0 10px;">'
-                    '<table style="border-collapse:collapse;width:100%;">'
-                    f"<tr><td style='{_td}'><b>{_e(c)}</b></td>"
+                st.markdown(_frame(
+                    f"<table style='{_tbl}'>{_cols}<tr>"
+                    f"<td style='{_td}'><b>{_e(c)}</b></td>"
                     f"<td style='{_td}'>{_e(dest)}"
-                    + (" <span style='color:#B30000;font-weight:bold'>TS"
-                       "</span>" if dts else "") + "</td>"
+                    + ("&nbsp;<span style='color:#B30000;font-weight:bold;"
+                       f"font:bold 10px {_F};'>TS</span>" if dts else "")
+                    + "</td>"
                     f"<td style='{_td}text-align:right'>"
-                    f"{l if l else 'circling'}</td>"
+                    f"{l if l else '&lt;1'}</td>"
                     f"<td style='{_td}text-align:right'>{p:.0f}</td>"
                     f"<td style='{_td}text-align:right'>{t:.0f}&deg;</td>"
-                    "</tr></table></div>",
-                    unsafe_allow_html=True)
+                    "</tr></table>"), unsafe_allow_html=True)
             with _r2:
                 if st.button("Locate", key=f"hold_tbl_loc_{c}",
                              use_container_width=True,
@@ -3420,15 +3468,13 @@ if run_button or _auto:
                     _dismissed.add(c)
                     st.rerun(scope="app")
         st.markdown(
-            '<div style="background:#FFF;border:2px solid #000;'
-            'border-top:none;padding:2px 10px 8px;margin-bottom:6px;">'
             f'<div style="font:8px {_F};color:#333;margin-top:4px;">'
             + (f"over the last {HOLD_FIXES * 2} min &middot; TS = "
                "destination METAR reporting thunderstorm &middot; "
-               "circling = less than one full lap so far" if shown else
+               "&lt;1 = less than one full lap so far" if shown else
                "checked every 2 min &middot; an aircraft appears here "
                "when its track shows a holding pattern")
-            + "</div></div>",
+            + "</div>",
             unsafe_allow_html=True)
 
     def _page_body():
@@ -3452,7 +3498,10 @@ if run_button or _auto:
                 "div[data-testid='stColumn']:has(.st-key-hold_box) "
                 "div[data-testid='stVerticalBlock']:first-of-type"
                 f"{{min-height:{int(map_height) + 72}px;}}"
-                ".st-key-hold_box{margin-top:auto;padding-top:24px;}"
+                # The box is pushed to the column's bottom; the column's
+                # own row gap (~16 px) is the floor of the space under
+                # the key when the column is taller than the map.
+                ".st-key-hold_box{margin-top:auto !important;}"
                 "</style>",
                 unsafe_allow_html=True)
             with st.container(key="hold_box"):
