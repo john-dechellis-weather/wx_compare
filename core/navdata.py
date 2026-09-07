@@ -70,7 +70,7 @@ ARTCC_IDS = set(x.strip().upper() for x in os.environ.get(
 # cache for a cycle is rebuilt when its stored version is older —
 # without this, a deploy that adds routes or more centres appears to
 # do nothing until the next 28-day cycle.
-DATA_VERSION = 4
+DATA_VERSION = 5
 
 _lock = threading.Lock()
 _started = set()
@@ -395,8 +395,10 @@ def build(cache_root, cycle: date = None, log=None) -> dict:
     nav_pos = {n["id"]: (n["lat"], n["lon"]) for n in navs}
     holds = parse_hpf(got["HPF"], fixes, nav_pos, log)
     bounds = pick_boundaries(parse_arb(got["ARB"], ARTCC_IDS or None, log))
-    routes = parse_awy(got["AWY"], fixes, nav_pos, ROUTE_PREFIXES, log)
-    routes += oceanic_routes(log)
+    routes = bundled_routes(log)
+    if ROUTE_PREFIXES:
+        routes += parse_awy(got["AWY"], fixes, nav_pos, ROUTE_PREFIXES,
+                            log)
     # Fixes that sit on a drawn route, with positions, for the
     # middle density setting on the map.
     on_route = {}
@@ -425,43 +427,50 @@ def build(cache_root, cycle: date = None, log=None) -> dict:
     return doc
 
 
-# Airway prefixes drawn as "major routes". J = high-altitude jet
-# routes, Q = high-altitude RNAV. V (victor) and T are low-altitude
-# and would triple the line count for nothing an airline dispatcher
-# needs.
+# Airway prefixes to ALSO draw from NASR's AWY group at full length.
+# EMPTY by default: the routes on the map are the 58 in the bundled
+# GeoJSON, exactly as exported, and nothing else. NAVDATA_ROUTES=J,Q
+# adds every high-altitude airway in the country on top of them.
 ROUTE_PREFIXES = set(x.strip().upper() for x in os.environ.get(
-    "NAVDATA_ROUTES", "J,Q").split(",") if x.strip())
+    "NAVDATA_ROUTES", "").split(",") if x.strip())
 
-# Oceanic L-routes are not in NASR's AWY group. They come from the
-# FAA AIS Open Data ATS Route layer, exported to GeoJSON and bundled
-# with the repo. Clipped to the western North Atlantic at export.
-OCEANIC_GEOJSON = os.environ.get(
-    "NAVDATA_OCEANIC",
+# The 58 routes the map draws — 42 domestic J and Q routes and 16
+# oceanic L-routes — from the FAA AIS Open Data ATS Route layer,
+# exported to GeoJSON and bundled with the repo. Drawn EXACTLY as
+# exported: the export was clipped to a Northeast box, so long
+# routes end at that box rather than at their true ends. That is the
+# geometry the map is meant to show.
+ROUTES_GEOJSON = os.environ.get(
+    "NAVDATA_ROUTES_GEOJSON",
     str(Path(__file__).resolve().parent.parent / "static"
-        / "oceanic_routes.geojson"))
+        / "map_routes.geojson"))
 
 
-def oceanic_routes(log=None) -> list:
+def bundled_routes(log=None) -> list:
+    """Every LineString in the bundled GeoJSON, domestic and oceanic."""
     try:
-        g = json.loads(Path(OCEANIC_GEOJSON).read_text())
+        g = json.loads(Path(ROUTES_GEOJSON).read_text())
     except Exception as exc:
         if log:
-            log(f"oceanic routes: {type(exc).__name__}: {exc}")
+            log(f"bundled routes: {type(exc).__name__}: {exc}")
         return []
     out = []
     for f in g.get("features", []):
         pr = f.get("properties", {})
-        if pr.get("family") != "oceanic":
-            continue
         geom = f.get("geometry", {})
         if geom.get("type") != "LineString":
             continue
-        out.append({"id": pr.get("ident", ""), "type": "OCEAN",
+        fam = (pr.get("family") or "").lower()
+        out.append({"id": pr.get("ident", ""),
+                    "type": "OCEAN" if fam == "oceanic"
+                            else (pr.get("type") or "").upper(),
                     "path": [[float(x), float(y)]
                              for x, y in geom["coordinates"]],
                     "fixes": []})
     if log:
-        log(f"oceanic routes: {len(out)} from GeoJSON")
+        n_oc = sum(1 for r in out if r["type"] == "OCEAN")
+        log(f"bundled routes: {len(out)} ({len(out) - n_oc} domestic, "
+            f"{n_oc} oceanic)")
     return out
 
 
