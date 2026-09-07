@@ -66,6 +66,12 @@ _CONUS_ARTCC = ("ZAB,ZAU,ZBW,ZDC,ZDV,ZFW,ZHU,ZID,ZJX,ZKC,ZLA,ZLC,"
 ARTCC_IDS = set(x.strip().upper() for x in os.environ.get(
     "NAVDATA_ARTCC", _CONUS_ARTCC).split(",") if x.strip())
 
+# Bump whenever the parsed output gains or changes a section. The
+# cache for a cycle is rebuilt when its stored version is older —
+# without this, a deploy that adds routes or more centres appears to
+# do nothing until the next 28-day cycle.
+DATA_VERSION = 3
+
 _lock = threading.Lock()
 _started = set()
 
@@ -368,6 +374,7 @@ def build(cache_root, cycle: date = None, log=None) -> dict:
                    for k, v in on_route.items()]
     navs = [n for n in navs if n.get("draw")]
     doc = {"cycle": f"{cycle:%Y-%m-%d}",
+           "version": DATA_VERSION,
            "built": datetime.now(timezone.utc).isoformat(),
            "navaids": navs, "holds": holds, "artcc": bounds,
            "routes": routes, "route_fixes": route_fixes,
@@ -437,11 +444,20 @@ def _log_to(cache_root):
     return _l
 
 
+def _cached_version(path: Path) -> int:
+    try:
+        return int(json.loads(path.read_text()).get("version", 0))
+    except Exception:
+        return 0
+
+
 def ensure(cache_root) -> None:
-    """Build the current cycle in the background if it is missing.
-    Idempotent per cycle per process."""
+    """Build the current cycle in the background if it is missing OR
+    was built by an older version of this module. Idempotent per
+    cycle per process."""
     cycle = current_cycle()
-    if _cache_path(cache_root, cycle).exists():
+    p = _cache_path(cache_root, cycle)
+    if p.exists() and _cached_version(p) >= DATA_VERSION:
         return
     with _lock:
         if cycle in _started:
