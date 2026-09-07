@@ -1434,24 +1434,8 @@ def _trail_paths(max_age_s: float = 1800.0, steps: int = 8):
 # further than it has moved.
 HOLD_FIXES = int(_os_ko.environ.get("JBU_HOLD_FIXES", "6"))
 HOLD_MIN_PATH_NM = float(_os_ko.environ.get("JBU_HOLD_MIN_PATH_NM", "15"))
-HOLD_RATIO = float(_os_ko.environ.get("JBU_HOLD_RATIO", "2.0"))
-# Three-quarters of an oval. The window must contain at least this
-# much same-direction turn.
+HOLD_RATIO = float(_os_ko.environ.get("JBU_HOLD_RATIO", "2.5"))
 HOLD_MIN_TURN_DEG = float(_os_ko.environ.get("JBU_HOLD_MIN_TURN", "270"))
-# A hold is COMPACT. Approach vectoring can accumulate 300+ deg of
-# turn too — downwind, base, final, plus a couple of vectors — but
-# it does so across 30-50 nm. Capping the spread is what separates
-# "circling in one place" from "being turned toward a runway".
-HOLD_MAX_SPREAD_NM = float(_os_ko.environ.get("JBU_HOLD_MAX_SPREAD_NM",
-                                              "22"))
-# Closure: after three-quarters of an oval the aircraft is back near
-# where the window started. End-to-start distance as a fraction of
-# the spread; a vector sequence marches away and fails this.
-HOLD_MAX_CLOSURE = float(_os_ko.environ.get("JBU_HOLD_MAX_CLOSURE", "0.7"))
-# When the DESTINATION is reporting a thunderstorm, holding is the
-# expected outcome and the bar drops: half an oval is enough.
-HOLD_TS_MIN_TURN_DEG = float(_os_ko.environ.get("JBU_HOLD_TS_MIN_TURN",
-                                                "180"))
 # Straight flight this long resets the lap counter.
 HOLD_CLEAR_S = float(_os_ko.environ.get("JBU_HOLD_CLEAR_S", "480"))
 
@@ -1459,20 +1443,20 @@ HOLD_CLEAR_S = float(_os_ko.environ.get("JBU_HOLD_CLEAR_S", "480"))
 def _hold_candidates(dest_by_cs: dict = None,
                      ts_stations: set = None) -> list:
     """[(callsign, path_nm, disp_nm, turn_deg, laps, dest_ts)] for
-    aircraft whose recent track is three-quarters of an oval or more.
+    aircraft that look to be holding — the ORIGINAL rule.
 
-    GEOMETRY ONLY. A cumulative-turn trigger was tried and flagged
-    arrivals being vectored: downwind-base-final plus two vectors is
-    300 deg of turn but it happens across 40 nm and marches toward
-    the runway. A hold is compact and closes on itself. So every
-    window from HOLD_FIXES up to the whole trail must show: enough
-    path, at least three-quarters of a lap of same-direction turn, a
-    spread under HOLD_MAX_SPREAD_NM, and an end point back near the
-    start.
+    Over the last HOLD_FIXES fixes: at least HOLD_MIN_PATH_NM flown,
+    path at least HOLD_RATIO times the spread of the positions, and
+    at least HOLD_MIN_TURN_DEG of same-direction turn. Restored 6 Sep
+    after two rounds of tuning: a cumulative-turn trigger flagged
+    arrivals being vectored, and the compactness rules that fixed
+    that were judged too strict in the other direction. This rule
+    misses a wide slow loop and flags a tight racetrack, and the
+    published holding fixes on the map are the intended complement —
+    an aircraft circling over one of those is holding whatever the
+    geometry says.
 
-    If the aircraft's destination is reporting a thunderstorm, the
-    turn requirement drops to half a lap — holding is the expected
-    outcome there, and an early call is worth more than a late one.
+    dest_ts is reported for the banner but does not change the rule.
     """
     import math
 
@@ -1482,44 +1466,30 @@ def _hold_candidates(dest_by_cs: dict = None,
     for cs, h in _TRACKS.items():
         if len(h) < HOLD_FIXES:
             continue
-        k = math.cos(math.radians(h[-1][1]))
-        dest = (dest_by_cs.get(cs) or "").upper()
-        dest_ts = dest in ts_stations
-        # Destination reporting TS: half an oval is enough, and the
-        # closure and ratio tests relax with it — half an oval has
-        # not come back round yet, by definition.
-        min_turn = HOLD_TS_MIN_TURN_DEG if dest_ts else HOLD_MIN_TURN_DEG
-        min_ratio = 1.5 if dest_ts else HOLD_RATIO
-        max_close = 1.0 if dest_ts else HOLD_MAX_CLOSURE
+        pts = [(lo, la) for lo, la, _ts in h[-HOLD_FIXES:]]
+        k = math.cos(math.radians(pts[0][1]))
 
         def _nm(a, b):
             return 60.0 * math.hypot(b[1] - a[1], (b[0] - a[0]) * k)
 
-        hit = None
-        for n in range(HOLD_FIXES, len(h) + 1):
-            pts = [(lo, la) for lo, la, _ in h[-n:]]
-            path = sum(_nm(a, b) for a, b in zip(pts, pts[1:]))
-            spread = max(_nm(a, b) for a in pts for b in pts)
-            if spread > HOLD_MAX_SPREAD_NM:
-                break                # longer windows only get wider
-            turn = 0.0
-            prev = None
-            for a, b in zip(pts, pts[1:]):
-                brg = math.degrees(math.atan2((b[0] - a[0]) * k,
-                                              b[1] - a[1]))
-                if prev is not None:
-                    turn += (brg - prev + 180.0) % 360.0 - 180.0
-                prev = brg
-            closure = _nm(pts[0], pts[-1]) / max(spread, 1.0)
-            if (path >= HOLD_MIN_PATH_NM
-                    and path >= min_ratio * max(spread, 1.0)
-                    and abs(turn) >= min_turn
-                    and closure <= max_close):
-                hit = (path, _nm(pts[0], pts[-1]), abs(turn))
-                break
-        if hit:
+        path = sum(_nm(a, b) for a, b in zip(pts, pts[1:]))
+        disp = _nm(pts[0], pts[-1])
+        spread = max(_nm(a, b) for a in pts for b in pts)
+        turn = 0.0
+        prev = None
+        for a, b in zip(pts, pts[1:]):
+            brg = math.degrees(math.atan2((b[0] - a[0]) * k,
+                                          b[1] - a[1]))
+            if prev is not None:
+                turn += (brg - prev + 180.0) % 360.0 - 180.0
+            prev = brg
+        if (path >= HOLD_MIN_PATH_NM
+                and path >= HOLD_RATIO * max(spread, 1.0)
+                and abs(turn) >= HOLD_MIN_TURN_DEG):
             laps = int(abs(_TURN.get(cs, {}).get("acc", 0.0)) // 360.0)
-            out.append((cs, hit[0], hit[1], hit[2], laps, dest_ts))
+            dest = (dest_by_cs.get(cs) or "").upper()
+            out.append((cs, path, disp, abs(turn), laps,
+                        dest in ts_stations))
     return out
 
 
@@ -2339,9 +2309,9 @@ if run_button or _auto:
         # layer list, so `radar_on` was read before it existed —
         # "name 'radar_on' is not defined". A control has to be
         # declared before anything reads it.
-        # Three controls: flight numbers, radar, track length. The
-        # last column is a spacer so none stretches across the page.
-        _ctl = st.columns([1.0, 1.0, 1.4, 2.6], gap="small")
+        # Four controls: flight numbers, radar, track length, fixes.
+        # The last column is a spacer so none stretches across the page.
+        _ctl = st.columns([1.0, 1.0, 1.4, 1.2, 1.4], gap="small")
         with _ctl[0]:
             show_cs = st.checkbox(
                 "Flight numbers", value=True, key="show_cs_f",
@@ -2368,6 +2338,16 @@ if run_button or _auto:
                 help="How much position history to draw behind each "
                      "aircraft.")
             track_age_s = float(_TRACK_OPTS[_track_lab])
+        with _ctl[3]:
+            # Published holding fixes and VOR-class navaids from the
+            # FAA NASR cycle. Off by default: ~3,000 marks is clutter
+            # at CONUS zoom and useful only when looking at a hold.
+            show_fixes = st.checkbox(
+                "Fixes", value=False, key="show_fixes",
+                help="FAA published holding fixes (diamonds) and "
+                     "VOR/VORTAC navaids (triangles). Labels scale "
+                     "with zoom: invisible at CONUS, readable in a "
+                     "terminal area.")
         # FIXED opacity, no widget.
         #
         # pydeck cannot change a layer property client-side, so every
@@ -2481,6 +2461,84 @@ if run_button or _auto:
                 _radar_note = f" Radar unavailable ({_rexc})."
         else:
             _radar_note = ""
+
+        # FIXES AND NAVAIDS, under the station dots. Sizes are in
+        # METERS so they scale with the map: at CONUS zoom a 1.5 km
+        # label is a sub-pixel smudge and the marks are specks; zoomed
+        # to a terminal area they are readable. That is the only way
+        # to put 3,000 marks on a map without a zoom-dependent layer,
+        # which pydeck cannot express.
+        _fix_rows, _nav_rows = [], []
+        if show_fixes:
+            try:
+                from core import navdata as _ND
+
+                _ND.ensure(_MAP_CACHE_ROOT)        # background build
+                _nd = _ND.load(_MAP_CACHE_ROOT)
+                if _nd:
+                    _fix_rows = [{"lon": h["lon"], "lat": h["lat"],
+                                  "id": h["id"],
+                                  "tip": (f"HOLD {h['id']}"
+                                          + (f" inbound {int(h['course']):03d}"
+                                             if h.get("course") else "")
+                                          + (f" {h['turn']} turns"
+                                             if h.get("turn") else ""))}
+                                 for h in _nd.get("holds", [])]
+                    _nav_rows = [{"lon": n["lon"], "lat": n["lat"],
+                                  "id": n["id"],
+                                  "tip": f"{n['type']} {n['id']} {n['name']}"}
+                                 for n in _nd.get("navaids", [])]
+                else:
+                    st.caption("Fixes: FAA NASR data downloading for "
+                               "this cycle; appears on the next refresh.")
+            except Exception as _nde:
+                st.caption(f"Fixes unavailable ({_nde}).")
+        if _nav_rows:
+            layers.append(pdk.Layer(
+                "ScatterplotLayer", data=_nav_rows,
+                get_position="[lon, lat]",
+                get_fill_color=[90, 90, 90, 200],
+                get_radius=1200, radius_units="meters",
+                radius_min_pixels=1, radius_max_pixels=6,
+                stroked=False, pickable=True,
+            ))
+            layers.append(pdk.Layer(
+                "TextLayer", data=_nav_rows,
+                get_position="[lon, lat]",
+                get_text="id",
+                get_size=1400, size_units="meters",
+                size_min_pixels=0, size_max_pixels=14,
+                get_color=[70, 70, 70, 220],
+                get_text_anchor='"middle"',
+                get_alignment_baseline='"top"',
+                get_pixel_offset=[0, 6],
+                pickable=False,
+            ))
+        if _fix_rows:
+            # Hollow diamond: a ring with no fill reads as "a place",
+            # distinct from every filled marker on this map.
+            layers.append(pdk.Layer(
+                "ScatterplotLayer", data=_fix_rows,
+                get_position="[lon, lat]",
+                get_fill_color=[0, 0, 0, 0],
+                get_line_color=[120, 40, 160, 230],
+                get_radius=1500, radius_units="meters",
+                radius_min_pixels=2, radius_max_pixels=8,
+                stroked=True, line_width_min_pixels=1,
+                filled=False, pickable=True,
+            ))
+            layers.append(pdk.Layer(
+                "TextLayer", data=_fix_rows,
+                get_position="[lon, lat]",
+                get_text="id",
+                get_size=1500, size_units="meters",
+                size_min_pixels=0, size_max_pixels=14,
+                get_color=[100, 30, 140, 230],
+                get_text_anchor='"middle"',
+                get_alignment_baseline='"bottom"',
+                get_pixel_offset=[0, -6],
+                pickable=False,
+            ))
 
         # EVERY JetBlue station as a small GREEN dot, drawn FIRST so
         # any METAR fill or TAF ring at the same place sits on top of
