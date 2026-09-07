@@ -2900,18 +2900,10 @@ if run_button or _auto:
         # that should interrupt whoever is looking at it.
         from html import escape
 
-        # Destination per callsign and the set of stations whose
-        # METAR is reporting a thunderstorm — the detector relaxes
-        # its turn requirement for an aircraft bound for one.
-        _dest_by_cs = {(d.get("callsign") or "").strip().upper():
-                       (d.get("dest") or "").strip().upper()
-                       for d in (fleet or [])}
-        _ts_stns = {r["icao"] for r in (metar_all or [])
-                    if r.get("ts_now")}
-        try:
-            _holds = _hold_candidates(_dest_by_cs, _ts_stns)
-        except Exception:
-            _holds = []
+        # Computed once at page level (see _compute_holds below) so
+        # the table under the map key and this banner agree.
+        _holds = _page_holds
+        _dest_by_cs = _page_dest_by_cs
 
         # PER-AIRCRAFT DISMISS. Each alert line has a button; a
         # dismissed callsign stays out of the banner for THIS viewer
@@ -3363,6 +3355,63 @@ if run_button or _auto:
     # The reload is cheap: fleet comes from the background sweep,
     # METAR/TAF are cached, and the only real work is deck.gl
     # drawing.
+    # HOLDS, computed ONCE here for both the banner over the map and
+    # the table under the map key. Both columns need it, and the key
+    # column renders before the map column does.
+    def _compute_holds():
+        _dbc = {(d.get("callsign") or "").strip().upper():
+                (d.get("dest") or "").strip().upper()
+                for d in (fleet or [])}
+        _tss = {r["icao"] for r in (metar_all or []) if r.get("ts_now")}
+        try:
+            return _hold_candidates(_dbc, _tss), _dbc
+        except Exception:
+            return [], _dbc
+
+    _page_holds, _page_dest_by_cs = _compute_holds()
+
+    def _holding_table_html(holds, dest_by_cs) -> str:
+        """Holding aircraft, one row each, in the map-key styling."""
+        from html import escape as _e
+
+        if not holds:
+            return ""
+        _th = ("font-family:Courier New,monospace;font-size:10px;"
+               "font-weight:bold;border:1px solid #000;padding:2px 6px;"
+               "background:#E8E8E4;text-align:left;")
+        _td = ("font-family:Courier New,monospace;font-size:10px;"
+               "border:1px solid #000;padding:2px 6px;")
+        rows = []
+        for c, p, _d, t, l, dts in sorted(holds, key=lambda x: -x[4]):
+            dest = dest_by_cs.get(c, "") or "\u2014"
+            rows.append(
+                "<tr>"
+                f"<td style='{_td}'><b>{_e(c)}</b></td>"
+                f"<td style='{_td}'>{_e(dest)}"
+                + (" <span style='color:#B30000;font-weight:bold'>TS</span>"
+                   if dts else "") + "</td>"
+                f"<td style='{_td};text-align:right'>"
+                f"{l if l else '<1'}</td>"
+                f"<td style='{_td};text-align:right'>{p:.0f}</td>"
+                f"<td style='{_td};text-align:right'>{t:.0f}&deg;</td>"
+                "</tr>")
+        return (
+            '<div style="background:#FFF;border:2px solid #000;'
+            'padding:6px 8px;margin-top:10px;">'
+            '<div style="font-family:Georgia,serif;font-weight:bold;'
+            'font-size:14px;color:#7A0000;margin-bottom:4px;">'
+            "\u26a0 Aircraft in holding</div>"
+            '<table style="border-collapse:collapse;">'
+            f"<tr><th style='{_th}'>FLIGHT</th><th style='{_th}'>DEST</th>"
+            f"<th style='{_th}'>LAPS</th><th style='{_th}'>NM</th>"
+            f"<th style='{_th}'>TURN</th></tr>"
+            + "".join(rows) + "</table>"
+            '<div style="font-family:Courier New,monospace;font-size:8px;'
+            'color:#333;margin-top:3px;">'
+            f"over the last {HOLD_FIXES * 2} min &middot; TS = destination "
+            "METAR reporting thunderstorm</div></div>"
+        )
+
     def _page_body():
         col_b, col_m = st.columns([1, 2.6], gap="small")
         with col_b:
@@ -3372,6 +3421,9 @@ if run_button or _auto:
             else:
                 st.markdown(_no_alerts(), unsafe_allow_html=True)
             st.markdown(_legend_html(), unsafe_allow_html=True)
+            _ht = _holding_table_html(_page_holds, _page_dest_by_cs)
+            if _ht:
+                st.markdown(_ht, unsafe_allow_html=True)
         with col_m:
             if metar_rows:
                 st.markdown(render_metar_table(metar_rows),
