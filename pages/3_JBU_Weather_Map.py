@@ -630,6 +630,9 @@ _AC_ICON_PUR = {"url": _a320_icon_uri("#A020F0"), "width": 64,
 _AC_ICON_ORG = {"url": _a320_icon_uri("#EE7700"), "width": 64,
                 "height": 64, "anchorX": 32, "anchorY": 32,
                 "mask": False}
+_AC_ICON_OTH = {"url": _a320_icon_uri("#8A8A8A"), "width": 64,
+                "height": 64, "anchorX": 32, "anchorY": 32,
+                "mask": False}
 _AC_ICON_RED = {"url": _a320_icon_uri("#E01A1A"), "width": 64,
                 "height": 64, "anchorX": 32, "anchorY": 32,
                 "mask": False}
@@ -1186,12 +1189,14 @@ _FLEET_TILES = [
 # carrying 5,000-8,000 rows through dedupe, caching and JSON
 # serialisation costs real time even when nothing draws them.
 import os as _os_ko
-# Other operators are no longer displayed on this page, so the sweep
-# does not keep them: 5,000-8,000 rows carried through dedupe,
-# caching and JSON serialisation cost real time even when nothing
-# drew them. JBU_KEEP_OTHERS=on re-enables collection if the layer
-# ever comes back.
-KEEP_OTHERS = _os_ko.environ.get("JBU_KEEP_OTHERS", "off").lower() == "on"
+# Other operators are collected again (6 Sep) for the "Other
+# airlines" layer. Only AIRLINE callsigns are kept — three letters
+# then digits — which drops general aviation and military and cuts
+# the 5,000-8,000 raw rows to the ~2,000 that are actually
+# commercial flights. JBU_KEEP_OTHERS=off stops collection.
+KEEP_OTHERS = _os_ko.environ.get("JBU_KEEP_OTHERS", "on").lower() != "off"
+import re as _re_cs
+_AIRLINE_CS = _re_cs.compile(r"^[A-Z]{3}\d{1,4}[A-Z]?$")
 
 
 
@@ -1670,8 +1675,14 @@ def cached_fleet(bucket: str):
             mine = cs.upper().startswith("JBU")
             if p.get("lat") is None:
                 continue
-            if not mine and not KEEP_OTHERS:
-                continue
+            if not mine:
+                if not KEEP_OTHERS:
+                    continue
+                # Airline callsign shape: three letters then digits.
+                # Drops N-numbers, military and most GA at the
+                # cheapest possible point.
+                if not _AIRLINE_CS.match(cs):
+                    continue
             alt = p.get("alt_baro")
             trk = p.get("track")
             gs = p.get("gs")
@@ -2309,9 +2320,8 @@ if run_button or _auto:
         # layer list, so `radar_on` was read before it existed —
         # "name 'radar_on' is not defined". A control has to be
         # declared before anything reads it.
-        # Four controls: flight numbers, radar, track length, fixes.
-        # The last column is a spacer so none stretches across the page.
-        _ctl = st.columns([1.0, 1.0, 1.4, 1.2, 1.4], gap="small")
+        # Six controls. No spacer column any more; six is the width.
+        _ctl = st.columns([1.0, 1.0, 1.2, 0.9, 1.1, 1.0], gap="small")
         with _ctl[0]:
             show_cs = st.checkbox(
                 "Flight numbers", value=True, key="show_cs_f",
@@ -2348,6 +2358,16 @@ if run_button or _auto:
                      "VOR/VORTAC navaids (triangles). Labels scale "
                      "with zoom: invisible at CONUS, readable in a "
                      "terminal area.")
+        with _ctl[4]:
+            show_others = st.checkbox(
+                "Other airlines", value=True, key="show_others",
+                help="Every other airline's aircraft, small and grey, "
+                     "under the JetBlue fleet. Hover for the callsign.")
+        with _ctl[5]:
+            show_centers = st.checkbox(
+                "Centers", value=False, key="show_centers",
+                help="ARTCC boundaries from the FAA NASR cycle (high "
+                     "structure): ZDC, ZTL, ZJX, ZMA.")
         # FIXED opacity, no widget.
         #
         # pydeck cannot change a layer property client-side, so every
@@ -2461,6 +2481,53 @@ if run_button or _auto:
                 _radar_note = f" Radar unavailable ({_rexc})."
         else:
             _radar_note = ""
+
+        # ARTCC BOUNDARIES, above the radar and under everything else.
+        # Real polygons from the FAA NASR ARB group (high structure),
+        # not approximations. Each centre labelled at its centroid.
+        if show_centers:
+            try:
+                from core import navdata as _ND2
+
+                _ND2.ensure(_MAP_CACHE_ROOT)
+                _nd2 = _ND2.load(_MAP_CACHE_ROOT)
+                _art = (_nd2 or {}).get("artcc", [])
+                if _art:
+                    layers.append(pdk.Layer(
+                        "PathLayer",
+                        data=[{"path": b["path"], "id": b["id"]}
+                              for b in _art],
+                        get_path="path",
+                        get_color=[40, 40, 40, 170],
+                        get_width=1.6, width_units="pixels",
+                        width_min_pixels=1, width_max_pixels=2,
+                        pickable=False,
+                    ))
+                    _lbl = {}
+                    for b in _art:
+                        # Centroid of the largest shape per centre,
+                        # so ZMA's label sits on the mainland part.
+                        pth = b["path"]
+                        if b["id"] not in _lbl or len(pth) > _lbl[b["id"]][2]:
+                            _lbl[b["id"]] = (
+                                sum(x for x, _ in pth) / len(pth),
+                                sum(y for _, y in pth) / len(pth),
+                                len(pth))
+                    layers.append(pdk.Layer(
+                        "TextLayer",
+                        data=[{"lon": v[0], "lat": v[1], "id": k}
+                              for k, v in _lbl.items()],
+                        get_position="[lon, lat]", get_text="id",
+                        get_size=14, get_color=[40, 40, 40, 200],
+                        get_text_anchor='"middle"',
+                        get_alignment_baseline='"center"',
+                        pickable=False,
+                    ))
+                elif _nd2 is None:
+                    st.caption("Centers: FAA NASR data downloading for "
+                               "this cycle; appears on the next refresh.")
+            except Exception as _ce:
+                st.caption(f"Centers unavailable ({_ce}).")
 
         # FIXES AND NAVAIDS, under the station dots. Sizes are in
         # METERS so they scale with the map: at CONUS zoom a 1.5 km
@@ -2968,6 +3035,38 @@ if run_button or _auto:
                     _tier.append(_r)
             fleet_disp, gnd_disp = _f2, _g2
             _n_dupe = _n_before - len(fleet_disp) - len(gnd_disp)
+
+            # OTHER AIRLINES: small grey icons under the JetBlue fleet,
+            # no labels — two thousand labels is noise; the hover has
+            # the callsign. Half the JetBlue icon size so the eleven
+            # that matter still stand out among the two thousand that
+            # do not.
+            if show_others and fleet_other:
+                _oth = []
+                for o in fleet_other:
+                    try:
+                        _oth.append({
+                            "lon": float(o["lon"]), "lat": float(o["lat"]),
+                            "angle": (360.0 - float(o.get("trk") or 0.0))
+                                     % 360.0,
+                            "tip": f"{o.get('cs', '')} | "
+                                   + (f"FL{int(o['alt'] // 100):03d}"
+                                      if o.get("alt") and o["alt"] >= 18000
+                                      else (f"{int(o['alt']):,} ft"
+                                            if o.get("alt") else "alt n/a")),
+                            "icon": _AC_ICON_OTH,
+                        })
+                    except Exception:
+                        continue
+                if _oth:
+                    layers.append(pdk.Layer(
+                        "IconLayer", data=_oth,
+                        get_position="[lon, lat]",
+                        get_icon="icon", get_angle="angle",
+                        get_size=13, size_units="pixels",
+                        size_min_pixels=8, size_max_pixels=16,
+                        pickable=True,
+                    ))
 
             # TRACK TRAILS, under the icons. Previous positions as
             # small dots; the icon marks only where the aircraft is
