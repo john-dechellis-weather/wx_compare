@@ -48,12 +48,6 @@ PRODUCT_PARAMS = {
     "VIS": ({"var_VIS": "on"}, [{"lev_surface": "on"}]),
     "CEIL": ({"var_HGT": "on"}, [{"lev_cloud_ceiling": "on"}]),
     "GUST": ({"var_GUST": "on"}, [{"lev_surface": "on"}]),
-    # 10 m wind components, for the RRFS point table. Speed and
-    # direction are derived from U and V at the station rather than
-    # fetched, so the two are guaranteed to come from the same cell
-    # and the same instant.
-    "UGRD10": ({"var_UGRD": "on"}, [{"lev_10_m_above_ground": "on"}]),
-    "VGRD10": ({"var_VGRD": "on"}, [{"lev_10_m_above_ground": "on"}]),
 }
 
 PRODUCT_LABELS = {
@@ -63,8 +57,6 @@ PRODUCT_LABELS = {
     "VIS": "Visibility (SM)",
     "CEIL": "Ceiling (hundreds ft)",
     "GUST": "10 m Wind Gust (kt)",
-    "UGRD10": "10 m U wind (m/s)",
-    "VGRD10": "10 m V wind (m/s)",
     "PROB_REFC40": "P(Composite Refl >= 40 dBZ)  %",
     "PROB_CIG500": "P(Ceiling < 500 ft)  %",
     "PROB_CIG1000": "P(Ceiling < 1000 ft)  %",
@@ -97,9 +89,13 @@ PROB_DEFS = {
     "PROB_CIG500": ("HGT", "cloud ceiling", "<", 152.4, 3.0),
     "PROB_CIG1000": ("HGT", "cloud ceiling", "<", 304.8, 3.0),
     "PROB_CIG2000": ("HGT", "cloud ceiling", "<", 609.6, 3.0),
-    "PROB_VIS05": ("VIS", "surface", "<", 804.7, 5.0),
-    "PROB_VIS1": ("VIS", "surface", "<", 1609.3, 8.0),
-    "PROB_VIS3": ("VIS", "surface", "<", 4828.0, 15.0),
+    # VIS tolerances are wide on purpose: the idx spells the threshold
+    # as <804, <804.7 or <804.672 depending on the cycle, and 1 sm has
+    # appeared as <1600. Neighbouring VIS thresholds are 800+ m apart,
+    # so +-40 m cannot pick the wrong one.
+    "PROB_VIS05": ("VIS", "surface", "<", 804.7, 40.0),
+    "PROB_VIS1": ("VIS", "surface", "<", 1609.3, 40.0),
+    "PROB_VIS3": ("VIS", "surface", "<", 4828.0, 80.0),
     # Echo tops (meters): 30 kft = 9144, 35 kft = 10668
     "PROB_RETOP30": ("RETOP", "", ">", 9144.0, 30.0),
     "PROB_RETOP35": ("RETOP", "", ">", 10668.0, 30.0),
@@ -114,8 +110,6 @@ IDX_MATCHERS = {
     "VIS": [("VIS", "surface")],
     "CEIL": [("HGT", "cloud ceiling")],
     "GUST": [("GUST", "surface")],
-    "UGRD10": [("UGRD", "10 m above ground")],
-    "VGRD10": [("VGRD", "10 m above ground")],
 }
 
 MODELS = {
@@ -748,109 +742,6 @@ JBU_STATIONS = {
 }
 
 
-# Station mark sizes in points. Four times the first attempt, which
-# was invisible at working zoom. CAM_STATION_DOT_PT / _FONT_PT tune
-# them without a deploy.
-STATION_DOT_PT = float(os.environ.get("CAM_STATION_DOT_PT", "13"))
-STATION_FONT_PT = float(os.environ.get("CAM_STATION_FONT_PT", "26"))
-# Range ring radius in NAUTICAL miles; 0 disables.
-STATION_RING_NM = float(os.environ.get("CAM_STATION_RING_NM", "10"))
-
-
-def draw_stations(ax, w: float, s: float, e: float, n: float,
-                  skip=None, pad: float = 0.15) -> int:
-    """JetBlue station dots and identifiers on a cartopy axis.
-
-    Shared by the matplotlib renderer here and the fast composite
-    renderer in cam_fast, so the warmed frames and the live-render
-    fallback show the same marks in the same places. New York metro
-    shows JFK only — LGA and EWR overlap it at every zoom these
-    pages use.
-    """
-    import math
-
-    import cartopy.crs as ccrs
-    import matplotlib.patheffects as _pe
-    import numpy as np
-
-    if skip is None:
-        import os as _os
-
-        skip = set(x.strip().upper() for x in _os.environ.get(
-            "CAM_STATION_SKIP", "KLGA,KEWR").split(",") if x.strip())
-    drawn = 0
-    for icao, (sla, slo) in JBU_STATIONS.items():
-        if icao in skip:
-            continue
-        if not (w + pad <= slo <= e - pad and s + pad <= sla <= n - pad):
-            continue
-        # Sized to read on the SOC wall, not a laptop: a 13 pt dot
-        # and 26 pt label on a ~2000 px frame. The first pass at
-        # 3 pt / 6.5 pt was invisible at working zoom. Label offset
-        # scales with the dot so it clears the edge at any size.
-        # Range ring first, so the dot draws over its centre. A
-        # true circle on the ground: radius in degrees of latitude,
-        # stretched in longitude by 1/cos(lat) so it is not an
-        # ellipse on the map. Thin and translucent — a reference
-        # mark, not a symbol.
-        if STATION_RING_NM > 0:
-            r_lat = STATION_RING_NM / 60.0
-            r_lon = r_lat / max(0.2, math.cos(math.radians(sla)))
-            th = np.linspace(0.0, 2.0 * np.pi, 73)
-            ax.plot(slo + r_lon * np.cos(th), sla + r_lat * np.sin(th),
-                    color="#003B8E", linewidth=0.9, alpha=0.75,
-                    transform=ccrs.PlateCarree(), zorder=6)
-        ax.plot(slo, sla, marker="o", markersize=STATION_DOT_PT,
-                markerfacecolor="#005ADC", markeredgecolor="white",
-                markeredgewidth=1.4, linestyle="none",
-                transform=ccrs.PlateCarree(), zorder=7)
-        # Label just clear of the dot: offset is the dot radius plus
-        # a small gap, in degrees, computed from the figure's own
-        # points-per-degree so it stays tight at any size.
-        _pt_per_deg = (ax.figure.get_size_inches()[1] * 72.0) / (n - s)
-        _gap_deg = (STATION_DOT_PT / 2.0 + 3.0) / _pt_per_deg
-        ax.text(slo, sla + _gap_deg,
-                icao[1:] if icao.startswith("K") else icao,
-                fontsize=STATION_FONT_PT, color="#003B8E",
-                fontweight="bold", ha="center", va="bottom",
-                transform=ccrs.PlateCarree(), zorder=7,
-                path_effects=[_pe.withStroke(linewidth=2.5,
-                                             foreground="white")])
-        drawn += 1
-    return drawn
-
-
-def render_frame(product: str, vals, lats, lons, center_lat: float,
-                 center_lon: float, zoom_deg: float, title: str = "",
-                 grid_key: str = None, cache_root=None) -> bytes:
-    """Render one frame the SAME way the warmer does.
-
-    Live renders used to go through render_field — the legacy
-    matplotlib figure with axes, a colorbar and its own small
-    station labels — while warmed frames came from cam_fast on a
-    full-bleed square. So the moment a page fell back to a live
-    render the map changed size, gained a colorbar, and station
-    marks doubled up. This routes live renders through cam_fast
-    whenever it supports the product, so a live frame and a warmed
-    frame are pixel-for-pixel the same layout.
-    """
-    try:
-        from core import cam_fast as _CF
-
-        if _CF.supports(product):
-            return _CF.render_fast(
-                product, vals, lats, lons, center_lat, center_lon,
-                zoom_deg,
-                grid_key=grid_key or f"{center_lat:.2f},{center_lon:.2f}"
-                                     f"|{zoom_deg:.2f}",
-                cache_dir=(str(cache_root) if cache_root else None),
-            )
-    except Exception:
-        pass
-    return render_field(product, vals, lats, lons, center_lat,
-                        center_lon, zoom_deg, title)
-
-
 def render_field(
     product: str,
     vals: np.ndarray,
@@ -997,11 +888,6 @@ def render_field(
         gl.right_labels = False
         gl.xlabel_style = {"size": 8}
     gl.ylabel_style = {"size": 8}
-
-    # render_field draws its own small station labels further down;
-    # the large marks live in draw_stations, used by cam_fast. Live
-    # renders reach cam_fast via render_frame, so they are not
-    # doubled here.
 
     # 10 nm range ring around the center site (white dashed with a
     # black understroke so it reads over any reflectivity), plus a
