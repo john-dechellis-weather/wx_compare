@@ -149,7 +149,8 @@ _set_icon_dir(_STATIC)
 # mean SMALL, not merely paler.
 OTHER_SIZE = 10
 OTHER_PX = (6, 13)
-FLEET_RATIO_DEFAULT = 3.0    # was 2.0, then x1.5 applied once, here
+FLEET_RATIO_DEFAULT = 1.0  # fixed; the slider is gone
+_FLEET_RATIO_UNUSED = 3.0    # was 2.0, then x1.5 applied once, here
 
 
 def fleet_sizing(ratio):
@@ -1433,7 +1434,11 @@ with c[0]:
 with c[1]:
     show_hull = st.checkbox("N90 extent", value=True)
 with c[2]:
-    show_cb = st.checkbox("Class B", value=True)
+    show_cb = st.checkbox(
+        "Class B", value=True,
+        help="Draws the New York Class B rings and shelves, and limits "
+             "the aircraft shown to those inside the Class B lateral "
+             "boundary. Off, every aircraft in the view draws.")
 with c[3]:
     show_ar = st.checkbox("ARTCC", value=True)
     show_radar = st.checkbox(
@@ -1487,7 +1492,7 @@ with c[3]:
 with c[4]:
     show_ap = st.checkbox("JBU stations", value=True)
     scope = st.toggle(
-        "Scope view", value=False,
+        "Scope view", value=True,
         help="Draw the map the way a STARS scope does: black background, "
              "a thin video map instead of a basemap, fixes as triangles, "
              "history dots instead of trails, range rings from JFK, muted "
@@ -1584,31 +1589,22 @@ elif show_radar and len(_hist) == 1:
                "two hours over the next ~20 minutes.")
 
 with st.expander("Map size (tuning)"):
-    z1, z2, z3 = st.columns([2, 2, 3])
+    z1, z2 = st.columns([2, 2])
     with z1:
         map_h = st.slider("Height (px)", 380, 1400, MAP_H_DEFAULT, 20)
-        # A RATIO, not a pixel size. Other traffic is fixed at
-        # OTHER_SIZE and this multiplies it, so the two layers can
-        # never drift apart the way they did when each was nudged on
-        # its own and compounded to 7x.
-        fleet_ratio = st.slider(
-            "JetBlue icon size (x other traffic)", 1.0, 6.0,
-            FLEET_RATIO_DEFAULT, 0.25,
-            help="How much larger a JetBlue aircraft draws than "
-                 "everyone else. 1.0 is the same size.")
     with z2:
         map_w = st.slider("Width (% of page)", 40, 100,
                           MAP_W_DEFAULT, 5)
-    with z3:
-        _fs, _fmin, _fmax = fleet_sizing(fleet_ratio)
-        st.caption(
-            f"Currently **{map_w}% x {map_h}px**, JetBlue at "
-            f"**{fleet_ratio:g}x** ({_fmin}-{_fmax} px against "
-            f"{OTHER_PX[0]}-{OTHER_PX[1]}). When this looks right, "
-            f"set MAP_H_DEFAULT = {map_h}, MAP_W_DEFAULT = {map_w} "
-            f"and FLEET_RATIO_DEFAULT = {fleet_ratio:g} in the "
-            f"source and remove this expander."
-        )
+    st.caption(f"Currently **{map_w}% x {map_h}px**. When this looks "
+               f"right, set MAP_H_DEFAULT = {map_h} and MAP_W_DEFAULT = "
+               f"{map_w} in the source and remove this expander.")
+
+# JETBLUE AT 1.0 — the same size as everyone else. Scope targets are
+# one square for every operator; the slider that scaled JetBlue's
+# silhouette is gone. The ratio still feeds the parked-aircraft
+# silhouettes at JFK, which is the one place a silhouette remains.
+fleet_ratio = 1.0
+_fs, _fmin, _fmax = fleet_sizing(fleet_ratio)
 
 
 import math
@@ -1961,6 +1957,24 @@ if show_ac:
     # dozen unrelated aircraft all squawking VFR.
     _nga = sum(1 for r in _other if not _TK.is_commercial(r["cs"]))
     _other = [r for r in _other if _TK.is_commercial(r["cs"])]
+    # CLASS B ON = CLASS B TRAFFIC ONLY. With the rings drawn, the
+    # aircraft shown are the ones inside the Class B lateral boundary
+    # — any of its shelves, floor ignored — which is the terminal
+    # picture the rings exist to frame. Applied here, before parked,
+    # fleet and trails, so everything downstream follows.
+    _ncb = 0
+    if show_cb and data.get("classb"):
+        from core.flow import pip as _pip_cb
+
+        _cb_polys = [c["polygon"] for c in data["classb"] if c.get("polygon")]
+
+        def _in_cb(r):
+            return any(_pip_cb(r["lon"], r["lat"], _p) for _p in _cb_polys)
+
+        _before = len(_ac) + len(_other)
+        _ac = [r for r in _ac if _in_cb(r)]
+        _other = [r for r in _other if _in_cb(r)]
+        _ncb = _before - len(_ac) - len(_other)
     # PARKED JETBLUE AT JFK go in their own layer, sized in real
     # metres, so they are sub-pixel at 300 nm and full size on the
     # ramp — visible only when you have zoomed in to look at the
@@ -2318,10 +2332,14 @@ if show_fix and data.get("fixes"):
     # size per frame, so the triangles shrink as you zoom out and grow
     # as you zoom in with no rerun — 5 px at 300 nm, 14 px at terminal
     # zoom. A fixed 14 px was the right size at z9 and clutter at z6.
+    # CHART GLYPHS: the waypoint star for RNAV fixes, the VOR/DME
+    # symbol for navaids, tinted by role (green arrival, red
+    # departure) — or video-map grey on the scope. Metre-sized with a
+    # pixel clamp, as the triangles were.
     layers.append(pdk.Layer(
-        "TextLayer", data=data["fixes"], get_position="[lon, lat]",
-        get_text='"△"' if scope else '"▲"', get_size=2500,
-        size_units='"meters"', size_min_pixels=5, size_max_pixels=14,
+        "IconLayer", data=data["fixes"], get_position="[lon, lat]",
+        get_icon="nav", get_size="nsize", size_units='"meters"',
+        size_min_pixels=10, size_max_pixels=26,
         get_color=[138, 152, 168] if scope else "tcolor",
         pickable=True))
     # LABELS THIN OUT AS THE VIEW WIDENS. Chips draw at a fixed
@@ -2337,11 +2355,13 @@ if show_fix and data.get("fixes"):
     # either way; only the chip is dropped.
     LABEL_SEP = radius_nm / 22.0        # ~14 nm at 300, ~4.5 at 100
     _lab, _kept = [], []
-    for _f in data["fixes"]:
+    # The operational nine first and unconditionally; the rest thin.
+    for _f in sorted(data["fixes"], key=lambda f: not f.get("key")):
         _clat = math.cos(math.radians(_f["lat"]))
-        if all(math.hypot((_f["lon"] - k[1]) * 60.0 * _clat,
-                          (_f["lat"] - k[0]) * 60.0) >= LABEL_SEP
-               for k in _kept):
+        if _f.get("key") or all(
+                math.hypot((_f["lon"] - k[1]) * 60.0 * _clat,
+                           (_f["lat"] - k[0]) * 60.0) >= LABEL_SEP
+                for k in _kept):
             _kept.append((_f["lat"], _f["lon"]))
             _lab.append(_f)
     _nhid = len(data["fixes"]) - len(_lab)
@@ -2752,6 +2772,7 @@ st.caption(
     + (f" {_nmetro} overflights hidden (not JFK/LGA/EWR/TEB). "
        if (show_ac and metro_filter and _nmetro) else "")
     + (f" {_nga} general aviation hidden. " if (show_ac and _nga) else "")
+    + (f" {_ncb} outside Class B hidden (Class B on). " if (show_ac and _ncb) else "")
     + (f" Traffic: {_acnote} within {_tr_nm} nm — "
        + (f" {len(_parked)} JetBlue parked at JFK, shown only when "
           f"zoomed to the ramp." if _parked else "")

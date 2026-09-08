@@ -837,6 +837,7 @@ for f in data.get("fixes", []):
                        "col": [max(0, c - 40) for c in _status(_l)] + [160]})
     _c = _status(_l)
     _gate_fix.append({"lon": f["lon"], "lat": f["lat"], "name": f["name"],
+                      "nav": f.get("nav") or IC.nav_icon(IC.nav_kind(f["name"])),
                       "bg": _c + [235], "tri": [max(0, c - 90) for c in _c],
                       # black text reads on green; white on red
                       "fg": [0, 0, 0] if _c == GREEN else [255, 255, 255],
@@ -851,8 +852,9 @@ if _links:
         width_max_pixels=1, pickable=False))
 if _gate_fix:
     layers.append(pdk.Layer(
-        "TextLayer", data=_gate_fix, get_position="[lon, lat]",
-        get_text='"\u25b2"', get_size=12, get_color="tri", pickable=True))
+        "IconLayer", data=_gate_fix, get_position="[lon, lat]",
+        get_icon="nav", get_size=16, size_min_pixels=12, size_max_pixels=20,
+        get_color="tri", pickable=True))
     # TextLayer cannot stroke its background box, so the black border
     # is a second, slightly larger text layer drawn first: same text,
     # black background, one pixel more padding all round.
