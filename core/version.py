@@ -5,4 +5,4 @@ upload deploy" is answered by reading it rather than by hunting for
 a feature. Bump BUILD on every batch of uploads.
 """
 
-BUILD = "2026-09-07 r12 — chart glyphs, scope default, jet-route panel, Class B filter"
+BUILD = "2026-09-07 r14 — Forecast map black, Airspace basemap back, blocks JetBlue+majors"

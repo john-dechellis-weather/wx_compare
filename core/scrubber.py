@@ -26,7 +26,8 @@ import json
 
 
 def scrubber_html(frames: list, geo: dict, view: dict,
-                  opacity: float, height: int = 720) -> str:
+                  opacity: float, height: int = 720,
+                  dark: bool = False) -> str:
     """One HTML document for streamlit.components.v1.html.
 
     frames: [{"url", "label", "valid"}] oldest first, ALL preloaded.
@@ -38,6 +39,9 @@ def scrubber_html(frames: list, geo: dict, view: dict,
     F = json.dumps(frames)
     G = json.dumps(geo)
     V = json.dumps(view)
+    style_url = ("https://basemaps.cartocdn.com/gl/dark-matter-nolabels-gl-style/style.json"
+                 if dark else
+                 "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json")
     return f"""
 <!doctype html><html><head><meta charset="utf-8">
 <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
@@ -90,7 +94,7 @@ FR.forEach(f=>{{const im=new Image(); im.crossOrigin='anonymous';
 // tiles are. deck.gl then sits on the MapLibre map as an overlay.
 // This is exactly pydeck's own architecture, done by hand.
 const map=new maplibregl.Map({{container:'map',
-  style:'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
+  style:'{style_url}',
   center:[V.lon,V.lat],zoom:V.zoom,pitch:0,bearing:0,
   attributionControl:true}});
 
