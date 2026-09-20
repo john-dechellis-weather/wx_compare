@@ -126,10 +126,11 @@ _SCOPE_MAP_STYLE = (
 
 
 # --- Airport scope: surface, ATIS, area traffic -----------------------
-@st.cache_data(ttl=86400, show_spinner=False, max_entries=20)
 def cached_scope_surface(icao: str, lat: float, lon: float):
-    """OSM surface for the field. Disk-cached for a week inside the
-    module; this wrapper keeps it off the run path within a session."""
+    """OSM surface for the field. NOT st.cache_data: the first call for
+    a new airport returns {} while a background fetch runs, and caching
+    that would pin an empty field for a day. core/surface.py caches the
+    file by mtime, so this is already cheap."""
     from core import airport_scope as _AS
     return _AS.surface(STATIC_DIR, icao, lat, lon)
 
@@ -904,8 +905,8 @@ with st.sidebar:
     )
 
     scope_traffic = st.checkbox(
-        "Airport scope: live traffic", value=True,
-        help="All operators within 30 nm of the field, from community "
+        "Airport scope: JetBlue traffic", value=True,
+        help="JetBlue aircraft within 30 nm of the field, from community "
              "ADS-B. One point query, shared between viewers.",
     )
 
@@ -1248,8 +1249,12 @@ if active_icao:
                 "every runway end rather than the ones in use.")
 
         _surface = cached_scope_surface(icao, _sc_lat, _sc_lon)
-        _ends = _AS.runway_ends(_surface)
-        if not _ends:
+        _ends = _AS.runway_ends(_surface) if _surface else []
+        if not _surface and _AS.surface_pending(icao):
+            st.caption(
+                "Airport diagram downloading from OpenStreetMap \u2014 "
+                "it appears on the next refresh (usually under a minute).")
+        elif not _ends:
             st.caption(
                 "No runway geometry from OpenStreetMap for this field; "
                 "showing range rings and traffic only.")
@@ -1257,8 +1262,9 @@ if active_icao:
         _ac = []
         if scope_traffic:
             _bucket = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")[:-1]
-            _ac = cached_scope_traffic(round(_sc_lat, 3), round(_sc_lon, 3),
-                                       30, _bucket)
+            _ac = [a for a in cached_scope_traffic(
+                       round(_sc_lat, 3), round(_sc_lon, 3), 30, _bucket)
+                   if a.get("jbu")]
 
         _scope_layers = _AS.layers(
             _surface, _ends, _sc_lat, _sc_lon,
@@ -1281,7 +1287,8 @@ if active_icao:
         st.caption(
             "30 x 20 nm \u00b7 rings at 10/20/30 nm \u00b7 finals 15 nm "
             "with 1 nm ticks \u00b7 "
-            + (f"{len(_ac)} aircraft" if _ac else "no traffic returned"))
+            + (f"{len(_ac)} JetBlue aircraft" if _ac
+               else "no JetBlue aircraft within 30 nm"))
 
     # --- Live inbound (instant, from ADS-B positions) ---
     st.subheader("JBU Inbound Now")
