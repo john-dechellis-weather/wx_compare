@@ -442,7 +442,7 @@ def _cell(text, bg="#FFFFFF", fg="#000000", bold=False):
         f'-webkit-text-fill-color:{fg};'
         f'font-family:Courier New,monospace;font-size:9px;'
         f'font-weight:{weight};padding:2px 3px;text-align:center;'
-        f'border:1px solid #000000;white-space:nowrap;min-width:38px;">'
+        f'border:1px solid #2D3957;white-space:nowrap;min-width:38px;">'
         f"{text}</td>"
     )
 
@@ -452,7 +452,7 @@ def _rowlabel(text):
         f'<th style="background:#E0E0E0;color:#000000;'
         f'-webkit-text-fill-color:#000000;'
         f'font-family:Courier New,monospace;font-size:9px;font-weight:bold;'
-        f'padding:2px 4px;text-align:left;border:1px solid #000000;'
+        f'padding:2px 4px;text-align:left;border:1px solid #2D3957;'
         f'white-space:nowrap;min-width:60px;">{text}</th>'
     )
 
@@ -521,7 +521,7 @@ def build_nbh_table(df_m: pd.DataFrame) -> str:
             f'-webkit-text-fill-color:#000000;'
             f'font-family:Courier New,monospace;font-size:9px;'
             f'font-weight:bold;padding:2px 3px;text-align:center;'
-            f'border:1px solid #000000;white-space:nowrap;min-width:38px;">'
+            f'border:1px solid #2D3957;white-space:nowrap;min-width:38px;">'
             f"{tstr}</th>"
         )
     rows = ["<tr>" + "".join(header) + "</tr>"]
@@ -558,7 +558,7 @@ def build_nbh_table(df_m: pd.DataFrame) -> str:
 
     return (
         '<div style="overflow-x:auto;background:#FFFFFF;padding:4px;'
-        'border:2px solid #000000;">'
+        'border:2px solid #2D3957;">'
         '<table style="border-collapse:collapse;margin:0;">'
         + "".join(rows)
         + "</table></div>"
@@ -682,14 +682,14 @@ def _reindent_taf(lines: list) -> list:
 
 
 def wx_colored_box(lines: list, taf_mode: bool = False) -> str:
-    """Retro box (green border, black background, white text) with
+    """Retro box (slate-blue border, black background, white text) with
     token-level hazard coloring. TAF mode normalizes group
     indentation (overlays nest one space under their group)."""
     if taf_mode:
         lines = _reindent_taf(lines)
     body = "\n".join(_colorize_line(ln) for ln in lines)
     return (
-        '<div style="background:#000000;border:2px solid #00FF00;'
+        '<div style="background:#000000;border:2px solid #2D3957;'
         'color:#FFFFFF;-webkit-text-fill-color:#FFFFFF;'
         'font-family:Courier New,monospace;font-size:12px;'
         'padding:8px 10px;white-space:pre-wrap;word-break:break-word;">'
@@ -705,7 +705,7 @@ def wx_colored_box(lines: list, taf_mode: bool = False) -> str:
 def mono_box(text: str) -> str:
     from html import escape
     return (
-        '<div style="background:#000000;border:2px solid #00FF00;'
+        '<div style="background:#000000;border:2px solid #2D3957;'
         'color:#FFFFFF;-webkit-text-fill-color:#FFFFFF;'
         'font-family:Courier New,monospace;font-size:12px;'
         'padding:8px 10px;white-space:pre-wrap;word-break:break-word;">'
@@ -783,7 +783,7 @@ def _client_scrubber(frames, key: str) -> str:
     return (
         "<style>"
         ".scr{font:13px monospace}"
-        ".scr .vp{overflow:hidden;border:1px solid #888;"
+        ".scr .vp{overflow:hidden;border:1px solid #2D3957;"
         "cursor:zoom-in;position:relative;"
         "height:540px}"
         ".scr .vp.z{cursor:grab}"
@@ -1235,7 +1235,7 @@ if active_icao:
         # text stays one click away rather than being hidden.
         if _atis.get("raw"):
             st.markdown(
-                f'<div style="background:#0A0A0A;border:1px solid #333;'
+                f'<div style="background:#0A0A0A;border:1px solid #2D3957;'
                 f'padding:8px 12px;font-family:{_SCOPE_FONT};'
                 f'font-size:13px;font-weight:700;color:#FFF;">'
                 + (_cfg_line or "ATIS received, no runways parsed")
@@ -1273,7 +1273,7 @@ if active_icao:
                                  "{gs} kt",
                          "style": {"backgroundColor": "#0A0A0A",
                                    "color": "#FFFFFF",
-                                   "border": "1px solid #333333",
+                                   "border": "1px solid #2D3957",
                                    "fontSize": "12px"}},
                 parameters={"clearColor": [0, 0, 0, 1]},
             ),
