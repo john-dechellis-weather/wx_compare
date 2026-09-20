@@ -1249,15 +1249,15 @@ if active_icao:
                 "every runway end rather than the ones in use.")
 
         _surface = cached_scope_surface(icao, _sc_lat, _sc_lon)
-        _ends = _AS.runway_ends(_surface) if _surface else []
+        _ends, _ends_src = _AS.best_runway_ends(icao, _surface)
         if not _surface and _AS.surface_pending(icao):
             st.caption(
                 "Airport diagram downloading from OpenStreetMap \u2014 "
                 "it appears on the next refresh (usually under a minute).")
-        elif not _ends:
+        if not _ends:
             st.caption(
-                "No runway geometry from OpenStreetMap for this field; "
-                "showing range rings and traffic only.")
+                "No runway geometry for this field; showing range rings "
+                "and traffic only.")
 
         _ac = []
         if scope_traffic:
@@ -1286,7 +1286,8 @@ if active_icao:
             use_container_width=True, height=_AS.height_px(1000))
         st.caption(
             "30 x 20 nm \u00b7 rings at 10/20/30 nm \u00b7 finals 15 nm "
-            "with 1 nm ticks \u00b7 "
+            "from the landing threshold, 1 nm ticks"
+            + (f" ({_ends_src})" if _ends_src else "") + " \u00b7 "
             + (f"{len(_ac)} JetBlue aircraft" if _ac
                else "no JetBlue aircraft within 30 nm"))
 
