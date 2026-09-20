@@ -63,7 +63,7 @@ class Status:
     """Result for one station."""
     icao: str
     level: int
-    reason: str          # the rule that set the level, for the tooltip
+    reason: str          # why this colour, as a sentence, for the hover
 
     @property
     def color(self) -> str:
@@ -140,12 +140,21 @@ def _gust_level(gust: int | None) -> tuple[int, str]:
     if gust is None:
         return GREEN, ""
     if gust >= GUST_PINK:
-        return PINK, f"G{gust}"
+        return PINK, f"Gusting {gust} kt"
     if gust >= GUST_ORANGE:
-        return ORANGE, f"G{gust}"
+        return ORANGE, f"Gusting {gust} kt"
     if gust >= GUST_YELLOW:
-        return YELLOW, f"G{gust}"
+        return YELLOW, f"Gusting {gust} kt"
     return GREEN, ""
+
+
+def _category_reason(cat: str, vis_sm, ceiling_ft) -> str:
+    bits = []
+    if vis_sm is not None:
+        bits.append(f"vis {vis_sm:g} SM")
+    bits.append("ceiling unlimited" if ceiling_ft is None
+                else f"ceiling {ceiling_ft} ft")
+    return f"{cat} \u2014 " + ", ".join(bits)
 
 
 def _strip_remarks(metar: str) -> str:
@@ -164,12 +173,14 @@ def status_for(icao: str, metar: str | None, taf: str | None = None) -> Status:
 
     body = _strip_remarks(metar.upper())
 
-    level, reason = GREEN, "VFR"
+    vis_sm = parse_visibility_sm(body)
+    ceiling_ft = parse_ceiling_ft(body)
+    cat = flight_category(vis_sm, ceiling_ft)
 
-    # flight category
-    cat = flight_category(parse_visibility_sm(body), parse_ceiling_ft(body))
-    if _CATEGORY_LEVEL[cat] > level:
-        level, reason = _CATEGORY_LEVEL[cat], cat
+    # flight category. Green still carries its reason, so a hover on a
+    # clear station explains the green rather than saying nothing.
+    level = _CATEGORY_LEVEL[cat]
+    reason = _category_reason(cat, vis_sm, ceiling_ft)
 
     # wind gusts
     glevel, gtext = _gust_level(parse_gust(body))
@@ -178,21 +189,22 @@ def status_for(icao: str, metar: str | None, taf: str | None = None) -> Status:
 
     # heavy precipitation
     if _HEAVY_RE.search(body) and ORANGE > level:
-        level, reason = ORANGE, "+RA"
+        level, reason = ORANGE, "Heavy precipitation (+RA)"
 
     # thunder. VCTS is yellow; everything else that is thunder is TS_LEVEL.
     ts_sources = [body]
     if TAF_TS_COUNTS and taf:
         ts_sources.append(_strip_remarks(taf.upper()))
 
-    for src in ts_sources:
+    for i, src in enumerate(ts_sources):
+        where = ("TAF" if (i and TAF_TS_COUNTS) else "current METAR")
         without_vc = _VCTS_RE.sub(" ", src)
         if _TS_RE.search(without_vc):
             if TS_LEVEL > level:
-                level, reason = TS_LEVEL, "TS"
+                level, reason = TS_LEVEL, f"Thunderstorm in {where}"
             break
         if _VCTS_RE.search(src) and YELLOW > level:
-            level, reason = YELLOW, "VCTS"
+            level, reason = YELLOW, f"Thunderstorm in the vicinity ({where})"
 
     return Status(icao, level, reason)
 
