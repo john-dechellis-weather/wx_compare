@@ -13,6 +13,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import os
+
 import pandas as pd
 import pydeck as pdk
 import requests
@@ -113,6 +115,10 @@ def cached_taf_raw(icao: str) -> str | None:
     except Exception:
         return None
 
+
+# The zoom the Level III warmer renders at. The page must ask for the
+# same value or warm_get_loop() misses and every load decodes live.
+_L3_WARM_ZOOM = float(os.environ.get("BLUEMET_L3_ZOOM", "1.5"))
 
 _SCOPE_FONT = "'Courier New', Courier, monospace"
 _SCOPE_MAP_STYLE = (
@@ -891,6 +897,12 @@ with st.sidebar:
         help="1 = current only; more shows recent history, newest first.",
     )
 
+    show_echo_tops = st.checkbox(
+        "Echo tops", value=False,
+        help="A second Level III loop. Off by default because it "
+             "doubles the cold render time of this page.",
+    )
+
     scope_traffic = st.checkbox(
         "Airport scope: live traffic", value=True,
         help="All operators within 30 nm of the field, from community "
@@ -906,10 +918,11 @@ with st.sidebar:
         index=0,
     )
     l3_zoom = st.slider(
-        "Level III zoom (degrees)", 0.3, 3.0, 0.9, 0.1,
+        "Level III zoom (degrees)", 0.3, 3.0, _L3_WARM_ZOOM, 0.1,
         disabled=not radar_mode.startswith("Level III"),
-        help="Half-width of the view. Smaller is closer in; "
-             "0.9 is the 1.7x-closer default, 1.5 the old one.",
+        help="Half-width of the view; smaller is closer in. The warm "
+             f"store is rendered at {_L3_WARM_ZOOM:g}: any other value "
+             "misses it and renders live, which is much slower.",
     )
     l3_auto = st.checkbox(
         "Auto-refresh aircraft (60s)",
@@ -1147,12 +1160,17 @@ if active_icao:
                 st.markdown("**Echo Tops (L3)**")
                 et_g = None
                 et_warm = False
-                if _RADAR_WARM_OK:
+                if not show_echo_tops:
+                    st.caption(
+                        "Off. Turn on 'Echo tops' in the sidebar - it is "
+                        "a second Level III loop and doubles the cold "
+                        "render.")
+                elif _RADAR_WARM_OK:
                     et_g = warm_get_loop(
                         CACHE_ROOT, icao, "ET", l3_zoom
                     )
                     et_warm = bool(et_g)
-                if not et_g:
+                if show_echo_tops and not et_g:
                     with st.spinner("Rendering echo tops loop..."):
                         try:
                             et_g = cached_l3_station_loop(
@@ -1210,22 +1228,18 @@ if active_icao:
         _atis = cached_scope_atis(icao)
         _arr = _atis.get("arriving") or []
         _dep = _atis.get("departing") or []
+        _cfg_line = _atis.get("describe") or ""
 
         # The configuration line, with the raw ATIS beside it: the
         # runway parse reads prose and can be wrong, so the source
         # text stays one click away rather than being hidden.
         if _atis.get("raw"):
-            _bits = []
-            if _atis.get("code"):
-                _bits.append(f"Info {_atis['code']}")
-            _bits.append("Landing " + (", ".join(_arr) if _arr else "?"))
-            _bits.append("Departing " + (", ".join(_dep) if _dep else "?"))
             st.markdown(
                 f'<div style="background:#0A0A0A;border:1px solid #333;'
                 f'padding:8px 12px;font-family:{_SCOPE_FONT};'
                 f'font-size:13px;font-weight:700;color:#FFF;">'
-                + "  &middot;  ".join(_bits) + "</div>",
-                unsafe_allow_html=True)
+                + (_cfg_line or "ATIS received, no runways parsed")
+                + "</div>", unsafe_allow_html=True)
             with st.expander("Raw ATIS", expanded=False):
                 st.markdown(mono_box(_atis["raw"]), unsafe_allow_html=True)
         else:
