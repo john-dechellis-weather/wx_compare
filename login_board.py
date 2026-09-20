@@ -41,7 +41,8 @@ VIEW_ZOOM = float(os.environ.get("BLUEMET_LOGIN_ZOOM", "3.0"))
 
 MAP_STYLE = os.environ.get(
     "BLUEMET_MAP_STYLE",
-    "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json")
+    "https://basemaps.cartocdn.com/gl/"
+    "dark-matter-nolabels-gl-style/style.json")
 
 # FLEET
 # -----
@@ -134,21 +135,43 @@ def _mrms_layers() -> tuple[list, str]:
             for c in chunks], (stamp or "")
 
 
-def _station_layers() -> list:
+def _station_layers(statuses) -> list:
+    """Small blue dots with small labels, and a hover that says why
+    the station is the colour it is on the board above.
+
+    SIZING: get_radius / get_size are in METRES with a pixel clamp,
+    not radius_units="pixels". The units props are ignored by the
+    pydeck build running here - that is what drew continent-sized
+    dots and labels - and the clamp is how pages/3 already does it.
+    """
     blue = _rgb(T.JBU_BLUE)
-    pts = [{"position": [lon, lat], "name": code}
-           for code, (lat, lon) in S.STATION_LATLON.items()
-           if code in S.LOGIN_STATIONS]
+    why = {s.icao: s for s in statuses}
+    pts = []
+    for code, (lat, lon) in S.STATION_LATLON.items():
+        if code not in S.LOGIN_STATIONS:
+            continue
+        st_ = why.get(code)
+        pts.append({
+            "position": [lon, lat],
+            "name": code,
+            "reason": (st_.reason if st_ else "no observation"),
+            "level": (st_.name if st_ else "none"),
+        })
     return [
         pdk.Layer("ScatterplotLayer", pts, get_position="position",
-                  get_fill_color=blue + [255], radius_units="pixels",
-                  get_radius=4, radius_min_pixels=4, pickable=False),
+                  get_fill_color=blue + [255],
+                  get_line_color=[0, 0, 0, 255], stroked=True,
+                  line_width_min_pixels=1,
+                  get_radius=9000,
+                  radius_min_pixels=3, radius_max_pixels=5,
+                  pickable=True, auto_highlight=True),
         pdk.Layer("TextLayer", pts, get_position="position",
                   get_text="name", get_color=blue + [255],
-                  get_size=12, size_units="pixels",
-                  get_pixel_offset=[11, -8],
+                  get_size=2600, size_min_pixels=0, size_max_pixels=11,
+                  get_pixel_offset=[10, -7],
                   get_text_anchor='"start"',
-                  get_alignment_baseline='"center"', pickable=False),
+                  get_alignment_baseline='"center"',
+                  pickable=False),
     ]
 
 
@@ -191,7 +214,14 @@ def _deck(layers) -> pdk.Deck:
             min_zoom=VIEW_ZOOM, max_zoom=VIEW_ZOOM,
             bearing=0, pitch=0),
         map_style=MAP_STYLE,
-        tooltip=False,
+        tooltip={
+            "html": "<b>{name}</b><br/>{reason}",
+            "style": {"backgroundColor": "#0A0A0A",
+                      "color": "#FFFFFF",
+                      "border": "1px solid #333333",
+                      "fontSize": "12px",
+                      "fontFamily": "DejaVu Sans Mono, monospace"},
+        },
         parameters={"clearColor": [0, 0, 0, 1]},
     )
 
@@ -200,8 +230,10 @@ def _deck(layers) -> pdk.Deck:
 
 def _chips(statuses) -> str:
     cells = "".join(
-        f'<div style="flex:0 0 auto;min-width:92px;background:{T.PANEL};'
-        f'border:1px solid {T.RULE};border-radius:3px;padding:10px 12px">'
+        f'<div title="{s.icao}: {s.reason}" '
+        f'style="flex:0 0 auto;min-width:92px;background:{T.PANEL};'
+        f'border:1px solid {T.RULE};border-radius:3px;padding:10px 12px;'
+        f'cursor:help">'
         f'<div style="color:{T.TEXT};font-size:17px;font-weight:700;'
         f'letter-spacing:.5px">{s.icao}</div>'
         f'<div style="height:6px;margin-top:10px;background:{s.color}">'
@@ -301,7 +333,7 @@ def render() -> str | None:
             f'<div style="color:{T.TEXT_2};font-size:12px;font-weight:700;'
             f'margin:16px 0 6px 0">{note}</div>', unsafe_allow_html=True)
         st.pydeck_chart(
-            _deck(mrms + _station_layers() + _fleet_layers()),
+            _deck(mrms + _station_layers(statuses) + _fleet_layers()),
             use_container_width=True, height=470)
 
     return pw or None

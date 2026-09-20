@@ -208,6 +208,70 @@ html, body, .stApp,
   border: 1px solid var(--bm-border) !important;
 }}
 
+/* ------------------------------------------------- alerts and banners */
+
+/* st.info / st.success / st.warning / st.error draw pale pastel
+   panels with near-black text, which is unreadable on this theme.
+   Streamlit renders them through baseweb, so the fill lives on an
+   inner container - every level of the nesting is pinned or the
+   pastel shows through at the edges. */
+[data-testid="stAlert"],
+[data-testid="stAlertContainer"],
+[data-testid="stNotification"],
+[data-testid="stAlert"] [data-baseweb="notification"],
+[data-testid="stAlert"] > div,
+[data-testid="stNotificationContentInfo"],
+[data-testid="stNotificationContentSuccess"],
+[data-testid="stNotificationContentWarning"],
+[data-testid="stNotificationContentError"] {{
+  background: var(--bm-panel-alt) !important;
+  border-radius: 3px !important;
+  box-shadow: none !important;
+}}
+
+[data-testid="stAlert"] *,
+[data-testid="stAlertContainer"] *,
+[data-testid="stNotification"] * {{
+  color: var(--bm-text) !important;
+  -webkit-text-fill-color: var(--bm-text) !important;
+  font-size: {FS_BODY} !important;
+}}
+
+/* The severity is carried by a left edge instead of a fill, so the
+   four levels still read apart at a glance. */
+[data-testid="stAlertContainer"] {{
+  border: 1px solid var(--bm-border) !important;
+  border-left: 4px solid var(--bm-cyan) !important;
+  padding: 10px 14px !important;
+}}
+[data-testid="stAlert"]:has([data-testid="stNotificationContentSuccess"])
+  [data-testid="stAlertContainer"] {{
+  border-left-color: var(--bm-green) !important;
+}}
+[data-testid="stAlert"]:has([data-testid="stNotificationContentWarning"])
+  [data-testid="stAlertContainer"] {{
+  border-left-color: var(--bm-yellow) !important;
+}}
+[data-testid="stAlert"]:has([data-testid="stNotificationContentError"])
+  [data-testid="stAlertContainer"] {{
+  border-left-color: var(--bm-red) !important;
+}}
+
+/* Icons ship as SVG that inherits currentColor. */
+[data-testid="stAlert"] svg {{ fill: var(--bm-text) !important; }}
+
+/* st.exception and st.toast use the same pastel family. */
+[data-testid="stException"],
+[data-testid="stToast"] {{
+  background: var(--bm-panel-alt) !important;
+  border: 1px solid var(--bm-border) !important;
+}}
+[data-testid="stException"] *,
+[data-testid="stToast"] * {{
+  color: var(--bm-text) !important;
+  -webkit-text-fill-color: var(--bm-text) !important;
+}}
+
 /* ---------------------------------------------------------- widgets */
 
 .stApp [data-testid="stWidgetLabel"] label,
