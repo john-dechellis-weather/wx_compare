@@ -25,7 +25,11 @@ import pydeck as pdk
 import streamlit as st
 
 import dark_theme as T
-import station_status as S
+
+try:
+    from core import station_status as S
+except ImportError:          # repo-root copy, if it ever moves back
+    import station_status as S
 
 # ---------------------------------------------------------------- view
 
@@ -70,18 +74,20 @@ def _rgb(h: str) -> list[int]:
 def _metars() -> dict:
     """Latest raw METAR per board station. Best effort: on any failure
     the chips render grey, which reads as 'no data', not as 'fine'."""
+    icaos = [f"K{c}" for c in S.LOGIN_STATIONS]
     try:
         from core.metar import fetch_metars
-        by_station = fetch_metars(list(S.LOGIN_STATIONS), hours_back=2)
+        by_station = fetch_metars(icaos, hours_back=2)
     except Exception:
         return {}
     out = {}
     for icao, obs in (by_station or {}).items():
-        if obs:
-            raw = getattr(obs[-1], "raw_text", None)
-            if raw:
-                out[icao.upper().lstrip("K")[-3:]] = raw
-                out[icao.upper()] = raw
+        if not obs:
+            continue
+        raw = getattr(obs[-1], "raw_text", None)
+        if raw:
+            # Key by the 3-letter code the board displays.
+            out[icao.upper()[-3:]] = raw
     return out
 
 
@@ -227,8 +233,16 @@ def _key() -> str:
 def render() -> str | None:
     """Draw the board. Returns the typed password, or None."""
     T.apply_dark_theme()
-    st.markdown('<style>[data-testid="stSidebar"]{display:none}</style>',
-                unsafe_allow_html=True)
+    st.markdown(
+        "<style>"
+        '[data-testid="stSidebar"]{display:none}'
+        # ~16 characters wide, as the old login form was.
+        '[data-testid="stTextInput"]{max-width:200px !important;}'
+        '[data-testid="InputInstructions"]{display:none !important;}'
+        # The eye toggle draws as the word "visibility" without the
+        # icon font, which looks like stray text in the box.
+        '[data-testid="stTextInput"] button{display:none !important;}'
+        "</style>", unsafe_allow_html=True)
 
     now = _dt.datetime.now(_dt.timezone.utc)
 
