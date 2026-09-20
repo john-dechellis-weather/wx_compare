@@ -22,6 +22,9 @@ st.set_page_config(
 from retro_theme import apply_retro_theme
 apply_retro_theme()
 
+from dark_theme import apply_dark_theme
+apply_dark_theme()
+
 # Tell the warmer the site is in use, BEFORE any work on this page.
 # It backs off while requests are arriving, so the CONUS map does not
 # compete with matplotlib for the GIL. First line that runs, because
@@ -194,24 +197,35 @@ _RED = "#CC0000"
 _WHITE = "#FFFFFF"
 _FONT = "'Courier New', Courier, monospace"
 
+# Ops Black. _PANEL is the cell fill, _EDGE the rule between cells,
+# _INK body text, _INK2 the secondary column (the WHEN column, notes).
+# _TBL_FS is the table type size - 12 px, bold, on both boards.
+_PANEL = "#0A0A0A"
+_PANEL_HEAD = "#121212"
+_EDGE = "#333333"
+_INK = "#FFFFFF"
+_INK2 = "#B8B8B8"
+_TBL_FS = "12px"
 
-def _td(text, bg="#FFFFFF", fg="#000000", bold=False,
+
+def _td(text, bg=_PANEL, fg=_INK, bold=True,
         align="left") -> str:
+    # Bold by default: this strip is read from across the SOC floor.
     weight = "bold" if bold else "normal"
     return (
         f'<td style="background-color:{bg}; color:{fg}; -webkit-text-fill-color:{fg}; '
-        f"font-family:{_FONT}; font-size:clamp(6px, 0.45vw, 8px); padding:0.2em 0.5em; "
-        f"border:1px solid #000000; font-weight:{weight}; "
+        f"font-family:{_FONT}; font-size:{_TBL_FS}; padding:0.25em 0.6em; "
+        f"border:1px solid {_EDGE}; font-weight:{weight}; "
         f'text-align:{align}; white-space:nowrap;">{text}</td>'
     )
 
 
 def _th(text, align="left") -> str:
     return (
-        f'<td style="background-color:#FFFFFF; color:#000000; '
-        f"-webkit-text-fill-color:#000000; "
-        f"font-family:{_FONT}; font-size:clamp(6px, 0.45vw, 8px); padding:0.22em 0.5em; "
-        f"border:1px solid #000000; font-weight:bold; "
+        f'<td style="background-color:{_PANEL_HEAD}; color:{_INK}; '
+        f"-webkit-text-fill-color:{_INK}; "
+        f"font-family:{_FONT}; font-size:{_TBL_FS}; padding:0.25em 0.6em; "
+        f"border:1px solid {_EDGE}; font-weight:bold; "
         f'text-align:{align}; text-decoration:underline; '
         f'white-space:nowrap;">{text}</td>'
     )
@@ -221,8 +235,8 @@ def _table(header_cells: list[str], body_rows: list[str],
            full_width: bool = True) -> str:
     w = "width:100%;" if full_width else "width:auto;"
     return (
-        f'<table style="border-collapse:collapse; background-color:#FFFFFF; '
-        f'border:2px solid {_WHITE}; {w}">'
+        f'<table style="border-collapse:collapse; background-color:{_PANEL}; '
+        f'border:1px solid {_EDGE}; {w}">'
         f"<tr>{''.join(header_cells)}</tr>"
         f"{''.join(body_rows)}"
         f"</table>"
@@ -231,8 +245,8 @@ def _table(header_cells: list[str], body_rows: list[str],
 
 def _no_alerts() -> str:
     return (
-        f'<div style="background-color:#FFFFFF; border:2px solid {_WHITE}; '
-        f"color:#000000; -webkit-text-fill-color:#000000; font-family:{_FONT}; font-size:clamp(6px, 0.45vw, 8px); "
+        f'<div style="background-color:{_PANEL}; border:1px solid {_EDGE}; '
+        f"color:{_INK}; -webkit-text-fill-color:{_INK}; font-family:{_FONT}; font-size:{_TBL_FS}; "
         f'padding:6px 10px;">NO AIRPORTS FLAGGED</div>'
     )
 
@@ -662,8 +676,8 @@ def _legend_html() -> str:
         'stroke="#000000"/>'
         '<text x="74" y="47" text-anchor="middle" '
         'font-family="Arial, Helvetica, sans-serif" '
-        'font-size="22" font-weight="900" fill="#E01A1A" '
-        'stroke="#FFFFFF" stroke-width="1.5" '
+        'font-size="22" font-weight="900" fill="#FF5A5A" '
+        'stroke="#000000" stroke-width="1.5" '
         'paint-order="stroke">TS</text>'
         # TS leader: from right edge of letters (74+17, 40)
         f'<line x1="93" y1="40" x2="112" y2="40" {LINE}/>'
@@ -683,9 +697,9 @@ def _legend_html() -> str:
     )
     row = ("display:flex; align-items:center; gap:10px; "
            "padding:4px 0;")
-    txt = ("color:#000; -webkit-text-fill-color:#000; "
+    txt = (f"color:{_INK}; -webkit-text-fill-color:{_INK}; "
            "font-family:Georgia, 'Times New Roman', serif; "
-           "font-size:clamp(9px, 0.7vw, 12px);")
+           "font-size:12px;")
     planes = "".join(
         f'<div style="{row}">'
         f'<img src="{u}" '
@@ -718,9 +732,9 @@ def _legend_html() -> str:
                 f'stroke="{color}" stroke-width="2.4"/>'
                 + inner + "</svg>")
 
-    ktxt = ("color:#000; -webkit-text-fill-color:#000; "
+    ktxt = (f"color:{_INK}; -webkit-text-fill-color:{_INK}; "
             "font-family:Georgia, 'Times New Roman', serif; "
-            "font-size:clamp(8px, 0.62vw, 11px); "
+            "font-size:12px; "
             "white-space:nowrap;")
     pair_row = ("display:flex; align-items:center; gap:5px; "
                 "padding:2px 0; flex-wrap:nowrap;")
@@ -763,19 +777,19 @@ def _legend_html() -> str:
         'style="flex:none">'
         '<circle cx="9" cy="10" r="3.2" fill="#00963C"/>'
         '<text x="9" y="5.5" text-anchor="middle" font-size="5" '
-        'font-family="monospace" fill="#007832">JFK</text></svg>'
+        'font-family="monospace" fill="#00C853">JFK</text></svg>'
         f'<span style="{txt}">JBU station, no alerts '
         '(a marker covers it when there are)</span></div>'
     )
     return (
         # width:100% + box-sizing so the MAP KEY and the alert
         # table above it are the same width in the left column
-        '<div style="background:#FFFFFF; border:1px solid #000; '
+        f'<div style="background:{_PANEL}; border:1px solid {_EDGE}; '
         'padding:6px 10px; margin-top:26px; width:100%; '
         'box-sizing:border-box; display:block;">'
-        '<div style="color:#000; -webkit-text-fill-color:#000; '
+        f'<div style="color:{_INK}; -webkit-text-fill-color:{_INK}; '
         f"font-family:{_FONT}; "
-        "font-size:clamp(10px, 0.85vw, 13px); "
+        "font-size:14px; "
         'font-weight:bold; text-decoration:underline; '
         'margin-bottom:2px;">MAP KEY</div>'
         + diagram + planes + rings_sec + city_sec + "</div>"
@@ -892,20 +906,22 @@ def build_map_markers(board_rows, metar_rows, coords,
 def render_status_board(rows) -> str:
     """TAF board at ~2x scale: 16px cells, generous padding, and
     bold text whenever the severity is red or magenta."""
-    _TEXT_COLOR = {_YELLOW: "#B8860B", _ORANGE: "#CC6600",
-                   _LT_RED: "#E05555"}
+    # On black the darkened print variants went muddy; these are the
+    # same three hazards at dark-background luminance.
+    _TEXT_COLOR = {_YELLOW: "#FFD400", _ORANGE: "#FF8A00",
+                   _LT_RED: "#FF7A7A"}
 
-    def cell(text, fg="#000000", bold=False, header=False):
+    def cell(text, fg=_INK, bold=False, header=False):
         # Every cell bold (19 Sep): the board is read from across the
         # room, and the light-red TS rows were the faint ones.
         w = "bold"
         deco = "text-decoration:underline;" if header else ""
         return (
-            f'<td style="background-color:#FFFFFF; color:{fg}; '
+            f'<td style="background-color:{_PANEL}; color:{fg}; '
             f"-webkit-text-fill-color:{fg}; font-family:{_FONT}; "
-            f"font-size:clamp(9px, 0.7vw, 11px); "
-            f"padding:0.3em 0.75em; "
-            f"border:1px solid #000000; font-weight:{w}; {deco}"
+            f"font-size:{_TBL_FS}; "
+            f"padding:0.32em 0.75em; "
+            f"border:1px solid {_EDGE}; font-weight:{w}; {deco}"
             f'white-space:nowrap;">{text}</td>'
         )
 
@@ -929,19 +945,19 @@ def render_status_board(rows) -> str:
         _a1_hot = bool(_a1) and _a1[2] in (_RED, _MAGENTA)
         _a2_txt = "/".join(c[1] for c in _rest)
         _a2_col = (_TEXT_COLOR.get(_rest[0][2], _rest[0][2])
-                   if _rest else "#444444")
+                   if _rest else _INK2)
         _a2_hot = bool(_rest) and _rest[0][2] in (_RED, _MAGENTA)
         body.append(
             "<tr>"
             + cell(icao, bold=True)
             + cell(_a1_txt, fg=_a1_col, bold=_a1_hot)
             + cell(_a2_txt or "&mdash;", fg=_a2_col, bold=_a2_hot)
-            + cell(when, fg="#444444")
+            + cell(when, fg=_INK2)
             + "</tr>"
         )
     return (
         f'<table style="border-collapse:collapse; '
-        f'background-color:#FFFFFF; border:2px solid {_WHITE}; '
+        f'background-color:{_PANEL}; border:1px solid {_EDGE}; '
         f'width:100%;">'
         f"{header_row}{''.join(body)}</table>"
     )
@@ -2619,9 +2635,9 @@ if run_button or _auto:
                         get_angle="angle",
                         get_size=1300, size_units="meters",
                         size_min_pixels=0, size_max_pixels=12,
-                        get_color=[60, 60, 60, 220],
+                        get_color=[200, 200, 200, 230],
                         background=True,
-                        get_background_color=[255, 255, 255, 200],
+                        get_background_color=[0, 0, 0, 170],
                         get_text_anchor='"middle"',
                         get_alignment_baseline='"center"',
                         pickable=False,
@@ -3234,7 +3250,12 @@ if run_button or _auto:
         deck = pdk.Deck(
             layers=layers,
             initial_view_state=_view_state,
-            map_style="light",
+            # Ops Black. Carto dark-matter, overridable without a
+            # deploy. "light" left the radar sitting on a white page.
+            map_style=_os_ko.environ.get(
+                "BLUEMET_MAP_STYLE",
+                "https://basemaps.cartocdn.com/gl/"
+                "dark-matter-gl-style/style.json"),
             tooltip={"html": "<b>{tip}</b>"},
         )
         # Reported ALWAYS, not only when nonzero. If the counts
@@ -3372,11 +3393,13 @@ if run_button or _auto:
                  "<col style='width:18%'></colgroup>")
         _tbl = ("border-collapse:collapse;table-layout:fixed;width:100%;"
                 "margin:0;")
-        _th = (f"font:bold 10px {_F};color:#000;border:1px solid #000;"
-               "padding:4px 7px;background:#E8E8E4;text-align:left;"
+        _th = (f"font:bold 12px {_F};color:{_INK};"
+               f"border:1px solid {_EDGE};"
+               f"padding:4px 7px;background:{_PANEL_HEAD};text-align:left;"
                "white-space:nowrap;overflow:hidden;")
-        _td = (f"font:10px {_F};color:#000;border:1px solid #000;"
-               "padding:4px 7px;background:#FFF;white-space:nowrap;"
+        _td = (f"font:bold 12px {_F};color:{_INK};"
+               f"border:1px solid {_EDGE};"
+               f"padding:4px 7px;background:{_PANEL};white-space:nowrap;"
                "overflow:hidden;")
         _dismissed = st.session_state.setdefault("_hold_dismissed", set())
         _live = {c for c, *_ in holds}
@@ -3389,8 +3412,9 @@ if run_button or _auto:
             # The container IS the box: white, bordered, padded. Every
             # piece inside is then plain, and no seam shows between
             # rows or beside the buttons.
-            ".st-key-hold_box{background:#FFF;border:2px solid #000;"
-            "padding:8px 10px;}"
+            f".st-key-hold_box{{background:{_PANEL};"
+            f"border:1px solid {_EDGE};"
+            "padding:8px 10px;}}"
             ".st-key-hold_box [data-testid='stMarkdownContainer'] p"
             "{margin:0;}"
             ".st-key-hold_box [data-testid='stVerticalBlock']"
@@ -3400,12 +3424,13 @@ if run_button or _auto:
             ".st-key-hold_box [data-testid='stElementContainer']"
             "{margin:0 !important;}"
             ".st-key-hold_box button{"
-            f"font:bold 10px {_F} !important;color:#000 !important;"
-            "background:#FFF !important;border:1px solid #000 !important;"
+            f"font:bold 12px {_F} !important;color:{_INK} !important;"
+            f"background:{_PANEL} !important;"
+            f"border:1px solid {_EDGE} !important;"
             "border-radius:0 !important;min-height:0 !important;"
             "height:26px !important;padding:0 6px !important;"
             "margin:0 !important;line-height:1 !important;}"
-            ".st-key-hold_box button:hover{background:#E8E8E4 !important;}"
+            ".st-key-hold_box button:hover{background:#1A1A1A !important;}"
             ".st-key-hold_box button p{font:inherit !important;"
             "color:inherit !important;}"
             "</style>",
@@ -3413,9 +3438,9 @@ if run_button or _auto:
 
         title = ("\u26a0 Aircraft in holding" if shown
                  else "Aircraft in holding")
-        color = "#7A0000" if shown else "#333"
+        color = "#FF5A5A" if shown else _INK2
         st.markdown(
-            f'<div style="display:block;font:bold 14px Georgia,serif;'
+            f'<div style="display:block;font:bold 16px Georgia,serif;'
             f'color:{color};line-height:20px;padding:0 0 6px;">'
             + title + "</div>",
             unsafe_allow_html=True)
@@ -3441,7 +3466,7 @@ if run_button or _auto:
             with _e1:
                 st.markdown(_frame(
                     f"<table style='{_tbl}'><tr><td style='{_td}"
-                    "text-align:center;color:#666;font-style:italic;"
+                    f"text-align:center;color:{_INK2};font-style:italic;"
                     "white-space:normal;'>No aircraft currently in a "
                     "holding pattern</td></tr></table>"),
                     unsafe_allow_html=True)
@@ -3453,8 +3478,8 @@ if run_button or _auto:
                     f"<table style='{_tbl}'>{_cols}<tr>"
                     f"<td style='{_td}'><b>{_e(c)}</b></td>"
                     f"<td style='{_td}'>{_e(dest)}"
-                    + ("&nbsp;<span style='color:#B30000;font-weight:bold;"
-                       f"font:bold 10px {_F};'>TS</span>" if dts else "")
+                    + ("&nbsp;<span style='color:#FF5A5A;font-weight:bold;"
+                       f"font:bold 12px {_F};'>TS</span>" if dts else "")
                     + "</td>"
                     f"<td style='{_td}text-align:right'>"
                     f"{l if l else '&lt;1'}</td>"
@@ -3473,7 +3498,7 @@ if run_button or _auto:
                     _dismissed.add(c)
                     st.rerun(scope="app")
         st.markdown(
-            f'<div style="font:8px {_F};color:#333;margin-top:4px;">'
+            f'<div style="font:12px {_F};color:{_INK2};margin-top:4px;">'
             + (f"over the last {HOLD_FIXES * 2} min &middot; TS = "
                "destination METAR reporting thunderstorm &middot; "
                "&lt;1 = less than one full lap so far" if shown else
@@ -3519,11 +3544,11 @@ if run_button or _auto:
                             unsafe_allow_html=True)
             else:
                 st.markdown(
-                    '<div style="background:#FFFFFF; border:1px '
-                    'solid #000; display:inline-block; '
+                    f'<div style="background:{_PANEL}; border:1px '
+                    f'solid {_EDGE}; display:inline-block; '
                     'padding:4px 14px; margin-bottom:6px; '
-                    'color:#000; -webkit-text-fill-color:#000; '
-                    f'font-family:{_FONT}; font-size:11px;">'
+                    f'color:{_INK}; -webkit-text-fill-color:{_INK}; '
+                    f'font-family:{_FONT}; font-size:12px;">'
                     "NO METARs AT/BEYOND THRESHOLDS</div>",
                     unsafe_allow_html=True,
                 )

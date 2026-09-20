@@ -34,6 +34,9 @@ st.set_page_config(
 from retro_theme import apply_retro_theme
 apply_retro_theme()
 
+from dark_theme import apply_dark_theme
+apply_dark_theme()
+
 try:
     from core.cam_warm import note_request as _note_req
 

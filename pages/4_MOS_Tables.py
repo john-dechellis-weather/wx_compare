@@ -16,6 +16,9 @@ st.set_page_config(
 from retro_theme import apply_retro_theme
 apply_retro_theme()
 
+from dark_theme import apply_dark_theme
+apply_dark_theme()
+
 from auth import check_password
 check_password()
 
@@ -295,10 +298,11 @@ def build_generic_table(df_m, table_label, show_viscig=True):
     for t in times:
         tstr = pd.to_datetime(t).strftime("%m/%d<br>%HZ")
         header_cells.append(
-            f'<th style="background:#E0E0E0;color:#000000;'
-            f'-webkit-text-fill-color:#000000;'
-            f'font-family:Courier New,monospace;font-size:9px;font-weight:bold;'
-            f'padding:2px 3px;text-align:center;border:1px solid #000000;'
+            f'<th style="background:#121212;color:#FFFFFF;'
+            f'-webkit-text-fill-color:#FFFFFF;'
+            f'font-family:Courier New,monospace;font-size:12px;'
+            f'font-weight:bold;'
+            f'padding:3px 5px;text-align:center;border:1px solid #333333;'
             f'white-space:nowrap;min-width:38px;">{tstr}</th>'
         )
     header_row = "<tr>" + "".join(header_cells) + "</tr>"
@@ -348,10 +352,10 @@ def build_generic_table(df_m, table_label, show_viscig=True):
                                     gst_series=df_m["gst"]))
 
     return (
-        '<div style="overflow-x:auto;background:#FFFFFF;padding:4px;'
-        'border:2px solid #000000;margin-bottom:10px;">'
-        + f'<div style="font-family:Courier New,monospace;font-size:10px;'
-        + f'font-weight:bold;color:#000000;-webkit-text-fill-color:#000000;'
+        '<div style="overflow-x:auto;background:#000000;padding:4px;'
+        'border:1px solid #333333;margin-bottom:10px;">'
+        + f'<div style="font-family:Courier New,monospace;font-size:13px;'
+        + f'font-weight:bold;color:#FFFFFF;-webkit-text-fill-color:#FFFFFF;'
         + f'padding:1px 2px;">{table_label}</div>'
         + '<table style="border-collapse:collapse;margin:0;">'
         + f'<thead>{header_row}</thead>'
@@ -500,10 +504,10 @@ def build_det_point_table(label: str, rows: dict, cycle: datetime,
     out.append(_row("GST", "gst_kt", _f_int,
                     lambda r: gust_bg(r.get("gst_kt"))))
     return (
-        '<div style="overflow-x:auto;background:#FFFFFF;padding:4px;'
-        'border:2px solid #000000;margin-top:10px;">'
-        '<div style="font-family:Courier New,monospace;font-size:10px;'
-        'font-weight:bold;color:#000000;-webkit-text-fill-color:#000000;'
+        '<div style="overflow-x:auto;background:#000000;padding:4px;'
+        'border:1px solid #333333;margin-top:10px;">'
+        '<div style="font-family:Courier New,monospace;font-size:13px;'
+        'font-weight:bold;color:#FFFFFF;-webkit-text-fill-color:#FFFFFF;'
         'padding:1px 2px;">'
         f'{label} point forecast \u2014 {cycle:%HZ} run \u2014 '
         'nearest 3 km grid cell</div>'
@@ -531,7 +535,7 @@ def section(title: str) -> None:
     is what says which is which.
     """
     st.markdown(
-        '<div style="border-top:2px solid #000;margin:18px 0 6px;"></div>'
+        '<div style="border-top:1px solid #333333;margin:18px 0 6px;"></div>'
         '<div style="font-family:Courier New,monospace;font-size:13px;'
         'font-weight:bold;color:#000;-webkit-text-fill-color:#000;'
         f'margin-bottom:6px;">{escape(title)}</div>',
@@ -628,10 +632,10 @@ def build_nbm_prob_table(df_m, cycle: datetime) -> str:
                          else make_cell(txt))
         out.append("<tr>" + "".join(cells) + "</tr>")
     return (
-        '<div style="overflow-x:auto;background:#FFFFFF;padding:4px;'
-        'border:2px solid #000000;margin-top:10px;">'
-        '<div style="font-family:Courier New,monospace;font-size:10px;'
-        'font-weight:bold;color:#000000;-webkit-text-fill-color:#000000;'
+        '<div style="overflow-x:auto;background:#000000;padding:4px;'
+        'border:1px solid #333333;margin-top:10px;">'
+        '<div style="font-family:Courier New,monospace;font-size:13px;'
+        'font-weight:bold;color:#FFFFFF;-webkit-text-fill-color:#FFFFFF;'
         'padding:1px 2px;">'
         f'NBM flight-category probability (%) \u2014 {cycle:%HZ} run '
         '\u2014 MDL calibrated</div>'
@@ -672,10 +676,10 @@ def build_refs_prob_table(probs: dict, cycle: datetime,
                          else make_cell(txt))
         rows.append("<tr>" + "".join(cells) + "</tr>")
     return (
-        '<div style="overflow-x:auto;background:#FFFFFF;padding:4px;'
-        'border:2px solid #000000;margin-top:10px;">'
-        '<div style="font-family:Courier New,monospace;font-size:10px;'
-        'font-weight:bold;color:#000000;-webkit-text-fill-color:#000000;'
+        '<div style="overflow-x:auto;background:#000000;padding:4px;'
+        'border:1px solid #333333;margin-top:10px;">'
+        '<div style="font-family:Courier New,monospace;font-size:13px;'
+        'font-weight:bold;color:#FFFFFF;-webkit-text-fill-color:#FFFFFF;'
         'padding:1px 2px;">'
         f'REFS ensemble probability (%) \u2014 {cycle:%HZ} run</div>'
         '<table style="border-collapse:collapse;margin:0;">'
@@ -687,21 +691,21 @@ def build_refs_prob_table(probs: dict, cycle: datetime,
     )
 
 
-def make_cell(text, bg="#FFFFFF", fg="#000000"):
-    """Return a <td>: white/black by default; tier colors pass a bg.
+def make_cell(text, bg="#0A0A0A", fg="#FFFFFF"):
+    """Return a <td>: white-on-panel by default; tier colors pass a bg.
     plain color + -webkit-text-fill-color, NO important flags: the Streamlit sanitizer strips inline declarations containing them; text-fill-color wins the paint step regardless."""
-    weight = "bold" if bg != "#FFFFFF" else "normal"
+    weight = "bold" if bg != "#0A0A0A" else "normal"
     return (
         f'<td style="'
         f'background:{bg};'
         f'color:{fg};'
         f'-webkit-text-fill-color:{fg};'
         f'font-family:Courier New,monospace;'
-        f'font-size:9px;'
+        f'font-size:12px;'
         f'font-weight:{weight};'
-        f'padding:2px 3px;'
+        f'padding:3px 5px;'
         f'text-align:center;'
-        f'border:1px solid #000000;'
+        f'border:1px solid #333333;'
         f'white-space:nowrap;'
         f'min-width:38px;'
         f'">{escape(str(text))}</td>'
@@ -714,15 +718,15 @@ def make_th(text, is_row_label=False):
     align = "left" if is_row_label else "center"
     return (
         f'<th style="'
-        f'background:#E0E0E0;'
-        f'color:#000000;'
-        f'-webkit-text-fill-color:#000000;'
+        f'background:#121212;'
+        f'color:#FFFFFF;'
+        f'-webkit-text-fill-color:#FFFFFF;'
         f'font-family:Courier New,monospace;'
-        f'font-size:9px;'
+        f'font-size:12px;'
         f'font-weight:bold;'
-        f'padding:2px 4px;'
+        f'padding:3px 5px;'
         f'text-align:{align};'
-        f'border:1px solid #000000;'
+        f'border:1px solid #333333;'
         f'white-space:nowrap;'
         f'min-width:{min_w};'
         f'">{escape(str(text))}</th>'
@@ -790,10 +794,11 @@ if run_button:
     for t in times:
         tstr = pd.to_datetime(t).strftime("%m/%d<br>%HZ")
         header_cells.append(
-            f'<th style="background:#E0E0E0;color:#000000;'
-            f'-webkit-text-fill-color:#000000;'
-            f'font-family:Courier New,monospace;font-size:9px;font-weight:bold;'
-            f'padding:2px 3px;text-align:center;border:1px solid #000000;'
+            f'<th style="background:#121212;color:#FFFFFF;'
+            f'-webkit-text-fill-color:#FFFFFF;'
+            f'font-family:Courier New,monospace;font-size:12px;'
+            f'font-weight:bold;'
+            f'padding:3px 5px;text-align:center;border:1px solid #333333;'
             f'white-space:nowrap;min-width:38px;">{tstr}</th>'
         )
     header_row = "<tr>" + "".join(header_cells) + "</tr>"
@@ -881,12 +886,12 @@ if run_button:
         gst_series=df_c["LAMP_wind_gst"])
 
     _wrap_open = (
-        '<div style="overflow-x:auto;background:#FFFFFF;padding:4px;'
-        'border:2px solid #000000;{margin}">'
+        '<div style="overflow-x:auto;background:#000000;padding:4px;'
+        'border:1px solid #333333;{margin}">'
     )
     _label = (
-        '<div style="font-family:Courier New,monospace;font-size:10px;'
-        'font-weight:bold;color:#000000;-webkit-text-fill-color:#000000;'
+        '<div style="font-family:Courier New,monospace;font-size:13px;'
+        'font-weight:bold;color:#FFFFFF;-webkit-text-fill-color:#FFFFFF;'
         'padding:1px 2px;">{name}</div>'
     )
     table_html = (
