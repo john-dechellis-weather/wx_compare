@@ -896,7 +896,9 @@ def render_status_board(rows) -> str:
                    _LT_RED: "#E05555"}
 
     def cell(text, fg="#000000", bold=False, header=False):
-        w = "bold" if (bold or header) else "normal"
+        # Every cell bold (19 Sep): the board is read from across the
+        # room, and the light-red TS rows were the faint ones.
+        w = "bold"
         deco = "text-decoration:underline;" if header else ""
         return (
             f'<td style="background-color:#FFFFFF; color:{fg}; '
