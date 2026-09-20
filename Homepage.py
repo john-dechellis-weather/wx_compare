@@ -122,6 +122,23 @@ except Exception as _exc:
     _warm_notes.append(f"MRMS warmer FAILED: "
                        f"{type(_exc).__name__}: {_exc}")
 
+# Airport diagrams for every JetBlue station (Station Quick View's
+# scope). One Overpass query per station, paced, refreshed weekly; a
+# page never waits on Overpass. Lowest priority of the warmers: it
+# starts last and is I/O-bound, so it does not hold the GIL against
+# page 3. SURFACE_WARMER=off stops it.
+_SCOPE_DIR = CACHE_ROOT / "scope"
+try:
+    from core.surface_warm import ensure_surface_warmer
+
+    if ensure_surface_warmer(_SCOPE_DIR):
+        _warm_notes.append("Surface warmer started (airport diagrams)")
+    else:
+        _warm_notes.append("Surface warmer off (SURFACE_WARMER=off)")
+except Exception as _exc:
+    _warm_notes.append(f"Surface warmer FAILED: "
+                       f"{type(_exc).__name__}: {_exc}")
+
 # The CAM-overlay and radar warmers were started here for the N90
 # Airspace page, which is no longer in the navigation. Both imports
 # are gone rather than merely disabled: an import of core.radar_l2
@@ -146,6 +163,17 @@ def _home():
     with st.expander("Background warmers", expanded=False):
         for _n in _warm_notes:
             (st.error if "FAILED" in _n else st.caption)(_n)
+        try:
+            from core.surface_warm import tail as _sw_tail, coverage as _sw_cov
+            _cov = _sw_cov(_SCOPE_DIR)
+            if _cov:
+                _have = sum(1 for v in _cov.values() if v.get("runways"))
+                st.caption(f"Airport diagrams: {_have}/{len(_cov)} "
+                           "stations have a surface")
+            for _ln in _sw_tail(_SCOPE_DIR, 6):
+                st.caption(_ln)
+        except Exception:
+            pass
         st.caption(
             f"Store: {CACHE_ROOT}"
             + ("" if _persistent.exists() else
