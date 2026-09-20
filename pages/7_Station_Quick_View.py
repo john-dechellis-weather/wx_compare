@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
+import pydeck as pdk
 import requests
 import streamlit as st
 
@@ -35,6 +36,8 @@ check_password()
 _persistent = Path("/opt/render/project/src/cache")
 CACHE_ROOT = _persistent if _persistent.exists() else Path("/tmp/wx_compare_cache")
 CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+STATIC_DIR = CACHE_ROOT / "scope"
+STATIC_DIR.mkdir(parents=True, exist_ok=True)
 
 # BlueMet's own JBU movement log (OpenSky is unreachable from this
 # server): background sampler polls hub airports via adsb.lol.
@@ -109,6 +112,35 @@ def cached_taf_raw(icao: str) -> str | None:
         return text or None
     except Exception:
         return None
+
+
+_SCOPE_FONT = "'Courier New', Courier, monospace"
+_SCOPE_MAP_STYLE = (
+    "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json")
+
+
+# --- Airport scope: surface, ATIS, area traffic -----------------------
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=20)
+def cached_scope_surface(icao: str, lat: float, lon: float):
+    """OSM surface for the field. Disk-cached for a week inside the
+    module; this wrapper keeps it off the run path within a session."""
+    from core import airport_scope as _AS
+    return _AS.surface(STATIC_DIR, icao, lat, lon)
+
+
+@st.cache_data(ttl=120, show_spinner=False, max_entries=20)
+def cached_scope_atis(icao: str):
+    from core import airport_scope as _AS
+    return _AS.atis(icao)
+
+
+@st.cache_data(ttl=45, show_spinner=False, max_entries=20)
+def cached_scope_traffic(lat: float, lon: float, radius_nm: int,
+                         bucket: str):
+    """bucket is a time bucket, so several viewers of the same field
+    share one query instead of multiplying the ADS-B rate."""
+    from core import airport_scope as _AS
+    return _AS.traffic(lat, lon, radius_nm)
 
 
 @st.cache_data(ttl=600, show_spinner=False, max_entries=30)
@@ -659,11 +691,9 @@ def wx_colored_box(lines: list, taf_mode: bool = False) -> str:
     )
 
 
-_WX_LEGEND = (
-    "colored values only: vis <1SM magenta / <3SM red | "
-    "cig <500 magenta / <1000 red / <2000 yellow | "
-    "gusts G30+ orange / G35+ red / G40+ magenta | TS red"
-)
+# The hazard-colour legend that used to print under the TAF box was
+# removed - it sat hard against the box and read as part of it. The
+# colouring in wx_colored_box is unchanged.
 
 
 def mono_box(text: str) -> str:
@@ -861,6 +891,12 @@ with st.sidebar:
         help="1 = current only; more shows recent history, newest first.",
     )
 
+    scope_traffic = st.checkbox(
+        "Airport scope: live traffic", value=True,
+        help="All operators within 30 nm of the field, from community "
+             "ADS-B. One point query, shared between viewers.",
+    )
+
     radar_mode = st.radio(
         "Radar display",
         options=[
@@ -933,25 +969,27 @@ if active_icao:
     )
 
     # --- METAR ---
-    st.subheader("Current METAR" if n_metars == 1 else
-                 f"METARs (last {n_metars})")
     # Hourly obs + specials: n+4 hours of lookback comfortably covers n obs.
     with st.spinner("Fetching METARs..."):
         obs_list = cached_metar_history(icao, hours_back=n_metars + 4)
     if obs_list:
         recent = obs_list[-n_metars:][::-1]  # newest first
+        latest = recent[0]
+        age_min = int((now - latest.obs_time).total_seconds() // 60)
+        # Observation age rides on the heading. It used to be a caption
+        # under the box, which read as part of the table.
+        st.subheader(
+            ("Current METAR" if n_metars == 1
+             else f"METARs (last {n_metars})")
+            + f"  \u00b7  {latest.obs_time:%H:%MZ}, {age_min} min ago"
+        )
         st.markdown(
             wx_colored_box([o.raw_text for o in recent]),
             unsafe_allow_html=True,
         )
-        latest = recent[0]
-        age_min = int((now - latest.obs_time).total_seconds() // 60)
-        st.caption(
-            f"Latest observed {latest.obs_time:%H:%MZ} ({age_min} min ago)"
-            + ("" if len(recent) == 1 else
-               f" · showing {len(recent)} obs, newest first")
-        )
     else:
+        st.subheader("Current METAR" if n_metars == 1 else
+                     f"METARs (last {n_metars})")
         st.warning("No recent METAR found.")
 
     # --- TAF ---
@@ -963,7 +1001,6 @@ if active_icao:
             wx_colored_box(taf_text.splitlines(), taf_mode=True),
             unsafe_allow_html=True,
         )
-        st.caption(_WX_LEGEND)
     else:
         st.warning("No TAF available (station may not be a TAF site).")
 
@@ -1160,6 +1197,77 @@ if active_icao:
         st.markdown(build_nbh_table(nbh_df), unsafe_allow_html=True)
     else:
         st.caption("No NBM data for this station.")
+
+    # --- Airport scope (30 x 20 nm) ---
+    st.subheader("Airport Scope")
+    _sc_coords = cached_station_coords(icao)
+    if not _sc_coords:
+        st.caption(f"No coordinates for {icao}; scope unavailable.")
+    else:
+        _sc_lat, _sc_lon = _sc_coords
+        from core import airport_scope as _AS
+
+        _atis = cached_scope_atis(icao)
+        _arr = _atis.get("arriving") or []
+        _dep = _atis.get("departing") or []
+
+        # The configuration line, with the raw ATIS beside it: the
+        # runway parse reads prose and can be wrong, so the source
+        # text stays one click away rather than being hidden.
+        if _atis.get("raw"):
+            _bits = []
+            if _atis.get("code"):
+                _bits.append(f"Info {_atis['code']}")
+            _bits.append("Landing " + (", ".join(_arr) if _arr else "?"))
+            _bits.append("Departing " + (", ".join(_dep) if _dep else "?"))
+            st.markdown(
+                f'<div style="background:#0A0A0A;border:1px solid #333;'
+                f'padding:8px 12px;font-family:{_SCOPE_FONT};'
+                f'font-size:13px;font-weight:700;color:#FFF;">'
+                + "  &middot;  ".join(_bits) + "</div>",
+                unsafe_allow_html=True)
+            with st.expander("Raw ATIS", expanded=False):
+                st.markdown(mono_box(_atis["raw"]), unsafe_allow_html=True)
+        else:
+            st.caption(
+                "No D-ATIS for this field \u2014 finals are drawn off "
+                "every runway end rather than the ones in use.")
+
+        _surface = cached_scope_surface(icao, _sc_lat, _sc_lon)
+        _ends = _AS.runway_ends(_surface)
+        if not _ends:
+            st.caption(
+                "No runway geometry from OpenStreetMap for this field; "
+                "showing range rings and traffic only.")
+
+        _ac = []
+        if scope_traffic:
+            _bucket = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")[:-1]
+            _ac = cached_scope_traffic(round(_sc_lat, 3), round(_sc_lon, 3),
+                                       30, _bucket)
+
+        _scope_layers = _AS.layers(
+            _surface, _ends, _sc_lat, _sc_lon,
+            arriving=_arr, departing=_dep, ac=_ac,
+            show_traffic=scope_traffic)
+        st.pydeck_chart(
+            pdk.Deck(
+                layers=_scope_layers,
+                initial_view_state=_AS.view(_sc_lat, _sc_lon),
+                map_style=_SCOPE_MAP_STYLE,
+                tooltip={"html": "<b>{callsign}</b><br/>{alt} ft &middot; "
+                                 "{gs} kt",
+                         "style": {"backgroundColor": "#0A0A0A",
+                                   "color": "#FFFFFF",
+                                   "border": "1px solid #333333",
+                                   "fontSize": "12px"}},
+                parameters={"clearColor": [0, 0, 0, 1]},
+            ),
+            use_container_width=True, height=_AS.height_px(1000))
+        st.caption(
+            "30 x 20 nm \u00b7 rings at 10/20/30 nm \u00b7 finals 15 nm "
+            "with 1 nm ticks \u00b7 "
+            + (f"{len(_ac)} aircraft" if _ac else "no traffic returned"))
 
     # --- Live inbound (instant, from ADS-B positions) ---
     st.subheader("JBU Inbound Now")
