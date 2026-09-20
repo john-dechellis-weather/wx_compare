@@ -84,9 +84,10 @@ def zoom_for(lat: float, width_nm: float = SCOPE_W_NM,
 # ------------------------------------------------------- the surface
 
 def _code(icao: str) -> str:
-    """KJFK -> JFK, the key core/surface.py and core/runways.py use."""
-    i = (icao or "").upper()
-    return i[1:] if len(i) == 4 and i.startswith("K") else i
+    """KJFK -> JFK, the key core/surface.py and core/runways.py use.
+    Delegates to core/airports so the KPBI -> KDJT alias holds."""
+    from core import airports as _AP
+    return _AP.code(icao)
 
 
 def surface(static_dir, icao: str, lat: float, lon: float) -> dict:
@@ -116,6 +117,22 @@ def surface_pending(icao: str) -> bool:
 
 
 # ------------------------------------------------------ runway ends
+
+def best_runway_ends(icao: str, sf: dict) -> tuple:
+    """(ends, source). The runway table first, OSM second.
+
+    The table (core/airports.py) knows where each LANDING threshold is,
+    displaced thresholds included; OSM knows only where the pavement
+    ends. So OSM is used only for a field the table has no geometry
+    for (TVSA today).
+    """
+    from core import airports as _AP
+    ends = _AP.runway_ends(icao)
+    if ends:
+        return ends, "runway table"
+    ends = runway_ends(sf) if sf else []
+    return ends, ("OpenStreetMap" if ends else "")
+
 
 def runway_ends(sf: dict) -> list:
     """[{apt, end, thr, far, hdg}] for every named runway end.
@@ -169,7 +186,10 @@ def finals(ends, active=None, out_nm: float = FINAL_NM,
         if lit and act:
             lab = offset(tlat, tlon, out_nm + 1.0, back)
             labels.append({"position": [lab[1], lab[0]],
-                           "text": f"ILS {e['end']}", "color": C_FINAL})
+                           # Not "ILS": the scope knows the runway, not
+                           # the approach type - the ATIS line says that.
+                           "text": f"RWY {e['end'].lstrip('0')}",
+                           "color": C_FINAL})
     return lines, ticks, labels
 
 
