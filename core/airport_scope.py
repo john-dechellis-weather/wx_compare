@@ -146,7 +146,7 @@ def surface(static_dir, icao: str, lat: float, lon: float,
         if len(pts) < 2:
             continue
         rec = {"ref": tags.get("ref") or tags.get("name") or "",
-               "path": pts}
+               "path": pts, "apt": icao.upper().lstrip("K")[-3:]}
         aw = tags.get("aeroway")
         if aw == "runway":
             out["runways"].append(rec)
@@ -164,40 +164,17 @@ def surface(static_dir, icao: str, lat: float, lon: float,
 
 # ------------------------------------------------------ runway ends
 
-_REF_RE = re.compile(r"^(\d{1,2}[LRC]?)\s*/\s*(\d{1,2}[LRC]?)$")
-
-
 def runway_ends(sf: dict) -> list:
-    """[{end, lat, lon, hdg}] for every runway end in the surface.
+    """[{apt, end, thr, far, hdg}] for every named runway end.
 
-    OSM gives a way per runway with ref "04L/22R" and no statement of
-    which name belongs to which physical end. The designator IS the
-    approximate magnetic heading, so each end is matched to whichever
-    name points closest to the direction you would be travelling when
-    you take off from it. Magnetic variation is ignored: the two
-    candidates are ~180 deg apart, so a 15 deg error cannot pick wrong.
+    Delegates to core/runways.py rather than repeating its geometry:
+    that module already binds each designator to the right physical
+    end (the designator is the approximate magnetic heading, and the
+    two candidates are 180 deg apart, so variation cannot flip it),
+    and the finals module expects exactly its output shape.
     """
-    ends = []
-    for rw in sf.get("runways", []):
-        ref = (rw.get("ref") or "").strip().upper()
-        m = _REF_RE.match(ref)
-        pts = rw.get("path") or []
-        if not m or len(pts) < 2:
-            continue
-        (alon, alat), (blon, blat) = pts[0], pts[-1]
-        a_to_b = bearing(alat, alon, blat, blon)
-        for name in (m.group(1), m.group(2)):
-            num = int(re.sub(r"[A-Z]", "", name)) * 10 % 360
-            d_ab = abs(((num - a_to_b) + 180) % 360 - 180)
-            if d_ab <= 90:
-                # departing this end travels a -> b, so the threshold
-                # is a
-                ends.append({"end": name, "lat": alat, "lon": alon,
-                             "hdg": a_to_b})
-            else:
-                ends.append({"end": name, "lat": blat, "lon": blon,
-                             "hdg": (a_to_b + 180) % 360})
-    return ends
+    from core import runways as _RW
+    return _RW.runway_ends(sf)
 
 
 # ---------------------------------------------------- finals + rings
@@ -210,14 +187,18 @@ def finals(ends, active=None, out_nm: float = FINAL_NM,
     dim, so the picture still shows the field's geometry without
     claiming every runway is active.
     """
-    act = {a.upper() for a in (active or [])}
+    from core import atis as _AT
+    # ATIS says "4R", runway ends are "04R" - normalise before matching
+    # or a whole configuration silently fails to light up.
+    act = {_AT.norm(a) for a in (active or [])}
     lines, ticks, labels = [], [], []
     for e in ends:
-        lit = (not act) or (e["end"].upper() in act)
+        lit = (not act) or (_AT.norm(e["end"]) in act)
         col = C_FINAL if (lit and act) else C_FINAL_IDLE
+        tlon, tlat = e["thr"]
         back = (e["hdg"] + 180.0) % 360.0
-        far = offset(e["lat"], e["lon"], out_nm, back)
-        lines.append({"path": [[e["lon"], e["lat"]], [far[1], far[0]]],
+        far = offset(tlat, tlon, out_nm, back)
+        lines.append({"path": [[tlon, tlat], [far[1], far[0]]],
                       "color": col, "end": e["end"],
                       "width": 2 if lit and act else 1})
         d = minor_tick_nm
@@ -225,7 +206,7 @@ def finals(ends, active=None, out_nm: float = FINAL_NM,
             major = abs((d / major_tick_nm)
                         - round(d / major_tick_nm)) < 1e-6
             half = 0.45 if major else 0.22
-            c = offset(e["lat"], e["lon"], d, back)
+            c = offset(tlat, tlon, d, back)
             p1 = offset(c[0], c[1], half, (e["hdg"] + 90) % 360)
             p2 = offset(c[0], c[1], half, (e["hdg"] + 270) % 360)
             ticks.append({"path": [[p1[1], p1[0]], [p2[1], p2[0]]],
@@ -233,7 +214,7 @@ def finals(ends, active=None, out_nm: float = FINAL_NM,
                           "width": 2 if major else 1})
             d += minor_tick_nm
         if lit and act:
-            lab = offset(e["lat"], e["lon"], out_nm + 1.0, back)
+            lab = offset(tlat, tlon, out_nm + 1.0, back)
             labels.append({"position": [lab[1], lab[0]],
                            "text": f"ILS {e['end']}", "color": C_FINAL})
     return lines, ticks, labels
@@ -241,12 +222,13 @@ def finals(ends, active=None, out_nm: float = FINAL_NM,
 
 def departure_marks(ends, departing=None):
     """A label at each departure end, as 'DEP 22R'."""
-    dep = {d.upper() for d in (departing or [])}
+    from core import atis as _AT
+    dep = {_AT.norm(d) for d in (departing or [])}
     out = []
     for e in ends:
-        if e["end"].upper() in dep:
-            p = offset(e["lat"], e["lon"], 0.8,
-                       (e["hdg"] + 180.0) % 360.0)
+        if _AT.norm(e["end"]) in dep:
+            tlon, tlat = e["thr"]
+            p = offset(tlat, tlon, 0.8, (e["hdg"] + 180.0) % 360.0)
             out.append({"position": [p[1], p[0]],
                         "text": f"DEP {e['end']}", "color": C_DEP})
     return out
@@ -329,79 +311,19 @@ def traffic(lat: float, lon: float, radius_nm: float = 30.0) -> list:
 
 # --------------------------------------------------------------- ATIS
 
-# Arrival runways appear in two orders in real D-ATIS:
-#   "ILS RWY 22L APPROACH IN USE"      - runway BEFORE the trigger
-#   "LANDING RWY 4R AND 4L"            - runway AFTER the trigger
-# Both are matched, every occurrence, because an ATIS often names two
-# approaches in one breath.
-_ARR_PATTERNS = (
-    re.compile(r"(?:ILS|RNAV|GPS|VOR|LOC|LDA|TACAN|VISUAL)\s+"
-               r"(?:RWYS?\s*)?((?:\d{1,2}[LRC]?)"
-               r"(?:\s*(?:AND|,|/)\s*"
-               r"(?:ILS|RNAV|GPS|VOR|LOC|LDA|TACAN|VISUAL)?\s*"
-               r"(?:RWYS?\s*)?\d{1,2}[LRC]?)*)"
-               r"[^.]{0,40}?APPROACH(?:ES)?\s+IN\s+USE"),
-    re.compile(r"(?:LAND(?:ING)?|ARR(?:IVAL|IVING)?)\s+"
-               r"(?:RWYS?\s*)?((?:\d{1,2}[LRC]?)"
-               r"(?:\s*(?:AND|,|/)\s*(?:RWYS?\s*)?\d{1,2}[LRC]?)*)"),
-)
-_DEP_PATTERNS = (
-    re.compile(r"(?:DEPART(?:ING|URE)?S?)\s+"
-               r"(?:RWYS?\s*)?((?:\d{1,2}[LRC]?)"
-               r"(?:\s*(?:AND|,|/)\s*(?:RWYS?\s*)?\d{1,2}[LRC]?)*)"),
-)
-_RWY_TOKEN = re.compile(r"\d{1,2}[LRC]?")
-
-
-def _runways_in(text: str, patterns) -> list:
-    """Every runway named by any of the patterns, in order, deduped."""
-    out = []
-    for rx in patterns:
-        for m in rx.finditer(text):
-            for tok in _RWY_TOKEN.findall(m.group(1)):
-                t = tok.upper()
-                if t not in out:
-                    out.append(t)
-    return out
-
-
 def atis(icao: str) -> dict:
-    """D-ATIS for the field: {'raw', 'code', 'arriving', 'departing'}.
+    """Runway configuration from the FAA D-ATIS relay.
 
-    Source is datis.clowd.io, which relays the FAA SWIM D-ATIS feed.
-    It is NOT an FAA endpoint and only covers D-ATIS airports (~76 of
-    them), so most small fields return nothing. The runway parse reads
-    prose and can be wrong - always show `raw` beside it so a human
-    can check.
+    core/atis.py owns the fetch, the cache and the parsing. This
+    wrapper only reshapes it for the scope and never raises.
     """
-    import requests
-    out = {"raw": "", "code": "", "arriving": [], "departing": []}
-    try:
-        r = requests.get(f"https://datis.clowd.io/api/{icao.upper()}",
-                         timeout=8,
-                         headers={"User-Agent": "bluemet.org ops"})
-        if r.status_code != 200:
-            return out
-        data = r.json()
-    except Exception:
-        return out
-    if isinstance(data, dict) and data.get("error"):
-        return out
-    if isinstance(data, dict):
-        data = [data]
-    if not isinstance(data, list) or not data:
-        return out
-
-    # Combined ATIS when there is one, otherwise arrival + departure.
-    text = " ".join((d.get("datis") or "") for d in data).upper()
-    out["raw"] = " ".join((d.get("datis") or "") for d in data)
-    for d in data:
-        if d.get("code"):
-            out["code"] = d["code"]
-            break
-    out["arriving"] = _runways_in(text, _ARR_PATTERNS)
-    out["departing"] = _runways_in(text, _DEP_PATTERNS)
-    return out
+    from core import atis as _AT
+    cfg = _AT.config(icao)
+    return {"raw": cfg.get("raw", ""), "code": cfg.get("code", ""),
+            "arriving": cfg.get("arr") or [],
+            "departing": cfg.get("dep") or [],
+            "err": cfg.get("err", ""),
+            "describe": _AT.describe(cfg)}
 
 
 # ------------------------------------------------------ pydeck layers
