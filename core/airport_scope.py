@@ -23,17 +23,11 @@ should cost the range rings, not the page.
 
 from __future__ import annotations
 
-import json
 import math
 import os
 import re
-import time
-from pathlib import Path
 
 NM_PER_DEG = 60.0
-OVERPASS = "https://overpass-api.de/api/interpreter"
-SURFACE_MAX_AGE_S = 7 * 86400
-HTTP_TIMEOUT = 20
 
 # The scope: 30 nm across, 20 nm tall.
 SCOPE_W_NM = float(os.environ.get("BLUEMET_SCOPE_W_NM", "30"))
@@ -44,7 +38,8 @@ FINAL_NM = 15.0
 # Colours, matching the Ops Black palette.
 C_RUNWAY = [235, 235, 235, 255]
 C_TAXIWAY = [120, 120, 128, 200]
-C_APRON = [60, 60, 66, 170]
+C_APRON = [38, 42, 50, 255]
+C_TERMINAL = [205, 205, 212, 235]
 C_RING = [150, 150, 160, 150]
 C_FINAL = [0, 255, 127, 210]
 C_FINAL_IDLE = [90, 96, 100, 120]
@@ -88,78 +83,36 @@ def zoom_for(lat: float, width_nm: float = SCOPE_W_NM,
 
 # ------------------------------------------------------- the surface
 
-_QUERY = """
-[out:json][timeout:60];
-(
-  way["aeroway"~"^(runway|taxiway|apron)$"]({s},{w},{n},{e});
-);
-out body;
->;
-out skel qt;
-"""
+def _code(icao: str) -> str:
+    """KJFK -> JFK, the key core/surface.py and core/runways.py use."""
+    i = (icao or "").upper()
+    return i[1:] if len(i) == 4 and i.startswith("K") else i
 
 
-def _bbox(lat, lon, nm=4.0):
-    dlat = nm / NM_PER_DEG
-    dlon = nm / (NM_PER_DEG * _k(lat))
-    return lat - dlat, lon - dlon, lat + dlat, lon + dlon
+def surface(static_dir, icao: str, lat: float, lon: float) -> dict:
+    """The field from OpenStreetMap, via core/surface.py.
+
+    NEVER BLOCKS. A cached surface returns at once; a missing one
+    starts a background Overpass fetch and returns {} - the scope
+    draws rings and traffic, and the field appears on a later rerun.
+    """
+    from core import surface as _SF
+    code = _code(icao)
+    _SF.register(code, lat, lon)
+    d = _SF.load(static_dir, code)
+    if not d:
+        _SF.fetch_async(static_dir, code)
+        return {}
+    # runways.runway_ends() attributes each runway by its "apt" key and
+    # defaults to JFK; set it so BOS runways are BOS runways.
+    for rw in d.get("runways", []):
+        rw.setdefault("apt", code)
+    return d
 
 
-def surface(static_dir, icao: str, lat: float, lon: float,
-            refresh: bool = False) -> dict:
-    """Runways, taxiways and aprons around the field, cached to
-    <static_dir>/scope_<ICAO>.json for a week."""
-    cache = Path(static_dir) / f"scope_{icao.upper()}.json"
-    if not refresh and cache.exists():
-        try:
-            if time.time() - cache.stat().st_mtime < SURFACE_MAX_AGE_S:
-                return json.loads(cache.read_text())
-        except Exception:
-            pass
-
-    import requests
-    s, w, n, e = _bbox(lat, lon)
-    try:
-        r = requests.post(OVERPASS,
-                          data={"data": _QUERY.format(s=s, w=w, n=n, e=e)},
-                          timeout=HTTP_TIMEOUT,
-                          headers={"User-Agent": "bluemet.org ops"})
-        r.raise_for_status()
-        payload = r.json()
-    except Exception:
-        # Serve a stale cache rather than nothing.
-        if cache.exists():
-            try:
-                return json.loads(cache.read_text())
-            except Exception:
-                pass
-        return {"runways": [], "taxiways": [], "aprons": []}
-
-    nodes = {el["id"]: (el["lon"], el["lat"])
-             for el in payload.get("elements", []) if el["type"] == "node"}
-    out = {"runways": [], "taxiways": [], "aprons": []}
-    for el in payload.get("elements", []):
-        if el["type"] != "way":
-            continue
-        tags = el.get("tags") or {}
-        pts = [nodes[i] for i in el.get("nodes", []) if i in nodes]
-        if len(pts) < 2:
-            continue
-        rec = {"ref": tags.get("ref") or tags.get("name") or "",
-               "path": pts, "apt": icao.upper().lstrip("K")[-3:]}
-        aw = tags.get("aeroway")
-        if aw == "runway":
-            out["runways"].append(rec)
-        elif aw == "taxiway":
-            out["taxiways"].append(rec)
-        elif aw == "apron":
-            out["aprons"].append(rec)
-    try:
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        cache.write_text(json.dumps(out))
-    except Exception:
-        pass
-    return out
+def surface_pending(icao: str) -> bool:
+    from core import surface as _SF
+    return _SF.fetching(_code(icao))
 
 
 # ------------------------------------------------------ runway ends
@@ -331,34 +284,47 @@ def atis(icao: str) -> dict:
 def layers(sf: dict, ends: list, lat: float, lon: float,
            arriving=None, departing=None, ac=None,
            show_traffic: bool = True) -> list:
-    """Every layer of the scope, bottom to top."""
+    """Every layer of the scope, bottom to top.
+
+    SIZING RULE: every width, radius and text size is in METRES with a
+    min/max pixel clamp. Never width_units / radius_units / size_units
+    = "pixels": the pydeck build on Render ignores those props, which
+    is what drew the rings and finals as bands miles wide.
+    """
     import pydeck as pdk
     out = []
 
     if sf.get("aprons"):
         out.append(pdk.Layer(
-            "PathLayer",
-            [{"path": [list(p) for p in a["path"]]} for a in sf["aprons"]],
-            get_path="path", get_color=C_APRON, get_width=18,
-            width_units="meters", width_min_pixels=1, pickable=False))
+            "SolidPolygonLayer",
+            [{"polygon": a["polygon"]} for a in sf["aprons"]
+             if len(a.get("polygon") or []) >= 3],
+            get_polygon="polygon", get_fill_color=C_APRON,
+            pickable=False))
+    if sf.get("terminals"):
+        out.append(pdk.Layer(
+            "SolidPolygonLayer",
+            [{"polygon": t["polygon"]} for t in sf["terminals"]
+             if len(t.get("polygon") or []) >= 3],
+            get_polygon="polygon", get_fill_color=C_TERMINAL,
+            pickable=False))
     if sf.get("taxiways"):
         out.append(pdk.Layer(
             "PathLayer",
-            [{"path": [list(p) for p in t["path"]]} for t in sf["taxiways"]],
-            get_path="path", get_color=C_TAXIWAY, get_width=14,
-            width_units="meters", width_min_pixels=1, pickable=False))
+            [{"path": t["path"]} for t in sf["taxiways"]],
+            get_path="path", get_color=C_TAXIWAY, get_width=20,
+            width_min_pixels=1, width_max_pixels=3, pickable=False))
     if sf.get("runways"):
         out.append(pdk.Layer(
             "PathLayer",
-            [{"path": [list(p) for p in r["path"]], "ref": r.get("ref", "")}
-             for r in sf["runways"]],
-            get_path="path", get_color=C_RUNWAY, get_width=45,
-            width_units="meters", width_min_pixels=2, pickable=False))
+            [{"path": r["path"]} for r in sf["runways"]],
+            get_path="path", get_color=C_RUNWAY, get_width=55,
+            width_min_pixels=2, width_max_pixels=7, pickable=False))
 
     circles, ring_labels = rings(lat, lon)
     out.append(pdk.Layer(
         "PathLayer", circles, get_path="path", get_color=C_RING,
-        get_width=1, width_units="pixels", width_min_pixels=1,
+        get_width=40, width_min_pixels=1, width_max_pixels=1,
         pickable=False))
     out.append(pdk.Layer(
         "TextLayer", ring_labels, get_position="position", get_text="text",
@@ -370,12 +336,12 @@ def layers(sf: dict, ends: list, lat: float, lon: float,
     if ticks:
         out.append(pdk.Layer(
             "PathLayer", ticks, get_path="path", get_color="color",
-            get_width="width", width_units="pixels", width_min_pixels=1,
+            get_width=40, width_min_pixels=1, width_max_pixels=1.5,
             pickable=False))
     if fin:
         out.append(pdk.Layer(
             "PathLayer", fin, get_path="path", get_color="color",
-            get_width="width", width_units="pixels", width_min_pixels=1,
+            get_width=60, width_min_pixels=1, width_max_pixels=2,
             pickable=False))
     if fin_labels:
         out.append(pdk.Layer(
@@ -396,7 +362,7 @@ def layers(sf: dict, ends: list, lat: float, lon: float,
         out.append(pdk.Layer(
             "ScatterplotLayer", ac, get_position="position",
             get_fill_color="color", get_radius=260,
-            radius_min_pixels=3, radius_max_pixels=6,
+            radius_min_pixels=3, radius_max_pixels=5,
             pickable=True, auto_highlight=True))
         out.append(pdk.Layer(
             "TextLayer", ac, get_position="position", get_text="label",
