@@ -856,8 +856,8 @@ with st.sidebar:
              "Auto-mapped for common airports.",
     ).strip().upper()
 
-    n_metars = st.slider(
-        "METARs to show", 1, 12, 1,
+    n_metars = st.selectbox(
+        "METARs to show", options=[1, 2, 3, 4, 5, 6], index=0,
         help="1 = current only; more shows recent history, newest first.",
     )
 
@@ -870,8 +870,10 @@ with st.sidebar:
         index=0,
     )
     l3_zoom = st.slider(
-        "Level III zoom (degrees)", 0.5, 3.0, 1.5, 0.5,
+        "Level III zoom (degrees)", 0.3, 3.0, 0.9, 0.1,
         disabled=not radar_mode.startswith("Level III"),
+        help="Half-width of the view. Smaller is closer in; "
+             "0.9 is the 1.7x-closer default, 1.5 the old one.",
     )
     l3_auto = st.checkbox(
         "Auto-refresh aircraft (60s)",
@@ -891,8 +893,10 @@ with st.sidebar:
              "older frames.",
     )
     l2_zoom = st.slider(
-        "Level II zoom (degrees)", 0.5, 3.0, 1.5, 0.5,
+        "Level II zoom (degrees)", 0.3, 3.0, 0.9, 0.1,
         disabled=not radar_mode.startswith("Raw"),
+        help="Half-width of the view. Smaller is closer in; "
+             "0.9 is the 1.7x-closer default, 1.5 the old one.",
     )
     l2_flights = st.checkbox(
         "Overlay live JBU flights",
@@ -949,6 +953,19 @@ if active_icao:
         )
     else:
         st.warning("No recent METAR found.")
+
+    # --- TAF ---
+    st.subheader("Current TAF")
+    with st.spinner("Fetching TAF..."):
+        taf_text = cached_taf_raw(icao)
+    if taf_text:
+        st.markdown(
+            wx_colored_box(taf_text.splitlines(), taf_mode=True),
+            unsafe_allow_html=True,
+        )
+        st.caption(_WX_LEGEND)
+    else:
+        st.warning("No TAF available (station may not be a TAF site).")
 
     # --- Radar ---
     st.subheader("Live Radar")
@@ -1130,19 +1147,6 @@ if active_icao:
                     st.caption("No echo tops frames returned.")
 
         _radar_deck(**_deck_kwargs)
-
-    # --- TAF ---
-    st.subheader("Current TAF")
-    with st.spinner("Fetching TAF..."):
-        taf_text = cached_taf_raw(icao)
-    if taf_text:
-        st.markdown(
-            wx_colored_box(taf_text.splitlines(), taf_mode=True),
-            unsafe_allow_html=True,
-        )
-        st.caption(_WX_LEGEND)
-    else:
-        st.warning("No TAF available (station may not be a TAF site).")
 
     # --- NBH MOS table ---
     st.subheader("NBM Hourly (NBH, f+1–25)")
