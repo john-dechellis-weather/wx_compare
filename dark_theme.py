@@ -331,6 +331,58 @@ html, body, .stApp,
   background: var(--bm-cyan) !important;
 }}
 
+/* ------------------------------------------- choice controls */
+
+/* Region pickers and similar. Streamlit draws these as radios,
+   segmented controls, pills or a button group depending on version
+   and call, and each keeps its own dark-text default, so all four
+   are pinned rather than guessing which one a page used. */
+[data-testid="stRadio"] label,
+[data-testid="stRadio"] label *,
+[data-testid="stRadio"] div[role="radiogroup"] *,
+[data-testid="stSegmentedControl"] *,
+[data-testid="stButtonGroup"] *,
+[data-testid="stPills"] *,
+[data-testid="stMultiSelect"] *,
+[data-testid="stSelectbox"] * {{
+  color: var(--bm-text) !important;
+  -webkit-text-fill-color: var(--bm-text) !important;
+}}
+
+/* The unselected segments read as panels; the selected one lifts. */
+[data-testid="stSegmentedControl"] button,
+[data-testid="stButtonGroup"] button,
+[data-testid="stPills"] button {{
+  background: var(--bm-panel) !important;
+  border: 1px solid var(--bm-border) !important;
+}}
+[data-testid="stSegmentedControl"] button[aria-checked="true"],
+[data-testid="stSegmentedControl"] button[aria-pressed="true"],
+[data-testid="stButtonGroup"] button[aria-checked="true"],
+[data-testid="stButtonGroup"] button[aria-pressed="true"],
+[data-testid="stPills"] button[aria-checked="true"] {{
+  background: #1C1C22 !important;
+  border-color: var(--bm-cyan) !important;
+}}
+
+/* Multiselect chips. */
+[data-testid="stMultiSelect"] [data-baseweb="tag"] {{
+  background: #1C1C22 !important;
+  border: 1px solid var(--bm-border) !important;
+}}
+
+/* Tabs. */
+[data-testid="stTabs"] button[role="tab"],
+[data-testid="stTabs"] button[role="tab"] * {{
+  color: var(--bm-text-2) !important;
+  -webkit-text-fill-color: var(--bm-text-2) !important;
+}}
+[data-testid="stTabs"] button[role="tab"][aria-selected="true"],
+[data-testid="stTabs"] button[role="tab"][aria-selected="true"] * {{
+  color: var(--bm-text) !important;
+  -webkit-text-fill-color: var(--bm-text) !important;
+}}
+
 /* --------------------------------------------------- panels, expanders */
 
 .stApp [data-testid="stExpander"] {{
