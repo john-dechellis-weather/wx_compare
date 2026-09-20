@@ -13,6 +13,11 @@ password is entered once per browser, not once per session.
 
 Password is read from Streamlit secrets (or env var as fallback).
 Never store the password in code.
+
+The login SCREEN is login_board.py - the network board, with station
+condition chips and a fixed-view radar map. This module still owns the
+decision; if the board raises for any reason it falls back to a plain
+password prompt rather than locking everyone out.
 """
 import hashlib
 import os
@@ -63,37 +68,19 @@ def check_password() -> bool:
     except Exception:
         pass
 
-    # Show login form
-    st.markdown("### \U0001f512 Restricted access")
-    st.write("This site is for authorized users only.")
-
-    st.markdown(
-        """
-        <style>
-        /* Compact password box: ~16 characters wide */
-        [data-testid="stTextInput"] {
-            max-width: 200px !important;
-        }
-        [data-testid="stTextInput"] input {
-            font-family: "Courier New", monospace !important;
-        }
-        /* Hide the "Press Enter to apply" hint */
-        [data-testid="InputInstructions"] {
-            display: none !important;
-        }
-        /* Hide the show-password eye toggle (renders as raw
-           "visibility" text since the icon font doesn't load) */
-        [data-testid="stTextInput"] button {
-            display: none !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    password = st.text_input(
-        "Enter password:", type="password", key="password_input"
-    )
+    # Show login form: the network board. Drawing lives in
+    # login_board.py; this function keeps the gate.
+    try:
+        import login_board
+        password = login_board.render()
+    except Exception:
+        # The board must never be the reason nobody can sign in. If it
+        # fails to draw for any reason, fall back to the plain prompt.
+        st.markdown("### Restricted access")
+        st.write("This site is for authorized users only.")
+        password = st.text_input(
+            "Enter password:", type="password", key="password_input"
+        )
 
     if password:
         if password == expected:

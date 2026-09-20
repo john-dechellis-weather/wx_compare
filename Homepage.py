@@ -42,6 +42,10 @@ from retro_theme import apply_retro_theme
 
 apply_retro_theme()
 
+from dark_theme import apply_dark_theme
+
+apply_dark_theme()
+
 try:
     from core.cam_warm import note_request as _note_req
 
@@ -131,7 +135,7 @@ except Exception as _exc:
 def _home():
     st.title("BlueMet")
     st.markdown(
-        "<p style='color: #B30000; font-size: 32px; "
+        "<p style='color: #FF5A5A; font-size: 32px; "
         "font-weight: bold;'>"
         "IMPORTANT: Use Prohbited outside of the JetBlue SOC or "
         "for Tomorrow.io employees"
@@ -215,7 +219,8 @@ st.markdown(
     <style>
     [data-testid="stNavSectionHeader"] {
         font-weight: bold !important;
-        color: #000000 !important;
+        color: #FFFFFF !important;
+        font-size: 13px !important;
     }
     </style>
     """,
