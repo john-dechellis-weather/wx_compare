@@ -97,24 +97,64 @@ html, body, .stApp,
 
 .stApp, .stApp p, .stApp li, .stApp span, .stApp div,
 .stApp label, [data-testid="stMarkdownContainer"] {{
-  color: var(--bm-text);
+  color: var(--bm-text) !important;
   font-size: {FS_BODY};
 }}
 
-.stApp h1 {{ color: var(--bm-text); font-size: {FS_H1}; letter-spacing: .5px; }}
-.stApp h2 {{ color: var(--bm-text); font-size: {FS_H2}; }}
+.stApp h1 {{ color: var(--bm-text) !important; font-size: {FS_H1};
+             letter-spacing: .5px; }}
+.stApp h2 {{ color: var(--bm-text) !important; font-size: {FS_H2}; }}
 .stApp h3, .stApp h4, .stApp h5, .stApp h6 {{
-  color: var(--bm-text); font-size: {FS_H3};
+  color: var(--bm-text) !important; font-size: {FS_H3};
+}}
+
+/* ------------------------------------------------- sidebar navigation */
+
+/* Page links are anchors, so without these they take the browser's
+   default link and VISITED colours - blue and purple on black, which
+   is what makes an already-visited page unreadable. Pin every state. */
+[data-testid="stSidebar"] a,
+[data-testid="stSidebar"] a:link,
+[data-testid="stSidebar"] a:visited,
+[data-testid="stSidebar"] a:hover,
+[data-testid="stSidebar"] a:active,
+[data-testid="stSidebar"] a span,
+[data-testid="stSidebar"] a p,
+[data-testid="stSidebarNav"] a,
+[data-testid="stSidebarNav"] a *,
+[data-testid="stSidebarNav"] span,
+[data-testid="stSidebarNav"] p {{
+  color: var(--bm-text) !important;
+  -webkit-text-fill-color: var(--bm-text) !important;
+  text-decoration: none !important;
+  font-size: {FS_BODY} !important;
+}}
+
+[data-testid="stSidebar"] a:hover,
+[data-testid="stSidebarNav"] a:hover {{ background: #161616 !important; }}
+
+[data-testid="stNavSectionHeader"],
+[data-testid="stNavSectionHeader"] * {{
+  color: var(--bm-text) !important;
+  -webkit-text-fill-color: var(--bm-text) !important;
+  font-weight: 700 !important;
+}}
+
+/* The selected-page pill. */
+[data-testid="stSidebarNav"] li [aria-current="page"],
+[data-testid="stSidebarNav"] li a[aria-selected="true"] {{
+  background: #1C1C22 !important;
 }}
 
 .stApp small,
 [data-testid="stCaptionContainer"],
 [data-testid="stCaptionContainer"] * {{
   color: var(--bm-text-2) !important;
+  -webkit-text-fill-color: var(--bm-text-2) !important;
   font-size: {FS_BODY} !important;
 }}
 
-.stApp a {{ color: var(--bm-cyan); }}
+.stApp a, .stApp a:visited {{ color: var(--bm-cyan) !important; }}
 .stApp hr {{ border-color: var(--bm-rule); }}
 
 /* Anything still carrying an explicit dark colour from an older
