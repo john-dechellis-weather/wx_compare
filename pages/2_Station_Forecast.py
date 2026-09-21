@@ -402,6 +402,7 @@ with c_obs:
             # Same dark restyle the wind pod applies; the traces, axes
             # and category bands are the original's.
             fig.update_layout(
+                title=None,
                 height=CV_H, width=None, autosize=True, paper_bgcolor=PANEL,
                 plot_bgcolor="#05070B",
                 font=dict(color=INK2, size=11, family="Roboto, Arial"),
@@ -419,7 +420,7 @@ with c_rad:
         # The airport scope, exactly as Station Quick View draws it -
         # same runway table, same finals, same ATIS colouring - with
         # MRMS reflectivity underneath and no traffic, at 20 nm.
-        stamp_txt, cfg = "", {}
+        stamp_txt, cfg, l3_txt = "", {}, ""
         if coords:
             from core import airport_scope as AS
             base = _origin()
@@ -445,8 +446,32 @@ with c_rad:
                 mrms_chunks=(chunks if st.session_state.get("sf_mrms", True)
                              else None),
                 base_url=base, range_nm=20, ac=ac)
+            # LEVEL III on top of MRMS: the station's nearest NEXRAD at
+            # 250 m, built by the L3 warmer for every hub (core/radar_l3
+            # STATION_DOMAINS), read here as one image - no radar work
+            # on page load. MRMS stays underneath for the area outside
+            # the Level III box and as the fallback while it warms.
+            l3_txt = ""
+            if base and st.session_state.get("sf_mrms", True):
+                try:
+                    from core import radar_l3 as L3
+                    _man, _l3s = L3.newest(STATIC_MRMS, L3.station_domain(icao))
+                    if _man and L3.age_s(_l3s) < 600:
+                        _l3 = pdk.Layer(
+                            "BitmapLayer", data=None,
+                            image=f"{base}/app/static/{_man['name']}",
+                            bounds=_man["bounds"], opacity=1.0)
+                        _after = max([i for i, l in enumerate(layers)
+                                      if getattr(l, "type", "") == "BitmapLayer"]
+                                     + [-1]) + 1
+                        layers.insert(_after, _l3)
+                        l3_txt = (f" · Level III {_man['site']} "
+                                  f"{_l3s[9:11]}:{_l3s[11:13]}Z")
+                except Exception:
+                    l3_txt = ""
         pod_title("Airport scope",
                   f"20 nm · MRMS {stamp_txt or 'no current scan'}"
+                  + (l3_txt if coords else "")
                   + (f" · {len(ac)} aircraft" if coords and ac else ""))
         show_mrms = st.checkbox("MRMS reflectivity", value=True, key="sf_mrms",
                                 help="Radar mosaic under the scope. Off shows "
@@ -549,6 +574,9 @@ with c_wind:
                 df, icao, cycle=cycle, speed_ylim=(0, speed_max),
                 hours_ahead=horizon, metars_df=mdf)
             fig.update_layout(
+                # No figure title: the pod header carries it, and the
+                # title sat on top of the "Wind speed (kt)" panel title.
+                title=None,
                 height=PLOT_H, width=None, autosize=True, paper_bgcolor=PANEL,
                 plot_bgcolor="#05070B",
                 font=dict(color=INK2, size=11, family="Roboto, Arial"),
