@@ -924,6 +924,14 @@ with st.sidebar:
              "doubles the cold render time of this page.",
     )
 
+    scope_range = st.selectbox(
+        "Airport scope range", options=[30, 20, 10, 5, 3], index=0,
+        format_func=lambda n: f"{n} nm across",
+        help="Full data cards are drawn at 5 nm and closer; wider than "
+             "that each aircraft carries just its flight number, which "
+             "keeps the scope readable.",
+    )
+
     scope_mode = st.radio(
         "Airport scope traffic",
         options=["All commercial traffic", "JBU only"], index=0,
@@ -1294,7 +1302,7 @@ if active_icao:
         _scope_layers = _AS.layers(
             _surface, _ends, _sc_lat, _sc_lon,
             arriving=_arr, departing=_dep, ac=_ac,
-            show_traffic=scope_traffic)
+            show_traffic=scope_traffic, range_nm=scope_range)
         _style = _scope_style_url()
         if _style is None:
             _cl = _AS.coast_layer(icao)
@@ -1303,7 +1311,8 @@ if active_icao:
         st.pydeck_chart(
             pdk.Deck(
                 layers=_scope_layers,
-                initial_view_state=_AS.view(_sc_lat, _sc_lon),
+                initial_view_state=_AS.view(_sc_lat, _sc_lon,
+                                            width_nm=scope_range),
                 map_style=_style,
                 map_provider=("carto" if _style else None),
                 tooltip={"html": "<b>{callsign}</b> {type}<br/>{alt} ft "
@@ -1316,9 +1325,12 @@ if active_icao:
             ),
             use_container_width=True, height=_AS.height_px(1000))
         st.caption(
-            "30 x 20 nm \u00b7 rings at 10/20/30 nm \u00b7 finals 15 nm "
-            "from the landing threshold, 1 nm ticks"
-            + (f" ({_ends_src})" if _ends_src else "") + " \u00b7 "
+            f"{scope_range} x {round(scope_range * 2 / 3)} nm \u00b7 "
+            "finals 15 nm from the landing threshold, 1 nm ticks"
+            + (f" ({_ends_src})" if _ends_src else "")
+            + (" \u00b7 full cards" if _AS.cards_at(scope_range)
+               else " \u00b7 flight numbers only; zoom to 5 nm for cards")
+            + " \u00b7 "
             + (f"{len(_ac)} aircraft" if _ac else
                ("no JetBlue aircraft within 30 nm"
                 if scope_mode == "JBU only"
