@@ -90,6 +90,44 @@ DOMAINS = {
 }
 # Label per domain, for pages.
 DOMAIN_LABEL = {"N90": "N90 - KOKX", "DCA": "DC - KLWX"}
+
+# STATION DOMAINS: one small box per hub on the Station Forecast page,
+# from the station's nearest NEXRAD, so the airport scope opens on a
+# 250 m picture that is already on disk. 75 km half-width covers the
+# 20 nm scope with room to pan; 600 x 600 px, ~30-60 KB a frame.
+# Newest scan only (no loop), see loop_minutes().
+STATION_RADAR = {
+    "KJFK": "OKX", "KLGA": "OKX", "KEWR": "OKX", "KHPN": "OKX",
+    "KBOS": "BOX", "KBDL": "BOX", "KDCA": "LWX", "KMCO": "MLB",
+    "KFLL": "AMX", "KDJT": "AMX", "KTPA": "TBW", "KLAX": "SOX",
+    "KSFO": "MUX", "TJSJ": "JUA",
+}
+STATION_LATLON = {
+    "KJFK": (40.640, -73.779), "KLGA": (40.777, -73.872),
+    "KEWR": (40.689, -74.175), "KHPN": (41.067, -73.708),
+    "KBOS": (42.363, -71.006), "KBDL": (41.939, -72.683),
+    "KDCA": (38.852, -77.038), "KMCO": (28.429, -81.309),
+    "KFLL": (26.072, -80.152), "KTPA": (27.976, -82.533),
+    "KDJT": (26.683, -80.096), "KLAX": (33.942, -118.408),
+    "KSFO": (37.619, -122.375), "TJSJ": (18.439, -66.002),
+}
+
+
+def station_domain(icao: str) -> str:
+    return f"STN_{icao.upper()}"
+
+
+for _i, _r in STATION_RADAR.items():
+    _la, _lo = STATION_LATLON[_i]
+    DOMAINS[station_domain(_i)] = (_r, _la, _lo, 75.0, 75.0, 250.0)
+    DOMAIN_LABEL[station_domain(_i)] = f"{_i} - K{_r}"
+
+
+def loop_minutes(domain: str) -> int:
+    """How far back a domain's loop reaches. Station boxes keep only
+    the newest scan: the scope shows one picture, and 14 hubs x an
+    hour of frames is work nobody would look at."""
+    return 0 if domain.startswith("STN_") else LOOP_MINUTES
 PRODUCT = "N0B"
 CC_PRODUCT = "N0C"
 CC_MIN = float(os.environ.get("L3_CC_MIN", "0.85"))
@@ -152,14 +190,26 @@ def latest_key(site: str, product: str = PRODUCT, now=None):
 def loop_keys(site: str, minutes: int = None, product: str = PRODUCT,
               now=None) -> list:
     """Keys of every scan in the last `minutes`, oldest first, capped
-    at LOOP_MAX_FRAMES. Time-based, so the loop is one hour whether
-    the radar is scanning every 4 min (precipitation) or every 10
-    (clear air)."""
-    minutes = minutes or LOOP_MINUTES
+    at LOOP_MAX_FRAMES; minutes=0 means the newest scan only.
+    Time-based, so the loop is one hour whether the radar is scanning
+    every 4 min (precipitation) or every 10 (clear air)."""
+    if minutes is None:
+        minutes = LOOP_MINUTES
     now = now or datetime.now(timezone.utc)
+    if minutes <= 0:
+        k = latest_key(site, product, now)
+        return [k] if k else []
     keys = recent_keys(site, LOOP_MAX_FRAMES, product, now)
     cut = now.timestamp() - minutes * 60
     return [k for k in keys if _stamp_s(key_stamp(k)) >= cut]
+
+
+def age_s(stamp: str) -> float:
+    """Seconds since a scan stamp (YYYYMMDD-HHMMSS)."""
+    try:
+        return time.time() - _stamp_s(stamp)
+    except Exception:
+        return 1e9
 
 
 def _stamp_s(stamp: str) -> float:
@@ -173,11 +223,26 @@ def key_stamp(key: str) -> str:
     return f"{p[2]}{p[3]}{p[4]}-{p[5]}{p[6]}{p[7]}"
 
 
+_dl: dict = {}
+_dl_lock = threading.Lock()
+
+
 def fetch(key: str) -> bytes:
+    """One download per key per process, briefly cached: four New York
+    stations share KOKX and would otherwise fetch the same 150 KB
+    four times a scan."""
     import requests
 
+    with _dl_lock:
+        hit = _dl.get(key)
+    if hit and time.time() - hit[0] < 600:
+        return hit[1]
     r = requests.get(f"{BUCKET}/{key}", timeout=20, headers=_HDRS)
     r.raise_for_status()
+    with _dl_lock:
+        _dl[key] = (time.time(), r.content)
+        for k in [k for k, v in _dl.items() if time.time() - v[0] > 600]:
+            del _dl[k]
     return r.content
 
 
@@ -374,6 +439,10 @@ def mrms_mask(domain: str, mask, grow_km: float = MASK_GROW_KM):
 
     lats, lons, _ = domain_grid(domain)
     w, s_, e, n = _MR.BOUNDS
+    # Outside the MRMS CONUS grid (San Juan is south of it) there is
+    # no mask to apply; the caller falls back to the CC filter.
+    if lats.min() < s_ or lats.max() > n or lons.min() < w or lons.max() > e:
+        return None
     rows, cols = mask.shape
     yi = np.clip(((n - lats) / (n - s_) * rows).astype(int), 0, rows - 1)
     xi = np.clip(((lons - w) / (e - w) * cols).astype(int), 0, cols - 1)
@@ -473,7 +542,8 @@ def _build(domain: str, outdir, key: str = None) -> tuple:
         if grid is not None:
             mask = mrms_mask(domain, grid)
             del grid
-            cc_note = f"MRMS-masked ({mstamp})"
+            cc_note = (f"MRMS-masked ({mstamp})" if mask is not None
+                       else "outside MRMS grid")
     except Exception as exc:
         cc_note = f"no MRMS mask ({type(exc).__name__})"
     if mask is None and CC_FILTER:
@@ -527,7 +597,7 @@ def newest(outdir, domain: str = "N90"):
 def frames(outdir, domain: str, minutes: int = None) -> list:
     """Manifests of the current-style frames from the last `minutes`,
     OLDEST first - the loop's order."""
-    minutes = minutes or LOOP_MINUTES
+    minutes = minutes or max(LOOP_MINUTES, 15)
     cut = time.time() - minutes * 60
     out = []
     for p in sorted(Path(outdir).glob(f"l3_{domain}_*.json")):
@@ -547,7 +617,7 @@ def backfill(domain: str, outdir) -> int:
     frames built. Each is ~0.5 s once the lookup tables exist."""
     site = DOMAINS[domain][0]
     built = 0
-    for key in reversed(loop_keys(site)):
+    for key in reversed(loop_keys(site, loop_minutes(domain))):
         man = Path(outdir) / f"l3_{domain}_{key_stamp(key)}.json"
         if man.exists():
             continue
@@ -635,7 +705,7 @@ def _loop(outdir):
                 # after that, builds just the new scan (one list call,
                 # the rest are already on disk).
                 backfill(dom, outdir)
-                _prune(outdir, dom, KEEP)
+                _prune(outdir, dom, 3 if dom.startswith("STN_") else KEEP)
             except Exception as exc:
                 _log(outdir, f"FAILED {dom}: {type(exc).__name__}: {exc}")
         # Scans arrive every 2-6 min depending on VCP; polling every
