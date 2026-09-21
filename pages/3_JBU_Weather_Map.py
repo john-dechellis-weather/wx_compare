@@ -243,6 +243,51 @@ def _table(header_cells: list[str], body_rows: list[str],
     )
 
 
+import re as _re_tbl
+
+# Rows per column before a board splits into side-by-side tables. The
+# split columns wrap under each other when the pod is too narrow to
+# hold them, so a large number here is never worse than one column.
+_METAR_ROWS_PER_COL = int(__import__("os").environ.get(
+    "JBU_METAR_ROWS_PER_COL", "12"))
+_TAF_ROWS_PER_COL = int(__import__("os").environ.get(
+    "JBU_TAF_ROWS_PER_COL", "8"))
+
+# Temperature/dewpoint group: "17/16", "M02/M05", or "17/" when the
+# dewpoint is missing. The (?<=\s) keeps RVR groups ("R04/2400FT")
+# and fractions ("1/2SM") from matching.
+_METAR_TEMP = _re_tbl.compile(r"(?<=\s)M?\d{2}/(?:M?\d{2})?(?=\s|$)")
+
+
+def _metar_short(raw: str) -> str:
+    """The METAR up to and including the temperature/dewpoint group.
+    Altimeter and remarks go, so every report fits on one line."""
+    body = (raw or "").split(" RMK")[0].strip()
+    m = _METAR_TEMP.search(body)
+    return body[:m.end()] if m else body
+
+
+def _split_cols(make_table, body_rows: list, per_col: int) -> str:
+    """One table, or several side by side with the header repeated.
+
+    Rows are balanced across columns (14 rows at 8 per column is 7 + 7,
+    not 8 + 6). Each column holds its natural width, so when the pod
+    is too narrow for all of them the flex row wraps and the columns
+    stack instead of squeezing the text."""
+    import math
+    n = len(body_rows)
+    if per_col <= 0 or n <= per_col:
+        return make_table(body_rows)
+    ncol = math.ceil(n / per_col)
+    k = math.ceil(n / ncol)
+    parts = [make_table(body_rows[i * k:(i + 1) * k]) for i in range(ncol)]
+    return ('<div style="display:flex;flex-wrap:wrap;gap:12px;'
+            'align-items:flex-start;">'
+            + "".join('<div style="flex:1 1 0;min-width:max-content;">'
+                      f"{t}</div>" for t in parts)
+            + "</div>")
+
+
 def _no_alerts() -> str:
     return (
         f'<div style="background-color:{_PANEL}; border:1px solid {_EDGE}; '
@@ -356,10 +401,11 @@ def render_metar_table(rows) -> str:
             + cell(_fmt_vis_obs(r["vis"]), r["vis_bad"])
             + cell(_fmt_cig_obs(r["cig"], r["cig_unl"]), r["cig_bad"])
             + cell(_fmt_wind_obs(r["spd"], r["gst"]), r["wind_bad"])
-            + _td(r["raw"])
+            + _td(_metar_short(r["raw"]))
             + "</tr>"
         )
-    return _table(header, body)
+    return _split_cols(lambda b: _table(header, b), body,
+                       _METAR_ROWS_PER_COL)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -652,6 +698,88 @@ _AC_ICON_RED = {"url": _a320_icon_uri("#E01A1A"), "width": 64,
                 "mask": False}
 
 
+# ---------------------------------------------------------------------------
+# Echo-top tags
+# ---------------------------------------------------------------------------
+# Drawn only with Reflectivity on. core.mrms builds the list per scan:
+# one tag per 50+ dBZ core, tallest first, at least 30 mi apart.
+#
+# 30 mi is ~15 px at the CONUS view, so a squall line still stacks
+# tags on top of each other. The second pass here drops any tag whose
+# box would overlap a taller one AT THE DEFAULT VIEW. pydeck ships
+# static JSON and cannot see the browser's zoom, so zooming in with
+# the wheel does not bring the dropped tags back.
+import os as _os_et
+
+_ECHO_TAGS = _os_et.environ.get("JBU_ECHO_TAGS", "on").lower() != "off"
+_TAG_VIEW_ZOOM = 4.3            # matches the CONUS ViewState below
+_TAG_BOX_W, _TAG_BOX_H = 34, 16  # px, a 3-digit tag with padding
+_TAG_LIFT = 14                  # px, tag centre above the core
+
+
+def _tag_px(lon: float, lat: float, zoom: float = _TAG_VIEW_ZOOM):
+    """Web Mercator pixel position at a zoom (deck.gl 512 px tiles)."""
+    import math
+    world = 512.0 * (2.0 ** zoom)
+    lat = max(-85.0, min(85.0, lat))
+    x = world * (lon + 180.0) / 360.0
+    y = world * (1.0 - math.log(math.tan(math.pi / 4
+                                        + math.radians(lat) / 2))
+                 / math.pi) / 2.0
+    return x, y
+
+
+def _declutter_tags(tags) -> list:
+    """Drop tags whose boxes would overlap a taller one on screen."""
+    kept, boxes = [], []
+    for lon, lat, top in sorted(tags, key=lambda t: -t[2]):
+        x, y = _tag_px(lon, lat)
+        cy = y - _TAG_LIFT
+        b = (x - _TAG_BOX_W / 2 - 2, cy - _TAG_BOX_H / 2 - 2,
+             x + _TAG_BOX_W / 2 + 2, cy + _TAG_BOX_H / 2 + 2)
+        if any(not (b[2] < o[0] or b[0] > o[2] or b[3] < o[1]
+                    or b[1] > o[3]) for o in boxes):
+            continue
+        boxes.append(b)
+        kept.append((lon, lat, top))
+    return kept
+
+
+def _echo_tag_layers(tags) -> list:
+    """Core dot + boxed label, e.g. 480 = 48,000 ft."""
+    import pydeck as pdk
+
+    rows = [{"position": [float(lo), float(la)],
+             "label": f"{int(tp):03d}",
+             "tip": f"Echo top {int(tp) * 100:,} ft (18 dBZ)"}
+            for lo, la, tp in _declutter_tags(tags)]
+    if not rows:
+        return []
+    return [
+        # Metres with a pixel clamp: radius_units="pixels" is ignored
+        # by the pydeck build on Render.
+        pdk.Layer("ScatterplotLayer", data=rows,
+                  get_position="position", get_radius=2500,
+                  radius_min_pixels=2, radius_max_pixels=3,
+                  get_fill_color=[255, 255, 255, 255],
+                  stroked=False, pickable=True),
+        pdk.Layer("TextLayer", data=rows,
+                  get_position="position", get_text="label",
+                  get_size=11, get_color=[255, 255, 255, 255],
+                  font_family='"Courier New", Courier, monospace',
+                  font_weight="bold",
+                  get_text_anchor='"middle"',
+                  get_alignment_baseline='"center"',
+                  get_pixel_offset=[0, -_TAG_LIFT],
+                  background=True,
+                  get_background_color=[0, 0, 0, 235],
+                  get_border_color=[255, 255, 255, 255],
+                  get_border_width=1,
+                  background_padding=[3, 1, 3, 1],
+                  pickable=True),
+    ]
+
+
 def _legend_html() -> str:
     """Design B: composite marker left, right-stacked labels with
     elbow leaders computed to touch each element's edge; JBU
@@ -661,9 +789,11 @@ def _legend_html() -> str:
     # Geometry (px, computed so leaders touch edges exactly):
     # marker center (74, 96); ring R=26 (stroke 5); dot r=11;
     # TS centered at (74, 40), ~15px half-width at font 22
+    # Key pod: white text on black. Leaders drop to the secondary grey
+    # so they read as lines, not as more text.
     LBL = ('font-family="Arial, Helvetica, sans-serif" '
-           'font-size="12.5" font-weight="bold" fill="#4477DD"')
-    LINE = ('stroke="#88AAEE" stroke-width="1.6" fill="none" '
+           'font-size="12.5" font-weight="bold" fill="#FFFFFF"')
+    LINE = ('stroke="#B8B8B8" stroke-width="1.6" fill="none" '
             'stroke-linejoin="round"')
     LX = 118          # label column x; leaders end at LX-6
     diagram = (
@@ -781,18 +911,35 @@ def _legend_html() -> str:
         f'<span style="{txt}">JBU station, no alerts '
         '(a marker covers it when there are)</span></div>'
     )
+    # Echo-top tag, drawn the way the map draws it.
+    tag_sec = (
+        f'<div style="{row}">'
+        '<span style="flex:none; display:inline-block; '
+        "font:bold 11px 'Courier New',Courier,monospace; "
+        'color:#FFFFFF; -webkit-text-fill-color:#FFFFFF; '
+        'background:#000000; border:1px solid #FFFFFF; '
+        'padding:0 3px; line-height:14px;">480</span>'
+        f'<span style="{txt}">Echo top in hundreds of ft '
+        "(480 = 48,000 ft) on cells &ge;50 dBZ, Reflectivity "
+        "only</span></div>"
+    )
+    col = "flex:1 1 240px; min-width:240px;"
     return (
-        # width:100% + box-sizing so the MAP KEY and the alert
-        # table above it are the same width in the left column
-        f'<div style="background:{_PANEL}; border:1px solid {_EDGE}; '
-        'padding:6px 10px; margin-top:26px; width:100%; '
-        'box-sizing:border-box; display:block;">'
+        # The key is its own pod now: black, white text, and wide, so
+        # its sections sit side by side instead of in one tall column.
+        '<div style="background:#000000; border:1px solid '
+        f'{_EDGE}; border-radius:12px; padding:10px 14px; '
+        'width:100%; box-sizing:border-box; display:block;">'
         f'<div style="color:{_INK}; -webkit-text-fill-color:{_INK}; '
         f"font-family:{_FONT}; "
         "font-size:14px; "
         'font-weight:bold; text-decoration:underline; '
         'margin-bottom:2px;">MAP KEY</div>'
-        + diagram + planes + rings_sec + city_sec + "</div>"
+        '<div style="display:flex; flex-wrap:wrap; gap:4px 24px; '
+        'align-items:flex-start;">'
+        f'<div style="{col}">{diagram}{planes}</div>'
+        f'<div style="{col}">{rings_sec}{city_sec}{tag_sec}</div>'
+        "</div></div>"
     )
 
 
@@ -955,12 +1102,14 @@ def render_status_board(rows) -> str:
             + cell(when, fg=_INK2)
             + "</tr>"
         )
-    return (
-        f'<table style="border-collapse:collapse; '
-        f'background-color:{_PANEL}; border:1px solid {_EDGE}; '
-        f'width:100%;">'
-        f"{header_row}{''.join(body)}</table>"
-    )
+    def _tbl(b):
+        return (
+            f'<table style="border-collapse:collapse; '
+            f'background-color:{_PANEL}; border:1px solid {_EDGE}; '
+            f'width:100%;">'
+            f"{header_row}{''.join(b)}</table>"
+        )
+    return _split_cols(_tbl, body, _TAF_ROWS_PER_COL)
 
 
 # ---------------------------------------------------------------------------
@@ -1418,6 +1567,15 @@ def _trail_paths(max_age_s: float = 1800.0, steps: int = 8):
         # Window by TIME, not by count, so "30 minutes" means thirty
         # minutes even if a sweep was late or missed.
         pts = [(lo, la) for lo, la, ts in h if ts >= cutoff]
+        # SHORT WINDOWS. Fixes land once per sweep (~2 min), so a
+        # 2-minute window often holds a single fix and would draw
+        # nothing - trails flickering on and off each beat. Reach
+        # back to the one fix just before the window so there is
+        # always a segment from the previous position to now.
+        if len(pts) < 2:
+            older = [(lo, la) for lo, la, ts in h if ts < cutoff]
+            if older and pts:
+                pts = older[-1:] + pts
         if len(pts) < 2:
             continue
         if len(pts) == 2:
@@ -2359,10 +2517,12 @@ if run_button or _auto:
             radar_product = _RADAR_OPTS[_radar_lab]
             radar_on = radar_product is not None
         with _ctl[2]:
-            _TRACK_OPTS = {"15 min": 900, "30 min": 1800,
+            # 2 min is the default: the last leg only, enough to show
+            # heading without lines across the Northeast.
+            _TRACK_OPTS = {"2 min": 120, "15 min": 900, "30 min": 1800,
                            "45 min": 2700, "1 hr": 3600}
             _track_lab = st.selectbox(
-                "Track length", list(_TRACK_OPTS), index=1,
+                "Track length", list(_TRACK_OPTS), index=0,
                 key="track_len", label_visibility="collapsed",
                 help="How much position history to draw behind each "
                      "aircraft.")
@@ -2474,6 +2634,17 @@ if run_button or _auto:
                             bounds=_c["bounds"],
                             opacity=float(radar_op),
                         ))
+                    # ECHO-TOP TAGS on reflectivity: one per core of
+                    # 50+ dBZ, the 18 dBZ top in hundreds of feet,
+                    # 30 mi apart. Built by the MRMS warmer for this
+                    # exact scan; if it has not caught up yet the
+                    # radar simply draws without them.
+                    if radar_product == "REFL" and _rs and _ECHO_TAGS:
+                        try:
+                            layers.extend(_echo_tag_layers(
+                                _MR.tags_for(_sd, _rs) or []))
+                        except Exception:
+                            pass      # decoration; never costs radar
                     _plabel = _MR.PRODUCTS[radar_product]["label"]
                     _radar_note = (
                         f" Radar: MRMS 1 km {_plabel.lower()}"
@@ -3413,8 +3584,8 @@ if run_button or _auto:
             # piece inside is then plain, and no seam shows between
             # rows or beside the buttons.
             f".st-key-hold_box{{background:{_PANEL};"
-            f"border:1px solid {_EDGE};"
-            "padding:8px 10px;}}"
+            f"border:1px solid {_EDGE};border-radius:12px;"
+            "padding:10px 12px;}}"
             ".st-key-hold_box [data-testid='stMarkdownContainer'] p"
             "{margin:0;}"
             ".st-key-hold_box [data-testid='stVerticalBlock']"
@@ -3507,55 +3678,74 @@ if run_button or _auto:
             + "</div>",
             unsafe_allow_html=True)
 
+    def _pod(title: str, inner: str, count=None) -> str:
+        """One page pod: panel fill, thin border, rounded, titled."""
+        n = (f' <span style="color:{_INK2};-webkit-text-fill-color:'
+             f'{_INK2};">({count})</span>' if count is not None else "")
+        return (
+            f'<div style="background:{_PANEL};border:1px solid {_EDGE};'
+            'border-radius:12px;padding:10px 12px;box-sizing:border-box;'
+            'overflow-x:auto;margin-bottom:12px;">'
+            f'<div style="font-family:{_FONT};font-size:13px;'
+            f'font-weight:bold;color:{_INK};-webkit-text-fill-color:'
+            f'{_INK};margin-bottom:6px;">{title}{n}</div>'
+            f"{inner}</div>")
+
+    def _diversion_pod() -> str:
+        """Diversion alerts. The pod and its columns are in place;
+        there is no diversion feed yet, and the pod says so rather
+        than implying there are none."""
+        head = [_th(h) for h in ("FLIGHT", "ORIG", "SCHED",
+                                 "DIVERTED TO", "TIME", "DEST WX",
+                                 "REASON")]
+        empty = ("<tr><td colspan='7' style='background:"
+                 f"{_PANEL};color:{_INK2};-webkit-text-fill-color:"
+                 f"{_INK2};font-family:{_FONT};font-size:{_TBL_FS};"
+                 f"font-weight:bold;font-style:italic;border:1px solid "
+                 f"{_EDGE};padding:0.25em 0.6em;'>No diversion data "
+                 "source connected yet</td></tr>")
+        return _pod("DIVERSION ALERTS", _table(head, [empty]))
+
     def _page_body():
-        col_b, col_m = st.columns([1, 2.6], gap="small")
-        with col_b:
-            if board_rows:
-                st.markdown(render_status_board(board_rows),
+        # PODS. Map across the full width, then two rows of pods:
+        #   METAR alerts | TAF alerts
+        #   map key      | diversion alerts + aircraft in holding
+        # Each pod grows downward with its content; the boards split
+        # into side-by-side columns when they get long.
+        if _deck is not None:
+            _map_fragment()
+        else:
+            st.caption(f"Map unavailable: {_map_err}")
+
+        _r1a, _r1b = st.columns(2, gap="small")
+        with _r1a:
+            if metar_rows:
+                st.markdown(_pod("METAR ALERTS",
+                                 render_metar_table(metar_rows),
+                                 len(metar_rows)),
                             unsafe_allow_html=True)
             else:
-                st.markdown(_no_alerts(), unsafe_allow_html=True)
+                st.markdown(_pod("METAR ALERTS", _no_alerts().replace(
+                    "NO AIRPORTS FLAGGED",
+                    "NO METARs AT/BEYOND THRESHOLDS")),
+                    unsafe_allow_html=True)
+        with _r1b:
+            if board_rows:
+                st.markdown(_pod("TAF ALERTS",
+                                 render_status_board(board_rows),
+                                 len(board_rows)),
+                            unsafe_allow_html=True)
+            else:
+                st.markdown(_pod("TAF ALERTS", _no_alerts()),
+                            unsafe_allow_html=True)
+
+        _r2a, _r2b = st.columns(2, gap="small")
+        with _r2a:
             st.markdown(_legend_html(), unsafe_allow_html=True)
-            # BOTTOM-ALIGNED with the map. The key column is a flex
-            # column already; give it a minimum height matching the
-            # map column (METAR strip + map) and push the holding
-            # table to the bottom with margin-top:auto. A keyed
-            # container gives the CSS something to target. The 24 px
-            # is the floor of the gap under the key when the column
-            # is taller than the map.
-            st.markdown(
-                "<style>"
-                # ONLY the column's own vertical block gets the minimum
-                # height. The earlier selector matched every vertical
-                # block under the column, including the one INSIDE the
-                # holding box, which stretched the box to map height
-                # and pushed its rows to the bottom of it.
-                "div[data-testid='stColumn']:has(.st-key-hold_box) "
-                "div[data-testid='stVerticalBlock']:not(.st-key-hold_box *)"
-                f"{{min-height:{int(map_height) + 72}px;}}"
-                ".st-key-hold_box{margin-top:auto !important;}"
-                "</style>",
-                unsafe_allow_html=True)
+        with _r2b:
+            st.markdown(_diversion_pod(), unsafe_allow_html=True)
             with st.container(key="hold_box"):
                 _render_holding_table(_page_holds, _page_dest_by_cs)
-        with col_m:
-            if metar_rows:
-                st.markdown(render_metar_table(metar_rows),
-                            unsafe_allow_html=True)
-            else:
-                st.markdown(
-                    f'<div style="background:{_PANEL}; border:1px '
-                    f'solid {_EDGE}; display:inline-block; '
-                    'padding:4px 14px; margin-bottom:6px; '
-                    f'color:{_INK}; -webkit-text-fill-color:{_INK}; '
-                    f'font-family:{_FONT}; font-size:12px;">'
-                    "NO METARs AT/BEYOND THRESHOLDS</div>",
-                    unsafe_allow_html=True,
-                )
-            if _deck is not None:
-                _map_fragment()
-            else:
-                st.caption(f"Map unavailable: {_map_err}")
 
     _page_body()
 
