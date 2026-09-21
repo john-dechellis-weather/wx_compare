@@ -190,7 +190,14 @@ def finals(ends, active=None, out_nm: float = FINAL_NM,
                           "width": 2 if major else 1})
             d += minor_tick_nm
         if lit and act:
+            suffix = e["end"][-1]
+            lat_off = 0.9 if suffix == "R" else -0.9 if suffix == "L" else 0.0
             lab = offset(tlat, tlon, out_nm + 1.0, back)
+            if lat_off:
+                # sideways from the final: +90 from the INBOUND course
+                # is the pilot's right, which is where an R belongs
+                lab = offset(lab[0], lab[1], abs(lat_off),
+                             (e["hdg"] + (90 if lat_off > 0 else 270)) % 360)
             labels.append({"position": [lab[1], lab[0]],
                            # Not "ILS": the scope knows the runway, not
                            # the approach type - the ATIS line says that.
@@ -233,32 +240,53 @@ _CALLSIGN_RE = re.compile(r"^[A-Z]{3}\d{1,4}[A-Z]?$")
 
 
 def traffic(lat: float, lon: float, radius_nm: float = 30.0) -> list:
-    """Every aircraft within radius_nm, from the community ADS-B
-    point endpoints. One request, one fallback host.
+    """Every aircraft within radius_nm.
 
-    Point-and-radius, so this is a single small query rather than the
-    tiled sweep the CONUS map runs - it does not add to that rate.
+    Goes through core/flights.fetch_positions_near, the same call the
+    Quick View inbound list makes, so the scope sees exactly what the
+    rest of the app sees. Falls back to the community point endpoints
+    only if that import is unavailable.
     """
+    rows = []
+    try:
+        from core.flights import fetch_positions_near
+        planes = fetch_positions_near(lat, lon, radius_deg=radius_nm / 60.0)
+        for p in planes or []:
+            rows.append({
+                "hex": getattr(p, "hex", "") or getattr(p, "icao24", ""),
+                "flight": getattr(p, "callsign", "") or "",
+                "lat": p.lat, "lon": p.lon,
+                "track": getattr(p, "heading_deg", None),
+                "alt_baro": getattr(p, "alt_ft", None),
+                "gs": getattr(p, "gs_kt", None) or getattr(p, "speed_kt", None),
+                "t": getattr(p, "ac_type", "") or getattr(p, "aircraft_type", "")
+                     or getattr(p, "type", ""),
+            })
+    except Exception:
+        rows = _traffic_direct(lat, lon, radius_nm)
+    return _dedupe(rows)
+
+
+def _traffic_direct(lat, lon, radius_nm) -> list:
     import requests
     hdrs = {"User-Agent": "bluemet.org ops dashboard"}
-    urls = (f"https://api.adsb.lol/v2/point/{lat:.4f}/{lon:.4f}/"
-            f"{int(radius_nm)}",
-            f"https://opendata.adsb.fi/api/v2/lat/{lat:.4f}/"
-            f"lon/{lon:.4f}/dist/{int(radius_nm)}")
-    rows = []
-    for u in urls:
+    for u in (f"https://api.adsb.lol/v2/point/{lat:.4f}/{lon:.4f}/{int(radius_nm)}",
+              f"https://opendata.adsb.fi/api/v2/lat/{lat:.4f}/lon/{lon:.4f}"
+              f"/dist/{int(radius_nm)}"):
         try:
             r = requests.get(u, timeout=8, headers=hdrs)
-            if r.status_code != 200:
-                continue
-            rows = (r.json() or {}).get("ac") or []
-            if rows:
-                break
+            if r.status_code == 200:
+                rows = (r.json() or {}).get("ac") or []
+                if rows:
+                    return rows
         except Exception:
             continue
+    return []
 
-    # Feeds overlap and repeat; dedupe on hex, callsign and rounded
-    # position at the source rather than per layer.
+
+def _dedupe(rows) -> list:
+    """Feeds overlap and repeat; dedupe on hex, callsign and rounded
+    position once, at the source, not per layer."""
     seen, out = set(), []
     for a in rows:
         cs = (a.get("flight") or "").strip().upper()
@@ -268,11 +296,9 @@ def traffic(lat: float, lon: float, radius_nm: float = 30.0) -> list:
         except (KeyError, TypeError, ValueError):
             continue
         key = (hexid, cs, round(alat, 3), round(alon, 3))
-        if key in seen:
+        if key in seen or not cs:
             continue
         seen.add(key)
-        if not cs:
-            continue
         jbu = cs.startswith("JBU")
         out.append({
             "position": [alon, alat],
@@ -491,6 +517,26 @@ def view(lat: float, lon: float, width_px: int = 1000,
 def height_px(width_px: int = 1000) -> int:
     """Pixel height that keeps the scope's 3:2 shape at any range."""
     return int(round(width_px * (SCOPE_H_NM / SCOPE_W_NM)))
+
+
+def mini_layers(icao: str, sf: dict, lat: float, lon: float,
+                mrms_chunks=None, base_url: str = "", range_nm: float = 20.0):
+    """The scope with MRMS underneath and no traffic: the Station
+    Forecast pod. Same runway table, same finals, same ATIS colouring
+    as the Quick View scope, so the two pages cannot disagree."""
+    import pydeck as pdk
+    out = []
+    if mrms_chunks and base_url:
+        out += [pdk.Layer("BitmapLayer", data=None,
+                          image=f"{base_url}/app/static/{c['name']}",
+                          bounds=c["bounds"], opacity=0.85)
+                for c in mrms_chunks]
+    cfg = atis(icao)
+    ends, _src = best_runway_ends(icao, sf)
+    out += layers(sf, ends, lat, lon, arriving=cfg["arriving"],
+                  departing=cfg["departing"], ac=[], show_traffic=False,
+                  range_nm=range_nm)
+    return out, cfg
 
 
 def cards_at(range_nm: float) -> bool:
