@@ -34,6 +34,7 @@ NM_PER_DEG = 60.0
 SCOPE_W_NM = float(os.environ.get("BLUEMET_SCOPE_W_NM", "30"))
 SCOPE_H_NM = float(os.environ.get("BLUEMET_SCOPE_H_NM", "20"))
 RING_NMS = (10.0, 20.0, 30.0)
+TAG_RANGE_NM = float(os.environ.get("BLUEMET_SCOPE_TAG_NM", "5"))
 FINAL_NM = 15.0
 
 # Colours, matching the Ops Black palette.
@@ -48,6 +49,12 @@ C_DEP = [255, 138, 0, 230]
 
 
 # ---------------------------------------------------------------- math
+
+def _rgb(hex_colour: str) -> list:
+    """'#1463F3' -> [20, 99, 243]."""
+    h = hex_colour.lstrip("#")
+    return [int(h[i:i + 2], 16) for i in (0, 2, 4)]
+
 
 def _k(lat: float) -> float:
     return math.cos(math.radians(lat))
@@ -304,7 +311,8 @@ def atis(icao: str) -> dict:
 
 def layers(sf: dict, ends: list, lat: float, lon: float,
            arriving=None, departing=None, ac=None,
-           show_traffic: bool = True) -> list:
+           show_traffic: bool = True,
+           range_nm: float = None) -> list:
     """Every layer of the scope, bottom to top.
 
     SIZING RULE: every width, radius and text size is in METRES with a
@@ -342,7 +350,9 @@ def layers(sf: dict, ends: list, lat: float, lon: float,
             get_path="path", get_color=C_RUNWAY, get_width=55,
             width_min_pixels=2, width_max_pixels=7, pickable=False))
 
-    circles, ring_labels = rings(lat, lon)
+    _r = [n for n in RING_NMS
+          if n <= (range_nm or SCOPE_W_NM)] or [min(RING_NMS)]
+    circles, ring_labels = rings(lat, lon, nms=tuple(_r))
     out.append(pdk.Layer(
         "PathLayer", circles, get_path="path", get_color=C_RING,
         get_width=40, width_min_pixels=1, width_max_pixels=1,
@@ -380,11 +390,13 @@ def layers(sf: dict, ends: list, lat: float, lon: float,
             pickable=False))
 
     if show_traffic and ac:
-        out.extend(aircraft_layers(ac))
+        out.extend(aircraft_layers(
+            ac, cards_on=cards_at(range_nm if range_nm is not None
+                                  else SCOPE_W_NM)))
     return out
 
 
-def aircraft_layers(ac: list) -> list:
+def aircraft_layers(ac: list, cards_on: bool = True) -> list:
     """The twin-podded icon in the carrier's colour, rotated to track,
     and the r202 data card beside it.
 
@@ -397,26 +409,45 @@ def aircraft_layers(ac: list) -> list:
     import pydeck as pdk
     from core import cards as _C
 
-    planes, by_h = [], {}
+    planes, by_h, tags = [], {}, []
     for a in ac:
         cs = a.get("callsign", "")
+        col = _C.colour(cs)
         planes.append({"position": a["position"],
-                       "icon": _C.plane_icon(_C.colour(cs)),
+                       "icon": _C.plane_icon(col),
                        # IconLayer turns counter-clockwise; track is
                        # clockwise from north
                        "angle": (360.0 - float(a.get("hdg") or 0)) % 360.0,
                        "callsign": cs, "alt": a.get("alt"),
                        "gs": a.get("gs"), "type": a.get("type")})
-        icon = _C.card(a)
-        h = icon.pop("px_h")
-        by_h.setdefault(h, []).append({"position": a["position"],
-                                       "icon": icon})
+        if cards_on:
+            icon = _C.card(a)
+            h = icon.pop("px_h")
+            by_h.setdefault(h, []).append({"position": a["position"],
+                                           "icon": icon})
+        else:
+            tags.append({"position": a["position"], "text": cs,
+                         "color": _rgb(col) + [235]})
+
     out = []
     for h, rows in sorted(by_h.items()):
         out.append(pdk.Layer(
             "IconLayer", rows, get_position="position", get_icon="icon",
             get_size=5000, size_min_pixels=h, size_max_pixels=h,
             pickable=False))
+    if tags:
+        # Zoomed out: the flight number only, small, tucked below and
+        # right of the aircraft, in the aircraft's own colour. A card
+        # per aircraft at 30 nm is unreadable; this still identifies
+        # everything without covering the weather.
+        out.append(pdk.Layer(
+            "TextLayer", tags, get_position="position", get_text="text",
+            get_color="color", get_size=5000,
+            size_min_pixels=_C.TAG_FS, size_max_pixels=_C.TAG_FS,
+            get_pixel_offset=[7, 8],
+            get_text_anchor='"start"',
+            get_alignment_baseline='"top"',
+            font_family=_C.FONT, font_weight=700, pickable=False))
     # aircraft drawn last so they sit on top of every leader line
     out.append(pdk.Layer(
         "IconLayer", planes, get_position="position", get_icon="icon",
@@ -447,15 +478,21 @@ def coast_layer(icao: str):
         width_min_pixels=1, width_max_pixels=1.2, pickable=False)
 
 
-def view(lat: float, lon: float, width_px: int = 1000):
-    """Fixed view: SCOPE_W_NM across, centred on the field."""
+def view(lat: float, lon: float, width_px: int = 1000,
+         width_nm: float = None):
+    """Centred on the field, width_nm across (SCOPE_W_NM by default)."""
     import pydeck as pdk
-    z = zoom_for(lat, SCOPE_W_NM, width_px)
+    z = zoom_for(lat, width_nm or SCOPE_W_NM, width_px)
     return pdk.ViewState(latitude=lat, longitude=lon, zoom=z,
                          min_zoom=z - 2, max_zoom=z + 3,
                          bearing=0, pitch=0)
 
 
 def height_px(width_px: int = 1000) -> int:
-    """Pixel height that makes the scope SCOPE_H_NM tall."""
+    """Pixel height that keeps the scope's 3:2 shape at any range."""
     return int(round(width_px * (SCOPE_H_NM / SCOPE_W_NM)))
+
+
+def cards_at(range_nm: float) -> bool:
+    """Full data cards, or just flight numbers?"""
+    return float(range_nm) <= TAG_RANGE_NM

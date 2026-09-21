@@ -50,6 +50,7 @@ FONT = ("DejaVu Sans Mono, Menlo, Consolas, 'Liberation Mono', "
 FS = 11.0                          # data rows, px
 CW = FS * 0.602                    # monospace advance per character
 LH = 13.0                          # line height
+TAG_FS = round(FS * 2 / 3)         # zoomed-out flight number, 2/3 the card
 PAD_X, PAD_Y = 4.0, 3.0
 LEAD = 14.0                        # leader, aircraft to card edge
 SCALE = 2                          # raster at 2x, display at 1x
