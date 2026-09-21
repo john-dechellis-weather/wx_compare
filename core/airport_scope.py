@@ -243,6 +243,64 @@ _CALLSIGN_RE = re.compile(r"^[A-Z]{3}\d{1,4}[A-Z]?$")
 #: scope: which path served it, how many rows came back, any error.
 LAST_TRAFFIC = {"source": "", "fetched": 0, "kept": 0, "error": ""}
 
+# Position history per callsign, for trails. Filled by every
+# traffic() call in this process; two minutes is what the scope draws.
+import threading as _threading
+import time as _time
+_HIST: dict = {}
+_HIST_LOCK = _threading.Lock()
+TRAIL_S = 120.0
+
+
+def _remember(rows) -> None:
+    now = _time.time()
+    with _HIST_LOCK:
+        for a in rows:
+            cs = a["callsign"]
+            h = _HIST.setdefault(cs, [])
+            if not h or now - h[-1][0] > 5:
+                h.append((now, a["position"][0], a["position"][1]))
+            del h[:-60]
+        for cs in [c for c, h in _HIST.items() if now - h[-1][0] > 900]:
+            _HIST.pop(cs, None)
+
+
+def trail(callsign: str, seconds: float = TRAIL_S) -> list:
+    cut = _time.time() - seconds
+    with _HIST_LOCK:
+        return [[lo, la] for t, lo, la in _HIST.get(callsign, []) if t >= cut]
+
+
+def inbound_eta(rows, lat, lon, max_min: float = 60.0) -> list:
+    """JetBlue aircraft tracking toward the field with an ETA inside
+    max_min, nearest first: [{callsign, nm, eta_min, alt}]. ETA is
+    distance over ground speed - a straight-line number, good enough
+    for 'who is coming this hour'."""
+    out = []
+    for a in rows:
+        if not a.get("jbu"):
+            continue
+        alon, alat = a["position"]
+        gs = a.get("gs")
+        try:
+            gs = float(gs)
+        except (TypeError, ValueError):
+            continue
+        if gs < 60:
+            continue
+        d = distance_nm(lat, lon, alat, alon)
+        if d < 0.5:
+            continue
+        brg = bearing(alat, alon, lat, lon)
+        if abs(((brg - float(a.get("hdg") or 0)) + 180) % 360 - 180) > 60:
+            continue
+        eta = d / gs * 60.0
+        if eta <= max_min:
+            out.append({"callsign": a["callsign"], "nm": d,
+                        "eta_min": eta, "alt": a.get("alt")})
+    out.sort(key=lambda r: r["eta_min"])
+    return out
+
 
 def traffic(lat: float, lon: float, radius_nm: float = 30.0) -> list:
     """Every aircraft within radius_nm.
@@ -278,12 +336,19 @@ def traffic(lat: float, lon: float, radius_nm: float = 30.0) -> list:
             })
     except Exception as exc:
         diag["error"] = f"core.flights: {type(exc).__name__}: {exc}"[:120]
+        rows = []
+    if not rows:
+        # core.flights returned nothing at all - seen at BOS at midday,
+        # with no error, so it is not the filter. Ask the point
+        # endpoints directly; the diagnostic line says which served.
         rows = _traffic_direct(lat, lon, radius_nm)
-        diag["source"] = "adsb point endpoint"
+        diag["source"] = ("adsb point endpoint"
+                          + (" (core.flights empty)" if not diag["error"] else ""))
         diag["fetched"] = len(rows)
     out = _dedupe(rows)
     diag["kept"] = len(out)
     LAST_TRAFFIC.update(diag)
+    _remember(out)
     return out
 
 
@@ -455,10 +520,13 @@ def aircraft_layers(ac: list, cards_on: bool = True) -> list:
     import pydeck as pdk
     from core import cards as _C
 
-    planes, by_h, tags = [], {}, []
+    planes, by_h, tags, trails = [], {}, [], []
     for a in ac:
         cs = a.get("callsign", "")
         col = _C.colour(cs)
+        t = trail(cs)
+        if len(t) > 1:
+            trails.append({"path": t, "color": _rgb(col) + [140]})
         planes.append({"position": a["position"],
                        "icon": _C.plane_icon(col),
                        # IconLayer turns counter-clockwise; track is
@@ -476,6 +544,12 @@ def aircraft_layers(ac: list, cards_on: bool = True) -> list:
                          "color": _rgb(col) + [235]})
 
     out = []
+    if trails:
+        # 2-minute track, under everything else, in the aircraft's colour
+        out.append(pdk.Layer(
+            "PathLayer", trails, get_path="path", get_color="color",
+            get_width=60, width_min_pixels=1.5, width_max_pixels=2,
+            pickable=False))
     for h, rows in sorted(by_h.items()):
         out.append(pdk.Layer(
             "IconLayer", rows, get_position="position", get_icon="icon",
