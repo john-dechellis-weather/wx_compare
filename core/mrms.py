@@ -504,6 +504,15 @@ def build(outdir, product: str = DEFAULT_PRODUCT) -> tuple:
     t0 = time.time()
     vals = decode(r.content)
     ny, nx = vals.shape
+    # The echo-top tags need both grids at native resolution, but the
+    # chunks keep neither. Save the one small field each product
+    # contributes before the grid is released. Decoration only: a
+    # failure here costs the tags, never the radar.
+    try:
+        _save_field(outdir, product, stamp, vals)
+    except Exception as exc:
+        _log(outdir, f"field save failed {product}: "
+                     f"{type(exc).__name__}: {exc}")
     chunks = render_chunks(vals, outdir, stamp, product)
     del vals
     if not chunks:
@@ -521,6 +530,180 @@ def build(outdir, product: str = DEFAULT_PRODUCT) -> tuple:
     return name, (f"{product} {nx * UPSAMPLE}x{ny * UPSAMPLE}, "
                   f"{len(chunks)} chunks, {_cb / 1024:.0f} KB, "
                   f"{time.time() - t0:.0f}s")
+
+
+# ---------------------------------------------------------------------------
+# Echo-top tags
+# ---------------------------------------------------------------------------
+# One small label per storm core: the 18 dBZ echo top over each area
+# of reflectivity at or above TAG_DBZ, thinned so no two tags sit
+# closer than TAG_SPACING_MI. Tallest tops are placed first, so in a
+# line of storms the tag that survives is always the highest one.
+#
+# Built in the warmer, never on the page: the page reads one small
+# JSON file per scan. Each product's build() leaves behind the one
+# field this needs (a packed >= 50 dBZ mask from REFL, a uint16 grid
+# of tops in hundreds of feet from ETOP), because the chunks keep
+# neither.
+TAG_DBZ = float(os.environ.get("MRMS_TAG_DBZ", "50"))
+TAG_SPACING_MI = float(os.environ.get("MRMS_TAG_SPACING_MI", "30"))
+# Cores smaller than this many 1 km cells are speckle, not storms.
+TAG_MIN_CELLS = int(os.environ.get("MRMS_TAG_MIN_CELLS", "4"))
+# REFL and ETOP scans are both ~2-minutely; pair them only when their
+# stamps are this close.
+TAG_MAX_SKEW_S = int(os.environ.get("MRMS_TAG_MAX_SKEW_S", "600"))
+
+
+def _field_path(outdir, product: str, stamp: str) -> Path:
+    return Path(outdir) / f"mrmsx_{product}_{stamp}.npz"
+
+
+def _tags_path(outdir, stamp: str) -> Path:
+    return Path(outdir) / f"mrmst_{stamp}.json"
+
+
+def _save_field(outdir, product: str, stamp: str, vals) -> None:
+    """Persist the compact field the tag builder needs."""
+    import numpy as np
+
+    Path(outdir).mkdir(parents=True, exist_ok=True)
+    tmp = Path(outdir) / f".mrmsx_{product}_{stamp}.tmp.npz"
+    if product == "REFL":
+        mask = np.nan_to_num(vals, nan=-999.0) >= TAG_DBZ
+        np.savez_compressed(tmp, mask=np.packbits(mask),
+                            shape=np.array(mask.shape))
+    elif product == "ETOP":
+        # Hundreds of feet, the unit the tag prints: 480 = 48,000 ft.
+        hft = np.nan_to_num(vals * PRODUCTS["ETOP"]["scale"] * 10.0,
+                            nan=0.0)
+        np.savez_compressed(
+            tmp, hft=np.clip(np.rint(hft), 0, 999).astype("uint16"))
+    else:
+        return
+    # Rename last, so a half-written file is never read.
+    os.replace(tmp, _field_path(outdir, product, stamp))
+
+
+def _stamp_s(stamp: str) -> float:
+    return datetime.strptime(stamp, "%Y%m%d-%H%M%S").replace(
+        tzinfo=timezone.utc).timestamp()
+
+
+def _field_stamps(outdir, product: str) -> list:
+    out = []
+    for p in sorted(Path(outdir).glob(f"mrmsx_{product}_*.npz")):
+        m = re.search(r"(\d{8}-\d{6})\.npz$", p.name)
+        if m:
+            out.append(m.group(1))
+    return out
+
+
+def _miles(lon1, lat1, lon2, lat2) -> float:
+    import math
+
+    la1, la2 = math.radians(lat1), math.radians(lat2)
+    dla, dlo = la2 - la1, math.radians(lon2 - lon1)
+    a = (math.sin(dla / 2) ** 2
+         + math.cos(la1) * math.cos(la2) * math.sin(dlo / 2) ** 2)
+    return 2 * 3958.8 * math.asin(min(1.0, math.sqrt(a)))
+
+
+def thin_tags(cands, spacing_mi: float = TAG_SPACING_MI) -> list:
+    """Greedy thinning, tallest first: keep a tag only if it is at
+    least `spacing_mi` from every tag already kept."""
+    kept = []
+    for lon, lat, top in sorted(cands, key=lambda c: -c[2]):
+        if all(_miles(lon, lat, k[0], k[1]) >= spacing_mi for k in kept):
+            kept.append((lon, lat, top))
+    return kept
+
+
+def build_tags(outdir) -> tuple:
+    """Tags for the newest REFL scan that has a mask. (stamp, note)."""
+    import json as _json
+
+    import numpy as np
+    from scipy import ndimage as ndi
+
+    refl = _field_stamps(outdir, "REFL")
+    etop = _field_stamps(outdir, "ETOP")
+    if not refl or not etop:
+        return None, "waiting for REFL and ETOP fields"
+    stamp = refl[-1]
+    if _tags_path(outdir, stamp).exists():
+        return stamp, "cached"
+    t_r = _stamp_s(stamp)
+    e_stamp = min(etop, key=lambda s: abs(_stamp_s(s) - t_r))
+    if abs(_stamp_s(e_stamp) - t_r) > TAG_MAX_SKEW_S:
+        return None, f"no ETOP scan within {TAG_MAX_SKEW_S}s of {stamp}"
+
+    with np.load(_field_path(outdir, "REFL", stamp)) as z:
+        shape = tuple(int(v) for v in z["shape"])
+        mask = np.unpackbits(z["mask"])[:shape[0] * shape[1]]
+        mask = mask.reshape(shape).astype(bool)
+    with np.load(_field_path(outdir, "ETOP", e_stamp)) as z:
+        hft = z["hft"]
+    if hft.shape != mask.shape:
+        return None, f"grid mismatch {hft.shape} vs {mask.shape}"
+
+    rows, cols = shape
+    w, s_, e, n = BOUNDS
+    cands = []
+    if mask.any():
+        # Work inside the bounding box of the cores only: on a quiet
+        # day that is a few thousand cells, not 24 million.
+        ys, xs = np.nonzero(mask.any(axis=1))[0], np.nonzero(
+            mask.any(axis=0))[0]
+        y0, y1, x0, x1 = ys[0], ys[-1] + 1, xs[0], xs[-1] + 1
+        sub = mask[y0:y1, x0:x1]
+        top = hft[y0:y1, x0:x1]
+        lab, nlab = ndi.label(sub, structure=np.ones((3, 3)))
+        if nlab:
+            idx = np.arange(1, nlab + 1)
+            size = ndi.sum(sub, lab, idx)
+            peak = ndi.maximum(top, lab, idx)
+            where = ndi.maximum_position(top, lab, idx)
+            for sz, pk, (py, px) in zip(size, peak, where):
+                if sz < TAG_MIN_CELLS or pk <= 0:
+                    continue
+                gy, gx = py + y0, px + x0
+                # Cell CENTRE; row 0 is the north edge.
+                lon = w + (e - w) * (gx + 0.5) / cols
+                lat = n - (n - s_) * (gy + 0.5) / rows
+                cands.append((round(lon, 3), round(lat, 3), int(pk)))
+    del mask, hft
+
+    kept = thin_tags(cands)
+    tmp = Path(outdir) / f".mrmst_{stamp}.tmp.json"
+    tmp.write_text(_json.dumps({
+        "refl": stamp, "etop": e_stamp, "dbz": TAG_DBZ,
+        "spacing_mi": TAG_SPACING_MI,
+        "tags": [[lo, la, tp] for lo, la, tp in kept]}))
+    os.replace(tmp, _tags_path(outdir, stamp))
+    return stamp, (f"echo-top tags {stamp}: {len(cands)} cores >= "
+                   f"{TAG_DBZ:.0f} dBZ -> {len(kept)} tags")
+
+
+def tags_for(outdir, stamp: str):
+    """[[lon, lat, top], ...] for one REFL scan, top in hundreds of
+    feet (480 = 48,000 ft), or None when the
+    warmer has not built them (yet)."""
+    import json as _json
+
+    try:
+        return _json.loads(_tags_path(outdir, stamp).read_text())["tags"]
+    except Exception:
+        return None
+
+
+def _prune_tags(outdir, keep: int) -> None:
+    """Fields and tag files follow the same retention as the scans."""
+    for pat in ("mrmsx_REFL_*.npz", "mrmsx_ETOP_*.npz", "mrmst_*.json"):
+        for old in sorted(Path(outdir).glob(pat))[:-keep]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -592,6 +775,15 @@ def _daemon(outdir):
                             _log(outdir, f"FAILED {prod}: {note}")
                     except Exception as exc:
                         _log(outdir, f"FAILED {prod}: "
+                                     f"{type(exc).__name__}: {exc}")
+                if "REFL" in WARM_PRODUCTS and "ETOP" in WARM_PRODUCTS:
+                    try:
+                        _ts, _tn = build_tags(outdir)
+                        if _tn != "cached":
+                            _log(outdir, _tn)
+                        _prune_tags(outdir, KEEP)
+                    except Exception as exc:
+                        _log(outdir, f"FAILED tags: "
                                      f"{type(exc).__name__}: {exc}")
         except Exception as exc:
             _log(outdir, f"FAILED: {type(exc).__name__}: {exc}")
