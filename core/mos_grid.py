@@ -17,7 +17,7 @@ from __future__ import annotations
 import math
 from html import escape
 
-FONT = "'DejaVu Sans Mono', 'Courier New', monospace"
+FONT = "'Roboto Mono', 'DejaVu Sans Mono', 'Courier New', monospace"
 PANEL, PANEL_HEAD, EDGE, RULE = "#0A0A0A", "#121212", "#2D3957", "#141A26"
 INK, INK2, CYAN = "#FFFFFF", "#B8B8B8", "#00E5FF"
 GREEN, YELLOW, ORANGE, PINK, RED = "#00FF7F", "#FFD400", "#FF8A00", "#FF00C8", "#FF3B30"
@@ -94,20 +94,23 @@ def f_gust(g):
 
 # --------------------------------------------------------------- grid
 
-def grid(times, rows, title: str = "", subtitle: str = "") -> str:
+def grid(times, rows, title: str = "", subtitle: str = "",
+         font_px: int = 11) -> str:
     """HTML for one grid.
 
     times: valid times (datetime), one per column.
     rows:  [(label, [(text, fill_or_None), ...]), ...]
     """
     ncol = len(times)
-    th = (f"background:{PANEL_HEAD};color:{CYAN};font:bold 11px {FONT};"
-          f"padding:4px 5px;text-align:center;border:1px solid {EDGE};"
+    fs = int(font_px)
+    pad_y = max(3, fs // 3)
+    th = (f"background:{PANEL_HEAD};color:{CYAN};font:bold {fs}px {FONT};"
+          f"padding:{pad_y + 1}px 5px;text-align:center;border:1px solid {EDGE};"
           "white-space:nowrap;")
-    td = (f"font:bold 11px {FONT};padding:3px 5px;text-align:center;"
+    td = (f"font:bold {fs}px {FONT};padding:{pad_y}px 5px;text-align:center;"
           f"border:1px solid {RULE};white-space:nowrap;")
-    lab = (f"background:{PANEL_HEAD};color:{INK2};font:bold 11px {FONT};"
-           f"padding:3px 8px;text-align:left;border:1px solid {EDGE};"
+    lab = (f"background:{PANEL_HEAD};color:{INK2};font:bold {fs}px {FONT};"
+           f"padding:{pad_y}px 8px;text-align:left;border:1px solid {EDGE};"
            "white-space:nowrap;")
 
     out = [f'<div style="overflow-x:auto;background:{PANEL};'
@@ -211,7 +214,7 @@ def category(cig_ft, unl, vis_sm) -> str:
 CAT_FILL = {"VFR": GREEN, "MVFR": YELLOW, "IFR": ORANGE, "LIFR": PINK}
 
 
-def category_strip(df, models, times, obs=None) -> str:
+def category_strip(df, models, times, obs=None, font_px: int = 11) -> str:
     """One row per model, one cell per valid hour, each cell printing
     its flight category on the category colour. A 3-hourly model
     leaves the hours between blank rather than pretending.
@@ -238,4 +241,4 @@ def category_strip(df, models, times, obs=None) -> str:
         by = {key(t): category(c, u, v) for t, c, u, v in obs}
         rows.append(("OBS", [((by[t], CAT_FILL[by[t]]) if t in by else ("", None))
                              for t in cols]))
-    return grid(cols, rows)
+    return grid(cols, rows, font_px=font_px)

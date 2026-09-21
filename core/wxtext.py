@@ -119,7 +119,7 @@ def _reindent_taf(lines: list) -> list:
     return out
 
 
-def wx_colored_box(lines: list, taf_mode: bool = False) -> str:
+def wx_colored_box(lines: list, taf_mode: bool = False, font_px: int = 13) -> str:
     """Retro box (slate-blue border, black background, white text) with
     token-level hazard coloring. TAF mode normalizes group
     indentation (overlays nest one space under their group)."""
@@ -127,10 +127,16 @@ def wx_colored_box(lines: list, taf_mode: bool = False) -> str:
         lines = _reindent_taf(lines)
     body = "\n".join(_colorize_line(ln) for ln in lines)
     return (
-        '<div style="background:#000000;border:2px solid #2D3957;'
+        # inline-block: the box is as wide as its longest line, not the
+        # column, so a short METAR does not sit in a wide empty frame
+        # a full-width rectangle, so METAR and TAF read as one block
+        '<div style="display:block;width:100%;box-sizing:border-box;'
+        'background:#000000;border:2px solid #2D3957;'
         'color:#FFFFFF;-webkit-text-fill-color:#FFFFFF;'
-        'font-family:Courier New,monospace;font-size:12px;'
-        'padding:8px 10px;white-space:pre-wrap;word-break:break-word;">'
+        f"font-family:'Roboto Mono','DejaVu Sans Mono',Menlo,Consolas,"
+        f"'Courier New',monospace;"
+        f"font-size:{font_px}px;line-height:1.6;"
+        'padding:12px 14px;white-space:pre-wrap;word-break:break-word;">'
         f"{body}</div>"
     )
 

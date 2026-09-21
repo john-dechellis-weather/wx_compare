@@ -45,8 +45,8 @@ CARRIERS = {
 OTHER = "#9AA0A6"
 COMPACT = {"DAL"}                  # mark to the right, four rows
 
-FONT = ("DejaVu Sans Mono, Menlo, Consolas, 'Liberation Mono', "
-        "monospace")
+FONT = ("'Roboto Mono', 'DejaVu Sans Mono', Menlo, Consolas, "
+        "'Liberation Mono', monospace")
 FS = 11.0                          # data rows, px
 CW = FS * 0.602                    # monospace advance per character
 LH = 13.0                          # line height
