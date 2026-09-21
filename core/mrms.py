@@ -546,9 +546,17 @@ def build(outdir, product: str = DEFAULT_PRODUCT) -> tuple:
 # of tops in hundreds of feet from ETOP), because the chunks keep
 # neither.
 TAG_DBZ = float(os.environ.get("MRMS_TAG_DBZ", "50"))
+# Floor for the saved echo mask (see _save_field).
+ECHO_DBZ = float(os.environ.get("MRMS_ECHO_DBZ", "5"))
 TAG_SPACING_MI = float(os.environ.get("MRMS_TAG_SPACING_MI", "30"))
 # Cores smaller than this many 1 km cells are speckle, not storms.
-TAG_MIN_CELLS = int(os.environ.get("MRMS_TAG_MIN_CELLS", "4"))
+# 4 let single-scan specks carry a tag; the displayed radar is
+# smoothed, so a speck that small often is not red on the map at all
+# and the tag looked stranded outside the core. 20 km2 is a real core.
+TAG_MIN_CELLS = int(os.environ.get("MRMS_TAG_MIN_CELLS", "20"))
+# Bump when tag placement or content changes: tag files are keyed by
+# it, so old tags are rebuilt rather than served until they age out.
+TAG_VERSION = 2
 # REFL and ETOP scans are both ~2-minutely; pair them only when their
 # stamps are this close.
 TAG_MAX_SKEW_S = int(os.environ.get("MRMS_TAG_MAX_SKEW_S", "600"))
@@ -558,8 +566,32 @@ def _field_path(outdir, product: str, stamp: str) -> Path:
     return Path(outdir) / f"mrmsx_{product}_{stamp}.npz"
 
 
+def echo_mask(outdir, near_stamp: str, max_skew_s: int = 480):
+    """(bool grid, stamp) of MRMS echo >= ECHO_DBZ from the REFL scan
+    nearest near_stamp (YYYYMMDD-HHMMSS), or (None, None) if none is
+    within max_skew_s or the file predates the echo field."""
+    import numpy as np
+
+    stamps = _field_stamps(outdir, "REFL")
+    if not stamps:
+        return None, None
+    t = _stamp_s(near_stamp)
+    best = min(stamps, key=lambda s: abs(_stamp_s(s) - t))
+    if abs(_stamp_s(best) - t) > max_skew_s:
+        return None, None
+    try:
+        with np.load(_field_path(outdir, "REFL", best)) as z:
+            if "echo" not in z.files:
+                return None, None
+            shape = tuple(int(v) for v in z["shape"])
+            grid = np.unpackbits(z["echo"])[:shape[0] * shape[1]]
+    except Exception:
+        return None, None
+    return grid.reshape(shape).astype(bool), best
+
+
 def _tags_path(outdir, stamp: str) -> Path:
-    return Path(outdir) / f"mrmst_{stamp}.json"
+    return Path(outdir) / f"mrmst{TAG_VERSION}_{stamp}.json"
 
 
 def _save_field(outdir, product: str, stamp: str, vals) -> None:
@@ -569,8 +601,14 @@ def _save_field(outdir, product: str, stamp: str, vals) -> None:
     Path(outdir).mkdir(parents=True, exist_ok=True)
     tmp = Path(outdir) / f".mrmsx_{product}_{stamp}.tmp.npz"
     if product == "REFL":
-        mask = np.nan_to_num(vals, nan=-999.0) >= TAG_DBZ
+        v = np.nan_to_num(vals, nan=-999.0)
+        mask = v >= TAG_DBZ
+        # "echo": where MRMS - quality-controlled - sees any weather.
+        # core/radar_l3.py uses it to strip clutter, birds and clear-
+        # air return from the single-site Level III picture.
+        echo = v >= ECHO_DBZ
         np.savez_compressed(tmp, mask=np.packbits(mask),
+                            echo=np.packbits(echo),
                             shape=np.array(mask.shape))
     elif product == "ETOP":
         # Hundreds of feet, the unit the tag prints: 480 = 48,000 ft.
@@ -662,11 +700,24 @@ def build_tags(outdir) -> tuple:
             idx = np.arange(1, nlab + 1)
             size = ndi.sum(sub, lab, idx)
             peak = ndi.maximum(top, lab, idx)
-            where = ndi.maximum_position(top, lab, idx)
-            for sz, pk, (py, px) in zip(size, peak, where):
+            # PLACEMENT: the middle of the core, not the tallest pixel.
+            # The highest 18 dBZ top often sits at the EDGE of the
+            # 50 dBZ core (the updraft side, or overhanging anvil), so
+            # tagging it put the dot beside the red rather than on it.
+            # The value is still the core's highest top.
+            cent = ndi.center_of_mass(sub, lab, idx)
+            boxes = ndi.find_objects(lab)
+            for k, (sz, pk, (cy, cx)) in enumerate(zip(size, peak, cent)):
                 if sz < TAG_MIN_CELLS or pk <= 0:
                     continue
-                gy, gx = py + y0, px + x0
+                # A curved core's centroid can fall outside it; snap
+                # to the nearest cell that is actually in the core.
+                sl = boxes[k]
+                yy, xx = np.nonzero(lab[sl] == k + 1)
+                yy = yy + sl[0].start
+                xx = xx + sl[1].start
+                j = int(np.argmin((yy - cy) ** 2 + (xx - cx) ** 2))
+                gy, gx = int(yy[j]) + y0, int(xx[j]) + x0
                 # Cell CENTRE; row 0 is the north edge.
                 lon = w + (e - w) * (gx + 0.5) / cols
                 lat = n - (n - s_) * (gy + 0.5) / rows
@@ -674,8 +725,9 @@ def build_tags(outdir) -> tuple:
     del mask, hft
 
     kept = thin_tags(cands)
-    tmp = Path(outdir) / f".mrmst_{stamp}.tmp.json"
+    tmp = Path(outdir) / f".mrmst{TAG_VERSION}_{stamp}.tmp.json"
     tmp.write_text(_json.dumps({
+        "v": TAG_VERSION,
         "refl": stamp, "etop": e_stamp, "dbz": TAG_DBZ,
         "spacing_mi": TAG_SPACING_MI,
         "tags": [[lo, la, tp] for lo, la, tp in kept]}))
@@ -698,7 +750,13 @@ def tags_for(outdir, stamp: str):
 
 def _prune_tags(outdir, keep: int) -> None:
     """Fields and tag files follow the same retention as the scans."""
-    for pat in ("mrmsx_REFL_*.npz", "mrmsx_ETOP_*.npz", "mrmst_*.json"):
+    for old in Path(outdir).glob("mrmst_*.json"):     # pre-v2 names
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    for pat in ("mrmsx_REFL_*.npz", "mrmsx_ETOP_*.npz",
+                f"mrmst{TAG_VERSION}_*.json"):
         for old in sorted(Path(outdir).glob(pat))[:-keep]:
             try:
                 old.unlink()
