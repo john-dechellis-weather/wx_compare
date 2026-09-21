@@ -64,6 +64,9 @@ class Status:
     icao: str
     level: int
     reason: str          # why this colour, as a sentence, for the hover
+    # The ONE value that set the colour, as printed on the chip:
+    # "CIG 600", "VIS 2SM", "G38", "+RA", "TS", "VCTS", "VFR".
+    label: str = ""
 
     @property
     def color(self) -> str:
@@ -157,6 +160,33 @@ def _category_reason(cat: str, vis_sm, ceiling_ft) -> str:
     return f"{cat} \u2014 " + ", ".join(bits)
 
 
+def _fmt_vis(v: float) -> str:
+    """0.25 -> '1/4SM', 1.5 -> '1 1/2SM', 2.0 -> '2SM'."""
+    whole, frac = int(v), round(v - int(v), 2)
+    fr = {0.25: "1/4", 0.5: "1/2", 0.75: "3/4", 0.12: "1/8",
+          0.13: "1/8", 0.62: "5/8", 0.63: "5/8", 0.38: "3/8"}.get(frac)
+    if not frac:
+        return f"{whole}SM"
+    if fr:
+        return f"{whole} {fr}SM" if whole else f"{fr}SM"
+    return f"{v:g}SM"
+
+
+def _category_label(cat: str, vis_sm, ceiling_ft) -> str:
+    """The value that put the station in its category: visibility or
+    ceiling, whichever is the worse on its own."""
+    if cat == "VFR":
+        return "VFR"
+    by_vis = flight_category(vis_sm, None)
+    by_cig = flight_category(None, ceiling_ft)
+    order = {"VFR": 0, "MVFR": 1, "IFR": 2, "LIFR": 3}
+    if ceiling_ft is not None and order[by_cig] >= order[by_vis]:
+        return f"CIG {ceiling_ft}"
+    if vis_sm is not None:
+        return f"VIS {_fmt_vis(vis_sm)}"
+    return cat
+
+
 def _strip_remarks(metar: str) -> str:
     """Everything after RMK is commentary and must not drive a colour."""
     return metar.split(" RMK ", 1)[0]
@@ -169,7 +199,7 @@ def status_for(icao: str, metar: str | None, taf: str | None = None) -> Status:
     for VCTS/TS when TAF_TS_COUNTS is on.
     """
     if not metar:
-        return Status(icao, NONE, "no observation")
+        return Status(icao, NONE, "no observation", "NO OBS")
 
     body = _strip_remarks(metar.upper())
 
@@ -181,15 +211,19 @@ def status_for(icao: str, metar: str | None, taf: str | None = None) -> Status:
     # clear station explains the green rather than saying nothing.
     level = _CATEGORY_LEVEL[cat]
     reason = _category_reason(cat, vis_sm, ceiling_ft)
+    label = _category_label(cat, vis_sm, ceiling_ft)
 
     # wind gusts
-    glevel, gtext = _gust_level(parse_gust(body))
+    gust = parse_gust(body)
+    glevel, gtext = _gust_level(gust)
     if glevel > level:
-        level, reason = glevel, gtext
+        level, reason, label = glevel, gtext, f"G{gust}"
 
     # heavy precipitation
-    if _HEAVY_RE.search(body) and ORANGE > level:
+    heavy = _HEAVY_RE.search(body)
+    if heavy and ORANGE > level:
         level, reason = ORANGE, "Heavy precipitation (+RA)"
+        label = heavy.group(0)
 
     # thunder. VCTS is yellow; everything else that is thunder is TS_LEVEL.
     ts_sources = [body]
@@ -202,11 +236,13 @@ def status_for(icao: str, metar: str | None, taf: str | None = None) -> Status:
         if _TS_RE.search(without_vc):
             if TS_LEVEL > level:
                 level, reason = TS_LEVEL, f"Thunderstorm in {where}"
+                label = "TS" if not i else "TS (TAF)"
             break
         if _VCTS_RE.search(src) and YELLOW > level:
             level, reason = YELLOW, f"Thunderstorm in the vicinity ({where})"
+            label = "VCTS" if not i else "VCTS (TAF)"
 
-    return Status(icao, level, reason)
+    return Status(icao, level, reason, label)
 
 
 def board(stations, metars: dict, tafs: dict | None = None):
