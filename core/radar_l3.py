@@ -149,6 +149,24 @@ def latest_key(site: str, product: str = PRODUCT, now=None):
     return k[-1] if k else None
 
 
+def loop_keys(site: str, minutes: int = None, product: str = PRODUCT,
+              now=None) -> list:
+    """Keys of every scan in the last `minutes`, oldest first, capped
+    at LOOP_MAX_FRAMES. Time-based, so the loop is one hour whether
+    the radar is scanning every 4 min (precipitation) or every 10
+    (clear air)."""
+    minutes = minutes or LOOP_MINUTES
+    now = now or datetime.now(timezone.utc)
+    keys = recent_keys(site, LOOP_MAX_FRAMES, product, now)
+    cut = now.timestamp() - minutes * 60
+    return [k for k in keys if _stamp_s(key_stamp(k)) >= cut]
+
+
+def _stamp_s(stamp: str) -> float:
+    return datetime.strptime(stamp, "%Y%m%d-%H%M%S").replace(
+        tzinfo=timezone.utc).timestamp()
+
+
 def key_stamp(key: str) -> str:
     """OKX_N0B_2026_09_21_16_18_52 -> 20260921-161852."""
     p = key.split("_")
@@ -506,29 +524,30 @@ def newest(outdir, domain: str = "N90"):
     return None, None
 
 
-def frames(outdir, domain: str, n: int = None) -> list:
-    """Manifests of the newest n current-style frames, OLDEST first -
-    the loop's order."""
-    n = n or LOOP_FRAMES
+def frames(outdir, domain: str, minutes: int = None) -> list:
+    """Manifests of the current-style frames from the last `minutes`,
+    OLDEST first - the loop's order."""
+    minutes = minutes or LOOP_MINUTES
+    cut = time.time() - minutes * 60
     out = []
     for p in sorted(Path(outdir).glob(f"l3_{domain}_*.json")):
         try:
             m = json.loads(p.read_text())
-            if m.get("style") == RENDER_STYLE:
+            if (m.get("style") == RENDER_STYLE
+                    and _stamp_s(m["stamp"]) >= cut):
                 out.append(m)
         except Exception:
             continue
-    return out[-n:]
+    return out[-LOOP_MAX_FRAMES:]
 
 
-def backfill(domain: str, outdir, n: int = None) -> int:
-    """Build any of the newest n scans not built yet, newest first so
-    the current frame is never the one waiting. Returns frames built.
-    Each is ~0.5 s once the lookup tables exist."""
-    n = n or LOOP_FRAMES
+def backfill(domain: str, outdir) -> int:
+    """Build every scan of the last LOOP_MINUTES not built yet, newest
+    first so the current frame is never the one waiting. Returns
+    frames built. Each is ~0.5 s once the lookup tables exist."""
     site = DOMAINS[domain][0]
     built = 0
-    for key in reversed(recent_keys(site, n)):
+    for key in reversed(loop_keys(site)):
         man = Path(outdir) / f"l3_{domain}_{key_stamp(key)}.json"
         if man.exists():
             continue
@@ -567,10 +586,12 @@ def backfill_bg(domain: str, outdir) -> None:
 # Warmer
 # ---------------------------------------------------------------------------
 SLEEP_S = int(os.environ.get("L3_SLEEP_S", "60"))
-# Loop length. In precipitation the radars scan every ~4-6 min, so 12
-# frames is roughly the last hour.
-LOOP_FRAMES = int(os.environ.get("L3_LOOP_FRAMES", "12"))
-KEEP = max(int(os.environ.get("L3_KEEP", "14")), LOOP_FRAMES)
+# Loop length: the last hour, whatever the scan rate. In precipitation
+# (VCP 212, ~4.3 min) that is 13-14 frames; the cap only matters if a
+# radar is scanning unusually fast.
+LOOP_MINUTES = int(os.environ.get("L3_LOOP_MINUTES", "60"))
+LOOP_MAX_FRAMES = int(os.environ.get("L3_LOOP_MAX_FRAMES", "20"))
+KEEP = max(int(os.environ.get("L3_KEEP", "20")), LOOP_MAX_FRAMES + 2)
 _warm = {"started": False}
 _warm_lock = threading.Lock()
 
