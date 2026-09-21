@@ -381,8 +381,43 @@ def render(scan: dict, domain: str, cache_dir: Path, cc: dict = None,
     return code_palette(scan["dbz_of_code"])[img]
 
 
-def build(domain: str, outdir) -> tuple:
-    """Fetch, decode and render the newest scan. (stamp, note)."""
+#: Last outcome per domain, for the page: {"ok": bool, "note": str,
+#: "at": epoch}. Lets the page say WHY there is no image instead of
+#: "warming" forever.
+STATUS: dict = {}
+_build_locks: dict = {}
+_build_locks_guard = threading.Lock()
+
+
+def _lock_for(domain: str) -> threading.Lock:
+    with _build_locks_guard:
+        return _build_locks.setdefault(domain, threading.Lock())
+
+
+def build(domain: str, outdir, wait: bool = True) -> tuple:
+    """Fetch, decode and render the newest scan. (stamp, note).
+
+    One build per domain at a time: the page can build on demand
+    while the warmer is running, and whichever arrives second waits
+    for the first (or, with wait=False, returns at once) and then
+    finds the result cached."""
+    lk = _lock_for(domain)
+    if not lk.acquire(blocking=wait):
+        return None, "busy"
+    try:
+        stamp, note = _build(domain, outdir)
+        STATUS[domain] = {"ok": stamp is not None, "note": note,
+                          "at": time.time()}
+        return stamp, note
+    except Exception as exc:
+        STATUS[domain] = {"ok": False, "at": time.time(),
+                          "note": f"{type(exc).__name__}: {exc}"}
+        raise
+    finally:
+        lk.release()
+
+
+def _build(domain: str, outdir) -> tuple:
     from PIL import Image
 
     outdir = Path(outdir)
@@ -487,8 +522,19 @@ def _prune(outdir, domain: str, keep: int):
 
 
 def _loop(outdir):
-    time.sleep(float(os.environ.get("L3_DELAY_S", "30")))
-    _log(outdir, f"L3 warmer started, domains {list(DOMAINS)}")
+    # Short start delay: the build is ~1 s. Import the heavy pieces
+    # up front so the first scan does not pay for them (metpy's unit
+    # registry alone is several seconds on a small instance).
+    time.sleep(float(os.environ.get("L3_DELAY_S", "5")))
+    t0 = time.time()
+    try:
+        import importlib
+        for mod in ("metpy.io", "pyproj", "scipy.ndimage", "PIL.Image"):
+            importlib.import_module(mod)
+    except Exception as exc:
+        _log(outdir, f"import FAILED: {type(exc).__name__}: {exc}")
+    _log(outdir, f"L3 warmer started, domains {list(DOMAINS)}, "
+                 f"imports {time.time() - t0:.1f}s")
     while True:
         for dom in DOMAINS:
             try:
