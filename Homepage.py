@@ -122,6 +122,38 @@ except Exception as _exc:
     _warm_notes.append(f"MRMS warmer FAILED: "
                        f"{type(_exc).__name__}: {_exc}")
 
+# JetBlue fleet sweep (core/fleet.py). Every FLEET_SWEEP_S (120 s)
+# whether or not anyone is looking, so the login map and the CONUS
+# map open on current positions, trails have no gaps, and holds are
+# detected with nobody watching. Same request rate as one viewer
+# leaving the CONUS map open. JBU_FLEET_WARMER=off stops it.
+try:
+    from core.fleet import ensure_fleet_warmer
+
+    if ensure_fleet_warmer():
+        _warm_notes.append("Fleet warmer started (ADS-B sweep every "
+                           "2 min)")
+    else:
+        _warm_notes.append("Fleet warmer off (JBU_FLEET_WARMER=off)")
+except Exception as _exc:
+    _warm_notes.append(f"Fleet warmer FAILED: "
+                       f"{type(_exc).__name__}: {_exc}")
+
+# Level III super-res radar (core/radar_l3.py): KOKX N0B over the N90
+# box, about a second per scan, polled every 60 s. Needs the MRMS
+# warmer's echo mask to strip clutter; falls back to a CC filter
+# without it. L3_WARMER=off stops it.
+try:
+    from core.radar_l3 import ensure_l3_warmer
+
+    if ensure_l3_warmer(Path(__file__).resolve().parent / "static"):
+        _warm_notes.append("Level III warmer started (KOKX N0B, N90)")
+    else:
+        _warm_notes.append("Level III warmer off (L3_WARMER=off)")
+except Exception as _exc:
+    _warm_notes.append(f"Level III warmer FAILED: "
+                       f"{type(_exc).__name__}: {_exc}")
+
 # Airport diagrams for every JetBlue station (Station Quick View's
 # scope). One Overpass query per station, paced, refreshed weekly; a
 # page never waits on Overpass. Lowest priority of the warmers: it
@@ -185,8 +217,8 @@ def _home():
         """
         ### Sections
 
-        - **Forecast Tools** — Hi-res CAMs, REFS, Station Forecast
-          (wind, flight conditions, MOS, radar) and MOS guidance
+        - **Forecast Tools** — Hi-res CAMs, wind plots, flight
+          conditions, and MOS guidance
         - **Situational Awareness Products** — the JBU Weather
           Map, station quick view, and fleet tracker
         - **Archive Flight Conditions** — historical satellite
@@ -204,18 +236,20 @@ PAGES = {
                 title="Hi-Res CAMs"),
         st.Page("pages/11_REFS_Ensemble.py",
                 title="REFS Ensemble"),
-        # Station Forecast replaced Forecast Wind Plots and Forecast
-        # Flight Conditions: both plots, the NBM and LAMP grids, the
-        # METAR/TAF, a radar snapshot and the JetBlue movement board
-        # for one station on one page.
-        st.Page("pages/2_Station_Forecast.py",
-                title="Station Forecast"),
+        st.Page("pages/8_Forecast_Wind_Plots.py",
+                title="Forecast Wind Plots"),
+        st.Page("pages/1_Forecast_Flight_Conditions.py",
+                title="Forecast Flight Conditions"),
         st.Page("pages/4_MOS_Tables.py",
                 title="MOS Tables"),
     ],
     "Situational Awareness Products": [
         st.Page("pages/3_JBU_Weather_Map.py",
                 title="JBU Weather Map CONUS"),
+        # Station Quick View removed from navigation 21 Sep. The file
+        # stays in pages/ (unlisted pages never run); core modules it
+        # used - airport_scope, surface, cards - are kept for the
+        # Station Forecast page.
         st.Page("pages/8_JBU_Flight_Tracker.py",
                 title="JBU Flight Tracker"),
     ],
@@ -231,6 +265,8 @@ PAGES = {
     "Experimental": [
         st.Page("pages/12_L2_Radar_Lab.py",
                 title="L2 Radar Lab"),
+        st.Page("pages/14_L3_Radar_N90.py",
+                title="Level III Radar N90"),
     ],
     "Archive Flight Conditions": [
         st.Page("pages/5_Archive_Satellite_Position.py",
