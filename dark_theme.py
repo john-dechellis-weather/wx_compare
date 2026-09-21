@@ -49,12 +49,22 @@ FS_H3     = "16px"
 FS_H2     = "20px"
 FS_H1     = "26px"
 
-MONO = ('"DejaVu Sans Mono", "SFMono-Regular", Menlo, Consolas, '
-        '"Liberation Mono", monospace')
+# Roboto Bold everywhere; Roboto Mono Bold wherever the text was
+# monospace (METAR/TAF, grids, cards, tags), so columns still line up.
+# Both load from Google Fonts; the stacks fall back to what the machine
+# has if that host is blocked.
+SANS = ('"Roboto", "Helvetica Neue", Arial, sans-serif')
+MONO = ('"Roboto Mono", "DejaVu Sans Mono", "SFMono-Regular", Menlo, '
+        'Consolas, "Liberation Mono", monospace')
 
 
 _CSS = f"""
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@700&family=Roboto+Mono:wght@700&display=swap" rel="stylesheet">
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@700&family=Roboto+Mono:wght@700&display=swap');
+
 :root {{
   --bm-bg: {BG};
   --bm-panel: {PANEL};
@@ -71,6 +81,36 @@ _CSS = f"""
   --bm-pink: {PINK};
   --bm-red: {RED};
   --bm-mono: {MONO};
+  --bm-sans: {SANS};
+}}
+
+/* ------------------------------------------------------- typeface */
+
+/* Everything is Roboto Bold. High specificity + !important so it
+   beats retro_theme.py's Courier rules and Streamlit's own. */
+html body, html body .stApp, html body .stApp *,
+html body [data-testid="stSidebar"] *,
+html body [data-baseweb="popover"] *,
+html body [data-baseweb="menu"] * {{
+  font-family: var(--bm-sans) !important;
+  font-weight: 700 !important;
+}}
+
+/* Anything that declared itself monospace inline - the METAR/TAF
+   boxes, the MOS grids, the board tables, the holding table - gets
+   Roboto Mono Bold instead. The attribute selector matches the inline
+   style text itself, which is the only way to override an inline
+   font-family from a stylesheet. */
+html body .stApp [style*="mono" i],
+html body .stApp [style*="Courier" i],
+html body .stApp code, html body .stApp pre, html body .stApp kbd,
+html body .stApp table {{
+  font-family: var(--bm-mono) !important;
+}}
+html body .stApp [style*="mono" i] *,
+html body .stApp [style*="Courier" i] *,
+html body .stApp table * {{
+  font-family: var(--bm-mono) !important;
 }}
 
 /* ---------------------------------------------------------- surfaces */
@@ -82,7 +122,7 @@ html, body, .stApp,
 [data-testid="stBottom"] {{
   background: var(--bm-bg) !important;
   color: var(--bm-text) !important;
-  font-family: var(--bm-mono) !important;
+  font-family: var(--bm-sans) !important;
 }}
 
 [data-testid="stSidebar"],
@@ -294,7 +334,7 @@ html, body, .stApp,
   background: var(--bm-panel) !important;
   border-color: var(--bm-border) !important;
   color: var(--bm-text) !important;
-  font-family: var(--bm-mono) !important;
+  font-family: var(--bm-sans) !important;
   font-size: {FS_BODY} !important;
 }}
 .stApp input::placeholder {{ color: var(--bm-muted) !important; }}
@@ -308,7 +348,7 @@ html, body, .stApp,
 [data-baseweb="popover"] [role="option"],
 [data-baseweb="menu"] li {{
   color: var(--bm-text) !important;
-  font-family: var(--bm-mono) !important;
+  font-family: var(--bm-sans) !important;
   font-size: {FS_BODY} !important;
 }}
 [data-baseweb="popover"] [role="option"]:hover,
@@ -503,6 +543,60 @@ html, body, .stApp,
 .stApp [data-testid="stBaseButton-primary"] * {{
   color: #000000 !important;
   -webkit-text-fill-color: #000000 !important;
+}}
+
+/* ------------------------------------------------------ loading box */
+
+/* Every st.spinner on the site becomes one large, fixed pop-box: the
+   page's own message (e.g. "Rendering Level III loop...") on top and
+   the standing instruction under it. Fixed to the viewport, so it is
+   seen no matter where on the page the render is happening. */
+[data-testid="stSpinner"] {{
+  position: fixed !important;
+  top: 88px; left: 50%;
+  transform: translateX(-50%);
+  z-index: 100000;
+  min-width: 520px; max-width: 90vw;
+  background: {PANEL} !important;
+  border: 2px solid #2D3957 !important;
+  border-radius: 6px;
+  padding: 18px 26px !important;
+  box-shadow: 0 8px 40px rgba(0,0,0,.8);
+  text-align: center;
+}}
+[data-testid="stSpinner"] *,
+[data-testid="stSpinner"] p,
+[data-testid="stSpinner"] div {{
+  color: var(--bm-text) !important;
+  -webkit-text-fill-color: var(--bm-text) !important;
+  font-size: 24px !important;
+  font-weight: 700 !important;
+  line-height: 1.3 !important;
+  justify-content: center;
+}}
+[data-testid="stSpinner"] i,
+[data-testid="stSpinner"] [data-testid="stSpinnerIcon"] {{
+  border-top-color: var(--bm-cyan) !important;
+  border-right-color: var(--bm-cyan) !important;
+  width: 26px !important; height: 26px !important;
+}}
+[data-testid="stSpinner"]::after {{
+  content: "Loading… wait 60 seconds, then refresh the page if it has not fully loaded";
+  display: block;
+  margin-top: 10px;
+  color: var(--bm-text);
+  -webkit-text-fill-color: var(--bm-text);
+  font: 700 24px {MONO};
+  line-height: 1.3;
+}}
+
+/* The small "Running" status in the header, while any script runs. */
+[data-testid="stStatusWidget"],
+[data-testid="stStatusWidget"] * {{
+  color: var(--bm-text) !important;
+  -webkit-text-fill-color: var(--bm-text) !important;
+  font-size: 14px !important;
+  font-weight: 700 !important;
 }}
 
 /* --------------------------------------------------- panels, expanders */
