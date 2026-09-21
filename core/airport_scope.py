@@ -24,6 +24,7 @@ should cost the range rings, not the page.
 from __future__ import annotations
 
 import math
+from pathlib import Path
 import os
 import re
 
@@ -44,8 +45,6 @@ C_RING = [150, 150, 160, 150]
 C_FINAL = [0, 255, 127, 210]
 C_FINAL_IDLE = [90, 96, 100, 120]
 C_DEP = [255, 138, 0, 230]
-C_JBU = [77, 163, 255, 235]
-C_OTHER = [170, 170, 178, 210]
 
 
 # ---------------------------------------------------------------- math
@@ -274,9 +273,11 @@ def traffic(lat: float, lon: float, radius_nm: float = 30.0) -> list:
             "hdg": float(a.get("track") or 0.0),
             "alt": a.get("alt_baro"),
             "gs": a.get("gs"),
+            "type": (a.get("t") or "").strip().upper(),
             "jbu": jbu,
+            # commercial = an airline callsign (three letters + flight
+            # number), which drops N-numbers and most GA and military
             "airline": _CALLSIGN_RE.match(cs) is not None,
-            "color": C_JBU if jbu else C_OTHER,
             "label": cs,
         })
     return out
@@ -379,18 +380,71 @@ def layers(sf: dict, ends: list, lat: float, lon: float,
             pickable=False))
 
     if show_traffic and ac:
-        out.append(pdk.Layer(
-            "ScatterplotLayer", ac, get_position="position",
-            get_fill_color="color", get_radius=260,
-            radius_min_pixels=3, radius_max_pixels=5,
-            pickable=True, auto_highlight=True))
-        out.append(pdk.Layer(
-            "TextLayer", ac, get_position="position", get_text="label",
-            get_color="color", get_size=2000, size_min_pixels=0,
-            size_max_pixels=11, get_pixel_offset=[10, -8],
-            get_text_anchor='"start"',
-            get_alignment_baseline='"center"', pickable=False))
+        out.extend(aircraft_layers(ac))
     return out
+
+
+def aircraft_layers(ac: list) -> list:
+    """The twin-podded icon in the carrier's colour, rotated to track,
+    and the r202 data card beside it.
+
+    Both are IconLayers sized in METRES with min == max pixel clamps,
+    which pins them to an exact pixel size at any zoom - the pattern
+    pages/3 has shipped every icon through. A layer's clamp is one
+    value, so cards are grouped by their pixel height: three layers
+    at most (plain, mark-on-top, compact).
+    """
+    import pydeck as pdk
+    from core import cards as _C
+
+    planes, by_h = [], {}
+    for a in ac:
+        cs = a.get("callsign", "")
+        planes.append({"position": a["position"],
+                       "icon": _C.plane_icon(_C.colour(cs)),
+                       # IconLayer turns counter-clockwise; track is
+                       # clockwise from north
+                       "angle": (360.0 - float(a.get("hdg") or 0)) % 360.0,
+                       "callsign": cs, "alt": a.get("alt"),
+                       "gs": a.get("gs"), "type": a.get("type")})
+        icon = _C.card(a)
+        h = icon.pop("px_h")
+        by_h.setdefault(h, []).append({"position": a["position"],
+                                       "icon": icon})
+    out = []
+    for h, rows in sorted(by_h.items()):
+        out.append(pdk.Layer(
+            "IconLayer", rows, get_position="position", get_icon="icon",
+            get_size=5000, size_min_pixels=h, size_max_pixels=h,
+            pickable=False))
+    # aircraft drawn last so they sit on top of every leader line
+    out.append(pdk.Layer(
+        "IconLayer", planes, get_position="position", get_icon="icon",
+        get_angle="angle", get_size=5000,
+        size_min_pixels=22, size_max_pixels=22,
+        pickable=True, auto_highlight=False))
+    return out
+
+
+def coast_layer(icao: str):
+    """Natural Earth coastline and lake shore for the station, as a
+    PathLayer. The FALLBACK basemap: coarse (about a kilometre) but
+    drawn entirely by this app, so it cannot fail to load."""
+    import json as _json
+    import pydeck as pdk
+    from core import airports as _AP
+    p = (Path(__file__).resolve().parent.parent / "static"
+         / "jbu_coast.json")
+    try:
+        segs = _json.loads(p.read_text()).get(_AP.canonical(icao)) or []
+    except Exception:
+        segs = []
+    if not segs:
+        return None
+    return pdk.Layer(
+        "PathLayer", [{"path": sg} for sg in segs], get_path="path",
+        get_color=[59, 74, 99, 255], get_width=40,
+        width_min_pixels=1, width_max_pixels=1.2, pickable=False)
 
 
 def view(lat: float, lon: float, width_px: int = 1000):
