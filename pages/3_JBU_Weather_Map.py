@@ -713,8 +713,8 @@ import os as _os_et
 
 _ECHO_TAGS = _os_et.environ.get("JBU_ECHO_TAGS", "on").lower() != "off"
 _TAG_VIEW_ZOOM = 4.3            # matches the CONUS ViewState below
-_TAG_BOX_W, _TAG_BOX_H = 34, 16  # px, a 3-digit tag with padding
-_TAG_LIFT = 14                  # px, tag centre above the core
+_TAG_BOX_W, _TAG_BOX_H = 36, 18  # px, a 3-digit tag with padding
+_TAG_LIFT = 15                  # px, tag centre above the core
 
 
 def _tag_px(lon: float, lat: float, zoom: float = _TAG_VIEW_ZOOM):
@@ -765,7 +765,14 @@ def _echo_tag_layers(tags) -> list:
                   stroked=False, pickable=True),
         pdk.Layer("TextLayer", data=rows,
                   get_position="position", get_text="label",
-                  get_size=11, get_color=[255, 255, 255, 255],
+                  # METRES with a pixel clamp, like every other label
+                  # on this map. A bare get_size=11 was read as 11 m
+                  # on Render's pydeck build, so the tag drew as a
+                  # speck of a box with unreadable text. The clamp
+                  # holds it at 12-13 px at every zoom.
+                  get_size=20000, size_units="meters",
+                  size_min_pixels=12, size_max_pixels=13,
+                  get_color=[255, 255, 255, 255],
                   font_family='"Courier New", Courier, monospace',
                   font_weight="bold",
                   get_text_anchor='"middle"',
@@ -2041,6 +2048,51 @@ if run_button or _auto:
                         + (f", {_rs[9:11]}:{_rs[11:13]}Z" if _rs else "")
                         + "."
                     )
+                    # ECHO-TOP TAGS. On the echo-tops product, label
+                    # every 18 dBZ top at or above FL320, tallest
+                    # first, no two closer than 30 nm. The peaks come
+                    # from core/etop_tags (a warmer, like the chunks);
+                    # this only draws the file. Perfect rectangles:
+                    # white, black text, thin orange outline.
+                    if radar_product == "ETOP":
+                        try:
+                            from core import etop_tags as _ET
+                            _tags = (_ET.read(_sd) or {}).get("tags") or []
+                        except Exception:
+                            _tags = []
+                        if _tags:
+                            _tag_rows = [{"position": [t["lon"], t["lat"]],
+                                          "text": f"FL{t['fl']}"}
+                                         for t in _tags]
+                            layers.append(pdk.Layer(
+                                "ScatterplotLayer", _tag_rows,
+                                get_position="position",
+                                get_fill_color=[255, 138, 0, 255],
+                                get_radius=1200, radius_min_pixels=2.5,
+                                radius_max_pixels=3.5, pickable=False))
+                            layers.append(pdk.Layer(
+                                "TextLayer", _tag_rows,
+                                get_position="position", get_text="text",
+                                get_color=[0, 0, 0, 255],
+                                get_size=1300, size_units="meters",
+                                size_min_pixels=0, size_max_pixels=12,
+                                font_family="Roboto Mono, DejaVu Sans Mono, "
+                                            "monospace",
+                                font_weight=700,
+                                background=True,
+                                get_background_color=[255, 255, 255, 255],
+                                get_border_color=[255, 138, 0, 255],
+                                get_border_width=1,
+                                # static prop in deck.gl 8.9: a list,
+                                # never an accessor (see handover)
+                                background_padding=[5, 3, 5, 3],
+                                get_pixel_offset=[10, -10],
+                                get_text_anchor='"start"',
+                                get_alignment_baseline='"center"',
+                                pickable=False))
+                            _radar_note += (
+                                f" {len(_tags)} echo tops \u2265 FL320 "
+                                f"tagged, 30 nm spacing.")
                 elif not _rbase:
                     _radar_note = " Radar: RENDER_EXTERNAL_URL unset."
                 else:
