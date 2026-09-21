@@ -239,32 +239,52 @@ def rings(lat, lon, nms=RING_NMS, steps: int = 180):
 _CALLSIGN_RE = re.compile(r"^[A-Z]{3}\d{1,4}[A-Z]?$")
 
 
+#: What the last traffic() call did, for the diagnostic line on the
+#: scope: which path served it, how many rows came back, any error.
+LAST_TRAFFIC = {"source": "", "fetched": 0, "kept": 0, "error": ""}
+
+
 def traffic(lat: float, lon: float, radius_nm: float = 30.0) -> list:
     """Every aircraft within radius_nm.
 
     Goes through core/flights.fetch_positions_near, the same call the
     Quick View inbound list makes, so the scope sees exactly what the
     rest of the app sees. Falls back to the community point endpoints
-    only if that import is unavailable.
+    only if that call fails. LAST_TRAFFIC records what happened.
     """
+    diag = {"source": "", "fetched": 0, "kept": 0, "error": ""}
     rows = []
     try:
         from core.flights import fetch_positions_near
-        planes = fetch_positions_near(lat, lon, radius_deg=radius_nm / 60.0)
-        for p in planes or []:
+        planes = list(fetch_positions_near(lat, lon,
+                                           radius_deg=radius_nm / 60.0) or [])
+        diag["source"] = "core.flights"
+        diag["fetched"] = len(planes)
+        for p in planes:
+            g = (lambda *names: next(
+                (getattr(p, n) for n in names
+                 if getattr(p, n, None) not in (None, "")), None))
+            if isinstance(p, dict):
+                g = (lambda *names: next(
+                    (p[n] for n in names if p.get(n) not in (None, "")), None))
             rows.append({
-                "hex": getattr(p, "hex", "") or getattr(p, "icao24", ""),
-                "flight": getattr(p, "callsign", "") or "",
-                "lat": p.lat, "lon": p.lon,
-                "track": getattr(p, "heading_deg", None),
-                "alt_baro": getattr(p, "alt_ft", None),
-                "gs": getattr(p, "gs_kt", None) or getattr(p, "speed_kt", None),
-                "t": getattr(p, "ac_type", "") or getattr(p, "aircraft_type", "")
-                     or getattr(p, "type", ""),
+                "hex": g("hex", "icao24") or "",
+                "flight": g("callsign", "flight", "cs") or "",
+                "lat": g("lat", "latitude"), "lon": g("lon", "longitude"),
+                "track": g("heading_deg", "track", "heading", "trk"),
+                "alt_baro": g("alt_ft", "alt_baro", "alt", "altitude"),
+                "gs": g("gs_kt", "speed_kt", "gs", "ground_speed"),
+                "t": g("ac_type", "aircraft_type", "type", "t") or "",
             })
-    except Exception:
+    except Exception as exc:
+        diag["error"] = f"core.flights: {type(exc).__name__}: {exc}"[:120]
         rows = _traffic_direct(lat, lon, radius_nm)
-    return _dedupe(rows)
+        diag["source"] = "adsb point endpoint"
+        diag["fetched"] = len(rows)
+    out = _dedupe(rows)
+    diag["kept"] = len(out)
+    LAST_TRAFFIC.update(diag)
+    return out
 
 
 def _traffic_direct(lat, lon, radius_nm) -> list:
