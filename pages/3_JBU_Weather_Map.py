@@ -2140,9 +2140,11 @@ with st.sidebar:
     st.divider()
     st.header("Map")
     map_height = st.slider(
-        "Map height (px)", 450, 1400, 1000, 50,
-        help="Width is fluid (fills the space beside the TAF "
-             "table and follows the window); height is set "
+        # 750 default, 25% under the old 1000: the map now spans the
+        # full width, so the pods below it come into view sooner.
+        "Map height (px)", 450, 1400, 750, 50,
+        help="Width is fluid (fills the page width and follows "
+             "the window); height is set "
              "here - Streamlit's component sizing defeats "
              "pure-CSS viewport tracking.",
     )
