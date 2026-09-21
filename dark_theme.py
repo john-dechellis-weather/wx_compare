@@ -229,6 +229,13 @@ html, body, .stApp,
   box-shadow: none !important;
 }}
 
+/* The outer wrapper keeps a pale frame from the older stylesheet. */
+[data-testid="stAlert"] {{
+  border: none !important;
+  outline: none !important;
+  padding: 0 !important;
+}}
+
 [data-testid="stAlert"] *,
 [data-testid="stAlertContainer"] *,
 [data-testid="stNotification"] * {{
@@ -313,17 +320,51 @@ html, body, .stApp,
   font-size: {FS_BODY} !important;
 }}
 
-.stApp button[kind="primary"] {{
-  background: var(--bm-cyan) !important;
-  color: #000000 !important;
-  border: none !important;
-  font-weight: 700;
-}}
-.stApp button[kind="secondary"] {{
+/* Base: every Streamlit button, whatever the markup version. */
+.stApp .stButton button,
+.stApp .stDownloadButton button,
+.stApp [data-testid^="stBaseButton"],
+.stApp button[kind="secondary"],
+.stApp button[kind="secondaryFormSubmit"] {{
   background: var(--bm-panel) !important;
-  color: var(--bm-text) !important;
   border: 1px solid var(--bm-border) !important;
-  font-weight: 700;
+  font-weight: 700 !important;
+}}
+
+/* The label is an inner <p> or <div>, and it carries its own colour.
+   Setting it on the button alone leaves the text dark. */
+.stApp .stButton button,
+.stApp .stButton button *,
+.stApp .stDownloadButton button,
+.stApp .stDownloadButton button *,
+.stApp [data-testid^="stBaseButton"],
+.stApp [data-testid^="stBaseButton"] * {{
+  color: var(--bm-text) !important;
+  -webkit-text-fill-color: var(--bm-text) !important;
+}}
+
+.stApp .stButton button:hover,
+.stApp [data-testid^="stBaseButton"]:hover {{
+  background: #1A1A1A !important;
+  border-color: var(--bm-cyan) !important;
+}}
+
+/* Primary wins over the base rules above: listed after, and matched
+   on both the old kind= attribute and the new testid. */
+.stApp button[kind="primary"],
+.stApp [data-testid="stBaseButton-primary"],
+.stApp [data-testid="stBaseButton-primaryFormSubmit"] {{
+  background: var(--bm-cyan) !important;
+  border: none !important;
+}}
+.stApp button[kind="primary"],
+.stApp button[kind="primary"] *,
+.stApp [data-testid="stBaseButton-primary"],
+.stApp [data-testid="stBaseButton-primary"] *,
+.stApp [data-testid="stBaseButton-primaryFormSubmit"],
+.stApp [data-testid="stBaseButton-primaryFormSubmit"] * {{
+  color: #000000 !important;
+  -webkit-text-fill-color: #000000 !important;
 }}
 
 /* Slider: the radar-opacity and similar controls. */
@@ -381,6 +422,87 @@ html, body, .stApp,
 [data-testid="stTabs"] button[role="tab"][aria-selected="true"] * {{
   color: var(--bm-text) !important;
   -webkit-text-fill-color: var(--bm-text) !important;
+}}
+
+/* ----------------------------------------------- sidebar toggle */
+
+/* The collapse/expand control in the header and at the top of the
+   sidebar. Streamlit draws it as an icon-font glyph; the icon font
+   does not always load here (the same reason the password eye showed
+   as the word "visibility"), so the glyph is hidden and a text label
+   is drawn instead. The label is a pseudo-element, so it works
+   whether or not the icon rendered. */
+[data-testid="stSidebarCollapseButton"] button,
+[data-testid="stExpandSidebarButton"] button,
+[data-testid="collapsedControl"] button,
+[data-testid="stSidebarCollapsedControl"] button,
+[data-testid="stSidebarCollapseButton"] button *,
+[data-testid="stExpandSidebarButton"] button *,
+[data-testid="collapsedControl"] button *,
+[data-testid="stSidebarCollapsedControl"] button * {{
+  color: var(--bm-text) !important;
+  -webkit-text-fill-color: var(--bm-text) !important;
+  fill: var(--bm-text) !important;
+  background: transparent !important;
+  border: none !important;
+}}
+[data-testid="stSidebarCollapseButton"] button::after,
+[data-testid="stExpandSidebarButton"] button::after,
+[data-testid="collapsedControl"] button::after,
+[data-testid="stSidebarCollapsedControl"] button::after {{
+  content: "Page View Toggle";
+  color: var(--bm-text) !important;
+  -webkit-text-fill-color: var(--bm-text) !important;
+  font: 700 14px {MONO};
+  margin-left: 6px;
+  white-space: nowrap;
+}}
+[data-testid="stSidebarCollapseButton"] button,
+[data-testid="stExpandSidebarButton"] button,
+[data-testid="collapsedControl"] button,
+[data-testid="stSidebarCollapsedControl"] button {{
+  width: auto !important;
+  padding: 2px 8px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+}}
+/* Arrow glyph: white, and readable even when the icon font failed. */
+[data-testid="stSidebarCollapseButton"] button span[data-testid="stIconMaterial"],
+[data-testid="stExpandSidebarButton"] button span[data-testid="stIconMaterial"],
+[data-testid="collapsedControl"] button span[data-testid="stIconMaterial"] {{
+  font-size: 0 !important;
+}}
+[data-testid="stSidebarCollapseButton"] button span[data-testid="stIconMaterial"]::before {{
+  content: "\25C0"; font-size: 14px; color: var(--bm-text);
+}}
+[data-testid="stExpandSidebarButton"] button span[data-testid="stIconMaterial"]::before,
+[data-testid="collapsedControl"] button span[data-testid="stIconMaterial"]::before {{
+  content: "\25B6"; font-size: 14px; color: var(--bm-text);
+}}
+
+/* -------------------------------------------- every button label */
+
+/* Catch-all beneath the specific rules above: whatever Streamlit
+   version renders the control, the label inside any button on the
+   page is white, 14 px, bold. This is what the REFS region pickers
+   needed and it holds for pills, segmented controls and button
+   groups alike. */
+.stApp button, .stApp button *,
+.stApp [role="radiogroup"] label, .stApp [role="radiogroup"] label *,
+.stApp [data-testid="stButtonGroup"] *,
+.stApp [data-testid="stSegmentedControl"] *,
+.stApp [data-testid="stPills"] * {{
+  color: var(--bm-text) !important;
+  -webkit-text-fill-color: var(--bm-text) !important;
+  font-size: 14px !important;
+  font-weight: 700 !important;
+}}
+/* Primary buttons stay black-on-cyan: the rule after wins. */
+.stApp button[kind="primary"], .stApp button[kind="primary"] *,
+.stApp [data-testid="stBaseButton-primary"],
+.stApp [data-testid="stBaseButton-primary"] * {{
+  color: #000000 !important;
+  -webkit-text-fill-color: #000000 !important;
 }}
 
 /* --------------------------------------------------- panels, expanders */
