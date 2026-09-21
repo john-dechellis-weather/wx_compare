@@ -121,8 +121,28 @@ def cached_taf_raw(icao: str) -> str | None:
 _L3_WARM_ZOOM = float(os.environ.get("BLUEMET_L3_ZOOM", "1.5"))
 
 _SCOPE_FONT = "'Courier New', Courier, monospace"
-_SCOPE_MAP_STYLE = (
-    "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json")
+# Scope basemap. "carto" (default): static/scope_style.json, Carto's
+# own vector tiles with every layer removed except water - the detailed
+# shoreline, no roads, no labels. "ne": no tiles at all; the app draws
+# a Natural Earth coastline itself. Coarser, but it cannot fail to load.
+_SCOPE_COAST = os.environ.get("BLUEMET_SCOPE_COAST", "carto").lower()
+
+
+def _scope_style_url():
+    """Absolute URL of the water-only style, from the request's own
+    Host header (same reasoning as the MRMS chunks: the browser's own
+    origin is the one that always works). None means use the fallback."""
+    if _SCOPE_COAST != "carto":
+        return None
+    try:
+        host = st.context.headers.get("Host", "")
+        if host:
+            proto = st.context.headers.get("X-Forwarded-Proto", "https")
+            return f"{proto}://{host}/app/static/scope_style.json"
+    except Exception:
+        pass
+    base = (os.environ.get("RENDER_EXTERNAL_URL") or "").rstrip("/")
+    return f"{base}/app/static/scope_style.json" if base else None
 
 
 # --- Airport scope: surface, ATIS, area traffic -----------------------
@@ -904,11 +924,14 @@ with st.sidebar:
              "doubles the cold render time of this page.",
     )
 
-    scope_traffic = st.checkbox(
-        "Airport scope: JetBlue traffic", value=True,
-        help="JetBlue aircraft within 30 nm of the field, from community "
-             "ADS-B. One point query, shared between viewers.",
+    scope_mode = st.radio(
+        "Airport scope traffic",
+        options=["All commercial traffic", "JBU only"], index=0,
+        help="Aircraft within 30 nm of the field, from community ADS-B. "
+             "Commercial means an airline callsign; private and "
+             "N-numbered aircraft are left off.",
     )
+    scope_traffic = True
 
     radar_mode = st.radio(
         "Radar display",
@@ -1262,21 +1285,29 @@ if active_icao:
         _ac = []
         if scope_traffic:
             _bucket = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")[:-1]
-            _ac = [a for a in cached_scope_traffic(
-                       round(_sc_lat, 3), round(_sc_lon, 3), 30, _bucket)
-                   if a.get("jbu")]
+            _rows = cached_scope_traffic(
+                round(_sc_lat, 3), round(_sc_lon, 3), 30, _bucket)
+            _ac = [a for a in _rows
+                   if (a.get("jbu") if scope_mode == "JBU only"
+                       else a.get("airline"))]
 
         _scope_layers = _AS.layers(
             _surface, _ends, _sc_lat, _sc_lon,
             arriving=_arr, departing=_dep, ac=_ac,
             show_traffic=scope_traffic)
+        _style = _scope_style_url()
+        if _style is None:
+            _cl = _AS.coast_layer(icao)
+            if _cl is not None:
+                _scope_layers = [_cl] + _scope_layers
         st.pydeck_chart(
             pdk.Deck(
                 layers=_scope_layers,
                 initial_view_state=_AS.view(_sc_lat, _sc_lon),
-                map_style=_SCOPE_MAP_STYLE,
-                tooltip={"html": "<b>{callsign}</b><br/>{alt} ft &middot; "
-                                 "{gs} kt",
+                map_style=_style,
+                map_provider=("carto" if _style else None),
+                tooltip={"html": "<b>{callsign}</b> {type}<br/>{alt} ft "
+                                 "&middot; {gs} kt",
                          "style": {"backgroundColor": "#0A0A0A",
                                    "color": "#FFFFFF",
                                    "border": "1px solid #2D3957",
@@ -1288,8 +1319,10 @@ if active_icao:
             "30 x 20 nm \u00b7 rings at 10/20/30 nm \u00b7 finals 15 nm "
             "from the landing threshold, 1 nm ticks"
             + (f" ({_ends_src})" if _ends_src else "") + " \u00b7 "
-            + (f"{len(_ac)} JetBlue aircraft" if _ac
-               else "no JetBlue aircraft within 30 nm"))
+            + (f"{len(_ac)} aircraft" if _ac else
+               ("no JetBlue aircraft within 30 nm"
+                if scope_mode == "JBU only"
+                else "no commercial aircraft within 30 nm")))
 
     # --- Live inbound (instant, from ADS-B positions) ---
     st.subheader("JBU Inbound Now")
