@@ -6,7 +6,6 @@ sidebar titles set explicitly (filename prefixes no longer control
 order or labels).
 """
 
-import os
 import time
 from pathlib import Path
 
@@ -155,8 +154,8 @@ except Exception as _exc:
     _warm_notes.append(f"Level III warmer FAILED: "
                        f"{type(_exc).__name__}: {_exc}")
 
-# Airport diagrams for every JetBlue station (Station Quick View's
-# scope). One Overpass query per station, paced, refreshed weekly; a
+# Airport diagrams for every JetBlue station (the airport scope on
+# Station Forecast). One Overpass query per station, paced, refreshed weekly; a
 # page never waits on Overpass. Lowest priority of the warmers: it
 # starts last and is I/O-bound, so it does not hold the GIL against
 # page 3. SURFACE_WARMER=off stops it.
@@ -172,6 +171,20 @@ except Exception as _exc:
     _warm_notes.append(f"Surface warmer FAILED: "
                        f"{type(_exc).__name__}: {_exc}")
 
+# Echo-top tags for the CONUS map: every 18 dBZ top at or above FL320
+# with 30 nm spacing, from the same MRMS file the mosaic uses, written
+# to static/etop_tags.json. Cheap (150 KB, ~0.4 s) and I/O-bound.
+try:
+    from core.etop_tags import ensure_etop_tags_warmer
+
+    if ensure_etop_tags_warmer(_static_mrms):
+        _warm_notes.append("Echo-top tag warmer started (FL320+, 30 nm)")
+    else:
+        _warm_notes.append("Echo-top tag warmer off (ETOP_TAGS=off)")
+except Exception as _exc:
+    _warm_notes.append(f"Echo-top tag warmer FAILED: "
+                       f"{type(_exc).__name__}: {_exc}")
+
 # The CAM-overlay and radar warmers were started here for the N90
 # Airspace page, which is no longer in the navigation. Both imports
 # are gone rather than merely disabled: an import of core.radar_l2
@@ -182,20 +195,20 @@ except Exception as _exc:
 # the N90 page means restoring its nav entry and these two blocks.
 
 
-def _home():
-    st.title("BlueMet")
-    st.markdown(
-        "<p style='color: #FF5A5A; font-size: 32px; "
-        "font-weight: bold;'>"
-        "IMPORTANT: Use Prohbited outside of the JetBlue SOC or "
-        "for Tomorrow.io employees"
-        "</p>",
-        unsafe_allow_html=True,
-    )
-    st.caption("Multi-model comparison for CONUS airports.")
-    with st.expander("Background warmers", expanded=False):
+def _warmer_status():
+    """Warmer health, in a collapsed sidebar expander on every page.
+    This used to be the Home page's only content; the Home page is
+    gone (login lands on Station Forecast), the diagnostics are not."""
+    with st.sidebar.expander("Background warmers", expanded=False):
         for _n in _warm_notes:
             (st.error if "FAILED" in _n else st.caption)(_n)
+        st.caption(
+            f"Store: {CACHE_ROOT}"
+            + ("" if _persistent.exists() else
+               "  \u2014 WARNING: the persistent disk is NOT mounted "
+               "at /opt/render/project/src/cache, so this is /tmp and "
+               "is wiped on every restart.")
+        )
         try:
             from core.surface_warm import tail as _sw_tail, coverage as _sw_cov
             _cov = _sw_cov(_SCOPE_DIR)
@@ -207,50 +220,55 @@ def _home():
                 st.caption(_ln)
         except Exception:
             pass
-        st.caption(
-            f"Store: {CACHE_ROOT}"
-            + ("" if _persistent.exists() else
-               "  \u2014 WARNING: the persistent disk is NOT mounted "
-               "at /opt/render/project/src/cache, so this is /tmp and "
-               "is wiped on every restart.")
-        )
-    st.markdown(
-        """
-        ### Sections
-
-        - **Forecast Tools** — Hi-res CAMs, wind plots, flight
-          conditions, and MOS guidance
-        - **Situational Awareness Products** — the JBU Weather
-          Map, station quick view, and fleet tracker
-        - **Archive Flight Conditions** — historical satellite
-          and radar with flight overlay
-        """
-    )
+        try:
+            from core.etop_tags import log_tail as _et_tail
+            for _ln in _et_tail(4):
+                st.caption("echo tops: " + _ln)
+        except Exception:
+            pass
+        try:
+            from core import fleet as _fl
+            _at = _fl.STATE.get("at") or 0
+            _res = _fl.STATE.get("res")
+            if _res:
+                st.caption(f"fleet: {len(_res[0] or [])} JBU aircraft, "
+                           f"swept {max(0, time.time() - _at) / 60:.0f} "
+                           "min ago")
+            elif _fl.STATE.get("err"):
+                st.caption("fleet: " + str(_fl.STATE["err"])[:120])
+        except Exception:
+            pass
+        try:
+            _l3log = (Path(__file__).resolve().parent / "static"
+                      / "l3_warmer.log")
+            for _ln in _l3log.read_text().splitlines()[-3:]:
+                st.caption("level III: " + _ln)
+        except Exception:
+            pass
 
 
 PAGES = {
-    "": [
-        st.Page(_home, title="Home", default=True),
-    ],
     "Forecast Tools": [
         st.Page("pages/9_HiRes_CAMs.py",
                 title="Hi-Res CAMs"),
         st.Page("pages/11_REFS_Ensemble.py",
                 title="REFS Ensemble"),
-        st.Page("pages/8_Forecast_Wind_Plots.py",
-                title="Forecast Wind Plots"),
-        st.Page("pages/1_Forecast_Flight_Conditions.py",
-                title="Forecast Flight Conditions"),
+        # Station Forecast replaced Forecast Wind Plots and Forecast
+        # Flight Conditions: both plots, the NBM and LAMP grids, the
+        # METAR/TAF, a radar snapshot and the JetBlue movement board
+        # for one station on one page.
+        # DEFAULT: the login lands here. There is no Home page.
+        st.Page("pages/2_Station_Forecast.py",
+                title="Station Forecast", default=True),
         st.Page("pages/4_MOS_Tables.py",
                 title="MOS Tables"),
     ],
     "Situational Awareness Products": [
         st.Page("pages/3_JBU_Weather_Map.py",
                 title="JBU Weather Map CONUS"),
-        # Station Quick View removed from navigation 21 Sep. The file
-        # stays in pages/ (unlisted pages never run); core modules it
-        # used - airport_scope, surface, cards - are kept for the
-        # Station Forecast page.
+        # Station Quick View removed from navigation 21 Sep; the file
+        # stays in pages/ unlisted. Its airport scope lives on in
+        # Station Forecast, so the surface warmer above still runs.
         st.Page("pages/8_JBU_Flight_Tracker.py",
                 title="JBU Flight Tracker"),
     ],
@@ -307,5 +325,7 @@ st.markdown(
 nav = st.navigation(PAGES)
 
 check_password()
+
+_warmer_status()
 
 nav.run()
