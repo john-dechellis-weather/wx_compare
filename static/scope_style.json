@@ -1,0 +1,38 @@
+{
+ "version": 8,
+ "name": "BlueMet scope - water only",
+ "sources": {
+  "carto": {
+   "type": "vector",
+   "url": "https://tiles.basemaps.cartocdn.com/vector/carto.streets/v1/tiles.json"
+  }
+ },
+ "layers": [
+  {
+   "id": "background",
+   "type": "background",
+   "paint": {
+    "background-color": "#000000"
+   }
+  },
+  {
+   "id": "water",
+   "type": "fill",
+   "source": "carto",
+   "source-layer": "water",
+   "paint": {
+    "fill-color": "#0A121C"
+   }
+  },
+  {
+   "id": "shoreline",
+   "type": "line",
+   "source": "carto",
+   "source-layer": "water",
+   "paint": {
+    "line-color": "#3B4A63",
+    "line-width": 0.9
+   }
+  }
+ ]
+}
