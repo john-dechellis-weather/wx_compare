@@ -58,11 +58,7 @@ MONO = ('"Roboto Mono", "DejaVu Sans Mono", "SFMono-Regular", Menlo, '
         'Consolas, "Liberation Mono", monospace')
 
 
-_CSS = f"""
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@700&family=Roboto+Mono:wght@700&display=swap" rel="stylesheet">
-<style>
+_CSS = f"""<style>
 @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@700&family=Roboto+Mono:wght@700&display=swap');
 
 :root {{
@@ -371,8 +367,8 @@ html, body, .stApp,
   font-weight: 700 !important;
 }}
 
-/* The label is an inner <p> or <div>, and it carries its own colour.
-   Setting it on the button alone leaves the text dark. */
+/* The label is an inner paragraph or div element, and it carries its
+   own colour. Setting it on the button alone leaves the text dark. */
 .stApp .stButton button,
 .stApp .stButton button *,
 .stApp .stDownloadButton button,
