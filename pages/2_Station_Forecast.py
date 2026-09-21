@@ -158,6 +158,14 @@ def cached_compare(icao: str, cycle_iso: str):
     return df, bool(resolved)
 
 
+@st.cache_data(ttl=45, show_spinner=False, max_entries=20)
+def cached_traffic(lat: float, lon: float, bucket: str):
+    """Aircraft within 20 nm; the bucket shares one query across
+    viewers of the same field."""
+    from core import airport_scope as _AS
+    return _AS.traffic(lat, lon, 20)
+
+
 @st.cache_data(ttl=120, show_spinner=False, max_entries=12)
 def cached_movements(icao: str, hours_back: int, bucket: str):
     if not _SAMPLER_OK:
@@ -217,6 +225,13 @@ with h2:
 
 coords = cached_coords(icao)
 
+cycle_iso = cached_latest_cycle(icao)
+df, ok = (cached_compare(icao, cycle_iso) if cycle_iso else (pd.DataFrame(), False))
+cycle = datetime.fromisoformat(cycle_iso) if cycle_iso else None
+cyc_txt = f"cycle {cycle:%d/%HZ}" if cycle else "no complete cycle"
+
+from core import mos_grid as G
+
 # ============================================================ row 1
 c_obs, c_rad = st.columns([2, 1], gap="small")
 
@@ -246,6 +261,27 @@ with c_obs:
             pod_title("TAF")
             st.warning("No TAF available (station may not be a TAF site).")
 
+    with st.container(border=True):
+        pod_title("Flight conditions",
+                  f"category by model, hour by hour · {cyc_txt}")
+        if ok and len(df) and {"ceiling_ft", "vsby_sm"} <= set(df.columns):
+            d = df[(df["station_id"] == icao)
+                   & (df["valid_time"] <= cycle + pd.Timedelta(hours=horizon))]
+            models = [m for m in MODELS if m in set(d["model"])]
+            times = [cycle + pd.Timedelta(hours=h) for h in range(0, horizon + 1)]
+            obs_rows = []
+            try:
+                for o in cached_metars(icao, 12):
+                    obs_rows.append((o.obs_time, getattr(o, "ceiling_ft", None),
+                                     bool(getattr(o, "ceiling_unlimited", False)),
+                                     getattr(o, "vsby_sm", None)))
+            except Exception:
+                obs_rows = []
+            st.markdown(G.category_strip(d, models, times, obs=obs_rows),
+                        unsafe_allow_html=True)
+        else:
+            st.caption("No ceiling/visibility guidance for this station and cycle.")
+
 with c_rad:
     with st.container(border=True):
         # The airport scope, exactly as Station Quick View draws it -
@@ -262,11 +298,15 @@ with c_rad:
             except Exception:
                 chunks = []
             surface = AS.surface(CACHE_ROOT / "scope", icao, coords[0], coords[1])
+            ac = [a for a in cached_traffic(round(coords[0], 3), round(coords[1], 3),
+                                            now.strftime("%Y%m%d%H%M")[:-1])
+                  if a.get("airline")]
             layers, cfg = AS.mini_layers(icao, surface, coords[0], coords[1],
                                          mrms_chunks=chunks, base_url=base,
-                                         range_nm=20)
+                                         range_nm=20, ac=ac)
         pod_title("Airport scope · MRMS",
-                  f"20 nm · {stamp_txt or 'no current scan'}")
+                  f"20 nm · {stamp_txt or 'no current scan'}"
+                  + (f" · {len(ac)} aircraft" if coords and ac else ""))
         if cfg.get("describe"):
             st.markdown(
                 f'<div style="border:1px solid {EDGE};padding:6px 10px;'
@@ -300,16 +340,11 @@ with c_rad:
             st.caption(f"No coordinates for {icao}.")
 
 # ============================================================ row 2
-cycle_iso = cached_latest_cycle(icao)
-df, ok = (cached_compare(icao, cycle_iso) if cycle_iso else (pd.DataFrame(), False))
-cycle = datetime.fromisoformat(cycle_iso) if cycle_iso else None
-cyc_txt = f"cycle {cycle:%d/%HZ}" if cycle else "no complete cycle"
-
-c_wind, c_fc = st.columns(2, gap="small")
+c_wind, c_mos = st.columns(2, gap="small")
 
 with c_wind:
     with st.container(border=True):
-        pod_title("Wind", f"speed, gust, direction \u00b7 {cyc_txt}")
+        pod_title("Wind", f"speed, gust, direction · {cyc_txt}")
         if ok and len(df):
             from compare import plot_wind_comparison_interactive
             try:
@@ -332,106 +367,11 @@ with c_wind:
         else:
             st.caption("No model data for this station and cycle.")
 
-with c_fc:
-    with st.container(border=True):
-        pod_title("Flight conditions", f"ceiling & visibility by model \u00b7 {cyc_txt}")
-        if ok and len(df) and {"ceiling_ft", "vsby_sm"} <= set(df.columns):
-            import plotly.graph_objects as go
-            from plotly.subplots import make_subplots
-
-            d = df[df["station_id"] == icao].copy()
-            d = d[d["valid_time"] <= cycle + pd.Timedelta(hours=horizon)]
-            fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
-                                row_heights=[0.18, 0.44, 0.38],
-                                vertical_spacing=0.04)
-            # category strip, one row per model
-            models = [m for m in MODELS if m in set(d["model"])]
-
-            def _cat(c, u, v):
-                cc = 1e9 if (u or pd.isna(c)) else c
-                vv = 99 if pd.isna(v) else v
-                if cc < 500 or vv < 1:
-                    return "LIFR"
-                if cc < 1000 or vv < 3:
-                    return "IFR"
-                if cc <= 3000 or vv <= 5:
-                    return "MVFR"
-                return "VFR"
-
-            for i, m in enumerate(models):
-                dm = d[d["model"] == m].sort_values("valid_time")
-                cats = [_cat(c, u, v) for c, u, v in zip(
-                    dm["ceiling_ft"], dm.get("ceiling_unlimited", [False] * len(dm)),
-                    dm["vsby_sm"])]
-                fig.add_trace(go.Bar(
-                    x=dm["valid_time"], y=[1] * len(dm), base=[len(models) - 1 - i] * len(dm),
-                    marker_color=[CAT[c] for c in cats], width=3600e3,
-                    name=m.replace("_", " "), showlegend=False,
-                    hovertemplate="%{x|%d/%HZ} " + m + " %{customdata}<extra></extra>",
-                    customdata=cats), row=1, col=1)
-            fig.update_yaxes(tickvals=[len(models) - 1 - i + 0.5 for i in range(len(models))],
-                             ticktext=[m.replace("_", " ") for m in models],
-                             range=[0, len(models)], row=1, col=1)
-            # ceiling (log) and visibility with category bands
-            for lo, hi, c in ((150, 500, CAT["LIFR"]), (500, 1000, CAT["IFR"]),
-                              (1000, 3000, CAT["MVFR"]), (3000, 12000, CAT["VFR"])):
-                fig.add_hrect(y0=lo, y1=hi, fillcolor=c, opacity=0.07,
-                              line_width=0, row=2, col=1)
-            for lo, hi, c in ((0, 1, CAT["LIFR"]), (1, 3, CAT["IFR"]),
-                              (3, 5, CAT["MVFR"]), (5, 10, CAT["VFR"])):
-                fig.add_hrect(y0=lo, y1=hi, fillcolor=c, opacity=0.07,
-                              line_width=0, row=3, col=1)
-            for m in models:
-                dm = d[d["model"] == m].sort_values("valid_time")
-                cig = dm["ceiling_ft"].where(
-                    ~dm.get("ceiling_unlimited", pd.Series([False] * len(dm))).astype(bool),
-                    12000)
-                fig.add_trace(go.Scatter(x=dm["valid_time"], y=cig, mode="lines",
-                                         line=dict(color=MODELS[m], width=2),
-                                         name=m.replace("_", " ")), row=2, col=1)
-                fig.add_trace(go.Scatter(x=dm["valid_time"], y=dm["vsby_sm"].clip(upper=10),
-                                         mode="lines", line=dict(color=MODELS[m], width=2),
-                                         showlegend=False), row=3, col=1)
-            # observations
-            try:
-                mdf = metars_to_df(filter_since({icao: cached_metars(icao, 48)},
-                                                cycle - pd.Timedelta(hours=6)))
-                if mdf is not None and len(mdf) and "ceiling_ft" in mdf.columns:
-                    fig.add_trace(go.Scatter(x=mdf["obs_time"], y=mdf["ceiling_ft"],
-                                             mode="markers", marker=dict(color=INK, size=5),
-                                             name="observed"), row=2, col=1)
-                    if "vsby_sm" in mdf.columns:
-                        fig.add_trace(go.Scatter(x=mdf["obs_time"], y=mdf["vsby_sm"],
-                                                 mode="markers", marker=dict(color=INK, size=5),
-                                                 showlegend=False), row=3, col=1)
-            except Exception:
-                pass
-            fig.add_vline(x=cycle, line=dict(color="#00E5FF", width=1))
-            fig.update_yaxes(type="log", range=[2.2, 4.08], title="ceiling ft",
-                             tickvals=[200, 500, 1000, 3000, 10000], row=2, col=1)
-            fig.update_yaxes(range=[0, 10], title="vis SM", tickvals=[0, 1, 3, 5, 10],
-                             row=3, col=1)
-            fig.update_layout(
-                height=520, autosize=True, paper_bgcolor=PANEL, plot_bgcolor="#05070B",
-                font=dict(color=INK2, size=11), margin=dict(l=40, r=16, t=10, b=30),
-                legend=dict(orientation="h", y=-0.12, bgcolor="rgba(0,0,0,0)"),
-                bargap=0.05)
-            fig.update_xaxes(gridcolor="#1A2233", tickformat="%HZ", dtick=3 * 3600e3)
-            fig.update_yaxes(gridcolor="#1A2233")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.caption("No ceiling/visibility guidance for this station and cycle.")
-
-# ============================================================ row 3
-from core import mos_grid as G
-
-c_nbm, c_lamp = st.columns(2, gap="small")
-for col, model, label, rows_fn in (
-        (c_nbm, "NBM", "NBM hourly", G.nbm_rows),
-        (c_lamp, "GFS_LAMP", "GFS LAMP", G.lamp_rows)):
-    with col:
+with c_mos:
+    for model, label, rows_fn in (("NBM", "NBM hourly", G.nbm_rows),
+                                  ("GFS_LAMP", "GFS LAMP", G.lamp_rows)):
         with st.container(border=True):
-            pod_title(label, f"{cyc_txt} \u00b7 next 24 h")
+            pod_title(label, f"{cyc_txt} · next 24 h")
             if ok and len(df):
                 dm = df[(df["station_id"] == icao) & (df["model"] == model)]
                 dm = dm[dm["valid_time"] <= cycle + pd.Timedelta(hours=25)]
@@ -443,45 +383,62 @@ for col, model, label, rows_fn in (
                     st.caption(f"No {label} rows for this cycle.")
             else:
                 st.caption("No model data.")
-st.markdown(G.legend(), unsafe_allow_html=True)
+    st.markdown(G.legend(), unsafe_allow_html=True)
 
 # ============================================================ row 4
+def _board_table(rows, kind: str) -> str:
+    """The board as HTML. st.dataframe draws through a canvas that
+    takes its colours from .streamlit/config.toml, not from CSS, so
+    without that file in place it can come out unreadable; this
+    cannot."""
+    th = (f"background:#121212;color:#00E5FF;font:bold 11px DejaVu Sans Mono,"
+          f"monospace;padding:4px 10px;text-align:left;border:1px solid {EDGE};")
+    td = (f"color:{INK};-webkit-text-fill-color:{INK};font:bold 12px DejaVu Sans "
+          f"Mono,monospace;padding:4px 10px;border:1px solid #141A26;")
+    out = [f'<div style="color:{INK2};font-size:11px;font-weight:700;'
+           f'margin:4px 0 6px">{kind} · {len(rows)}</div>',
+           '<table style="border-collapse:collapse;width:100%">'
+           f'<tr><th style="{th}">Flight</th><th style="{th}">Time (Z)</th>'
+           f'<th style="{th}">Alt band</th></tr>']
+    if not rows:
+        out.append(f'<tr><td colspan="3" style="{td}color:{MUTED};'
+                   f'-webkit-text-fill-color:{MUTED};font-style:italic">'
+                   'none derived in window</td></tr>')
+    for m in rows[:8]:
+        cs = m["callsign"]
+        fl = f"B6 {cs[3:]}" if cs.startswith("JBU") else cs
+        t = datetime.fromtimestamp(m["time_unix"], timezone.utc)
+        out.append(f'<tr><td style="{td}">{fl}</td>'
+                   f'<td style="{td}">{t:%m/%d %H:%M}</td>'
+                   f'<td style="{td}">{m["alt_from"]}–{m["alt_to"]} ft</td></tr>')
+    out.append("</table>")
+    return "".join(out)
+
+
 with st.container(border=True):
     movements, since_ts = cached_movements(icao, mv_hours,
                                            now.strftime("%Y%m%d%H%M")[:11])
     pod_title("JetBlue arrivals & departures",
-              f"last {mv_hours} h \u00b7 BlueMet terminal-area sampling, "
-              f"fresh to 2\u20134 min")
+              f"last {mv_hours} h · BlueMet terminal-area sampling, "
+              f"fresh to 2–4 min")
     if not _SAMPLER_OK:
         st.caption(f"Movement sampler unavailable ({_SAMPLER_ERR})")
     elif not is_sampled(icao):
         st.caption(f"{icao} is not a JetBlue destination; the sampler does "
                    "not cover it.")
-    elif not movements:
-        if since_ts:
-            since = datetime.fromtimestamp(since_ts, timezone.utc)
-            st.caption(f"No JetBlue movements derived in the last {mv_hours} h "
-                       f"(sampling {icao} since {since:%m/%d %H:%M}Z).")
-        else:
-            st.caption("Sampler has no observations for this station yet.")
     else:
-        def _row(m):
-            cs = m["callsign"]
-            return {"Flight": f"B6 {cs[3:]}" if cs.startswith("JBU") else cs,
-                    "Time (Z)": datetime.fromtimestamp(
-                        m["time_unix"], timezone.utc).strftime("%m/%d %H:%M"),
-                    "Alt band": f"{m['alt_from']}\u2013{m['alt_to']} ft"}
-
+        if not movements:
+            if since_ts:
+                since = datetime.fromtimestamp(since_ts, timezone.utc)
+                st.caption(f"No JetBlue movements derived in the last "
+                           f"{mv_hours} h (sampling {icao} since "
+                           f"{since:%m/%d %H:%M}Z).")
+            else:
+                st.caption("Sampler has no observations for this station yet.")
         arr = [m for m in movements if m["kind"] == "ARR"]
         dep = [m for m in movements if m["kind"] == "DEP"]
         a, d_ = st.columns(2)
         with a:
-            st.markdown(f"**Arrivals** \u00b7 {len(arr)}")
-            st.dataframe(pd.DataFrame([_row(m) for m in arr[:8]]) if arr
-                         else pd.DataFrame(columns=["Flight", "Time (Z)", "Alt band"]),
-                         use_container_width=True, hide_index=True)
+            st.markdown(_board_table(arr, "Arrivals"), unsafe_allow_html=True)
         with d_:
-            st.markdown(f"**Departures** \u00b7 {len(dep)}")
-            st.dataframe(pd.DataFrame([_row(m) for m in dep[:8]]) if dep
-                         else pd.DataFrame(columns=["Flight", "Time (Z)", "Alt band"]),
-                         use_container_width=True, hide_index=True)
+            st.markdown(_board_table(dep, "Departures"), unsafe_allow_html=True)
