@@ -139,15 +139,16 @@ except Exception as _exc:
     _warm_notes.append(f"Fleet warmer FAILED: "
                        f"{type(_exc).__name__}: {_exc}")
 
-# Level III super-res radar (core/radar_l3.py): KOKX N0B over the N90
-# box, about a second per scan, polled every 60 s. Needs the MRMS
+# Level III super-res radar (core/radar_l3.py): KOKX over N90 and
+# KLWX over DC, about a second per scan, polled every 60 s, keeping
+# an hour's loop. Needs the MRMS
 # warmer's echo mask to strip clutter; falls back to a CC filter
 # without it. L3_WARMER=off stops it.
 try:
     from core.radar_l3 import ensure_l3_warmer
 
     if ensure_l3_warmer(Path(__file__).resolve().parent / "static"):
-        _warm_notes.append("Level III warmer started (KOKX N0B, N90)")
+        _warm_notes.append("Level III warmer started (KOKX, KLWX)")
     else:
         _warm_notes.append("Level III warmer off (L3_WARMER=off)")
 except Exception as _exc:
@@ -266,7 +267,7 @@ PAGES = {
         st.Page("pages/12_L2_Radar_Lab.py",
                 title="L2 Radar Lab"),
         st.Page("pages/14_L3_Radar_N90.py",
-                title="Level III Radar N90"),
+                title="Level III Radar"),
     ],
     "Archive Flight Conditions": [
         st.Page("pages/5_Archive_Satellite_Position.py",
