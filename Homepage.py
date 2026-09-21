@@ -122,6 +122,23 @@ except Exception as _exc:
     _warm_notes.append(f"MRMS warmer FAILED: "
                        f"{type(_exc).__name__}: {_exc}")
 
+# JetBlue fleet sweep (core/fleet.py). Every FLEET_SWEEP_S (120 s)
+# whether or not anyone is looking, so the login map and the CONUS
+# map open on current positions, trails have no gaps, and holds are
+# detected with nobody watching. Same request rate as one viewer
+# leaving the CONUS map open. JBU_FLEET_WARMER=off stops it.
+try:
+    from core.fleet import ensure_fleet_warmer
+
+    if ensure_fleet_warmer():
+        _warm_notes.append("Fleet warmer started (ADS-B sweep every "
+                           "2 min)")
+    else:
+        _warm_notes.append("Fleet warmer off (JBU_FLEET_WARMER=off)")
+except Exception as _exc:
+    _warm_notes.append(f"Fleet warmer FAILED: "
+                       f"{type(_exc).__name__}: {_exc}")
+
 # Airport diagrams for every JetBlue station (Station Quick View's
 # scope). One Overpass query per station, paced, refreshed weekly; a
 # page never waits on Overpass. Lowest priority of the warmers: it

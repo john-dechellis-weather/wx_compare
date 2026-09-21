@@ -12,7 +12,9 @@ it draws is either already on disk (the MRMS chunks the warmer wrote)
 or a constant, so the login page starts no fetches of its own except
 the twelve METARs behind a five-minute cache.
 
-Fleet: see FLEET, below.
+Fleet: live JetBlue aircraft from core.fleet - the same sweep page 3
+draws, kept running by the fleet warmer - with 2-minute trails and NO
+flight numbers, labels or hover. The login page is public.
 """
 
 from __future__ import annotations
@@ -35,34 +37,26 @@ except ImportError:          # repo-root copy, if it ever moves back
 
 # Fixed extent, matched to the CONUS map's usual framing. Nothing here
 # is user-adjustable by design.
-VIEW_LAT = float(os.environ.get("BLUEMET_LOGIN_LAT", "37.8"))
+VIEW_LAT = float(os.environ.get("BLUEMET_LOGIN_LAT", "36.8"))
 VIEW_LON = float(os.environ.get("BLUEMET_LOGIN_LON", "-95.5"))
-VIEW_ZOOM = float(os.environ.get("BLUEMET_LOGIN_ZOOM", "3.0"))
+# 3.3 fills the larger map with the lower 48. Raise it on a very large
+# display, lower it if the coasts are clipped.
+VIEW_ZOOM = float(os.environ.get("BLUEMET_LOGIN_ZOOM", "3.3"))
+
+# Map height: 75% of the window height left below the board, never
+# below MAP_MIN_PX. MAP_TOP_PX is roughly what sits above the map
+# (wordmark, chips, rules, page padding).
+MAP_FILL = float(os.environ.get("BLUEMET_LOGIN_MAP_FILL", "0.75"))
+MAP_TOP_PX = int(os.environ.get("BLUEMET_LOGIN_MAP_TOP_PX", "440"))
+MAP_MIN_PX = int(os.environ.get("BLUEMET_LOGIN_MAP_MIN_PX", "380"))
 
 MAP_STYLE = os.environ.get(
     "BLUEMET_MAP_STYLE",
     "https://basemaps.cartocdn.com/gl/"
     "dark-matter-nolabels-gl-style/style.json")
 
-# FLEET
-# -----
-# Aircraft and their 5-minute trails are NOT drawn yet, and the reason
-# is worth keeping: the ADS-B sweep lives inside pages/3, in module
-# scope (_fleet_state, fleet_now, cached_fleet). A page module cannot
-# be imported, so the only ways to put the fleet here are to move the
-# sweep into core/ - where both the page and this module can read the
-# same singleton - or to run a second sweep. A second sweep doubles
-# the request rate against adsb.lol and adsb.fi, on a page anyone who
-# finds the URL can load, and 429s there degrade the map page that
-# matters. JBU_FLEET_SWEEP_S exists precisely to stop the rate being
-# multiplied.
-#
-# When the sweep moves to core/, set FLEET_READER to a callable
-# returning [{"lat", "lon", "trail": [[lon, lat], ...]}, ...] and the
-# two layers below start drawing. Nothing else has to change.
-FLEET_READER = None
-TRAIL_MINUTES = 5
-
+# FLEET. 2-minute trails, the same default as the CONUS map.
+TRAIL_S = float(os.environ.get("BLUEMET_LOGIN_TRAIL_S", "120"))
 
 def _rgb(h: str) -> list[int]:
     h = h.lstrip("#")
@@ -175,32 +169,53 @@ def _station_layers(statuses) -> list:
     ]
 
 
+def _plane_uri(fill: str) -> str:
+    """The CONUS map's A320 silhouette, as a data URI."""
+    import urllib.parse
+    body = ("M0,-10 L0.35,-9.6 L0.55,-8.8 L0.6,-6 L0.6,-1.6 "
+            "L9.2,3.2 L9.6,3.4 L9.6,4 L9.1,4.1 L2.6,3.3 "
+            "L0.6,3.1 L0.6,6.4 L3.3,8.2 L3.3,9 L0.5,8.5 "
+            "L0.45,9.4 L0,9.7 L-0.45,9.4 L-0.5,8.5 L-3.3,9 "
+            "L-3.3,8.2 L-0.6,6.4 L-0.6,3.1 L-2.6,3.3 "
+            "L-9.1,4.1 L-9.6,4 L-9.6,3.4 L-9.2,3.2 L-0.6,-1.6 "
+            "L-0.6,-6 L-0.55,-8.8 L-0.35,-9.6 Z")
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="64" '
+           'height="64" viewBox="-11 -11 22 22">'
+           f'<path d="{body}" fill="{fill}" stroke="#000000" '
+           'stroke-width="0.6"/></svg>')
+    return "data:image/svg+xml;charset=utf-8," + urllib.parse.quote(svg)
+
+
 def _fleet_layers() -> list:
-    if FLEET_READER is None:
-        return []
+    """JetBlue aircraft and their trails. Positions only: no callsign
+    is read, drawn or put in a tooltip."""
     try:
-        fleet = FLEET_READER() or []
+        from core import fleet as F
+        fleet = F.login_aircraft(trail_s=TRAIL_S)
     except Exception:
         return []
     if not fleet:
         return []
     blue = _rgb(T.JBU_BLUE)
+    icon = {"url": _plane_uri(T.JBU_BLUE), "width": 64, "height": 64,
+            "anchorX": 32, "anchorY": 32, "mask": False}
     trails = [{"path": a["trail"]} for a in fleet
               if len(a.get("trail") or ()) > 1]
+    planes = [{"position": [a["lon"], a["lat"]], "angle": a["angle"],
+               "icon": icon} for a in fleet]
     out = []
     if trails:
+        # Metres with a pixel clamp; width_units is ignored here.
         out.append(pdk.Layer("PathLayer", trails, get_path="path",
-                             get_color=blue + [150], get_width=2,
-                             width_units="pixels", width_min_pixels=2,
+                             get_color=blue + [170], get_width=4000,
+                             width_min_pixels=1.5, width_max_pixels=2,
+                             joint_rounded=True, cap_rounded=True,
                              pickable=False))
-    out.append(pdk.Layer(
-        "ScatterplotLayer",
-        [{"position": [a["lon"], a["lat"]]} for a in fleet],
-        get_position="position", get_fill_color=blue + [230],
-        get_radius=3, radius_units="pixels", radius_min_pixels=3,
-        pickable=False))
+    out.append(pdk.Layer("IconLayer", planes, get_position="position",
+                         get_icon="icon", get_angle="angle",
+                         get_size=14, size_min_pixels=10,
+                         size_max_pixels=16, pickable=False))
     return out
-
 
 def _deck(layers) -> pdk.Deck:
     # controller=False freezes the view. min_zoom == max_zoom is the
@@ -229,6 +244,8 @@ def _deck(layers) -> pdk.Deck:
 # -------------------------------------------------------------- chrome
 
 def _chips(statuses) -> str:
+    """Identifier, colour bar, and the ONE value that set the colour.
+    The full reason is still on hover."""
     cells = "".join(
         f'<div title="{s.icao}: {s.reason}" '
         f'style="flex:0 0 auto;min-width:92px;background:{T.PANEL};'
@@ -236,30 +253,14 @@ def _chips(statuses) -> str:
         f'cursor:help">'
         f'<div style="color:{T.TEXT};font-size:17px;font-weight:700;'
         f'letter-spacing:.5px">{s.icao}</div>'
-        f'<div style="height:6px;margin-top:10px;background:{s.color}">'
-        f'</div></div>'
+        f'<div style="height:6px;margin:10px 0 6px 0;background:{s.color}">'
+        f'</div>'
+        f'<div style="color:{s.color};-webkit-text-fill-color:{s.color};'
+        f'font-size:12px;font-weight:700;white-space:nowrap">'
+        f'{getattr(s, "label", "") or s.name.upper()}</div>'
+        f'</div>'
         for s in statuses)
     return f'<div style="display:flex;gap:9px;flex-wrap:wrap">{cells}</div>'
-
-
-def _key() -> str:
-    rows = [
-        (T.GREEN,  "VFR \u00b7 gusts \u2264 25 kt"),
-        (T.YELLOW, "MVFR \u00b7 VCTS \u00b7 gusts 26\u201330 kt"),
-        (T.ORANGE, "IFR \u00b7 +RA \u00b7 gusts 31\u201335 kt"),
-        (T.PINK,   "LIFR \u00b7 gusts \u2265 36 kt"),
-        (T.RED,    "Thunderstorms"),
-        (S.COLORS[S.NONE], "No observation"),
-    ]
-    items = "".join(
-        f'<div style="display:flex;align-items:center;gap:10px">'
-        f'<span style="width:26px;height:6px;background:{c};'
-        f'display:inline-block"></span>'
-        f'<span style="color:{T.TEXT};font-size:12px;font-weight:700">'
-        f'{label}</span></div>'
-        for c, label in rows)
-    return (f'<div style="display:flex;gap:30px;flex-wrap:wrap;'
-            f'margin-top:12px">{items}</div>')
 
 
 def render() -> str | None:
@@ -274,7 +275,27 @@ def render() -> str | None:
         # The eye toggle draws as the word "visibility" without the
         # icon font, which looks like stray text in the box.
         '[data-testid="stTextInput"] button{display:none !important;}'
+        # MAP SIZE. pydeck_chart only takes a fixed pixel height, so
+        # the chart and everything inside it are sized from the window
+        # instead: 75% of the height left below the board, with a
+        # floor. deck.gl follows its container's size.
+        '[data-testid="stDeckGlJsonChart"],'
+        '[data-testid="stDeckGlJsonChart"] > div,'
+        '[data-testid="stDeckGlJsonChart"] #deckgl-wrapper,'
+        '[data-testid="stDeckGlJsonChart"] .mapboxgl-map,'
+        '[data-testid="stDeckGlJsonChart"] .maplibregl-map{'
+        f"height:max({MAP_MIN_PX}px,calc((100vh - {MAP_TOP_PX}px) * "
+        f"{MAP_FILL})) !important;}}"
         "</style>", unsafe_allow_html=True)
+
+    # Keeps the fleet current for the aircraft below. Homepage starts
+    # it too; this is idempotent and covers a login rendered first.
+    try:
+        from core import fleet as _F
+        _F.ensure_fleet_warmer()
+        _F.kick()
+    except Exception:
+        pass
 
     now = _dt.datetime.now(_dt.timezone.utc)
 
@@ -302,12 +323,12 @@ def render() -> str | None:
         f'<div style="color:{T.TEXT_2};font-size:12px;font-weight:700;'
         f'margin-bottom:8px">Network conditions</div>' + _chips(statuses),
         unsafe_allow_html=True)
-    st.markdown(_key(), unsafe_allow_html=True)
 
     st.markdown(f'<hr style="border-color:{T.RULE};margin:24px 0 8px 0">',
                 unsafe_allow_html=True)
 
-    left, right = st.columns([1, 2], gap="large")
+    # Narrow sign-in column; the map takes the rest of the width.
+    left, right = st.columns([1, 3.2], gap="large")
 
     with left:
         st.markdown(
@@ -334,6 +355,6 @@ def render() -> str | None:
             f'margin:16px 0 6px 0">{note}</div>', unsafe_allow_html=True)
         st.pydeck_chart(
             _deck(mrms + _station_layers(statuses) + _fleet_layers()),
-            use_container_width=True, height=470)
+            use_container_width=True, height=MAP_MIN_PX)
 
     return pw or None
