@@ -248,50 +248,53 @@ with c_obs:
 
 with c_rad:
     with st.container(border=True):
-        stamp_txt = ""
-        layers = []
+        # The airport scope, exactly as Station Quick View draws it -
+        # same runway table, same finals, same ATIS colouring - with
+        # MRMS reflectivity underneath and no traffic, at 20 nm.
+        stamp_txt, cfg = "", {}
         if coords:
             from core import airport_scope as AS
             base = _origin()
             try:
                 from core import mrms as MR
                 chunks, stamp = MR.newest(STATIC_MRMS, "REFL")
-            except Exception:
-                chunks, stamp = [], ""
-            if chunks and base:
-                layers += [pdk.Layer("BitmapLayer", data=None,
-                                     image=f"{base}/app/static/{c['name']}",
-                                     bounds=c["bounds"], opacity=1.0)
-                           for c in chunks]
                 stamp_txt = f"{stamp[9:11]}:{stamp[11:13]}Z" if stamp else ""
-            coast = AS.coast_layer(icao)
-            if coast is not None:
-                layers.append(coast)
-            circles, ring_labels = AS.rings(coords[0], coords[1])
-            layers.append(pdk.Layer("PathLayer", circles, get_path="path",
-                                    get_color=[90, 100, 120, 200], get_width=40,
-                                    width_min_pixels=1, width_max_pixels=1))
-            layers.append(pdk.Layer(
-                "ScatterplotLayer", [{"position": [coords[1], coords[0]]}],
-                get_position="position", get_fill_color=[77, 163, 255, 255],
-                get_radius=400, radius_min_pixels=4, radius_max_pixels=5))
-            layers.append(pdk.Layer(
-                "TextLayer", [{"position": [coords[1], coords[0]],
-                               "text": icao[-3:]}],
-                get_position="position", get_text="text",
-                get_color=[77, 163, 255, 255], get_size=2400,
-                size_min_pixels=0, size_max_pixels=11,
-                get_pixel_offset=[9, -8], get_text_anchor='"start"'))
-        pod_title("MRMS reflectivity",
-                  f"1 km \u00b7 {stamp_txt or 'no current scan'} \u00b7 30 nm")
+            except Exception:
+                chunks = []
+            surface = AS.surface(CACHE_ROOT / "scope", icao, coords[0], coords[1])
+            layers, cfg = AS.mini_layers(icao, surface, coords[0], coords[1],
+                                         mrms_chunks=chunks, base_url=base,
+                                         range_nm=20)
+        pod_title("Airport scope · MRMS",
+                  f"20 nm · {stamp_txt or 'no current scan'}")
+        if cfg.get("describe"):
+            st.markdown(
+                f'<div style="border:1px solid {EDGE};padding:6px 10px;'
+                f'margin-bottom:6px;color:{INK};font-size:12px;font-weight:700;'
+                f'font-family:DejaVu Sans Mono,monospace">{cfg["describe"]}</div>',
+                unsafe_allow_html=True)
+        elif coords:
+            st.caption("No D-ATIS for this field \u2014 finals drawn off every end.")
         if coords:
+            style = None
+            try:
+                host = st.context.headers.get("Host", "")
+                if host and os.environ.get("BLUEMET_SCOPE_COAST", "carto") == "carto":
+                    proto = st.context.headers.get("X-Forwarded-Proto", "https")
+                    style = f"{proto}://{host}/app/static/scope_style.json"
+            except Exception:
+                style = None
+            if style is None:
+                cl = AS.coast_layer(icao)
+                if cl is not None:
+                    layers = [cl] + layers
             st.pydeck_chart(pdk.Deck(
                 layers=layers,
                 initial_view_state=AS.view(coords[0], coords[1], width_px=520,
-                                           width_nm=34),
+                                           width_nm=20),
                 views=[pdk.View(type="MapView", controller=False)],
-                map_style=None, map_provider=None,
-                parameters={"clearColor": [0.02, 0.03, 0.05, 1]},
+                map_style=style, map_provider=("carto" if style else None),
+                parameters={"clearColor": [0, 0, 0, 1]},
             ), use_container_width=True, height=372)
         else:
             st.caption(f"No coordinates for {icao}.")
