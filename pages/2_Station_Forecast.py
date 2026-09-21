@@ -67,13 +67,15 @@ JBU = "#4DA3FF"
 # JetBlue board, the flight-conditions strip - adds up to about this,
 # so the two columns end level and the Wind / MOS row starts under
 # both.
-SCOPE_H = int(os.environ.get("BLUEMET_SF_SCOPE_H", "900"))
+SCOPE_H = int(os.environ.get("BLUEMET_SF_SCOPE_H", "1000"))
 
 # Text size in the left column's boxes (METAR, TAF, category strip,
 # JetBlue board). Sized so that column stands as tall as the scope
 # beside it; raise or lower with the env var if a station's TAF runs
 # long or short.
 SF_TEXT_PX = int(os.environ.get("BLUEMET_SF_TEXT_PX", "15"))
+PLOT_H = 620          # wind, level with the two grids beside it
+CV_H = 420            # ceiling & visibility, under the strip
 
 HUBS = ["KJFK", "KBOS", "KFLL", "KMCO", "KEWR", "KLGA", "KDCA", "KLAX",
         "KSFO", "KTPA", "KDJT", "KBDL", "KHPN", "TJSJ"]
@@ -380,26 +382,75 @@ with c_obs:
         else:
             st.caption("No ceiling/visibility guidance for this station and cycle.")
 
-    # JetBlue board: the last 3 h from BlueMet's own movement sampler,
-    # the next 3 h from what is actually inbound right now.
     with st.container(border=True):
-        pod_title("JetBlue arrivals & departures",
-                  "past 3 h derived \u00b7 inbound now from live ADS-B")
-        _movements, _since = cached_movements(icao, 3, now.strftime("%Y%m%d%H%M")[:11])
-        _arr = [m for m in _movements if m["kind"] == "ARR"]
-        _dep = [m for m in _movements if m["kind"] == "DEP"]
-        _inbound = _inbound_now(icao, coords, now) if coords else []
-        if not _SAMPLER_OK:
-            st.caption(f"Movement sampler unavailable ({_SAMPLER_ERR})")
-        elif not is_sampled(icao):
-            st.caption(f"{icao} is not a JetBlue destination; the sampler "
-                       "does not cover it.")
-        ca, cd = st.columns(2)
-        with ca:
-            st.markdown(_board_table(_arr, "Arrived", inbound=_inbound),
-                        unsafe_allow_html=True)
-        with cd:
-            st.markdown(_board_table(_dep, "Departed"), unsafe_allow_html=True)
+        pod_title("Ceiling & visibility", f"by model · {cyc_txt}")
+        if ok and len(df) and {"ceiling_ft", "vsby_sm"} <= set(df.columns):
+            import plotly.graph_objects as go
+            from plotly.subplots import make_subplots
+
+            d = df[(df["station_id"] == icao)
+                   & (df["valid_time"] <= cycle + pd.Timedelta(hours=horizon))]
+            models = [m for m in MODELS if m in set(d["model"])]
+            fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                                row_heights=[0.55, 0.45], vertical_spacing=0.05)
+            for lo, hi, c in ((150, 500, CAT["LIFR"]), (500, 1000, CAT["IFR"]),
+                              (1000, 3000, CAT["MVFR"]), (3000, 12000, CAT["VFR"])):
+                fig.add_hrect(y0=lo, y1=hi, fillcolor=c, opacity=0.07,
+                              line_width=0, row=1, col=1)
+            for lo, hi, c in ((0, 1, CAT["LIFR"]), (1, 3, CAT["IFR"]),
+                              (3, 5, CAT["MVFR"]), (5, 10, CAT["VFR"])):
+                fig.add_hrect(y0=lo, y1=hi, fillcolor=c, opacity=0.07,
+                              line_width=0, row=2, col=1)
+            for m in models:
+                dm = d[d["model"] == m].sort_values("valid_time")
+                unl = dm["ceiling_unlimited"].astype(bool) if "ceiling_unlimited" in dm \
+                    else pd.Series([False] * len(dm), index=dm.index)
+                cig = dm["ceiling_ft"].where(~unl, 12000)
+                fig.add_trace(go.Scatter(x=dm["valid_time"], y=cig, mode="lines",
+                                         line=dict(color=MODELS[m], width=2),
+                                         name=m.replace("_", " ")), row=1, col=1)
+                fig.add_trace(go.Scatter(x=dm["valid_time"],
+                                         y=dm["vsby_sm"].clip(upper=10), mode="lines",
+                                         line=dict(color=MODELS[m], width=2),
+                                         showlegend=False), row=2, col=1)
+            try:
+                from core.metar import filter_since, metars_to_df
+                mdf = metars_to_df(filter_since({icao: cached_metars(icao, 48)},
+                                                cycle - pd.Timedelta(hours=6)))
+                if mdf is not None and len(mdf) and "ceiling_ft" in mdf.columns:
+                    fig.add_trace(go.Scatter(x=mdf["obs_time"], y=mdf["ceiling_ft"],
+                                             mode="markers",
+                                             marker=dict(color=INK, size=5),
+                                             name="observed"), row=1, col=1)
+                    if "vsby_sm" in mdf.columns:
+                        fig.add_trace(go.Scatter(x=mdf["obs_time"], y=mdf["vsby_sm"],
+                                                 mode="markers",
+                                                 marker=dict(color=INK, size=5),
+                                                 showlegend=False), row=2, col=1)
+            except Exception:
+                pass
+            fig.add_vline(x=cycle, line=dict(color="#00E5FF", width=1))
+            fig.update_yaxes(type="log", range=[2.2, 4.08], title="ceiling ft",
+                             tickvals=[200, 500, 1000, 3000, 10000], row=1, col=1)
+            fig.update_yaxes(range=[0, 10], title="vis SM",
+                             tickvals=[0, 1, 3, 5, 10], row=2, col=1)
+            for y, lab, c in ((260, "LIFR", CAT["LIFR"]), (700, "IFR", CAT["IFR"]),
+                              (1700, "MVFR", CAT["MVFR"]), (6000, "VFR", CAT["VFR"])):
+                fig.add_annotation(x=1, xref="paper", y=__import__("math").log10(y),
+                                   text=lab, showarrow=False, xanchor="right",
+                                   font=dict(color=c, size=10), row=1, col=1)
+            fig.update_layout(
+                height=CV_H, autosize=True, paper_bgcolor=PANEL,
+                plot_bgcolor="#05070B",
+                font=dict(color=INK2, size=11, family="Roboto, Arial"),
+                margin=dict(l=40, r=16, t=24, b=30),
+                legend=dict(orientation="h", y=-0.14, bgcolor="rgba(0,0,0,0)"))
+            fig.update_xaxes(gridcolor="#1A2233", tickformat="%HZ",
+                             dtick=3 * 3600e3)
+            fig.update_yaxes(gridcolor="#1A2233")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.caption("No ceiling/visibility guidance for this station and cycle.")
 
 
 with c_rad:
@@ -428,12 +479,17 @@ with c_rad:
                   or (a.get("airline")
                       and AS.distance_nm(coords[0], coords[1],
                                          a["position"][1], a["position"][0]) <= 20)]
-            layers, cfg = AS.mini_layers(icao, surface, coords[0], coords[1],
-                                         mrms_chunks=chunks, base_url=base,
-                                         range_nm=20, ac=ac)
-        pod_title("Airport scope · MRMS",
-                  f"20 nm · {stamp_txt or 'no current scan'}"
+            layers, cfg = AS.mini_layers(
+                icao, surface, coords[0], coords[1],
+                mrms_chunks=(chunks if st.session_state.get("sf_mrms", True)
+                             else None),
+                base_url=base, range_nm=20, ac=ac)
+        pod_title("Airport scope",
+                  f"20 nm · MRMS {stamp_txt or 'no current scan'}"
                   + (f" · {len(ac)} aircraft" if coords and ac else ""))
+        show_mrms = st.checkbox("MRMS reflectivity", value=True, key="sf_mrms",
+                                help="Radar mosaic under the scope. Off shows "
+                                     "the field and traffic on black.")
         if coords:
             from core import station_status as SS
             _latest = obs[-1].raw_text if obs else ""
@@ -532,9 +588,9 @@ with c_wind:
                 df, icao, cycle=cycle, speed_ylim=(0, speed_max),
                 hours_ahead=horizon, metars_df=mdf)
             fig.update_layout(
-                # matched to the NBM + LAMP grids beside it
-                height=620, width=None, autosize=True, paper_bgcolor=PANEL,
-                plot_bgcolor="#05070B", font=dict(color=INK2, size=11, family="Roboto, Arial"),
+                height=PLOT_H, width=None, autosize=True, paper_bgcolor=PANEL,
+                plot_bgcolor="#05070B",
+                font=dict(color=INK2, size=11, family="Roboto, Arial"),
                 margin=dict(l=40, r=16, t=24, b=30),
                 legend=dict(bgcolor="rgba(0,0,0,0)"))
             fig.update_xaxes(gridcolor="#1A2233", zerolinecolor="#1A2233")
@@ -560,4 +616,27 @@ with c_mos:
             else:
                 st.caption("No model data.")
     st.markdown(G.legend(), unsafe_allow_html=True)
+
+# ============================================================ row 4
+# JetBlue board: the last 3 h from BlueMet's own movement sampler,
+# the next 3 h from what is actually inbound right now.
+with st.container(border=True):
+    pod_title("JetBlue arrivals & departures",
+              "past 3 h derived \u00b7 inbound now from live ADS-B")
+    _movements, _since = cached_movements(icao, 3, now.strftime("%Y%m%d%H%M")[:11])
+    _arr = [m for m in _movements if m["kind"] == "ARR"]
+    _dep = [m for m in _movements if m["kind"] == "DEP"]
+    _inbound = _inbound_now(icao, coords, now) if coords else []
+    if not _SAMPLER_OK:
+        st.caption(f"Movement sampler unavailable ({_SAMPLER_ERR})")
+    elif not is_sampled(icao):
+        st.caption(f"{icao} is not a JetBlue destination; the sampler "
+                   "does not cover it.")
+    ca, cd = st.columns(2)
+    with ca:
+        st.markdown(_board_table(_arr, "Arrived", inbound=_inbound),
+                    unsafe_allow_html=True)
+    with cd:
+        st.markdown(_board_table(_dep, "Departed"), unsafe_allow_html=True)
+
 
