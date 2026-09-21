@@ -756,3 +756,14 @@ def login_aircraft(trail_s: float = 120.0,
                     "angle": float(r.get("angle") or 0.0),
                     "trail": trails.get(cs, [])})
     return out
+
+
+def publish(rows, source: str = "map") -> None:
+    """Compatibility with pages written against an earlier core/fleet
+    that had page 3 push its sweep here. The sweep now runs in this
+    module, so there is nothing to publish; positions are still noted
+    for the trails in case a caller has a sweep of its own."""
+    try:
+        note_positions(rows or [])
+    except Exception:
+        pass
