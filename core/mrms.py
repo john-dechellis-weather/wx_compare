@@ -548,6 +548,7 @@ def build(outdir, product: str = DEFAULT_PRODUCT) -> tuple:
 TAG_DBZ = float(os.environ.get("MRMS_TAG_DBZ", "50"))
 # Floor for the saved echo mask (see _save_field).
 ECHO_DBZ = float(os.environ.get("MRMS_ECHO_DBZ", "5"))
+FIELD_KEEP = int(os.environ.get("MRMS_FIELD_KEEP", "30"))
 TAG_SPACING_MI = float(os.environ.get("MRMS_TAG_SPACING_MI", "30"))
 # Cores smaller than this many 1 km cells are speckle, not storms.
 # 4 let single-scan specks carry a tag; the displayed radar is
@@ -755,9 +756,14 @@ def _prune_tags(outdir, keep: int) -> None:
             old.unlink()
         except OSError:
             pass
-    for pat in ("mrmsx_REFL_*.npz", "mrmsx_ETOP_*.npz",
-                f"mrmst{TAG_VERSION}_*.json"):
-        for old in sorted(Path(outdir).glob(pat))[:-keep]:
+    # REFL fields carry the echo mask core/radar_l3.py filters each
+    # Level III frame with. Its loop runs back ~an hour, so those are
+    # kept for FIELD_KEEP scans (~1 h at the 2-minute cadence, about
+    # 0.1-1 MB each); everything else follows the scans.
+    for pat, k in (("mrmsx_REFL_*.npz", max(keep, FIELD_KEEP)),
+                   ("mrmsx_ETOP_*.npz", keep),
+                   (f"mrmst{TAG_VERSION}_*.json", keep)):
+        for old in sorted(Path(outdir).glob(pat))[:-k]:
             try:
                 old.unlink()
             except OSError:

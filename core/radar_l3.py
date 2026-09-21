@@ -84,7 +84,12 @@ _HDRS = {"User-Agent": "bluemet.org"}
 # The N90 box matches radar_l2's "N90 merged" view: 250 x 250 km on JFK.
 DOMAINS = {
     "N90": ("OKX", 40.6398, -73.7789, 125.0, 125.0, 250.0),
+    # Potomac: KLWX (Sterling VA) over a DCA-centred box, which also
+    # takes in IAD and BWI.
+    "DCA": ("LWX", 38.8512, -77.0377, 125.0, 125.0, 250.0),
 }
+# Label per domain, for pages.
+DOMAIN_LABEL = {"N90": "N90 - KOKX", "DCA": "DC - KLWX"}
 PRODUCT = "N0B"
 CC_PRODUCT = "N0C"
 CC_MIN = float(os.environ.get("L3_CC_MIN", "0.85"))
@@ -105,18 +110,20 @@ RENDER_STYLE = 3
 # ---------------------------------------------------------------------------
 # Fetch
 # ---------------------------------------------------------------------------
-def latest_key(site: str, product: str = PRODUCT, now=None):
-    """Newest object key for site/product, or None. Keys look like
-    OKX_N0B_2026_09_21_16_18_52 and sort by time. Lists today and,
-    just after 00Z, yesterday too."""
+def recent_keys(site: str, n: int = 1, product: str = PRODUCT,
+                now=None) -> list:
+    """The newest n object keys for site/product, oldest first. Keys
+    look like OKX_N0B_2026_09_21_16_18_52 and sort by time. Lists today
+    and, in the first two hours after 00Z, yesterday too (a loop at
+    00:30Z reaches back past midnight)."""
     import requests
 
     now = now or datetime.now(timezone.utc)
     days = [now]
-    if now.hour == 0 and now.minute < 20:
+    if now.hour < 2:
         days.insert(0, datetime.fromtimestamp(now.timestamp() - 86400,
                                               timezone.utc))
-    best = None
+    found = []
     for d in days:
         prefix = f"{site}_{product}_{d:%Y_%m_%d}_"
         token = None
@@ -128,14 +135,18 @@ def latest_key(site: str, product: str = PRODUCT, now=None):
             r = requests.get(f"{BUCKET}/", params=params, timeout=15,
                              headers=_HDRS)
             r.raise_for_status()
-            keys = re.findall(r"<Key>([^<]+)</Key>", r.text)
-            if keys:
-                best = max(keys + ([best] if best else []))
+            found += re.findall(r"<Key>([^<]+)</Key>", r.text)
             m = re.search(r"<NextContinuationToken>([^<]+)<", r.text)
             if not m:
                 break
             token = m.group(1)
-    return best
+    return sorted(set(found))[-n:] if found else []
+
+
+def latest_key(site: str, product: str = PRODUCT, now=None):
+    """Newest object key for site/product, or None."""
+    k = recent_keys(site, 1, product, now)
+    return k[-1] if k else None
 
 
 def key_stamp(key: str) -> str:
@@ -394,7 +405,7 @@ def _lock_for(domain: str) -> threading.Lock:
         return _build_locks.setdefault(domain, threading.Lock())
 
 
-def build(domain: str, outdir, wait: bool = True) -> tuple:
+def build(domain: str, outdir, wait: bool = True, key: str = None) -> tuple:
     """Fetch, decode and render the newest scan. (stamp, note).
 
     One build per domain at a time: the page can build on demand
@@ -405,7 +416,7 @@ def build(domain: str, outdir, wait: bool = True) -> tuple:
     if not lk.acquire(blocking=wait):
         return None, "busy"
     try:
-        stamp, note = _build(domain, outdir)
+        stamp, note = _build(domain, outdir, key)
         STATUS[domain] = {"ok": stamp is not None, "note": note,
                           "at": time.time()}
         return stamp, note
@@ -417,14 +428,14 @@ def build(domain: str, outdir, wait: bool = True) -> tuple:
         lk.release()
 
 
-def _build(domain: str, outdir) -> tuple:
+def _build(domain: str, outdir, key: str = None) -> tuple:
     from PIL import Image
 
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     site = DOMAINS[domain][0]
     t0 = time.time()
-    key = latest_key(site)
+    key = key or latest_key(site)
     if not key:
         return None, f"no {site} {PRODUCT} files listed"
     stamp = key_stamp(key)
@@ -470,6 +481,7 @@ def _build(domain: str, outdir) -> tuple:
         "style": RENDER_STYLE, "name": name, "bounds": bounds,
         "site": f"K{site}", "product": PRODUCT, "stamp": stamp,
         "elev": scan["elev"],
+        "radar": [scan["lon"], scan["lat"]],
         "filter": ("mrms" if mask is not None
                    else "cc" if cc is not None else "none")}))
     return stamp, (f"{domain} K{site} {stamp}: list {t1 - t0:.2f}s, "
@@ -494,11 +506,71 @@ def newest(outdir, domain: str = "N90"):
     return None, None
 
 
+def frames(outdir, domain: str, n: int = None) -> list:
+    """Manifests of the newest n current-style frames, OLDEST first -
+    the loop's order."""
+    n = n or LOOP_FRAMES
+    out = []
+    for p in sorted(Path(outdir).glob(f"l3_{domain}_*.json")):
+        try:
+            m = json.loads(p.read_text())
+            if m.get("style") == RENDER_STYLE:
+                out.append(m)
+        except Exception:
+            continue
+    return out[-n:]
+
+
+def backfill(domain: str, outdir, n: int = None) -> int:
+    """Build any of the newest n scans not built yet, newest first so
+    the current frame is never the one waiting. Returns frames built.
+    Each is ~0.5 s once the lookup tables exist."""
+    n = n or LOOP_FRAMES
+    site = DOMAINS[domain][0]
+    built = 0
+    for key in reversed(recent_keys(site, n)):
+        man = Path(outdir) / f"l3_{domain}_{key_stamp(key)}.json"
+        if man.exists():
+            continue
+        stamp, note = build(domain, outdir, key=key)
+        if stamp and note != "cached":
+            built += 1
+            _log(outdir, note)
+    return built
+
+
+_bg = {"busy": set()}
+
+
+def backfill_bg(domain: str, outdir) -> None:
+    """backfill() in a background thread, at most one per domain - for
+    a page that should show what exists now and let the rest arrive."""
+    if domain in _bg["busy"]:
+        return
+
+    def _run():
+        try:
+            backfill(domain, outdir)
+            _prune(outdir, domain, KEEP)
+        except Exception as exc:
+            _log(outdir, f"backfill FAILED {domain}: "
+                         f"{type(exc).__name__}: {exc}")
+        finally:
+            _bg["busy"].discard(domain)
+
+    _bg["busy"].add(domain)
+    threading.Thread(target=_run, daemon=True,
+                     name=f"l3-backfill-{domain}").start()
+
+
 # ---------------------------------------------------------------------------
 # Warmer
 # ---------------------------------------------------------------------------
 SLEEP_S = int(os.environ.get("L3_SLEEP_S", "60"))
-KEEP = int(os.environ.get("L3_KEEP", "6"))
+# Loop length. In precipitation the radars scan every ~4-6 min, so 12
+# frames is roughly the last hour.
+LOOP_FRAMES = int(os.environ.get("L3_LOOP_FRAMES", "12"))
+KEEP = max(int(os.environ.get("L3_KEEP", "14")), LOOP_FRAMES)
 _warm = {"started": False}
 _warm_lock = threading.Lock()
 
@@ -538,9 +610,10 @@ def _loop(outdir):
     while True:
         for dom in DOMAINS:
             try:
-                stamp, note = build(dom, outdir)
-                if note != "cached":
-                    _log(outdir, note)
+                # Fills the loop on the first pass after a restart;
+                # after that, builds just the new scan (one list call,
+                # the rest are already on disk).
+                backfill(dom, outdir)
                 _prune(outdir, dom, KEEP)
             except Exception as exc:
                 _log(outdir, f"FAILED {dom}: {type(exc).__name__}: {exc}")
