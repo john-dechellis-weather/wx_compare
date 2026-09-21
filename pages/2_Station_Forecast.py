@@ -200,11 +200,90 @@ with st.sidebar:
     st.subheader("Plots")
     horizon = st.slider("Forecast horizon (h)", 12, 72, 36, 6)
     speed_max = st.slider("Wind y-axis max (kt)", 20, 80, 40, 5)
-    st.divider()
-    mv_hours = st.selectbox("JBU movements window", [3, 6, 12, 24], index=1,
-                            format_func=lambda h: f"Last {h} hours")
 
 now = datetime.now(timezone.utc)
+
+
+def _inbound_now(icao: str, coords, now) -> list:
+    """JetBlue aircraft within 30 nm tracking toward the field, nearest
+    first: the 'next' side of the board. Reads the same traffic query
+    the scope uses, so it costs nothing extra."""
+    import math
+    rows = cached_traffic(round(coords[0], 3), round(coords[1], 3),
+                          now.strftime("%Y%m%d%H%M")[:-1])
+    lat, lon = coords
+
+    def brg_to(alat, alon):
+        p1, p2 = math.radians(alat), math.radians(lat)
+        dl = math.radians(lon - alon)
+        x = math.sin(dl) * math.cos(p2)
+        y = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
+        return (math.degrees(math.atan2(x, y)) + 360) % 360
+
+    out = []
+    for a in rows:
+        if not a.get("jbu"):
+            continue
+        alon, alat = a["position"]
+        alt = a.get("alt")
+        if isinstance(alt, (int, float)) and alt > 18000:
+            continue
+        diff = abs((brg_to(alat, alon) - float(a.get("hdg") or 0) + 180) % 360 - 180)
+        if diff > 60:
+            continue
+        from core import airport_scope as _AS
+        out.append({"callsign": a["callsign"],
+                    "nm": _AS.distance_nm(lat, lon, alat, alon),
+                    "alt": alt, "gs": a.get("gs")})
+    out.sort(key=lambda r: r["nm"])
+    return out
+
+
+def _board_table(rows, kind: str, inbound=None) -> str:
+    """The board as HTML. st.dataframe draws through a canvas that
+    takes its colours from .streamlit/config.toml, not from CSS, so
+    without that file in place it can come out unreadable; this
+    cannot."""
+    th = (f"background:#121212;color:#00E5FF;font:bold 11px DejaVu Sans Mono,"
+          f"monospace;padding:4px 10px;text-align:left;border:1px solid {EDGE};")
+    td = (f"color:{INK};-webkit-text-fill-color:{INK};font:bold 12px DejaVu Sans "
+          f"Mono,monospace;padding:4px 10px;border:1px solid #141A26;")
+    muted = f"{td}color:{MUTED};-webkit-text-fill-color:{MUTED};font-style:italic;"
+
+    def fl(cs):
+        return f"B6 {cs[3:]}" if cs.startswith("JBU") else cs
+
+    out = []
+    if inbound is not None:
+        out += [f'<div style="color:{INK2};font-size:11px;font-weight:700;'
+                f'margin:4px 0 6px">Inbound now \u00b7 {len(inbound)}</div>',
+                '<table style="border-collapse:collapse;width:100%">'
+                f'<tr><th style="{th}">Flight</th><th style="{th}">Dist</th>'
+                f'<th style="{th}">Alt</th></tr>']
+        if not inbound:
+            out.append(f'<tr><td colspan="3" style="{muted}">none within 30 nm</td></tr>')
+        for r in inbound[:6]:
+            alt = r["alt"]
+            alt_s = (f"{int(alt):,} ft" if isinstance(alt, (int, float))
+                     else ("GND" if str(alt).lower().startswith("gr") else "\u2014"))
+            out.append(f'<tr><td style="{td}">{fl(r["callsign"])}</td>'
+                       f'<td style="{td}">{r["nm"]:.0f} nm</td>'
+                       f'<td style="{td}">{alt_s}</td></tr>')
+        out.append("</table>")
+    out += [f'<div style="color:{INK2};font-size:11px;font-weight:700;'
+            f'margin:10px 0 6px">{kind} \u00b7 last 3 h \u00b7 {len(rows)}</div>',
+            '<table style="border-collapse:collapse;width:100%">'
+            f'<tr><th style="{th}">Flight</th><th style="{th}">Time (Z)</th>'
+            f'<th style="{th}">Alt band</th></tr>']
+    if not rows:
+        out.append(f'<tr><td colspan="3" style="{muted}">none derived in window</td></tr>')
+    for m in rows[:6]:
+        t = datetime.fromtimestamp(m["time_unix"], timezone.utc)
+        out.append(f'<tr><td style="{td}">{fl(m["callsign"])}</td>'
+                   f'<td style="{td}">{t:%H:%M}</td>'
+                   f'<td style="{td}">{m["alt_from"]}\u2013{m["alt_to"]} ft</td></tr>')
+    out.append("</table>")
+    return "".join(out)
 
 # -------------------------------------------------------------- header
 h1, h2 = st.columns([3, 2])
@@ -339,6 +418,38 @@ with c_rad:
         else:
             st.caption(f"No coordinates for {icao}.")
 
+    # Diagnostic line for the traffic path: which fetch served the
+    # scope, how many rows it returned, and what it kept. Stays until
+    # the live-aircraft question is settled.
+    if coords:
+        _d = AS.LAST_TRAFFIC
+        st.caption(
+            f"traffic: {_d['fetched']} via {_d['source'] or '?'} \u00b7 "
+            f"{_d['kept']} with callsign \u00b7 "
+            f"{sum(1 for a in ac if a.get('jbu'))} JetBlue"
+            + (f" \u00b7 {_d['error']}" if _d.get("error") else ""))
+
+    # JetBlue board: the last 3 h from BlueMet's own movement sampler,
+    # the next 3 h from what is actually inbound right now.
+    with st.container(border=True):
+        pod_title("JetBlue arrivals & departures",
+                  "past 3 h derived \u00b7 inbound now from live ADS-B")
+        _movements, _since = cached_movements(icao, 3, now.strftime("%Y%m%d%H%M")[:11])
+        _arr = [m for m in _movements if m["kind"] == "ARR"]
+        _dep = [m for m in _movements if m["kind"] == "DEP"]
+        _inbound = _inbound_now(icao, coords, now) if coords else []
+        if not _SAMPLER_OK:
+            st.caption(f"Movement sampler unavailable ({_SAMPLER_ERR})")
+        elif not is_sampled(icao):
+            st.caption(f"{icao} is not a JetBlue destination; the sampler "
+                       "does not cover it.")
+        ca, cd = st.columns(2)
+        with ca:
+            st.markdown(_board_table(_arr, "Arrived", inbound=_inbound),
+                        unsafe_allow_html=True)
+        with cd:
+            st.markdown(_board_table(_dep, "Departed"), unsafe_allow_html=True)
+
 # ============================================================ row 2
 c_wind, c_mos = st.columns(2, gap="small")
 
@@ -385,60 +496,3 @@ with c_mos:
                 st.caption("No model data.")
     st.markdown(G.legend(), unsafe_allow_html=True)
 
-# ============================================================ row 4
-def _board_table(rows, kind: str) -> str:
-    """The board as HTML. st.dataframe draws through a canvas that
-    takes its colours from .streamlit/config.toml, not from CSS, so
-    without that file in place it can come out unreadable; this
-    cannot."""
-    th = (f"background:#121212;color:#00E5FF;font:bold 11px DejaVu Sans Mono,"
-          f"monospace;padding:4px 10px;text-align:left;border:1px solid {EDGE};")
-    td = (f"color:{INK};-webkit-text-fill-color:{INK};font:bold 12px DejaVu Sans "
-          f"Mono,monospace;padding:4px 10px;border:1px solid #141A26;")
-    out = [f'<div style="color:{INK2};font-size:11px;font-weight:700;'
-           f'margin:4px 0 6px">{kind} · {len(rows)}</div>',
-           '<table style="border-collapse:collapse;width:100%">'
-           f'<tr><th style="{th}">Flight</th><th style="{th}">Time (Z)</th>'
-           f'<th style="{th}">Alt band</th></tr>']
-    if not rows:
-        out.append(f'<tr><td colspan="3" style="{td}color:{MUTED};'
-                   f'-webkit-text-fill-color:{MUTED};font-style:italic">'
-                   'none derived in window</td></tr>')
-    for m in rows[:8]:
-        cs = m["callsign"]
-        fl = f"B6 {cs[3:]}" if cs.startswith("JBU") else cs
-        t = datetime.fromtimestamp(m["time_unix"], timezone.utc)
-        out.append(f'<tr><td style="{td}">{fl}</td>'
-                   f'<td style="{td}">{t:%m/%d %H:%M}</td>'
-                   f'<td style="{td}">{m["alt_from"]}–{m["alt_to"]} ft</td></tr>')
-    out.append("</table>")
-    return "".join(out)
-
-
-with st.container(border=True):
-    movements, since_ts = cached_movements(icao, mv_hours,
-                                           now.strftime("%Y%m%d%H%M")[:11])
-    pod_title("JetBlue arrivals & departures",
-              f"last {mv_hours} h · BlueMet terminal-area sampling, "
-              f"fresh to 2–4 min")
-    if not _SAMPLER_OK:
-        st.caption(f"Movement sampler unavailable ({_SAMPLER_ERR})")
-    elif not is_sampled(icao):
-        st.caption(f"{icao} is not a JetBlue destination; the sampler does "
-                   "not cover it.")
-    else:
-        if not movements:
-            if since_ts:
-                since = datetime.fromtimestamp(since_ts, timezone.utc)
-                st.caption(f"No JetBlue movements derived in the last "
-                           f"{mv_hours} h (sampling {icao} since "
-                           f"{since:%m/%d %H:%M}Z).")
-            else:
-                st.caption("Sampler has no observations for this station yet.")
-        arr = [m for m in movements if m["kind"] == "ARR"]
-        dep = [m for m in movements if m["kind"] == "DEP"]
-        a, d_ = st.columns(2)
-        with a:
-            st.markdown(_board_table(arr, "Arrivals"), unsafe_allow_html=True)
-        with d_:
-            st.markdown(_board_table(dep, "Departures"), unsafe_allow_html=True)
