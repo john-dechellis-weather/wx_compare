@@ -63,6 +63,12 @@ CAT = {"VFR": "#00FF7F", "MVFR": "#FFD400", "IFR": "#FF8A00", "LIFR": "#FF00C8"}
 EDGE, PANEL, INK, INK2, MUTED = "#2D3957", "#0A0A0A", "#FFFFFF", "#B8B8B8", "#6E6E6E"
 JBU = "#4DA3FF"
 
+# Height of the airport scope. The left column - METAR, TAF, the
+# JetBlue board, the flight-conditions strip - adds up to about this,
+# so the two columns end level and the Wind / MOS row starts under
+# both.
+SCOPE_H = int(os.environ.get("BLUEMET_SF_SCOPE_H", "900"))
+
 HUBS = ["KJFK", "KBOS", "KFLL", "KMCO", "KEWR", "KLGA", "KDCA", "KLAX",
         "KSFO", "KTPA", "KDJT", "KBDL", "KHPN", "TJSJ"]
 
@@ -160,10 +166,11 @@ def cached_compare(icao: str, cycle_iso: str):
 
 @st.cache_data(ttl=45, show_spinner=False, max_entries=20)
 def cached_traffic(lat: float, lon: float, bucket: str):
-    """Aircraft within 20 nm; the bucket shares one query across
-    viewers of the same field."""
+    """Aircraft within 150 nm - wide enough that JetBlue traffic is
+    already loaded when the map is zoomed well out. The bucket shares
+    one query across viewers of the same field."""
     from core import airport_scope as _AS
-    return _AS.traffic(lat, lon, 20)
+    return _AS.traffic(lat, lon, 150)
 
 
 @st.cache_data(ttl=120, show_spinner=False, max_entries=12)
@@ -312,7 +319,7 @@ cyc_txt = f"cycle {cycle:%d/%HZ}" if cycle else "no complete cycle"
 from core import mos_grid as G
 
 # ============================================================ row 1
-c_obs, c_rad = st.columns([2, 1], gap="small")
+c_obs, c_rad = st.columns(2, gap="small")
 
 with c_obs:
     with st.container(border=True):
@@ -361,6 +368,28 @@ with c_obs:
         else:
             st.caption("No ceiling/visibility guidance for this station and cycle.")
 
+    # JetBlue board: the last 3 h from BlueMet's own movement sampler,
+    # the next 3 h from what is actually inbound right now.
+    with st.container(border=True):
+        pod_title("JetBlue arrivals & departures",
+                  "past 3 h derived \u00b7 inbound now from live ADS-B")
+        _movements, _since = cached_movements(icao, 3, now.strftime("%Y%m%d%H%M")[:11])
+        _arr = [m for m in _movements if m["kind"] == "ARR"]
+        _dep = [m for m in _movements if m["kind"] == "DEP"]
+        _inbound = _inbound_now(icao, coords, now) if coords else []
+        if not _SAMPLER_OK:
+            st.caption(f"Movement sampler unavailable ({_SAMPLER_ERR})")
+        elif not is_sampled(icao):
+            st.caption(f"{icao} is not a JetBlue destination; the sampler "
+                       "does not cover it.")
+        ca, cd = st.columns(2)
+        with ca:
+            st.markdown(_board_table(_arr, "Arrived", inbound=_inbound),
+                        unsafe_allow_html=True)
+        with cd:
+            st.markdown(_board_table(_dep, "Departed"), unsafe_allow_html=True)
+
+
 with c_rad:
     with st.container(border=True):
         # The airport scope, exactly as Station Quick View draws it -
@@ -377,15 +406,47 @@ with c_rad:
             except Exception:
                 chunks = []
             surface = AS.surface(CACHE_ROOT / "scope", icao, coords[0], coords[1])
-            ac = [a for a in cached_traffic(round(coords[0], 3), round(coords[1], 3),
-                                            now.strftime("%Y%m%d%H%M")[:-1])
-                  if a.get("airline")]
+            _all = cached_traffic(round(coords[0], 3), round(coords[1], 3),
+                                  now.strftime("%Y%m%d%H%M")[:-1])
+            # JetBlue anywhere in the 150 nm pull, so they are there when
+            # the map is zoomed out; other operators only inside the
+            # frame the map opens at.
+            ac = [a for a in _all
+                  if a.get("jbu")
+                  or (a.get("airline")
+                      and AS.distance_nm(coords[0], coords[1],
+                                         a["position"][1], a["position"][0]) <= 20)]
             layers, cfg = AS.mini_layers(icao, surface, coords[0], coords[1],
                                          mrms_chunks=chunks, base_url=base,
                                          range_nm=20, ac=ac)
         pod_title("Airport scope · MRMS",
                   f"20 nm · {stamp_txt or 'no current scan'}"
                   + (f" · {len(ac)} aircraft" if coords and ac else ""))
+        if coords:
+            from core import station_status as SS
+            _latest = obs[-1].raw_text if obs else ""
+            _alert = SS.alert_for(_latest)
+            _eta = AS.inbound_eta(_all, coords[0], coords[1], max_min=60)
+            if _eta:
+                _items = " &nbsp;|&nbsp; ".join(
+                    f"{r['callsign']} Arrival ETA: "
+                    f"{(now + pd.Timedelta(minutes=r['eta_min'])):%H%M}Z"
+                    for r in _eta[:4])
+                if _alert:
+                    st.markdown(
+                        f'<div style="background:#B3000A;border:2px solid #FF3B30;'
+                        f'color:#FFFFFF;-webkit-text-fill-color:#FFFFFF;'
+                        f'font:bold 14px DejaVu Sans Mono,monospace;'
+                        f'padding:8px 12px;margin-bottom:6px">'
+                        f'{_items} &nbsp;|&nbsp; {_alert} ALERT</div>',
+                        unsafe_allow_html=True)
+                else:
+                    st.markdown(
+                        f'<div style="background:{PANEL};border:1px solid #00E5FF;'
+                        f'color:#FFFFFF;-webkit-text-fill-color:#FFFFFF;'
+                        f'font:bold 13px DejaVu Sans Mono,monospace;'
+                        f'padding:6px 12px;margin-bottom:6px">{_items}</div>',
+                        unsafe_allow_html=True)
         if cfg.get("describe"):
             st.markdown(
                 f'<div style="border:1px solid {EDGE};padding:6px 10px;'
@@ -409,12 +470,24 @@ with c_rad:
                     layers = [cl] + layers
             st.pydeck_chart(pdk.Deck(
                 layers=layers,
-                initial_view_state=AS.view(coords[0], coords[1], width_px=520,
+                initial_view_state=AS.view(coords[0], coords[1], width_px=780,
                                            width_nm=20),
-                views=[pdk.View(type="MapView", controller=False)],
+                # Interactive: drag to pan, wheel to zoom. The view
+                # state only sets where it opens.
+                views=[pdk.View(type="MapView",
+                                controller={"scrollZoom": True, "dragPan": True,
+                                            "dragRotate": False,
+                                            "doubleClickZoom": True,
+                                            "inertia": True})],
                 map_style=style, map_provider=("carto" if style else None),
+                tooltip={"html": "<b>{callsign}</b> {type}<br/>{alt} ft "
+                                 "&middot; {gs} kt",
+                         "style": {"backgroundColor": "#0A0A0A",
+                                   "color": "#FFFFFF",
+                                   "border": f"1px solid {EDGE}",
+                                   "fontSize": "12px"}},
                 parameters={"clearColor": [0, 0, 0, 1]},
-            ), use_container_width=True, height=372)
+            ), use_container_width=True, height=SCOPE_H)
         else:
             st.caption(f"No coordinates for {icao}.")
 
@@ -428,27 +501,6 @@ with c_rad:
             f"{_d['kept']} with callsign \u00b7 "
             f"{sum(1 for a in ac if a.get('jbu'))} JetBlue"
             + (f" \u00b7 {_d['error']}" if _d.get("error") else ""))
-
-    # JetBlue board: the last 3 h from BlueMet's own movement sampler,
-    # the next 3 h from what is actually inbound right now.
-    with st.container(border=True):
-        pod_title("JetBlue arrivals & departures",
-                  "past 3 h derived \u00b7 inbound now from live ADS-B")
-        _movements, _since = cached_movements(icao, 3, now.strftime("%Y%m%d%H%M")[:11])
-        _arr = [m for m in _movements if m["kind"] == "ARR"]
-        _dep = [m for m in _movements if m["kind"] == "DEP"]
-        _inbound = _inbound_now(icao, coords, now) if coords else []
-        if not _SAMPLER_OK:
-            st.caption(f"Movement sampler unavailable ({_SAMPLER_ERR})")
-        elif not is_sampled(icao):
-            st.caption(f"{icao} is not a JetBlue destination; the sampler "
-                       "does not cover it.")
-        ca, cd = st.columns(2)
-        with ca:
-            st.markdown(_board_table(_arr, "Arrived", inbound=_inbound),
-                        unsafe_allow_html=True)
-        with cd:
-            st.markdown(_board_table(_dep, "Departed"), unsafe_allow_html=True)
 
 # ============================================================ row 2
 c_wind, c_mos = st.columns(2, gap="small")
@@ -468,7 +520,8 @@ with c_wind:
                 df, icao, cycle=cycle, speed_ylim=(0, speed_max),
                 hours_ahead=horizon, metars_df=mdf)
             fig.update_layout(
-                width=None, autosize=True, paper_bgcolor=PANEL,
+                # matched to the NBM + LAMP grids beside it
+                height=620, width=None, autosize=True, paper_bgcolor=PANEL,
                 plot_bgcolor="#05070B", font=dict(color=INK2, size=11),
                 margin=dict(l=40, r=16, t=24, b=30),
                 legend=dict(bgcolor="rgba(0,0,0,0)"))
