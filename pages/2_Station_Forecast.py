@@ -69,6 +69,12 @@ JBU = "#4DA3FF"
 # both.
 SCOPE_H = int(os.environ.get("BLUEMET_SF_SCOPE_H", "900"))
 
+# Text size in the left column's boxes (METAR, TAF, category strip,
+# JetBlue board). Sized so that column stands as tall as the scope
+# beside it; raise or lower with the env var if a station's TAF runs
+# long or short.
+SF_TEXT_PX = int(os.environ.get("BLUEMET_SF_TEXT_PX", "15"))
+
 HUBS = ["KJFK", "KBOS", "KFLL", "KMCO", "KEWR", "KLGA", "KDCA", "KLAX",
         "KSFO", "KTPA", "KDJT", "KBDL", "KHPN", "TJSJ"]
 
@@ -251,10 +257,11 @@ def _board_table(rows, kind: str, inbound=None) -> str:
     takes its colours from .streamlit/config.toml, not from CSS, so
     without that file in place it can come out unreadable; this
     cannot."""
-    th = (f"background:#121212;color:#00E5FF;font:bold 11px DejaVu Sans Mono,"
-          f"monospace;padding:4px 10px;text-align:left;border:1px solid {EDGE};")
-    td = (f"color:{INK};-webkit-text-fill-color:{INK};font:bold 12px DejaVu Sans "
-          f"Mono,monospace;padding:4px 10px;border:1px solid #141A26;")
+    th = (f"background:#121212;color:#00E5FF;font:bold {SF_TEXT_PX - 2}px "
+          f"DejaVu Sans Mono,monospace;padding:5px 10px;text-align:left;"
+          f"border:1px solid {EDGE};")
+    td = (f"color:{INK};-webkit-text-fill-color:{INK};font:bold {SF_TEXT_PX - 1}px "
+          f"DejaVu Sans Mono,monospace;padding:5px 10px;border:1px solid #141A26;")
     muted = f"{td}color:{MUTED};-webkit-text-fill-color:{MUTED};font-style:italic;"
 
     def fl(cs):
@@ -262,8 +269,9 @@ def _board_table(rows, kind: str, inbound=None) -> str:
 
     out = []
     if inbound is not None:
-        out += [f'<div style="color:{INK2};font-size:11px;font-weight:700;'
-                f'margin:4px 0 6px">Inbound now \u00b7 {len(inbound)}</div>',
+        out += [f'<div style="color:{INK2};font-size:{SF_TEXT_PX - 2}px;'
+                f'font-weight:700;margin:4px 0 6px">Inbound now \u00b7 '
+                f'{len(inbound)}</div>',
                 '<table style="border-collapse:collapse;width:100%">'
                 f'<tr><th style="{th}">Flight</th><th style="{th}">Dist</th>'
                 f'<th style="{th}">Alt</th></tr>']
@@ -277,8 +285,9 @@ def _board_table(rows, kind: str, inbound=None) -> str:
                        f'<td style="{td}">{r["nm"]:.0f} nm</td>'
                        f'<td style="{td}">{alt_s}</td></tr>')
         out.append("</table>")
-    out += [f'<div style="color:{INK2};font-size:11px;font-weight:700;'
-            f'margin:10px 0 6px">{kind} \u00b7 last 3 h \u00b7 {len(rows)}</div>',
+    out += [f'<div style="color:{INK2};font-size:{SF_TEXT_PX - 2}px;'
+            f'font-weight:700;margin:10px 0 6px">{kind} \u00b7 last 3 h \u00b7 '
+            f'{len(rows)}</div>',
             '<table style="border-collapse:collapse;width:100%">'
             f'<tr><th style="{th}">Flight</th><th style="{th}">Time (Z)</th>'
             f'<th style="{th}">Alt band</th></tr>']
@@ -330,7 +339,8 @@ with c_obs:
             age = int((now - recent[0].obs_time).total_seconds() // 60)
             pod_title("METAR", f"last {len(recent)} \u00b7 newest first \u00b7 "
                                f"{recent[0].obs_time:%H:%MZ}, {age} min ago")
-            st.markdown(wx_colored_box([o.raw_text for o in recent]),
+            st.markdown(wx_colored_box([o.raw_text for o in recent],
+                                       font_px=SF_TEXT_PX),
                         unsafe_allow_html=True)
         else:
             pod_title("METAR")
@@ -341,7 +351,8 @@ with c_obs:
         if taf:
             first = taf.strip().split("\n")[0]
             pod_title("TAF", first[:60])
-            st.markdown(wx_colored_box(taf.splitlines(), taf_mode=True),
+            st.markdown(wx_colored_box(taf.splitlines(), taf_mode=True,
+                                       font_px=SF_TEXT_PX),
                         unsafe_allow_html=True)
         else:
             pod_title("TAF")
@@ -363,7 +374,8 @@ with c_obs:
                                      getattr(o, "vsby_sm", None)))
             except Exception:
                 obs_rows = []
-            st.markdown(G.category_strip(d, models, times, obs=obs_rows),
+            st.markdown(G.category_strip(d, models, times, obs=obs_rows,
+                                         font_px=SF_TEXT_PX - 3),
                         unsafe_allow_html=True)
         else:
             st.caption("No ceiling/visibility guidance for this station and cycle.")
@@ -522,7 +534,7 @@ with c_wind:
             fig.update_layout(
                 # matched to the NBM + LAMP grids beside it
                 height=620, width=None, autosize=True, paper_bgcolor=PANEL,
-                plot_bgcolor="#05070B", font=dict(color=INK2, size=11),
+                plot_bgcolor="#05070B", font=dict(color=INK2, size=11, family="Roboto, Arial"),
                 margin=dict(l=40, r=16, t=24, b=30),
                 legend=dict(bgcolor="rgba(0,0,0,0)"))
             fig.update_xaxes(gridcolor="#1A2233", zerolinecolor="#1A2233")
