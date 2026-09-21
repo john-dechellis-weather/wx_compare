@@ -520,10 +520,12 @@ def height_px(width_px: int = 1000) -> int:
 
 
 def mini_layers(icao: str, sf: dict, lat: float, lon: float,
-                mrms_chunks=None, base_url: str = "", range_nm: float = 20.0):
-    """The scope with MRMS underneath and no traffic: the Station
-    Forecast pod. Same runway table, same finals, same ATIS colouring
-    as the Quick View scope, so the two pages cannot disagree."""
+                mrms_chunks=None, base_url: str = "", range_nm: float = 20.0,
+                ac=None):
+    """The scope with MRMS underneath: the Station Forecast pod. Same
+    runway table, same finals, same ATIS colouring as the Quick View
+    scope, so the two pages cannot disagree. ac: traffic rows from
+    traffic(), drawn with flight-number tags at this range."""
     import pydeck as pdk
     out = []
     if mrms_chunks and base_url:
@@ -534,8 +536,8 @@ def mini_layers(icao: str, sf: dict, lat: float, lon: float,
     cfg = atis(icao)
     ends, _src = best_runway_ends(icao, sf)
     out += layers(sf, ends, lat, lon, arriving=cfg["arriving"],
-                  departing=cfg["departing"], ac=[], show_traffic=False,
-                  range_nm=range_nm)
+                  departing=cfg["departing"], ac=ac or [],
+                  show_traffic=bool(ac), range_nm=range_nm)
     return out, cfg
 
 

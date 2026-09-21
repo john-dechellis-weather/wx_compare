@@ -192,3 +192,50 @@ def legend() -> str:
         f'color:{INK2};font:10px {FONT}"><span style="width:16px;height:6px;'
         f'background:{c};display:inline-block"></span>{t}</span>'
         for c, t in items) + "</div>")
+
+
+# ----------------------------------------------------- category strip
+
+def category(cig_ft, unl, vis_sm) -> str:
+    c = 1e9 if (unl or _num(cig_ft) is None) else _num(cig_ft)
+    v = 99 if _num(vis_sm) is None else _num(vis_sm)
+    if c < 500 or v < 1:
+        return "LIFR"
+    if c < 1000 or v < 3:
+        return "IFR"
+    if c <= 3000 or v <= 5:
+        return "MVFR"
+    return "VFR"
+
+
+CAT_FILL = {"VFR": GREEN, "MVFR": YELLOW, "IFR": ORANGE, "LIFR": PINK}
+
+
+def category_strip(df, models, times, obs=None) -> str:
+    """One row per model, one cell per valid hour, each cell printing
+    its flight category on the category colour. A 3-hourly model
+    leaves the hours between blank rather than pretending.
+
+    df: the comparison frame (station_id, model, valid_time,
+    ceiling_ft, ceiling_unlimited, vsby_sm). times: the columns.
+    obs: optional [(time, cig, unl, vis)] for an OBS row.
+    """
+    import pandas as pd
+    key = lambda t: pd.Timestamp(t).floor("h")
+    cols = [key(t) for t in times]
+    rows = []
+    for m in models:
+        dm = df[df["model"] == m]
+        by = {}
+        for _, r in dm.iterrows():
+            unl = _bool(r.get("ceiling_unlimited", False))
+            by[key(r["valid_time"])] = category(r.get("ceiling_ft"), unl,
+                                                 r.get("vsby_sm"))
+        cells = [((by[t], CAT_FILL[by[t]]) if t in by else ("", None))
+                 for t in cols]
+        rows.append((m.replace("_", " "), cells))
+    if obs:
+        by = {key(t): category(c, u, v) for t, c, u, v in obs}
+        rows.append(("OBS", [((by[t], CAT_FILL[by[t]]) if t in by else ("", None))
+                             for t in cols]))
+    return grid(cols, rows)
