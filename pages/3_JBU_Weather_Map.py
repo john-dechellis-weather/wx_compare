@@ -712,8 +712,14 @@ _AC_ICON_RED = {"url": _a320_icon_uri("#E01A1A"), "width": 64,
 import os as _os_et
 
 _ECHO_TAGS = _os_et.environ.get("JBU_ECHO_TAGS", "on").lower() != "off"
-_TAG_VIEW_ZOOM = 4.3            # matches the CONUS ViewState below
-_TAG_BOX_W, _TAG_BOX_H = 36, 18  # px, a 3-digit tag with padding
+# Screen-space thinning at one fixed zoom. OFF by default: at the
+# CONUS zoom 30 mi is ~15 px, so it dropped real tags - two cells
+# 45 mi apart kept only one - and the loss showed the moment anyone
+# zoomed in. With it off, tags 30 mi apart overlap at the full CONUS
+# view and separate as you zoom. JBU_TAG_DECLUTTER=on restores it.
+_TAG_DECLUTTER = _os_et.environ.get("JBU_TAG_DECLUTTER", "off").lower() == "on"
+_TAG_VIEW_ZOOM = float(_os_et.environ.get("JBU_TAG_ZOOM", "5.5"))
+_TAG_BOX_W, _TAG_BOX_H = 40, 18  # px, a 3-digit tag with padding
 _TAG_LIFT = 15                  # px, tag centre above the core
 
 
@@ -731,6 +737,8 @@ def _tag_px(lon: float, lat: float, zoom: float = _TAG_VIEW_ZOOM):
 
 def _declutter_tags(tags) -> list:
     """Drop tags whose boxes would overlap a taller one on screen."""
+    if not _TAG_DECLUTTER:
+        return list(tags)
     kept, boxes = [], []
     for lon, lat, top in sorted(tags, key=lambda t: -t[2]):
         x, y = _tag_px(lon, lat)
@@ -745,46 +753,65 @@ def _declutter_tags(tags) -> list:
     return kept
 
 
-def _echo_tag_layers(tags) -> list:
-    """Core dot + boxed label, e.g. 480 = 48,000 ft."""
-    import pydeck as pdk
+def _tag_icon_uri(label: str) -> str:
+    """The whole tag as one SVG: a dot on the core, a short leader,
+    and a white-bordered black box with the number. One icon per
+    distinct value, a few dozen at most.
 
-    rows = [{"position": [float(lo), float(la)],
-             "label": f"{int(tp):03d}",
-             "tip": f"Echo top {int(tp) * 100:,} ft (18 dBZ)"}
-            for lo, la, tp in _declutter_tags(tags)]
-    if not rows:
-        return []
-    return [
-        # Metres with a pixel clamp: radius_units="pixels" is ignored
-        # by the pydeck build on Render.
-        pdk.Layer("ScatterplotLayer", data=rows,
-                  get_position="position", get_radius=2500,
-                  radius_min_pixels=2, radius_max_pixels=3,
-                  get_fill_color=[255, 255, 255, 255],
-                  stroked=False, pickable=True),
-        pdk.Layer("TextLayer", data=rows,
-                  get_position="position", get_text="label",
-                  # METRES with a pixel clamp, like every other label
-                  # on this map. A bare get_size=11 was read as 11 m
-                  # on Render's pydeck build, so the tag drew as a
-                  # speck of a box with unreadable text. The clamp
-                  # holds it at 12-13 px at every zoom.
-                  get_size=20000, size_units="meters",
-                  size_min_pixels=12, size_max_pixels=13,
-                  get_color=[255, 255, 255, 255],
-                  font_family='"Courier New", Courier, monospace',
-                  font_weight="bold",
-                  get_text_anchor='"middle"',
-                  get_alignment_baseline='"center"',
-                  get_pixel_offset=[0, -_TAG_LIFT],
-                  background=True,
-                  get_background_color=[0, 0, 0, 235],
-                  get_border_color=[255, 255, 255, 255],
-                  get_border_width=1,
-                  background_padding=[3, 1, 3, 1],
-                  pickable=True),
-    ]
+    An icon, not a TextLayer: text on this page has never sized
+    reliably on Render's pydeck build (the last attempt drew a box a
+    few pixels wide with no digits in it). The aircraft icons on this
+    map size correctly with metres + a pixel clamp, so the tags now
+    use exactly that path.
+
+    Geometry, in a W x 44 viewBox: the dot at (20, 40) is the anchor
+    (anchorX/Y below), the leader runs up-right to the box, which is
+    sized to the label (8 px per character plus padding)."""
+    import urllib.parse
+    bw = 8 * len(label) + 15
+    w = 24 + bw + 1
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{2 * w}" '
+           f'height="88" viewBox="0 0 {w} 44">'
+           '<line x1="20" y1="40" x2="27" y2="22" stroke="#FFFFFF" '
+           'stroke-width="1.2"/>'
+           f'<rect x="24.5" y="2.5" width="{bw}" height="19" fill="#000000" '
+           'stroke="#FFFFFF" stroke-width="1.2"/>'
+           f'<text x="{24.5 + bw / 2}" y="16.5" text-anchor="middle" '
+           'fill="#FFFFFF" font-family="Courier New, Courier, monospace" '
+           f'font-size="13" font-weight="700">{label}</text>'
+           '<circle cx="20" cy="40" r="2.6" fill="#FFFFFF"/></svg>')
+    return "data:image/svg+xml;charset=utf-8," + urllib.parse.quote(svg)
+
+
+def _tag_icon(label: str) -> dict:
+    """IconLayer icon dict for a label, anchored on the dot."""
+    w = 24 + 8 * len(label) + 15 + 1
+    return {"url": _tag_icon_uri(label), "width": 2 * w, "height": 88,
+            "anchorX": 40, "anchorY": 80, "mask": False}
+
+
+def _tag_icon_layer(rows) -> "object":
+    """One IconLayer for tag rows ({position, icon, tip}). The icon is
+    sized by HEIGHT (44 px at the clamp); width follows the label."""
+    import pydeck as pdk
+    return pdk.Layer("IconLayer", data=rows, get_position="position",
+                     get_icon="icon", get_size=60000, size_units="meters",
+                     size_min_pixels=40, size_max_pixels=44,
+                     pickable=True)
+
+
+def _echo_tag_layers(tags) -> list:
+    """Echo-top tags, e.g. 480 = 48,000 ft, as icons anchored on the
+    core."""
+    icons = {}
+    rows = []
+    for lo, la, tp in _declutter_tags(tags):
+        label = f"{int(tp):03d}"
+        icons.setdefault(label, _tag_icon(label))
+        rows.append({"position": [float(lo), float(la)],
+                     "icon": icons[label],
+                     "tip": f"Echo top {int(tp) * 100:,} ft (18 dBZ)"})
+    return [_tag_icon_layer(rows)] if rows else []
 
 
 def _legend_html() -> str:
@@ -2061,35 +2088,18 @@ if run_button or _auto:
                         except Exception:
                             _tags = []
                         if _tags:
-                            _tag_rows = [{"position": [t["lon"], t["lat"]],
-                                          "text": f"FL{t['fl']}"}
-                                         for t in _tags]
-                            layers.append(pdk.Layer(
-                                "ScatterplotLayer", _tag_rows,
-                                get_position="position",
-                                get_fill_color=[255, 138, 0, 255],
-                                get_radius=1200, radius_min_pixels=2.5,
-                                radius_max_pixels=3.5, pickable=False))
-                            layers.append(pdk.Layer(
-                                "TextLayer", _tag_rows,
-                                get_position="position", get_text="text",
-                                get_color=[0, 0, 0, 255],
-                                get_size=1300, size_units="meters",
-                                size_min_pixels=0, size_max_pixels=12,
-                                font_family="Roboto Mono, DejaVu Sans Mono, "
-                                            "monospace",
-                                font_weight=700,
-                                background=True,
-                                get_background_color=[255, 255, 255, 255],
-                                get_border_color=[255, 138, 0, 255],
-                                get_border_width=1,
-                                # static prop in deck.gl 8.9: a list,
-                                # never an accessor (see handover)
-                                background_padding=[5, 3, 5, 3],
-                                get_pixel_offset=[10, -10],
-                                get_text_anchor='"start"',
-                                get_alignment_baseline='"center"',
-                                pickable=False))
+                            # Same icon tags as the reflectivity
+                            # product, labelled by flight level.
+                            _ic = {}
+                            _tag_rows = []
+                            for t in _tags:
+                                _lab = f"FL{t['fl']}"
+                                _ic.setdefault(_lab, _tag_icon(_lab))
+                                _tag_rows.append({
+                                    "position": [t["lon"], t["lat"]],
+                                    "icon": _ic[_lab],
+                                    "tip": f"Echo top {_lab} (18 dBZ)"})
+                            layers.append(_tag_icon_layer(_tag_rows))
                             _radar_note += (
                                 f" {len(_tags)} echo tops \u2265 FL320 "
                                 f"tagged, 30 nm spacing.")
