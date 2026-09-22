@@ -119,26 +119,23 @@ st.markdown(
     "div[data-testid='stImage'] img{border-radius:8px}"
     "</style>", unsafe_allow_html=True)
 
-with st.sidebar:
-    st.header("Region")
-    _region = st.radio("Region", list(REFS_HUBS),
-                       format_func=lambda k: _HUB_LABELS.get(k, k),
-                       index=0, key="refs_region",
-                       label_visibility="collapsed")
-
-icao = _region
-_g = REFS_HUBS[icao]
-clat, clon = _g[0], _g[1]
+# Top two pods are the Northeast, bottom two Florida (22 Sep): both
+# regions on one page instead of a region switch.
+_POD_REGION = ["NE", "NE", "FL", "FL"]
 from core.cam_warm import hub_geom as _hub_geom
-_region_zoom = _hub_geom(icao)[2]
 now = datetime.now(timezone.utc)
 bucket10 = now.strftime("%Y%m%d%H") + str(now.minute // 10)
 
 # ---- run toggle + shared hour -------------------------------------------
-_h1, _h2, _h3 = st.columns([2.2, 3, 1.4])
+_h1, _h2 = st.columns([2.6, 1.4])
 with _h1:
     run_choice = st.radio("Run", list(_RUNS), horizontal=True,
                           key="refs_run", label_visibility="collapsed")
+with _h2:
+    # Pod size: the maps' display width as a share of the page. The
+    # rows stay two across; the pair shrinks toward the centre.
+    pod_pct = st.slider("Pod size", 40, 100, 100, 5, key="refs_pod_pct",
+                        format="%d%%")
 need_fhr = _RUNS[run_choice]
 
 
@@ -159,15 +156,11 @@ if cycle_iso is None:
     st.stop()
 cyc = datetime.fromisoformat(cycle_iso)
 max_fhr = 60 if cyc.hour in (0, 12) else 48
-with _h2:
-    fhr = st.slider("Forecast hour", 1, max_fhr, 1, key="refs_fhr",
-                    label_visibility="collapsed")
+# The hour slider is read here (its widget is drawn between the two
+# rows, below) so every pod on this run shows the same hour.
+fhr = int(st.session_state.get("refs_fhr", 1) or 1)
+fhr = max(1, min(fhr, max_fhr))
 valid = cyc + timedelta(hours=fhr)
-with _h3:
-    st.markdown(
-        f'<div style="font:bold 13px DejaVu Sans Mono,monospace;'
-        f'color:{_INK2};margin-top:10px">valid <span style="color:{_INK}">'
-        f'{valid:%HZ %d %b}</span></div>', unsafe_allow_html=True)
 
 
 @st.cache_data(ttl=10800, show_spinner=False, max_entries=800)
@@ -181,14 +174,52 @@ def cached_refs_frame(model: str, field: str, cycle_iso: str, h: int,
                         cache_root=CACHE_ROOT / "cam_warm")
 
 
-def _frame(model: str, field: str, h: int):
-    """(image bytes, 'warm'|'live') for one product and hour."""
+def _frame(region: str, model: str, field: str, h: int):
+    """(image bytes, 'warm'|'live') for one region, product and hour."""
     _wk = f"{model}@{field}"
-    got = warm_get(CACHE_ROOT, _wk, icao, h)
+    got = warm_get(CACHE_ROOT, _wk, region, h)
     if got and got[1] == cycle_iso:
         return got[0], "warm"
+    clat, clon, zm = _hub_geom(region)
     return cached_refs_frame(model, field, cycle_iso, h,
-                             round(clat, 2), round(clon, 2), _region_zoom), "live"
+                             round(clat, 2), round(clon, 2), zm), "live"
+
+
+def _viewer(img: bytes, key: str, height: int = 560) -> None:
+    """The frame in a small pan/zoom viewer: wheel over the map zooms
+    about the cursor, drag pans, double-click resets. The image is
+    square, so the viewer is too."""
+    import base64 as _b64
+    import streamlit.components.v1 as _components
+    mime = "image/webp" if img[:4] == b"RIFF" else "image/png"
+    uri = f"data:{mime};base64," + _b64.b64encode(img).decode("ascii")
+    _components.html(f"""
+<div id="w" style="width:100%;height:{height}px;overflow:hidden;
+     background:#0b0c0e;border-radius:8px;cursor:grab;position:relative">
+ <img id="m" src="{uri}" draggable="false"
+      style="position:absolute;left:0;top:0;width:100%;height:100%;
+             transform-origin:0 0;user-select:none">
+</div>
+<script>
+(function(){{
+  const w=document.getElementById('w'), m=document.getElementById('m');
+  let s=1, tx=0, ty=0, drag=null;
+  function apply(){{ m.style.transform=`translate(${{tx}}px,${{ty}}px) scale(${{s}})`; }}
+  w.addEventListener('wheel', e=>{{
+    e.preventDefault();
+    const r=w.getBoundingClientRect(), x=e.clientX-r.left, y=e.clientY-r.top;
+    const k=Math.exp(-e.deltaY*0.0015), ns=Math.min(12, Math.max(1, s*k));
+    // keep the point under the cursor fixed
+    tx = x - (x - tx) * (ns / s); ty = y - (y - ty) * (ns / s); s = ns;
+    if (s===1) {{ tx=0; ty=0; }}
+    apply();
+  }}, {{passive:false}});
+  w.addEventListener('mousedown', e=>{{ drag={{x:e.clientX-tx, y:e.clientY-ty}}; w.style.cursor='grabbing'; }});
+  window.addEventListener('mousemove', e=>{{ if(!drag) return; tx=e.clientX-drag.x; ty=e.clientY-drag.y; apply(); }});
+  window.addEventListener('mouseup', ()=>{{ drag=null; w.style.cursor='grab'; }});
+  w.addEventListener('dblclick', ()=>{{ s=1; tx=0; ty=0; apply(); }});
+}})();
+</script>""", height=height + 4)
 
 
 def _colorbar(field: str) -> str:
@@ -215,6 +246,7 @@ def _colorbar(field: str) -> str:
 
 
 def _pod(i: int):
+    region = _POD_REGION[i]
     with st.container(border=True):
         c1, c2 = st.columns([1.3, 1])
         with c1:
@@ -226,13 +258,16 @@ def _pod(i: int):
             st.markdown(
                 f'<div style="font:bold 12px DejaVu Sans Mono,monospace;'
                 f'color:{_INK2};text-align:right;margin-top:10px">'
-                f'REFS {cyc:%H}Z/{cyc:%d} &middot; f{fhr:02d} &middot; '
-                f'valid {valid:%H}Z/{valid:%d}</div>', unsafe_allow_html=True)
+                f'{_HUB_LABELS.get(region, region).split(" and ")[0]} '
+                f'&middot; REFS {cyc:%H}Z/{cyc:%d} &middot; f{fhr:02d} '
+                f'&middot; valid {valid:%H}Z/{valid:%d}</div>',
+                unsafe_allow_html=True)
         model, field = PRODUCTS[label]
         try:
             with st.spinner(""):
-                img, src = _frame(model, field, fhr)
-            st.image(img, use_container_width=True)
+                img, src = _frame(region, model, field, fhr)
+            _viewer(img, key=f"v{i}_{fhr}_{field}_{region}",
+                    height=int(560 * pod_pct / 100))
             st.markdown(_colorbar(field), unsafe_allow_html=True)
             if src == "live":
                 st.caption("rendered on demand (not yet in the warm store)")
@@ -240,18 +275,39 @@ def _pod(i: int):
             st.warning(f"{label}: {type(exc).__name__}: {str(exc)[:160]}")
 
 
-_r1 = st.columns(2, gap="small")
-with _r1[0]:
-    _pod(0)
+# Two pods per row at pod_pct of the page width, centred: a spacer
+# column each side takes up the rest.
+_side = max(0.001, (100 - pod_pct) / 2)
+_spec = [_side, pod_pct / 2, pod_pct / 2, _side]
+
+_r1 = st.columns(_spec, gap="small")
 with _r1[1]:
+    _pod(0)
+with _r1[2]:
     _pod(1)
-_r2 = st.columns(2, gap="small")
-with _r2[0]:
-    _pod(2)
+
+# THE HOUR, between the rows: one slider for all four pods.
+_s1, _s2, _s3 = st.columns([_side, pod_pct, _side], gap="small")
+with _s2:
+    _sa, _sb = st.columns([5, 1.2])
+    with _sa:
+        st.slider("Forecast hour", 1, max_fhr, min(fhr, max_fhr),
+                  key="refs_fhr", label_visibility="collapsed")
+    with _sb:
+        st.markdown(
+            f'<div style="font:bold 13px DejaVu Sans Mono,monospace;'
+            f'color:{_INK2};margin-top:10px">f{fhr:02d} &middot; valid '
+            f'<span style="color:{_INK}">{valid:%HZ %d %b}</span></div>',
+            unsafe_allow_html=True)
+
+_r2 = st.columns(_spec, gap="small")
 with _r2[1]:
+    _pod(2)
+with _r2[2]:
     _pod(3)
 
 st.caption(
-    "One run and one valid hour for all four pods. Warmed hours open "
+    "Top row Northeast, bottom row Florida. One run and one valid hour "
+    "for all four pods. Warmed hours open "
     "instantly; others render on demand and are kept for three hours. "
     "The yellow outline is the N90 extent.")
