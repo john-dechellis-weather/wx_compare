@@ -629,11 +629,20 @@ with c_rad:
         with _rc2:
             with st.expander("Radar status", expanded=False):
                 st.caption("\n".join(_radar_diag))
+        _eta = []
         if coords:
-            from core import station_status as SS
-            _latest = obs[-1].raw_text if obs else ""
-            _alert = SS.alert_for(_latest)
-            _eta = AS.inbound_eta(_all, coords[0], coords[1], max_min=60)
+            # Kept apart from the map: a failure here (a missing helper
+            # in an older core module, say) used to stop the script
+            # before the scope was drawn - the blank pod.
+            try:
+                from core import station_status as SS
+                _latest = obs[-1].raw_text if obs else ""
+                _alert = SS.alert_for(_latest)
+                _eta = AS.inbound_eta(_all, coords[0], coords[1], max_min=60)
+            except Exception as _ee:
+                _alert, _eta = None, []
+                st.caption(f"arrivals banner unavailable: "
+                           f"{type(_ee).__name__}: {str(_ee)[:120]}")
             if _eta:
                 _items = " &nbsp;|&nbsp; ".join(
                     f"{r['callsign']} Arrival ETA: "
@@ -747,10 +756,14 @@ with c_rad:
             except Exception:
                 pass
             _vs = AS.view(coords[0], coords[1], width_px=780, width_nm=20)
-            # Zoom out as far as you like (the scope used to stop two
-            # levels out).
-            _vs.min_zoom = 2
-            st.pydeck_chart(pdk.Deck(
+            # Zoom out to about a 300-mile radius (~600 mi across the
+            # 780 px view), no further.
+            import math as _mz
+            _vs.min_zoom = round(_mz.log2(
+                156543.03 * _mz.cos(_mz.radians(coords[0])) * 780
+                / (600 * 1609.34)), 2)
+            try:
+              st.pydeck_chart(pdk.Deck(
                 layers=layers,
                 initial_view_state=_vs,
                 # Interactive: drag to pan, wheel to zoom. The view
@@ -768,7 +781,10 @@ with c_rad:
                                    "border": f"1px solid {EDGE}",
                                    "fontSize": "12px"}},
                 parameters={"clearColor": [0, 0, 0, 1]},
-            ), use_container_width=True, height=SCOPE_H)
+              ), use_container_width=True, height=SCOPE_H)
+            except Exception as _de:
+                st.error(f"Scope did not draw: {type(_de).__name__}: "
+                         f"{str(_de)[:200]}")
         else:
             st.caption(f"No coordinates for {icao}.")
 

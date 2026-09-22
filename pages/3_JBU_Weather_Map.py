@@ -3462,8 +3462,12 @@ if run_button or _auto:
         else:
             st.caption(f"Map unavailable: {_map_err}")
 
-        _r1a, _r1b = st.columns(2, gap="small")
-        with _r1a:
+        # LAYOUT (22 Sep): left column stacks METAR alerts, then the
+        # diversion and holding pods, then the map key - so the pods
+        # move down as the METAR list grows. Right column is the TAF
+        # board, which is the tall one.
+        _c_left, _c_right = st.columns(2, gap="small")
+        with _c_left:
             if metar_rows:
                 st.markdown(_pod("METAR ALERTS",
                                  render_metar_table(metar_rows),
@@ -3474,7 +3478,11 @@ if run_button or _auto:
                     "NO AIRPORTS FLAGGED",
                     "NO METARs AT/BEYOND THRESHOLDS")),
                     unsafe_allow_html=True)
-        with _r1b:
+            st.markdown(_diversion_pod(), unsafe_allow_html=True)
+            with st.container(key="hold_box"):
+                _render_holding_table(_page_holds, _page_dest_by_cs)
+            st.markdown(_legend_html(), unsafe_allow_html=True)
+        with _c_right:
             if board_rows:
                 st.markdown(_pod("TAF ALERTS",
                                  render_status_board(board_rows),
@@ -3483,14 +3491,6 @@ if run_button or _auto:
             else:
                 st.markdown(_pod("TAF ALERTS", _no_alerts()),
                             unsafe_allow_html=True)
-
-        _r2a, _r2b = st.columns(2, gap="small")
-        with _r2a:
-            st.markdown(_legend_html(), unsafe_allow_html=True)
-        with _r2b:
-            st.markdown(_diversion_pod(), unsafe_allow_html=True)
-            with st.container(key="hold_box"):
-                _render_holding_table(_page_holds, _page_dest_by_cs)
 
     _page_body()
 
