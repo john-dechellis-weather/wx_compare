@@ -692,10 +692,67 @@ with c_rad:
                 cl = AS.coast_layer(icao)
                 if cl is not None:
                     layers = [cl] + layers
+            # WHOLE FLEET + STATIONS (22 Sep): every JetBlue aircraft
+            # from the fleet sweep (one icon layer, ~130 rows, no
+            # extra fetch) and every JBU station as a blue dot with a
+            # blue label, so zooming out shows the network. The
+            # scope's own traffic layer keeps the local detail.
+            try:
+                from core import fleet as _FL2
+                from core import station_status as _SS2
+                _fr = _FL2.STATE.get("res")
+                _fleet_rows = [{"position": [r["lon"], r["lat"]],
+                                "angle": float(r.get("angle") or 0.0),
+                                "callsign": r.get("callsign", ""),
+                                "type": "", "alt": r.get("alt", ""),
+                                "gs": int(r.get("gs") or 0)}
+                               for r in ((_fr[0] if _fr else []) or [])
+                               if r.get("lat") is not None]
+                if _fleet_rows:
+                    import urllib.parse as _up
+                    _svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="64" '
+                            'height="64" viewBox="-11 -11 22 22"><path d="M0,-10 '
+                            'L0.35,-9.6 L0.55,-8.8 L0.6,-6 L0.6,-1.6 L9.2,3.2 '
+                            'L9.6,3.4 L9.6,4 L9.1,4.1 L2.6,3.3 L0.6,3.1 L0.6,6.4 '
+                            'L3.3,8.2 L3.3,9 L0.5,8.5 L0.45,9.4 L0,9.7 L-0.45,9.4 '
+                            'L-0.5,8.5 L-3.3,9 L-3.3,8.2 L-0.6,6.4 L-0.6,3.1 '
+                            'L-2.6,3.3 L-9.1,4.1 L-9.6,4 L-9.6,3.4 L-9.2,3.2 '
+                            'L-0.6,-1.6 L-0.6,-6 L-0.55,-8.8 L-0.35,-9.6 Z" '
+                            'fill="#4DA3FF" stroke="#000" stroke-width="0.6"/></svg>')
+                    _icon = {"url": "data:image/svg+xml;charset=utf-8,"
+                                    + _up.quote(_svg), "width": 64, "height": 64,
+                             "anchorX": 32, "anchorY": 32, "mask": False}
+                    for r in _fleet_rows:
+                        r["icon"] = _icon
+                    layers.append(pdk.Layer(
+                        "IconLayer", _fleet_rows, get_position="position",
+                        get_icon="icon", get_angle="angle",
+                        get_size=32344, size_units="meters",
+                        size_min_pixels=9, size_max_pixels=18,
+                        pickable=True))
+                _stn = [{"position": [lo, la], "name": k}
+                        for k, (la, lo) in _SS2.STATION_LATLON.items()]
+                layers.append(pdk.Layer(
+                    "ScatterplotLayer", _stn, get_position="position",
+                    get_radius=1200, radius_min_pixels=3,
+                    radius_max_pixels=5, get_fill_color=[77, 163, 255, 255],
+                    pickable=False))
+                layers.append(pdk.Layer(
+                    "TextLayer", _stn, get_position="position",
+                    get_text="name", get_size=2600, size_min_pixels=0,
+                    size_max_pixels=11, get_color=[77, 163, 255, 255],
+                    font_weight="bold", get_pixel_offset=[9, -6],
+                    get_text_anchor='"start"',
+                    get_alignment_baseline='"center"', pickable=False))
+            except Exception:
+                pass
+            _vs = AS.view(coords[0], coords[1], width_px=780, width_nm=20)
+            # Zoom out as far as you like (the scope used to stop two
+            # levels out).
+            _vs.min_zoom = 2
             st.pydeck_chart(pdk.Deck(
                 layers=layers,
-                initial_view_state=AS.view(coords[0], coords[1], width_px=780,
-                                           width_nm=20),
+                initial_view_state=_vs,
                 # Interactive: drag to pan, wheel to zoom. The view
                 # state only sets where it opens.
                 views=[pdk.View(type="MapView",
