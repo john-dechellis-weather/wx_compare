@@ -467,6 +467,7 @@ with c_rad:
         # same runway table, same finals, same ATIS colouring - with
         # MRMS reflectivity underneath and no traffic, at 20 nm.
         stamp_txt, cfg, l3_txt, l3_frames, base = "", {}, "", [], ""
+        _radar_diag = []
         if coords:
             from core import airport_scope as AS
             base = _origin()
@@ -487,10 +488,12 @@ with c_rad:
                   or (a.get("airline")
                       and AS.distance_nm(coords[0], coords[1],
                                          a["position"][1], a["position"][0]) <= 20)]
+            _mode = st.session_state.get("sf_radar_mode", "Level III + MRMS")
+            _want_mrms = _mode != "Off"
+            _want_l3 = _mode == "Level III + MRMS"
             layers, cfg = AS.mini_layers(
                 icao, surface, coords[0], coords[1],
-                mrms_chunks=(chunks if st.session_state.get("sf_mrms", True)
-                             else None),
+                mrms_chunks=(chunks if _want_mrms else None),
                 base_url=base, range_nm=20, ac=ac)
             # LEVEL III on top of MRMS: the station's nearest NEXRAD at
             # 250 m, built by the L3 warmer for every hub (core/radar_l3
@@ -499,13 +502,48 @@ with c_rad:
             # the Level III box and as the fallback while it warms.
             l3_txt = ""
             l3_frames = []
-            if base and st.session_state.get("sf_mrms", True):
+            # Diagnostics for the "Radar status" expander: everything
+            # the scope needed and what it found, so a missing radar
+            # can be read off the page instead of the server log.
+            _radar_diag.append(f"static dir: {STATIC_MRMS} "
+                               f"({'exists' if STATIC_MRMS.exists() else 'MISSING'})")
+            _radar_diag.append(f"MRMS newest: {stamp or 'none'}, "
+                               f"{len(chunks) if chunks else 0} chunks")
+            _radar_diag.append(f"page origin: {base or 'NONE (images cannot load)'}")
+            try:
+                from core import radar_l3 as L3
+                _dom = L3.station_domain(icao)
+                _all = sorted(STATIC_MRMS.glob(f"l3_{_dom}_*.json"))
+                _radar_diag.append(
+                    f"Level III domain {_dom}: {len(_all)} manifests on disk"
+                    + (f", newest {_all[-1].name}" if _all else ""))
+                _st = L3.STATUS.get(_dom)
+                if _st:
+                    _radar_diag.append(f"last build: {_st.get('note')}")
+                try:
+                    _lg = (STATIC_MRMS / "l3_warmer.log").read_text().splitlines()
+                    _radar_diag.extend("log: " + ln for ln in _lg[-4:])
+                except OSError:
+                    _radar_diag.append("log: no l3_warmer.log yet (warmer "
+                                       "has not started or cannot write)")
+            except Exception as _de:
+                _radar_diag.append(f"radar_l3 import/diag failed: {_de}")
+            if base and _want_l3:
                 try:
                     from core import radar_l3 as L3
                     l3_frames = L3.frames(STATIC_MRMS, L3.station_domain(icao))
-                    _man = l3_frames[-1] if l3_frames else None
+                    # RADAR LOOP SLIDER (drawn above the scope, below):
+                    # which of the last hour's frames to show. The
+                    # slider's value is read here so this run draws it;
+                    # 0 = oldest ... n-1 = latest. Latest by default and
+                    # whenever the airport changes.
+                    _n = len(l3_frames)
+                    _pick = st.session_state.get(f"sf_l3_slider_{icao}")
+                    if _pick is None or _pick >= _n:
+                        _pick = _n - 1
+                    _man = l3_frames[_pick] if _n else None
                     _l3s = _man["stamp"] if _man else None
-                    if _man and L3.age_s(_l3s) < 1200:
+                    if _man and L3.age_s(_l3s) < 4800:
                         _l3 = pdk.Layer(
                             "BitmapLayer", data=None,
                             image=f"{base}/app/static/{_man['name']}",
@@ -517,20 +555,44 @@ with c_rad:
                         l3_txt = (f" · Level III {_man['site']} "
                                   f"{_l3s[9:11]}:{_l3s[11:13]}Z")
                     elif icao.upper() in L3.STATION_RADAR:
-                        l3_txt = (f" · MRMS only (no radar within "
-                                  f"{L3.STATION_MAX_MI:.0f} mi with a "
-                                  "current scan)")
+                        # Distinguish "the warmer has built nothing for
+                        # this station" from "it looked and found no
+                        # radar": the first is a warmer problem.
+                        l3_txt = (" · Level III: no frames yet (see Radar "
+                                  "status)" if not l3_frames else
+                                  " · Level III frames are stale")
                 except Exception:
                     l3_txt = ""
         pod_title("Airport scope",
                   f"20 nm · MRMS {stamp_txt or 'no current scan'}"
                   + (l3_txt if coords else "")
                   + (f" · {len(ac)} aircraft" if coords and ac else ""))
-        show_mrms = st.checkbox("Radar", value=True, key="sf_mrms",
-                                help="Current reflectivity: Level III from "
-                                     "the airport's nearest radar over MRMS. "
-                                     "Off shows the field and traffic on "
-                                     "black.")
+        if coords and len(l3_frames) > 1:
+            # Last hour of the airport's radar: drag to step back
+            # through the frames. Labels are the scan times.
+            _lab = [f"{f['stamp'][9:11]}:{f['stamp'][11:13]}Z"
+                    for f in l3_frames]
+            _k = f"sf_l3_slider_{icao}"
+            if st.session_state.get(_k, len(_lab)) >= len(_lab):
+                st.session_state[_k] = len(_lab) - 1
+            st.select_slider(
+                "Radar time (last hour)", options=list(range(len(_lab))),
+                format_func=lambda k: _lab[k], key=_k,
+                help="Level III frames from the last hour, oldest to "
+                     "newest. MRMS underneath stays current.")
+        _rc1, _rc2 = st.columns([2, 1])
+        with _rc1:
+            radar_mode = st.radio(
+                "Radar", ["Level III + MRMS", "MRMS only", "Off"],
+                horizontal=True, key="sf_radar_mode",
+                label_visibility="collapsed",
+                help="Level III + MRMS: the airport's nearest radar at "
+                     "250 m over the MRMS mosaic. MRMS only: the mosaic "
+                     "alone (the fallback when Level III is not "
+                     "available). Off: field and traffic on black.")
+        with _rc2:
+            with st.expander("Radar status", expanded=False):
+                st.caption("\n".join(_radar_diag))
         if coords:
             from core import station_status as SS
             _latest = obs[-1].raw_text if obs else ""
