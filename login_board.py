@@ -217,6 +217,85 @@ def _fleet_layers() -> list:
                          size_max_pixels=16, pickable=False))
     return out
 
+# ARTCC boundaries and jet routes: bundled files in static/, read once
+# per process. Nothing here fetches.
+_STATIC = Path(__file__).resolve().parent / "static"
+_AIRSPACE: dict = {}
+
+
+def _airspace():
+    """{"artcc": [{"id", "path"}], "labels": [{"id","lon","lat"}],
+    "routes": [{"id","path"}]} from static/artcc_high.json and
+    static/map_routes.geojson."""
+    if _AIRSPACE:
+        return _AIRSPACE
+    import json
+    out = {"artcc": [], "labels": [], "routes": []}
+    try:
+        a = json.loads((_STATIC / "artcc_high.json").read_text())
+        best = {}
+        for c in a.get("centers", []):
+            poly = c.get("polygon") or []
+            if len(poly) < 3:
+                continue
+            path = [[float(x), float(y)] for x, y in poly]
+            if path[0] != path[-1]:
+                path.append(path[0])
+            out["artcc"].append({"id": c["ident"], "path": path})
+            # Label on the largest piece of each centre, at the middle
+            # of its bounding box (ZNY has two pieces).
+            if c["ident"] not in best or len(poly) > best[c["ident"]][2]:
+                xs = [p[0] for p in path]
+                ys = [p[1] for p in path]
+                best[c["ident"]] = ((min(xs) + max(xs)) / 2,
+                                    (min(ys) + max(ys)) / 2, len(poly))
+        out["labels"] = [{"id": k, "position": [v[0], v[1]]}
+                         for k, v in best.items()]
+    except Exception:
+        pass
+    try:
+        r = json.loads((_STATIC / "map_routes.geojson").read_text())
+        for f in r.get("features", []):
+            g = f.get("geometry") or {}
+            if g.get("type") == "LineString" and len(g["coordinates"]) > 1:
+                out["routes"].append(
+                    {"id": (f.get("properties") or {}).get("ident", ""),
+                     "path": [[float(x), float(y)]
+                              for x, y in g["coordinates"]]})
+    except Exception:
+        pass
+    _AIRSPACE.update(out)
+    return _AIRSPACE
+
+
+def _airspace_layers() -> list:
+    """Thin grey ARTCC outlines with a small bold label at the centre
+    of each, and jet routes in yellow at 50% - under the stations."""
+    A = _airspace()
+    layers = []
+    if A["routes"]:
+        layers.append(pdk.Layer(
+            "PathLayer", A["routes"], get_path="path",
+            get_color=[255, 212, 0, 128], get_width=3000,
+            width_min_pixels=1, width_max_pixels=1.5,
+            pickable=False))
+    if A["artcc"]:
+        layers.append(pdk.Layer(
+            "PathLayer", A["artcc"], get_path="path",
+            get_color=[120, 130, 145, 190], get_width=2500,
+            width_min_pixels=1, width_max_pixels=1.2,
+            pickable=False))
+        layers.append(pdk.Layer(
+            "TextLayer", A["labels"], get_position="position",
+            # Same sizing as the station labels beside it, which draw.
+            get_text="id", get_size=2600, size_min_pixels=0,
+            size_max_pixels=11, get_color=[175, 185, 200, 230],
+            get_text_anchor='"middle"',
+            get_alignment_baseline='"center"',
+            pickable=False))
+    return layers
+
+
 def _deck(layers) -> pdk.Deck:
     # controller=False freezes the view. min_zoom == max_zoom is the
     # second line of defence: if a pydeck version ignores the view's
@@ -288,14 +367,14 @@ def render() -> str | None:
         f"{MAP_FILL})) !important;}}"
         "</style>", unsafe_allow_html=True)
 
-    # Keeps the fleet current for the aircraft below. Homepage starts
-    # it too; this is idempotent and covers a login rendered first.
-    try:
-        from core import fleet as _F
-        _F.ensure_fleet_warmer()
-        _F.kick()
-    except Exception:
-        pass
+    # Keeps the fleet current for the aircraft, when they are on.
+    if os.environ.get("BLUEMET_LOGIN_FLEET", "off").lower() == "on":
+        try:
+            from core import fleet as _F
+            _F.ensure_fleet_warmer()
+            _F.kick()
+        except Exception:
+            pass
 
     now = _dt.datetime.now(_dt.timezone.utc)
 
@@ -344,17 +423,24 @@ def render() -> str | None:
             f'bluemet.org</div>', unsafe_allow_html=True)
 
     with right:
-        mrms, stamp = _mrms_layers()
-        note = "MRMS 1 km reflectivity"
-        if stamp:
-            note += f", {stamp[9:11]}:{stamp[11:13]}Z"
-        elif not mrms:
-            note = "MRMS reflectivity \u2014 no current scan"
+        # MRMS and the live fleet are OFF on the login map (21 Sep):
+        # it shows the airspace - ARTCC boundaries and jet routes -
+        # and the station conditions. BLUEMET_LOGIN_MRMS=on and
+        # BLUEMET_LOGIN_FLEET=on turn them back on.
+        layers = _airspace_layers()
+        note = "ARTCC boundaries and jet routes"
+        if os.environ.get("BLUEMET_LOGIN_MRMS", "off").lower() == "on":
+            mrms, stamp = _mrms_layers()
+            layers = mrms + layers
+            note += (f" \u00b7 MRMS {stamp[9:11]}:{stamp[11:13]}Z"
+                     if stamp else " \u00b7 MRMS: no current scan")
+        layers += _station_layers(statuses)
+        if os.environ.get("BLUEMET_LOGIN_FLEET", "off").lower() == "on":
+            layers += _fleet_layers()
         st.markdown(
             f'<div style="color:{T.TEXT_2};font-size:12px;font-weight:700;'
             f'margin:16px 0 6px 0">{note}</div>', unsafe_allow_html=True)
-        st.pydeck_chart(
-            _deck(mrms + _station_layers(statuses) + _fleet_layers()),
-            use_container_width=True, height=MAP_MIN_PX)
+        st.pydeck_chart(_deck(layers), use_container_width=True,
+                        height=MAP_MIN_PX)
 
     return pw or None
