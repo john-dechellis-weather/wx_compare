@@ -914,7 +914,21 @@ def _legend_html() -> str:
                 f"{sw2}"
                 f'<span style="{ktxt}">{l2}</span></div>')
 
-    rings_sec = (
+    chip_note = (
+        f'<div style="{row}">'
+        '<svg width="34" height="18" viewBox="0 0 34 18">'
+        '<rect x="1" y="1" width="32" height="16" rx="2" fill="#E01A1A"/>'
+        '<rect x="4" y="4" width="26" height="10" fill="#7A0060" '
+        'stroke="#000" stroke-width="0.8"/>'
+        '<text x="17" y="11.5" text-anchor="middle" font-size="7" '
+        "font-family=\"Courier New,monospace\" font-weight=\"700\" "
+        'fill="#FFFFFF">JFK</text></svg>'
+        f'<span style="{txt}">Station chip: <b>border = TAF</b>, '
+        '<b>fill = current METAR</b>, colours below. Grows with the '
+        'Station chips setting; touching chips merge (×N) and show '
+        'the worst of the group.</span></div>'
+    )
+    rings_sec = chip_note + (
         pair(ring_sw("#FF00FF"), "LIFR in TAF",
              ring_sw("#FF00FF", "#FF00FF"),
              "LIFR in TAF and METAR")
@@ -1082,6 +1096,303 @@ def build_map_markers(board_rows, metar_rows, coords,
         if (m and m["ts"]) or (t and t["ts"]):
             ts_marks.append(base)
     return fills, rings, ts_marks
+
+
+# ---------------------------------------------------------------------------
+# Station chips
+# ---------------------------------------------------------------------------
+# One rectangle per station: BORDER = the TAF ring colour, FILL = the
+# METAR dot colour, both exactly the ladders the rings and dots used
+# (magenta LIFR > red IFR > dark green G40 > light green G30 > orange
+# TS/other). A station with no TAF alert gets a dim border; no METAR
+# alert, a dark fill. The chip grows in four tiers as the view
+# narrows, each tier adding a line of text, and chips that would
+# touch at a tier merge into one chip that carries the WORST colours
+# of its group and a station count. Chosen by the "Station chips"
+# control; pydeck cannot see the mouse wheel, so the tier is a page
+# setting rather than the live zoom.
+_CHIP_TIERS = ["CONUS", "Region", "Area", "Metro"]
+_CHIP_ZOOM = {0: 4.3, 1: 5.5, 2: 6.8, 3: 8.3}
+#                w    h   border  id  line2 line3  (px at the clamp)
+_CHIP_GEOM = {0: (5, 3.5, 1.0, 0, 0, 0),
+              1: (16, 8, 1.2, 6, 0, 0),
+              2: (26, 14, 1.6, 6.2, 5.6, 0),
+              3: (34, 19, 2.2, 8, 7, 0)}
+_CHIP_RANK = {"#FF00FF": 6, "#E01A1A": 5, "#0B6B0B": 4, "#4CBB17": 3,
+              "#EE7700": 2, "#F2C200": 1}
+_CHIP_DIM_BORDER = "#3A4658"
+_CHIP_DIM_FILL = "#101418"
+# Darkened fills so white text reads on them; the bright colour stays
+# on the border and on the tier-0 chip.
+_CHIP_FILL = {"#FF00FF": "#7A0060", "#E01A1A": "#7A0E0E",
+              "#0B6B0B": "#0B4A0B", "#4CBB17": "#2E7A0E",
+              "#EE7700": "#8A4600"}
+# Fan direction for the Northeast cluster at tiers 2-3, so the metro
+# chips sit off their fields on leaders instead of stacking.
+_CHIP_FAN = {"KJFK": (1, 1), "KLGA": (1.2, -0.3), "KEWR": (-1, 0),
+             "KHPN": (0, -1), "KBDL": (0, -1), "KBOS": (1, -1),
+             "KDCA": (-1, 0), "KIAD": (-1, -1), "KBWI": (1, -1),
+             "KFLL": (1, 0), "KDJT": (-1, 1), "KMIA": (1, 1),
+             "KMCO": (1, 0), "KTPA": (-1, 0), "KLAX": (0, -1),
+             "KLGB": (1, 1), "KSNA": (1, 1), "KBUR": (-1, -1),
+             "KSFO": (-1, 0), "KOAK": (1, -1), "KSJC": (1, 1)}
+
+
+def _chip_rank(hexc) -> int:
+    return _CHIP_RANK.get((hexc or "").upper(), 0) if hexc else 0
+
+
+def _chip_token(r) -> str:
+    """The ONE word on a chip, from the current METAR: TSRA when a
+    thunderstorm is in the body, otherwise the flight category.
+    Nothing else goes in the box; the hover has the rest."""
+    if r.get("ts_now"):
+        return "TSRA"
+    v, c = r.get("vis"), (None if r.get("cig_unl") else r.get("cig"))
+    if (v is not None and v < 1) or (c is not None and c < 500):
+        return "LIFR"
+    if (v is not None and v < 3) or (c is not None and c < 1000):
+        return "IFR"
+    if (v is not None and v <= 5) or (c is not None and c <= 3000):
+        return "MVFR"
+    return "VFR"
+
+
+def build_station_chips(board_rows, metar_rows, coords, taf_ring_map):
+    """[{icao, id3, lat, lon, fill, border, now, taf, ts}] for every
+    station with a TAF or METAR alert. Same inputs as
+    build_map_markers, same colours."""
+    taf_ring_map = taf_ring_map or {}
+    taf = {r[1]: {"ts": bool(r[5].get("ts")), "ring": taf_ring_map.get(r[1]),
+                  "txt": r[6]} for r in board_rows}
+    met = {}
+    for r in (metar_rows or []):
+        color, toks = _metar_severity(r, include_ts=True)
+        met[r["icao"]] = {"ts": bool(r.get("ts_now")), "fill": color,
+                          "toks": toks, "tok": _chip_token(r)}
+    out = []
+    for icao in sorted(set(taf) | set(met)):
+        if icao not in coords:
+            continue
+        la, lo = coords[icao]
+        t, m = taf.get(icao), met.get(icao)
+        now = ""
+        if m and (m["toks"] or m["ts"]):
+            now = m["toks"] or ""
+            # _metar_severity(include_ts=True) already puts TS in the
+            # tokens; only add it when it is not there.
+            if m["ts"] and "TS" not in now.split("/"):
+                now = ("TS/" + now) if now else "TS"
+        fill = m["fill"] if m else None
+        border = t["ring"] if t else None
+        if not fill and not border:
+            continue
+        out.append({"icao": icao,
+                    "id3": icao[1:] if (len(icao) == 4
+                                        and icao.startswith("K")) else icao,
+                    "lat": la, "lon": lo, "fill": fill, "border": border,
+                    # the word: the current METAR's category or TSRA;
+                    # with no METAR row, the TAF's category or TSRA
+                    "tok": (m["tok"] if m else
+                            {"#FF00FF": "LIFR", "#E01A1A": "IFR",
+                             "#F2C200": "TSRA"}.get(border or "", "VFR")),
+                    "now": now, "taf": (t["txt"] if t else ""),
+                    "ts": bool((m and m["ts"]) or (t and t["ts"]))})
+    return out
+
+
+def _chip_canvas(tier: int) -> float:
+    """Side of the square canvas every chip at a tier is drawn on,
+    centred on the field. Same size for all, so one pixel clamp sizes
+    the whole layer (IconLayer sizes by height)."""
+    w, h, b, *_ = _CHIP_GEOM[tier]
+    fan = (30, 40)[tier - 2] if tier >= 2 else 0
+    return 2 * (fan + max(w, h) / 2 + b) + 6
+
+
+def _chip_icon_uri(tier, border, fill, lines) -> str:
+    """The chip as one SVG at 2x on a square canvas centred on the
+    field. At tiers 2-3 the chip is offset from the centre and a
+    leader joins them."""
+    import urllib.parse
+    w, h, b, f1, f2, f3 = _CHIP_GEOM[tier]
+    ox, oy = (0, 0)
+    if tier >= 2:
+        ox, oy = lines[-1] if isinstance(lines[-1], tuple) else (0, 0)
+        lines = [ln for ln in lines if not isinstance(ln, tuple)]
+    W = H = _chip_canvas(tier)
+    fx = fy = W / 2
+    cx, cy = fx + ox, fy + oy
+    bc = border or _CHIP_DIM_BORDER
+    fc = (fill if tier == 0 else _CHIP_FILL.get(fill, _CHIP_DIM_FILL)) \
+        if fill else _CHIP_DIM_FILL
+    el = []
+    if tier >= 2:
+        el.append(f'<line x1="{fx:.1f}" y1="{fy:.1f}" x2="{cx:.1f}" '
+                  f'y2="{cy:.1f}" stroke="#C8D0DA" stroke-width="0.8"/>'
+                  f'<circle cx="{fx:.1f}" cy="{fy:.1f}" r="1.7" '
+                  'fill="#FFFFFF" stroke="#000" stroke-width="0.6"/>')
+    el.append(f'<rect x="{cx - w / 2 - b:.1f}" y="{cy - h / 2 - b:.1f}" '
+              f'width="{w + 2 * b:.1f}" height="{h + 2 * b:.1f}" rx="1.5" '
+              f'fill="{bc}"/>'
+              f'<rect x="{cx - w / 2:.1f}" y="{cy - h / 2:.1f}" width="{w}" '
+              f'height="{h}" fill="{fc}" stroke="#000" stroke-width="0.7"/>')
+    T = ('text-anchor="middle" fill="#FFFFFF" font-family="Courier New,'
+         'Courier,monospace" font-weight="700"')
+
+    def tx(x, y, size, text):
+        # textLength pins the rendered width whatever monospace font
+        # the browser substitutes (the first deploy drew Courier New's
+        # fallback wider than the box). 0.6 em per glyph is Courier's
+        # advance; the box interior less 3 px is the ceiling.
+        nat = 0.6 * size * len(text)
+        tl = min(nat, w - 3)
+        return (f'<text x="{x:.1f}" y="{y:.1f}" font-size="{size}" '
+                f'textLength="{tl:.1f}" lengthAdjust="spacingAndGlyphs" '
+                f'{T}>{text}</text>')
+    if tier == 0 and lines and lines[0]:
+        el.append(tx(cx, cy + 1.6, 4.5, lines[0]))
+    elif tier == 1:
+        el.append(tx(cx, cy + 2.2, f1, lines[0]))
+    elif tier == 2:
+        el.append(tx(cx, cy - 1, f1, lines[0]))
+        el.append(tx(cx, cy + 5, f2, lines[1]))
+    elif tier == 3:
+        el.append(tx(cx, cy - 2, f1, lines[0]))
+        el.append(tx(cx, cy + 6.5, f2, lines[1]))
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{2 * W:.0f}" '
+           f'height="{2 * H:.0f}" viewBox="{0} {0} {W:.1f} {H:.1f}">'
+           + "".join(el) + "</svg>")
+    return ("data:image/svg+xml;charset=utf-8,"
+            + urllib.parse.quote(svg), W, H, fx, fy)
+
+
+def _esc(t: str) -> str:
+    return (t or "").replace("&", "&amp;").replace("<", "&lt;")
+
+
+def station_chip_layers(chips, tier: int) -> list:
+    """Cluster, then one IconLayer of chips. Tier 0-1 chips sit on
+    the station; tiers 2-3 fan off it on a leader."""
+    import pydeck as pdk
+    if not chips:
+        return []
+    zoom = _CHIP_ZOOM[tier]
+    w, h, b, *_ = _CHIP_GEOM[tier]
+    fan = (30, 40)[tier - 2] if tier >= 2 else 0
+    items = []
+    for c in chips:
+        sx, sy = _tag_px(c["lon"], c["lat"], zoom)
+        dx, dy = _CHIP_FAN.get(c["icao"], (1, -1))
+        items.append({**c, "sx": sx, "sy": sy,
+                      "x": sx + dx * fan, "y": sy + dy * fan})
+    # Greedy merge of chips whose boxes would touch (2 px gap).
+    W_, H_ = w + 2 * b + 2, h + 2 * b + 2
+    groups = [[i] for i in items]
+    changed = True
+    while changed:
+        changed = False
+        for a in range(len(groups)):
+            for c in range(a + 1, len(groups)):
+                ga, gc = groups[a], groups[c]
+                ax = sum(i["x"] for i in ga) / len(ga)
+                ay = sum(i["y"] for i in ga) / len(ga)
+                cx = sum(i["x"] for i in gc) / len(gc)
+                cy = sum(i["y"] for i in gc) / len(gc)
+                if abs(ax - cx) < W_ and abs(ay - cy) < H_:
+                    groups[a] = ga + gc
+                    del groups[c]
+                    changed = True
+                    break
+            if changed:
+                break
+    rows = []
+    for g in groups:
+        k = len(g)
+        fill = max((i["fill"] for i in g), key=_chip_rank)
+        border = max((i["border"] for i in g), key=_chip_rank)
+        # position: the group's mean field position; the chip offset
+        # is the mean of the members' fan offsets
+        mlon = sum(i["lon"] for i in g) / k
+        mlat = sum(i["lat"] for i in g) / k
+        sx, sy = _tag_px(mlon, mlat, zoom)
+        ox = sum(i["x"] for i in g) / k - sx
+        oy = sum(i["y"] for i in g) / k - sy
+        if k == 1:
+            i = g[0]
+            # Two lines at most, four characters each: the ID and
+            # one word (TSRA, SN, IFR, G38 ...). Everything else is
+            # on the hover.
+            lines = [_esc(i["id3"])[:4], _esc(i["tok"] or "")[:4]]
+            tip = (f"{i['icao']}"
+                   + (f" | NOW: {i['now']}" if i["now"] else "")
+                   + (f" | TAF: {i['taf']}" if i["taf"] else ""))
+        else:
+            ids = ", ".join(i["id3"] for i in g)
+            worst = max(g, key=lambda i: _chip_rank(i["fill"]))
+            lines = [f"×{k}", _esc(worst["tok"] or "TAF")[:4]]
+            tip = (f"{k} stations: {ids} | worst METAR/TAF shown; "
+                   "zoom in to separate")
+        if tier == 0:
+            lines = [str(k) if k > 1 else ""]
+        icon_lines = lines[:1 if tier <= 1 else 2]
+        if tier >= 2:
+            icon_lines = icon_lines + [(round(ox, 1), round(oy, 1))]
+        uri, W, H, fx, fy = _chip_icon_uri(tier, border, fill, icon_lines)
+        rows.append({"position": [mlon, mlat],
+                     "icon": {"url": uri, "width": int(2 * W),
+                              "height": int(2 * H), "anchorX": int(2 * fx),
+                              "anchorY": int(2 * fy), "mask": False},
+                     "tip": tip})
+    # Metres with a pixel clamp at the canvas size - the sizing that
+    # works on this build (the aircraft and echo-top icons use it).
+    S = _chip_canvas(tier)
+    return [pdk.Layer("IconLayer", data=rows, get_position="position",
+                      get_icon="icon", get_size=60000, size_units="meters",
+                      size_min_pixels=S, size_max_pixels=S,
+                      pickable=True)]
+
+
+def _legacy_station_layers(fills, rings, ts_marks, label_px) -> list:
+    """The pre-chip markers: METAR dot, TAF ring, TS bolt, ID label."""
+    import pydeck as pdk
+    layers = []
+    if fills:
+        layers.append(pdk.Layer(
+            "ScatterplotLayer", data=fills, get_position="[lon, lat]",
+            get_fill_color="color", get_radius=15000,
+            radius_min_pixels=4, radius_max_pixels=11,
+            stroked=True, get_line_color=[0, 0, 0],
+            line_width_min_pixels=1, pickable=True))
+    _seen, _lbl = set(), []
+    for r in (rings or []) + (fills or []):
+        k = (round(r["lat"], 3), round(r["lon"], 3))
+        if k in _seen or not r.get("id3"):
+            continue
+        _seen.add(k)
+        _lbl.append({"lon": r["lon"], "lat": r["lat"], "id3": r["id3"]})
+    if _lbl:
+        layers.append(pdk.Layer(
+            "TextLayer", data=_lbl, get_position="[lon, lat]",
+            get_text="id3", get_size=10, get_color=[20, 20, 20, 230],
+            get_text_anchor='"middle"', get_alignment_baseline='"top"',
+            get_pixel_offset=[0, label_px], pickable=False))
+    if rings:
+        layers.append(pdk.Layer(
+            "ScatterplotLayer", data=rings, get_position="[lon, lat]",
+            get_line_color="color", get_radius=22500,
+            radius_min_pixels=8, radius_max_pixels=16,
+            filled=False, stroked=True, line_width_min_pixels=2.5,
+            pickable=True))
+    if ts_marks:
+        for d in ts_marks:
+            d["icon"] = _TS_TEXT_ICON
+        layers.append(pdk.Layer(
+            "IconLayer", data=ts_marks, get_position="[lon, lat]",
+            get_icon="icon", get_size=32344, size_units="meters",
+            size_min_pixels=11.5, size_max_pixels=23,
+            get_pixel_offset=[0, -20], pickable=True))
+    return layers
 
 
 def render_status_board(rows) -> str:
@@ -1892,6 +2203,8 @@ if run_button or _auto:
         fills, rings, ts_marks = build_map_markers(
             board_rows, metar_all, coords, taf_ring
         )
+        station_chips = build_station_chips(
+            board_rows, metar_all, coords, taf_ring)
 
         # NON-BLOCKING. This used to wait up to 20 s on a prefetch
         # future for the fleet, then fall back to a DIRECT sweep if
@@ -1921,7 +2234,7 @@ if run_button or _auto:
         # "name 'radar_on' is not defined". A control has to be
         # declared before anything reads it.
         # Seven controls across the top of the map.
-        _ctl = st.columns([1.0, 1.0, 1.1, 1.3, 0.9, 1.0, 0.9],
+        _ctl = st.columns([1.0, 1.0, 1.1, 1.3, 0.9, 1.0, 0.9, 1.6],
                           gap="small")
         with _ctl[0]:
             show_cs = st.checkbox(
@@ -1980,6 +2293,32 @@ if run_button or _auto:
                 "Routes", value=False, key="show_routes",
                 help="The 58 ATS routes on the map: 42 domestic J and Q "
                      "routes and 16 oceanic L-routes, as exported.")
+        with _ctl[7]:
+            # STATION CHIPS. Tier sets chip size and detail and, for
+            # anything but CONUS, recentres the map on a hub at a
+            # matching zoom. pydeck cannot see the wheel, so this is
+            # the page's zoom.
+            _cc1, _cc2 = st.columns([1, 1], gap="small")
+            with _cc1:
+                _chip_lab = st.selectbox(
+                    "Station chips", _CHIP_TIERS, index=0,
+                    key="chip_tier", label_visibility="collapsed",
+                    help="Station chip detail. CONUS: colours only. "
+                         "Region: airport ID. Area: ID + current "
+                         "METAR. Metro: ID, METAR and TAF. Border is "
+                         "the TAF colour, fill the METAR colour. Chips "
+                         "that would touch merge into one showing the "
+                         "worst of the group.")
+            chip_tier = _CHIP_TIERS.index(_chip_lab)
+            with _cc2:
+                _CHIP_HUBS = ["JFK", "BOS", "DCA", "MCO", "FLL", "LAX",
+                              "SFO", "TPA", "BDL"]
+                chip_hub = st.selectbox(
+                    "Centre on", _CHIP_HUBS, index=0, key="chip_hub",
+                    label_visibility="collapsed",
+                    disabled=(chip_tier == 0),
+                    help="Hub the map centres on for Region, Area and "
+                         "Metro.")
         with _ctl[5]:
             show_centers = st.checkbox(
                 "Centers", value=False, key="show_centers",
@@ -2445,70 +2784,16 @@ if run_button or _auto:
                 pickable=False,
             ))
 
-        if fills:
-            # Solid core: current METAR breach (trouble NOW)
-            layers.append(pdk.Layer(
-                "ScatterplotLayer", data=fills,
-                get_position="[lon, lat]",
-                get_fill_color="color",
-                get_radius=15000,
-                radius_min_pixels=4, radius_max_pixels=11,
-                stroked=True, get_line_color=[0, 0, 0],
-                line_width_min_pixels=1, pickable=True,
-            ))
-        # Identifier UNDER a marked station, ALERT_LABEL_PX below the
-        # centre. One label per marked station, whichever of fill or
-        # ring it has — dedupe on position so a station with both
-        # does not get two.
-        _seen_lbl = set()
-        _mark_labels = []
-        for r in (rings or []) + (fills or []):
-            k = (round(r["lat"], 3), round(r["lon"], 3))
-            if k in _seen_lbl or not r.get("id3"):
-                continue
-            _seen_lbl.add(k)
-            _mark_labels.append({"lon": r["lon"], "lat": r["lat"],
-                                 "id3": r["id3"]})
-        if _mark_labels:
-            layers.append(pdk.Layer(
-                "TextLayer", data=_mark_labels,
-                get_position="[lon, lat]",
-                get_text="id3",
-                get_size=10,
-                get_color=[20, 20, 20, 230],
-                get_text_anchor='"middle"',
-                get_alignment_baseline='"top"',
-                get_pixel_offset=[0, ALERT_LABEL_PX],
-                pickable=False,
-            ))
-
-        if rings:
-            # Hollow ring: TAF forecast breach, concentric
-            # around the METAR dot when both apply
-            layers.append(pdk.Layer(
-                "ScatterplotLayer", data=rings,
-                get_position="[lon, lat]",
-                get_line_color="color",
-                get_radius=22500,
-                radius_min_pixels=8, radius_max_pixels=16,
-                filled=False, stroked=True,
-                line_width_min_pixels=2.5, pickable=True,
-            ))
-        if ts_marks:
-            for d in ts_marks:
-                d["icon"] = _TS_TEXT_ICON
-            # Calibrated by eye 8/15: (0, -20) screen px from
-            # ring center
-            _dx, _dy = 0, -20
-            layers.append(pdk.Layer(
-                "IconLayer", data=ts_marks,
-                get_position="[lon, lat]",
-                get_icon="icon",
-                get_size=32344, size_units="meters",
-                size_min_pixels=11.5, size_max_pixels=23,
-                get_pixel_offset=[_dx, _dy],
-                pickable=True,
-            ))
+        # STATION CHIPS replace the METAR dot, TAF ring, TS bolt and
+        # the label under the marker (21 Sep). Same colours, one
+        # rectangle: border = TAF, fill = METAR. build_map_markers is
+        # still called for its tooltips and counts; its layers are
+        # not drawn. JBU_STATION_RINGS=on restores the old markers.
+        if _os_et.environ.get("JBU_STATION_RINGS", "off").lower() == "on":
+            layers.extend(_legacy_station_layers(fills, rings, ts_marks,
+                                                 ALERT_LABEL_PX))
+        else:
+            layers.extend(station_chip_layers(station_chips, chip_tier))
 
         _n_warn = (sum(1 for d in fleet
                        if dest_warn.get(d.get("dest", "")))
@@ -2849,6 +3134,12 @@ if run_button or _auto:
         _view_state = pdk.ViewState(
             latitude=38.5, longitude=-96.0,
             zoom=4.3, min_zoom=4.1, max_zoom=11)
+        if chip_tier > 0:
+            _hc = coords.get("K" + chip_hub) or coords.get(chip_hub)
+            if _hc:
+                _view_state = pdk.ViewState(
+                    latitude=float(_hc[0]), longitude=float(_hc[1]),
+                    zoom=_CHIP_ZOOM[chip_tier], min_zoom=4.1, max_zoom=11)
         _loc_cs = st.session_state.get("_locate_cs")
         if _loc_cs:
             _tgt = next((d for d in (fleet or [])
