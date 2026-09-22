@@ -269,3 +269,18 @@ STATION_LATLON = {
     "FLL": (26.072, -80.152), "TPA": (27.976, -82.533),
     "DJT": (26.683, -80.096), "LAX": (33.942, -118.408),
 }
+
+
+def alert_for(metar: str | None) -> str | None:
+    """The word for a destination-METAR alert, or None.
+
+    Used by the Station Forecast arrivals banner: "TS", "LIFR" or
+    "G38" when the current METAR has thunder, is LIFR, or gusts 36 kt
+    or more (the pink/red levels of the ladder above); None for
+    anything milder, so the banner stays plain."""
+    if not metar:
+        return None
+    s = status_for("XXXX", metar)
+    if s.level >= PINK:
+        return s.label or s.name.upper()
+    return None
