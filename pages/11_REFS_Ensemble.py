@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import streamlit as st
-import streamlit.components.v1
+
 
 st.set_page_config(
     page_title="BlueMet - REFS Ensemble",
@@ -25,6 +25,14 @@ st.set_page_config(
 from retro_theme import apply_retro_theme
 
 apply_retro_theme()
+
+from dark_theme import apply_dark_theme
+
+apply_dark_theme()
+
+from auth import check_password
+
+check_password()
 
 _persistent = Path("/opt/render/project/src/cache")
 CACHE_ROOT = (_persistent if _persistent.exists()
@@ -74,465 +82,176 @@ def cached_refs_cycle(model: str, fhr: int, bucket: str):
     return cyc.isoformat() if cyc else None
 
 
-
-def _data_uri(b: bytes) -> str:
-    """data: URI carrying the MIME the bytes actually are."""
-    import base64 as _b64
-
-    if b[:4] == b"RIFF" and b[8:12] == b"WEBP":
-        mime = "image/webp"
-    else:
-        mime = "image/png"
-    return f"data:{mime};base64," + _b64.b64encode(b).decode()
-
-
-def build_scrub_html(frames: dict, hour_axis: list,
-                     order: list, single: bool = False,
-                     base_cycle_iso: str = None,
-                     product_label: str = "") -> tuple:
-    """Client-side shared-slider grid from {model: {fhr: png}}.
-    Returns (html, height). Used by smooth-scrub mode AND the
-    instant-open warm path."""
-    import base64
-    import json as _json
-
-    from core.hrrr_cam import MODELS
-
-    model_arrays = {}
-    for m in order:
-        if m not in frames or not frames[m]:
-            continue
-        arr = []
-        for h in hour_axis:
-            png = frames[m].get(h)
-            arr.append(
-                # MIME from the magic bytes: render_field returns
-                # WebP now, and calling it PNG fails silently in
-                # some browsers.
-                _data_uri(png) if png else None
-            )
-        model_arrays[m] = arr
-    # Header text per model per frame, and a slider label that reads
-    # as a VALID TIME rather than a forecast hour.
-    #
-    # Ported from the CAMs page for the same reason it exists there:
-    # a title baked into the image sits at the top of the CANVAS, so
-    # it scrolls out of view the moment you zoom — which is exactly
-    # when you need to know what you are looking at. An HTML bar
-    # above the map stays put at any zoom.
-    from datetime import datetime as _dl, timedelta as _tl
-
-    _bc = None
-    if base_cycle_iso:
-        try:
-            _bc = _dl.fromisoformat(str(base_cycle_iso))
-        except Exception:
-            _bc = None
-    if _bc is not None:
-        labels = [f"{(_bc + _tl(hours=h)):%H}Z "
-                  f"{(_bc + _tl(hours=h)):%a} "
-                  f"{(_bc + _tl(hours=h)).month}-"
-                  f"{(_bc + _tl(hours=h)).day}"
-                  for h in hour_axis]
-    else:
-        labels = [f"f{h:02d}" for h in hour_axis]
-    # \x1f separates [prefix, bold valid, italic product] — a
-    # character the text can never contain, unlike a pipe or dash
-    # which a product label might legitimately use.
-    order = [m for m in order if m in model_arrays]
-    names = {m: MODELS[m]["label"] for m in order}
-
-    heads = {}
-    for m in order:
-        row = []
-        for h in hour_axis:
-            if _bc is not None:
-                v = _bc + _tl(hours=h)
-                row.append(f"{names[m]} valid "
-                           f"\x1f{v:%H}Z {v.month}-{v.day}\x1f"
-                           f"{product_label}")
-            else:
-                row.append(f"{names[m]}\x1ff{h:02d}\x1f"
-                           f"{product_label}")
-        heads[m] = row
-    _cols = "1fr" if single else "1fr 1fr"
-    html = (
-        "<style>"
-        # Square side, set per view: one big panel fills
-        # the screen; two side by side each get less.
-        ":root{--sq:980px}"
-        ".camgrid.pair{--sq:980px}"
-        ".camgrid{display:grid;grid-template-columns:"
-        + _cols + ";gap:6px}"
-        # Fit by HEIGHT, not aspect-ratio.
-        #
-        # aspect-ratio:1/1 was the previous attempt and it made the
-        # clipping worse: the container is ~2300 px wide, so a square
-        # wrapper became 2300 px TALL, far past the component height,
-        # and the iframe cut it off. Pinning the wrapper to a fixed
-        # height and letting object-fit:contain letterbox the square
-        # horizontally shows the WHOLE 10x10 degree frame, every
-        # time, at any container width.
-        ".camgrid img{border:1px solid #888}"
-        # SQUARE viewport, not full width. The frame is 10x10
-        # degrees; stretching the wrapper across a 2300 px window
-        # left enormous white margins either side and squeezed the
-        # map into a short band. Sizing the wrapper to the frame's
-        # own shape uses the space for map instead of padding.
-        # min() so a narrow window still fits.
-        ".camgrid img{border:1px solid #888}"
-        ".zoomwrap{overflow:hidden;cursor:grab;"
-        "width:min(var(--sq),100%);height:var(--sq);"
-        "margin:0 auto;display:flex;align-items:center;"
-        "justify-content:center;background:#fff}"
-        ".zoomwrap img{max-width:100%;max-height:100%;"
-        "width:auto;height:100%;object-fit:contain;"
-        "transform-origin:center center;user-select:none;"
-        "-webkit-user-drag:none}"
-        # Header BAR above the map, not a box on it. Sitting
-        # outside the zoom wrapper means it can never cover weather,
-        # and because the wrapper scrolls underneath it the bar
-        # stays visible at any zoom — the whole point.
-        ".hdr{display:block;width:min(var(--sq),100%);"
-        "margin:0 auto;box-sizing:border-box;"
-        "background:#F2F2EE;border:1px solid #111;border-bottom:none;"
-        "border-radius:4px 4px 0 0;padding:6px 10px;text-align:center;"
-        "font:normal 22px/1.3 monospace;color:#111}"
-        ".hdr .vt{font-weight:bold}"
-        ".hdr .sub{font-style:italic;font-size:17px;opacity:0.85;"
-        "font-weight:normal}"
-        # No full-screen wrapper on this page, so no #fswrap rule —
-        # it would target an element that never exists here.
-        ".camlbl{font:bold 13px monospace;margin:2px 0}"
-        ".ctl{font:13px monospace;margin:8px 0}"
-        "input[type=range]{width:70%}"
-        "</style>"
-        "<div class='ctl'>Forecast hour: "
-        "<span id='hlbl'></span><br>"
-        "<input type='range' id='hsl' min='0' max='"
-        + str(len(hour_axis) - 1) + "' value='0' step='1'>"
-        # `pair` narrows the square when two panels sit side by
-        # side; a single panel keeps the full :root size.
-        "</div><div class='camgrid"
-        + ("" if single else " pair") + "'>"
-    )
-    for m in order:
-        _wrap = " class='zoomwrap'" if single else ""
-        html += ("<div><div class='hdr' id='hdr_" + m + "'></div>"
-                 + "<div class='camlbl'>" + ""
-                 + "</div><div" + _wrap + "><img id='img_"
-                 + m + "'></div></div>")
-    html += "</div><script>"
-    html += "const D=" + _json.dumps(model_arrays) + ";"
-    html += "const L=" + _json.dumps(labels) + ";"
-    html += "const H=" + _json.dumps(heads) + ";"
-    html += (
-        "const sl=document.getElementById('hsl');"
-        "function upd(){const i=+sl.value;"
-        "document.getElementById('hlbl').textContent=L[i];"
-        "for(const m in H){const hd="
-        "document.getElementById('hdr_'+m);"
-        "if(hd){const t=(H[m][i]||'').split('\\x1f');"
-        "hd.innerHTML=(t[0]||'')"
-        "+(t[1]?\"<span class='vt'>\"+t[1]+'</span>':'')"
-        "+(t[2]?\"<br><span class='sub'>\"+t[2]+'</span>':'');}}"
-        "for(const m in D){const el="
-        "document.getElementById('img_'+m);"
-        "if(D[m][i]){el.src=D[m][i];el.style.display='';}"
-        "else{el.style.display='none';}}}"
-        "sl.addEventListener('input',upd);upd();"
-    )
-    if single:
-        # Wheel zoom (cursor-anchored) + drag pan on the single
-        # panel; transform persists across frame swaps because
-        # the <img> element is reused
-        html += (
-            "document.querySelectorAll('.zoomwrap').forEach("
-            "w=>{const im=w.querySelector('img');"
-            "let s=1,tx=0,ty=0,dragging=false,lx=0,ly=0;"
-            "function ap(){im.style.transform="
-            "'translate('+tx+'px,'+ty+'px) scale('+s+')';}"
-            "w.addEventListener('wheel',e=>{e.preventDefault();"
-            "const r=w.getBoundingClientRect();"
-            "const mx=e.clientX-r.left,my=e.clientY-r.top;"
-            "const os=s;"
-            "s=Math.min(6,Math.max(1,s*(e.deltaY<0?1.15:0.87)));"
-            "tx=mx-(mx-tx)*s/os;ty=my-(my-ty)*s/os;"
-            "if(s===1){tx=0;ty=0;}ap();},{passive:false});"
-            "w.addEventListener('mousedown',e=>{dragging=true;"
-            "lx=e.clientX;ly=e.clientY;"
-            "w.style.cursor='grabbing';});"
-            "window.addEventListener('mouseup',()=>{"
-            "dragging=false;w.style.cursor='grab';});"
-            "window.addEventListener('mousemove',e=>{"
-            "if(!dragging)return;tx+=e.clientX-lx;"
-            "ty+=e.clientY-ly;lx=e.clientX;ly=e.clientY;ap();});"
-            "});"
-        )
-    html += "</script>"
-    if single:
-        # 820 px of map + slider, label and padding.
-        # +70 for the two-line header bar above the panel.
-        return html, 220 + 980
-    rows = (len(order) + 1) // 2
-    return html, 150 + rows * 1090
-
-
+# ---------------------------------------------------------------------------
+# Pods (22 Sep): four square maps, each with its own product, one run
+# toggle and one valid-hour slider shared by all four. Frames come
+# from the warm store when the hour is warmed (instant) and render on
+# demand otherwise. The renderer draws the dark ground and the N90
+# outline; see core/cam_fast.py.
+# ---------------------------------------------------------------------------
 PRODUCTS = {
-    "Ensemble mean": ("refs_mean", "REFC"),
-    "Prob-matched mean (PMMN)": ("refs_pmmn", "REFC"),
-    "Local prob-matched (LPMM)": ("refs_lpmm", "REFC"),
-    "Probability REFC >= 40 dBZ": ("refs_prob", "PROB_REFC40"),
-    "Prob ceiling < 500 ft": ("refs_prob", "PROB_CIG500"),
-    "Prob ceiling < 1000 ft": ("refs_prob", "PROB_CIG1000"),
-    "Prob ceiling < 2000 ft": ("refs_prob", "PROB_CIG2000"),
-    "Prob visibility < 1/2 sm": ("refs_prob", "PROB_VIS05"),
-    "Prob visibility < 1 sm": ("refs_prob", "PROB_VIS1"),
-    "Prob visibility < 3 sm": ("refs_prob", "PROB_VIS3"),
-    "Prob echo tops > 30 kft": ("refs_prob", "PROB_RETOP30"),
-    "Prob echo tops > 35 kft": ("refs_prob", "PROB_RETOP35"),
+    "PMMN composite reflectivity": ("refs_pmmn", "REFC"),
+    "Probability REFC \u2265 40 dBZ": ("refs_prob", "PROB_REFC40"),
+    "Probability REFC \u2265 50 dBZ": ("refs_prob", "PROB_REFC50"),
+    "Probability ceiling < 1000 ft": ("refs_prob", "PROB_CIG1000"),
+    "Probability ceiling < 500 ft": ("refs_prob", "PROB_CIG500"),
+    "Probability visibility < 1 sm": ("refs_prob", "PROB_VIS1"),
+    "Probability visibility < 3 sm": ("refs_prob", "PROB_VIS3"),
+    "Probability echo tops > FL350": ("refs_prob", "PROB_RETOP35"),
 }
+_POD_DEFAULTS = ["PMMN composite reflectivity",
+                 "Probability REFC \u2265 40 dBZ",
+                 "Probability ceiling < 1000 ft",
+                 "Probability visibility < 3 sm"]
+
+# Run choice -> the forecast hour a run must have reached to count.
+# REFS runs 00Z and 12Z to f60, 06Z and 18Z to f48.
+_RUNS = {"Latest run": 1,
+         "Latest 60-hr run (00Z/12Z)": 60,
+         "Latest 48-hr run": 48}
+
+_PANEL, _EDGE, _INK, _INK2 = "#0A0A0A", "#333333", "#FFFFFF", "#B8B8B8"
+st.markdown(
+    "<style>"
+    "[data-testid='stVerticalBlockBorderWrapper']{"
+    f"background:{_PANEL};border:1px solid {_EDGE} !important;"
+    "border-radius:12px;padding:6px 10px}"
+    "div[data-testid='stImage'] img{border-radius:8px}"
+    "</style>", unsafe_allow_html=True)
 
 with st.sidebar:
-    st.header("Station")
-    icao_input = st.text_input(
-        "ICAO", value="", placeholder="e.g. KJFK",
-        help="Any station; hub buttons below for one tap",
-    ).strip().upper()
+    st.header("Region")
+    _region = st.radio("Region", list(REFS_HUBS),
+                       format_func=lambda k: _HUB_LABELS.get(k, k),
+                       index=0, key="refs_region",
+                       label_visibility="collapsed")
 
-    st.header("Ensemble product")
-    prod_label = st.selectbox(
-        "Product", list(PRODUCTS.keys()), index=1,
-        help="Mean smooths displaced cells into broad signal; "
-             "PMMN/LPMM keep realistic reflectivity structure "
-             "(the products HREF displays are built on). All "
-             "render composite reflectivity.",
-    )
+icao = _region
+_g = REFS_HUBS[icao]
+clat, clon = _g[0], _g[1]
+from core.cam_warm import hub_geom as _hub_geom
+_region_zoom = _hub_geom(icao)[2]
+now = datetime.now(timezone.utc)
+bucket10 = now.strftime("%Y%m%d%H") + str(now.minute // 10)
 
-    st.header("Hours")
-    fhr_lo, fhr_hi = st.slider(
-        "Preload hours", 0, 60, (0, 24),
-        help="REFS runs 00/06/12/18Z to 60h. Full-run spans "
-             "allowed; warmed hub products load instantly.",
-    )
-    # 2.5 deg matches WARM_ZOOM, which is what the warm store is
-    # rendered at — moving off it silently disables instant open,
-    # because the page tests `abs(zoom - WARM_ZOOM) < 0.01` before
-    # reading the store. The frame itself covers +-5 deg
-    # (RENDER_FACTOR 2), and the CSS above now shows all of it, so
-    # the default already IS the whole map.
-    # Kept for non-hub stations only. For the two regions the frame
-    # is always the region's own half-width, matching the warm store.
-    zoom = st.slider("Zoom (degrees)", 1.0, 6.0, 2.5, 0.5,
-                     help="Applies to stations outside the two warmed "
-                          "regions. Region maps use their own extent.")
-    # Display width as a percentage of the column. Default 70 rather
-    # than full width: the ensemble opens as a grid of members, and
-    # at 100% the first row alone fills the window so nothing else is
-    # visible without scrolling. 70% fits the whole set on a laptop.
-    refs_scale = st.slider(
-        "Panel size (%)", 40, 100, 70, 5,
-        help="Display size only — the underlying render is "
-             "unchanged, so this costs nothing to move.")
-    st.session_state["refs_scale_v"] = refs_scale
+# ---- run toggle + shared hour -------------------------------------------
+_h1, _h2, _h3 = st.columns([2.2, 3, 1.4])
+with _h1:
+    run_choice = st.radio("Run", list(_RUNS), horizontal=True,
+                          key="refs_run", label_visibility="collapsed")
+need_fhr = _RUNS[run_choice]
 
-    st.divider()
-    run_button = st.button("Render", type="primary",
-                           width=int(760 * st.session_state.get(
-                               "refs_scale_v", 70) / 100))
 
-if run_button and icao_input:
-    st.session_state["refs_icao"] = icao_input
+@st.cache_data(ttl=600, show_spinner=False, max_entries=24)
+def _cycle_for(need_fhr: int, bucket: str):
+    """The newest REFS cycle that has reached need_fhr, from the
+    warm store when it has one (no probing), else by probing."""
+    if need_fhr <= 1:
+        _wc = warm_cycle(CACHE_ROOT, "refs_prob@PROB_REFC40")
+        if _wc:
+            return _wc
+    return cached_refs_cycle("refs_prob", need_fhr, bucket)
 
-active = st.session_state.get("refs_icao")
 
-if not active:
-    st.info("Pick a hub or enter an ICAO, then Render.")
+cycle_iso = _cycle_for(need_fhr, bucket10)
+if cycle_iso is None:
+    st.warning("No REFS cycle found for that run length yet.")
+    st.stop()
+cyc = datetime.fromisoformat(cycle_iso)
+max_fhr = 60 if cyc.hour in (0, 12) else 48
+with _h2:
+    fhr = st.slider("Forecast hour", 1, max_fhr, 1, key="refs_fhr",
+                    label_visibility="collapsed")
+valid = cyc + timedelta(hours=fhr)
+with _h3:
     st.markdown(
-        "<style>div[data-testid='stHorizontalBlock'] button{"
-        "font-size:17px;font-weight:600;padding:0.6rem 1rem}"
-        "</style>", unsafe_allow_html=True)
-    _c = st.columns(len(REFS_HUBS))
-    for _i, _hk in enumerate(REFS_HUBS):
-        # Full region name, not _hk[1:] — that stripped the leading
-        # K off an ICAO and turns "NE" into "E".
-        if _c[_i].button(_HUB_LABELS.get(_hk, _hk), key=f"w_{_hk}",
-                         use_container_width=True):
-            st.session_state["refs_icao"] = _hk
-            st.rerun()
-else:
-    _sw = st.columns(len(REFS_HUBS))
-    for _i, _hk in enumerate(REFS_HUBS):
-        _lbl = _HUB_LABELS.get(_hk, _hk)
-        if _hk == active:
-            _lbl = "\u25cf  " + _lbl
-        if _sw[_i].button(_lbl, key=f"sw_{_hk}",
-                          use_container_width=True):
-            st.session_state["refs_icao"] = _hk
-            st.rerun()
+        f'<div style="font:bold 13px DejaVu Sans Mono,monospace;'
+        f'color:{_INK2};margin-top:10px">valid <span style="color:{_INK}">'
+        f'{valid:%HZ %d %b}</span></div>', unsafe_allow_html=True)
 
-    icao = active
-    model, field = PRODUCTS[prod_label]
-    # Region keys ("NE", "FL") are not ICAOs — the station resolver
-    # cannot find them. Take the centre from HUBS instead.
-    if icao in REFS_HUBS:
-        _g = REFS_HUBS[icao]
-        clat, clon = _g[0], _g[1]
-        _region_half = _g[2] if len(_g) > 2 else None
-    else:
-        coords = cached_station_coords(icao)
-        if coords is None:
-            st.error(f"Cannot resolve coordinates for {icao}.")
-            st.stop()
-        clat, clon = coords
-        _region_half = None
-    now = datetime.now(timezone.utc)
-    bucket10 = now.strftime("%Y%m%d%H") + str(now.minute // 10)
 
-    st.info(f"**{_HUB_LABELS.get(icao, icao)}** | {prod_label}")
+@st.cache_data(ttl=10800, show_spinner=False, max_entries=800)
+def cached_refs_frame(model: str, field: str, cycle_iso: str, h: int,
+                      la: float, lo: float, zm: float):
+    from core.hrrr_cam import fetch_and_decode, render_frame
+    _c = datetime.fromisoformat(cycle_iso)
+    vals, lats, lons = fetch_and_decode(model, field, _c, h, la, lo, zm)
+    return render_frame(field, vals, lats, lons, la, lo, zm, "",
+                        grid_key=f"{la:.2f},{lo:.2f},{zm:.2f}|{model}",
+                        cache_root=CACHE_ROOT / "cam_warm")
 
-    span = min(fhr_hi - fhr_lo, 60)
-    _lo = MODELS[model].get("min_fhr", 0)
-    hours = [h for h in range(fhr_lo, fhr_lo + span + 1)
-             if _lo <= h <= MODELS[model]["max_fhr"]]
-    if not hours:
-        st.warning(f"{MODELS[model]['label']} starts at "
-                   f"f{_lo:02d} - raise the hour range.")
-        st.stop()
 
+def _frame(model: str, field: str, h: int):
+    """(image bytes, 'warm'|'live') for one product and hour."""
     _wk = f"{model}@{field}"
-    # The warm store is rendered at the REGION half-width — 6.5 deg
-    # for the Northeast, 5.0 for Florida — not the legacy 2.5 deg
-    # WARM_ZOOM from when the store was per-hub. The live render
-    # must use the same value, or a frame drawn on demand covers a
-    # third of the area the warmed one does and station marks look
-    # four times too big against it. Seen live 4 Sep the moment
-    # stale-style frames started being refused.
-    from core.cam_warm import hub_geom as _hub_geom
+    got = warm_get(CACHE_ROOT, _wk, icao, h)
+    if got and got[1] == cycle_iso:
+        return got[0], "warm"
+    return cached_refs_frame(model, field, cycle_iso, h,
+                             round(clat, 2), round(clon, 2), _region_zoom), "live"
 
-    _region_zoom = (_hub_geom(icao)[2] if icao in REFS_HUBS
-                    else zoom)
-    _warm_ok = icao in REFS_HUBS
-    cycle_iso = None
-    if _warm_ok:
-        _wc = warm_cycle(CACHE_ROOT, _wk)
-        # Use the warm store if it covers ANY of the requested hours,
-        # not only if it covers the LAST one. The warmer is now
-        # depth-capped (CAM_WARM_MAX_FHR, 24 by default) to leave CPU
-        # for the CONUS map, so a request out to f60 would never see
-        # a warm frame under the old test — the store would be full
-        # and completely unused. Hours past the cap fall through to
-        # an on-demand render, which is the intended trade.
-        _wh = set(warm_hours(_wk))
-        if _wc and (_wh & set(hours)):
-            cycle_iso = _wc
-            _n_warm_hrs = len(_wh & set(hours))
-            if _n_warm_hrs < len(hours):
-                st.caption(
-                    f"{_n_warm_hrs} of {len(hours)} hours are "
-                    f"pre-warmed (to f{max(_wh):02d}); later hours "
-                    f"render on demand."
-                )
-    if cycle_iso is None:
-        cycle_iso = cached_refs_cycle(model, hours[-1], bucket10)
-    if cycle_iso is None:
-        pd = MODELS[model].get("_probe_diag") or {}
-        st.warning(
-            f"{MODELS[model]['label']}: no cycle found"
-            + ("; probes: " + "; ".join(list(pd.values())[:4])
-               if pd else "")
-        )
-        st.stop()
 
-    @st.cache_data(ttl=10800, show_spinner=False,
-                   max_entries=600)
-    def cached_refs_frame(model: str, field: str,
-                          cycle_iso: str, h: int,
-                          la: float, lo: float, zm: float):
-        from core.hrrr_cam import fetch_and_decode, render_frame
-        cyc = datetime.fromisoformat(cycle_iso)
-        vals, lats, lons = fetch_and_decode(
-            model, field, cyc, h, la, lo, zm)
-        valid = cyc + timedelta(hours=h)
-        title = (f"{MODELS[model]['label']} "
-                 f"{cyc:%m/%d %H}Z  f{h:02d}  "
-                 f"valid {valid:%m/%d %H}Z")
-        # Same renderer as the warmer, so a live frame matches a
-        # warmed one in size, layout and station marks.
-        # grid_key identifies the region AND the model grid; the
-        # centre/zoom are stable per region, so this matches the
-        # warmer's cached basemap and regrid index for the same
-        # place rather than building new ones.
-        return render_frame(field, vals, lats, lons, la, lo, zm, title,
-                            grid_key=f"{la:.2f},{lo:.2f},{zm:.2f}|{model}",
-                            cache_root=CACHE_ROOT / "cam_warm")
+def _colorbar(field: str) -> str:
+    """The fast renderer's palette for a product, as a strip."""
+    try:
+        from core.cam_fast import PALETTES, _lut_for
+        spec = PALETTES.get(field) or PALETTES["PROB"]
+        bounds = spec["bounds"]
+        # _lut_for gives the exact colours the frame used, including
+        # metpy's reflectivity table; index 0 is transparent.
+        lut = _lut_for(field if field in PALETTES else "PROB")
+        cols = ["#%02x%02x%02x" % tuple(int(v) for v in c[:3])
+                for c in lut[1:1 + len(bounds)]]
+        unit = ("dBZ" if field == "REFC" else "%")
+        cells = "".join(
+            f'<div style="flex:1;text-align:center"><div style="height:8px;'
+            f'background:{c}"></div>{bounds[i]:g}</div>'
+            for i, c in enumerate(cols) if i < len(bounds))
+        return (f'<div style="display:flex;font:11px DejaVu Sans Mono,'
+                f'monospace;color:{_INK2};margin-top:4px">{cells}'
+                f'<div style="padding:8px 0 0 6px">{unit}</div></div>')
+    except Exception:
+        return ""
 
-    prog = st.progress(0.0, text=f"Loading {len(hours)} "
-                                 "ensemble frames...")
-    frames = {model: {}}
-    _errs = {}
-    for i, h in enumerate(hours):
-        prog.progress((i + 1) / len(hours),
-                      text=f"Frame f{h:02d} ({i + 1}/"
-                           f"{len(hours)})")
+
+def _pod(i: int):
+    with st.container(border=True):
+        c1, c2 = st.columns([1.3, 1])
+        with c1:
+            label = st.selectbox(
+                "Product", list(PRODUCTS), index=list(PRODUCTS).index(
+                    st.session_state.get(f"refs_pod{i}", _POD_DEFAULTS[i])),
+                key=f"refs_pod{i}", label_visibility="collapsed")
+        with c2:
+            st.markdown(
+                f'<div style="font:bold 12px DejaVu Sans Mono,monospace;'
+                f'color:{_INK2};text-align:right;margin-top:10px">'
+                f'REFS {cyc:%H}Z/{cyc:%d} &middot; f{fhr:02d} &middot; '
+                f'valid {valid:%H}Z/{valid:%d}</div>', unsafe_allow_html=True)
+        model, field = PRODUCTS[label]
         try:
-            got = (warm_get(CACHE_ROOT, _wk, icao, h)
-                   if _warm_ok else None)
-            if got and got[1] == cycle_iso:
-                frames[model][h] = got[0]
-            else:
-                frames[model][h] = cached_refs_frame(
-                    model, field, cycle_iso, h,
-                    round(clat, 2), round(clon, 2), _region_zoom)
-        except Exception as _re:
-            _errs.setdefault(
-                model, f"f{h:02d}: {type(_re).__name__}: "
-                       f"{_re}"[:220])
-    prog.empty()
+            with st.spinner(""):
+                img, src = _frame(model, field, fhr)
+            st.image(img, use_container_width=True)
+            st.markdown(_colorbar(field), unsafe_allow_html=True)
+            if src == "live":
+                st.caption("rendered on demand (not yet in the warm store)")
+        except Exception as exc:
+            st.warning(f"{label}: {type(exc).__name__}: {str(exc)[:160]}")
 
-    if not frames[model]:
-        for _m, _e in _errs.items():
-            st.warning(f"{MODELS[_m]['label']}: {_e}")
-        _pd = MODELS[model].get("_probe_diag") or {}
-        _ir = MODELS[model].get("_idx_resolved")
-        if _ir or _pd:
-            st.caption(
-                "resolved template: " + (_ir or "none")
-                + ((" | probes: " + "; ".join(
-                    list(_pd.values())[:4])) if _pd else "")
-            )
-        st.error("No REFS frames - see verdicts above.")
-        st.stop()
 
-    got_hours = sorted(frames[model].keys())
-    html, hgt = build_scrub_html(frames, got_hours, [model],
-                                 single=True,
-                                 base_cycle_iso=cycle_iso,
-                                 product_label=prod_label)
-    streamlit.components.v1.html(html, height=hgt)
-    with st.expander("File inventory (what this REFS file "
-                     "contains)"):
-        try:
-            import requests as _rq
-            _tpl = (MODELS[model].get("_idx_resolved")
-                    or MODELS[model]["idx"])
-            _cyc = datetime.fromisoformat(cycle_iso)
-            _iu = _tpl.format(ymd=_cyc.strftime("%Y%m%d"),
-                              cc=_cyc.hour, ff=got_hours[-1])
-            _it = _rq.get(_iu, timeout=15).text
-            _sel = st.text_input("Filter lines", value="prob"
-                                 if field.startswith("PROB")
-                                 else "")
-            _show = [l for l in _it.splitlines()
-                     if _sel.lower() in l.lower()][:120]
-            st.code("\n".join(_show) or "(no matching lines)")
-        except Exception as _ie:
-            st.caption(f"inventory unavailable: {_ie}")
+_r1 = st.columns(2, gap="small")
+with _r1[0]:
+    _pod(0)
+with _r1[1]:
+    _pod(1)
+_r2 = st.columns(2, gap="small")
+with _r2[0]:
+    _pod(2)
+with _r2[1]:
+    _pod(3)
 
-    st.caption(
-        f"{len(got_hours)} frames | wheel to zoom "
-        "(cursor-anchored), drag to pan; view holds while "
-        "scrubbing | hub views prewarm to disk each cycle "
-        "(PMMN + CIG/VIS/REFC probs); everything else caches "
-        "server-side for 3h"
-    )
+st.caption(
+    "One run and one valid hour for all four pods. Warmed hours open "
+    "instantly; others render on demand and are kept for three hours. "
+    "The yellow outline is the N90 extent.")
