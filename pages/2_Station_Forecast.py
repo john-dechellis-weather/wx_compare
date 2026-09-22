@@ -144,6 +144,16 @@ def cached_coords(icao: str):
 
 @st.cache_data(ttl=300, show_spinner=False, max_entries=10)
 def cached_latest_cycle(icao: str) -> str | None:
+    # The compare warmer (core/compare_warm.py) already found it - no
+    # NOMADS probing on the request path. Falls through to probing
+    # only when the warmer has not run yet.
+    try:
+        from core.compare_warm import latest_cycle
+        _c = latest_cycle(CACHE_ROOT)
+        if _c:
+            return _c
+    except Exception:
+        pass
     from core.stations import StationResolver
     from core.cycle_select import find_latest_complete
     from models import GfsMos, GfsLamp, Hrrr, Nbm
@@ -164,7 +174,18 @@ def cached_latest_cycle(icao: str) -> str | None:
 @st.cache_data(ttl=600, show_spinner=False, max_entries=20)
 def cached_compare(icao: str, cycle_iso: str):
     """Every model, one station, one cycle - the frame both plots and
-    both grids read from. One fetch, four consumers."""
+    both grids read from. One fetch, four consumers.
+
+    Read from the compare warmer's saved frame when it has one (a few
+    ms); computed here only for a station or cycle it has not built
+    yet (4-15 s)."""
+    try:
+        from core.compare_warm import read_frame
+        _hit = read_frame(CACHE_ROOT, icao, cycle_iso)
+        if _hit is not None:
+            return _hit
+    except Exception:
+        pass
     from compare import compare_icaos
     cycle = datetime.fromisoformat(cycle_iso)
     df, resolved, _ = compare_icaos(icaos=[icao], cycle=cycle,
