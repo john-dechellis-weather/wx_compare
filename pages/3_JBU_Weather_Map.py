@@ -928,7 +928,7 @@ def _legend_html() -> str:
         'Station chips setting; touching chips merge (×N) and show '
         'the worst of the group.</span></div>'
     )
-    rings_sec = chip_note + (
+    rings_sec = (chip_note if _STATION_CHIPS else "") + (
         pair(ring_sw("#FF00FF"), "LIFR in TAF",
              ring_sw("#FF00FF", "#FF00FF"),
              "LIFR in TAF and METAR")
@@ -1111,6 +1111,7 @@ def build_map_markers(board_rows, metar_rows, coords,
 # of its group and a station count. Chosen by the "Station chips"
 # control; pydeck cannot see the mouse wheel, so the tier is a page
 # setting rather than the live zoom.
+_STATION_CHIPS = _os_et.environ.get("JBU_STATION_CHIPS", "off").lower() == "on"
 _CHIP_TIERS = ["CONUS", "Region", "Area", "Metro"]
 _CHIP_ZOOM = {0: 4.3, 1: 5.5, 2: 6.8, 3: 8.3}
 #                w    h   border  id  line2 line3  (px at the clamp)
@@ -2234,7 +2235,8 @@ if run_button or _auto:
         # "name 'radar_on' is not defined". A control has to be
         # declared before anything reads it.
         # Seven controls across the top of the map.
-        _ctl = st.columns([1.0, 1.0, 1.1, 1.3, 0.9, 1.0, 0.9, 1.6],
+        _ctl = st.columns([1.0, 1.0, 1.1, 1.3, 0.9, 1.0, 0.9]
+                          + ([1.6] if _STATION_CHIPS else []),
                           gap="small")
         with _ctl[0]:
             show_cs = st.checkbox(
@@ -2293,32 +2295,33 @@ if run_button or _auto:
                 "Routes", value=False, key="show_routes",
                 help="The 58 ATS routes on the map: 42 domestic J and Q "
                      "routes and 16 oceanic L-routes, as exported.")
-        with _ctl[7]:
-            # STATION CHIPS. Tier sets chip size and detail and, for
-            # anything but CONUS, recentres the map on a hub at a
-            # matching zoom. pydeck cannot see the wheel, so this is
-            # the page's zoom.
-            _cc1, _cc2 = st.columns([1, 1], gap="small")
-            with _cc1:
-                _chip_lab = st.selectbox(
-                    "Station chips", _CHIP_TIERS, index=0,
-                    key="chip_tier", label_visibility="collapsed",
-                    help="Station chip detail. CONUS: colours only. "
-                         "Region: airport ID. Area: ID + current "
-                         "METAR. Metro: ID, METAR and TAF. Border is "
-                         "the TAF colour, fill the METAR colour. Chips "
-                         "that would touch merge into one showing the "
-                         "worst of the group.")
-            chip_tier = _CHIP_TIERS.index(_chip_lab)
-            with _cc2:
-                _CHIP_HUBS = ["JFK", "BOS", "DCA", "MCO", "FLL", "LAX",
-                              "SFO", "TPA", "BDL"]
-                chip_hub = st.selectbox(
-                    "Centre on", _CHIP_HUBS, index=0, key="chip_hub",
-                    label_visibility="collapsed",
-                    disabled=(chip_tier == 0),
-                    help="Hub the map centres on for Region, Area and "
-                         "Metro.")
+        chip_tier, chip_hub = 0, "JFK"
+        if _STATION_CHIPS:
+            with _ctl[7]:
+                # STATION CHIPS (JBU_STATION_CHIPS=on only). Tier sets chip
+                # size and detail and, for anything but CONUS, recentres
+                # the map on a hub at a matching zoom.
+                _cc1, _cc2 = st.columns([1, 1], gap="small")
+                with _cc1:
+                    _chip_lab = st.selectbox(
+                        "Station chips", _CHIP_TIERS, index=0,
+                        key="chip_tier", label_visibility="collapsed",
+                        help="Station chip detail. CONUS: colours only. "
+                             "Region: airport ID. Area: ID + current "
+                             "METAR. Metro: ID, METAR and TAF. Border is "
+                             "the TAF colour, fill the METAR colour. Chips "
+                             "that would touch merge into one showing the "
+                             "worst of the group.")
+                chip_tier = _CHIP_TIERS.index(_chip_lab)
+                with _cc2:
+                    _CHIP_HUBS = ["JFK", "BOS", "DCA", "MCO", "FLL", "LAX",
+                                  "SFO", "TPA", "BDL"]
+                    chip_hub = st.selectbox(
+                        "Centre on", _CHIP_HUBS, index=0, key="chip_hub",
+                        label_visibility="collapsed",
+                        disabled=(chip_tier == 0),
+                        help="Hub the map centres on for Region, Area and "
+                             "Metro.")
         with _ctl[5]:
             show_centers = st.checkbox(
                 "Centers", value=False, key="show_centers",
@@ -2784,16 +2787,15 @@ if run_button or _auto:
                 pickable=False,
             ))
 
-        # STATION CHIPS replace the METAR dot, TAF ring, TS bolt and
-        # the label under the marker (21 Sep). Same colours, one
-        # rectangle: border = TAF, fill = METAR. build_map_markers is
-        # still called for its tooltips and counts; its layers are
-        # not drawn. JBU_STATION_RINGS=on restores the old markers.
-        if _os_et.environ.get("JBU_STATION_RINGS", "off").lower() == "on":
+        # STATION MARKERS: the METAR dot, TAF ring, TS bolt and the
+        # label under them - the original set. The rectangular
+        # station chips tried on 21 Sep are kept behind
+        # JBU_STATION_CHIPS=on; off, nothing about them runs.
+        if _STATION_CHIPS:
+            layers.extend(station_chip_layers(station_chips, chip_tier))
+        else:
             layers.extend(_legacy_station_layers(fills, rings, ts_marks,
                                                  ALERT_LABEL_PX))
-        else:
-            layers.extend(station_chip_layers(station_chips, chip_tier))
 
         _n_warn = (sum(1 for d in fleet
                        if dest_warn.get(d.get("dest", "")))
