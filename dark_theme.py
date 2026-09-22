@@ -408,6 +408,38 @@ html, body, .stApp,
 /* The warmer-log expander on the Home page. */
 .stApp [data-testid="stExpander"] pre {{ color: var(--bm-text-2) !important; }}
 
+/* ------------------------------------------------ rerun behaviour */
+
+/* While a script reruns, Streamlit keeps the previous page on screen
+   dimmed ("stale") until the new one arrives. After sign-in that is
+   the login board ghosting behind the first page for as long as it
+   takes to render; on a slow page it is the old frame. Hide stale
+   elements instead. */
+.stApp [data-stale="true"] {{
+  opacity: 0 !important;
+  pointer-events: none !important;
+}}
+
+/* A loading banner for every rerun. The status widget exists only
+   while the script is running, so this pins a fixed banner to the top
+   of the page for exactly that long - no JavaScript, nothing a page
+   has to call. */
+.stApp:has([data-testid="stStatusWidget"])::before {{
+  content: "Loading \2026  refresh the page after 1 min if it does not render";
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 999999;
+  padding: 7px 0;
+  text-align: center;
+  background: #1C1C22;
+  color: var(--bm-text);
+  border-bottom: 1px solid var(--bm-cyan);
+  font-family: var(--bm-mono);
+  font-size: {FS_BODY};
+  font-weight: 700;
+  letter-spacing: .3px;
+}}
+
 /* ------------------------------------------ sidebar collapse arrows */
 
 /* retro_theme.py draws its own « » arrows and a "Click arrows to view
