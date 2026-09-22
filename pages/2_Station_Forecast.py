@@ -488,9 +488,11 @@ with c_rad:
                   or (a.get("airline")
                       and AS.distance_nm(coords[0], coords[1],
                                          a["position"][1], a["position"][0]) <= 20)]
-            _mode = st.session_state.get("sf_radar_mode", "Level III + MRMS")
-            _want_mrms = _mode != "Off"
-            _want_l3 = _mode == "Level III + MRMS"
+            _mode = st.session_state.get("sf_radar_mode", "NEXRAD Radar")
+            # NEXRAD shows the single-site picture only; MRMS shows the
+            # mosaic only. Each is one thing.
+            _want_mrms = _mode == "MRMS Precipitation"
+            _want_l3 = _mode == "NEXRAD Radar"
             layers, cfg = AS.mini_layers(
                 icao, surface, coords[0], coords[1],
                 mrms_chunks=(chunks if _want_mrms else None),
@@ -507,6 +509,39 @@ with c_rad:
             # can be read off the page instead of the server log.
             _radar_diag.append(f"static dir: {STATIC_MRMS} "
                                f"({'exists' if STATIC_MRMS.exists() else 'MISSING'})")
+            # Can this process write there? A deploy that mounts the
+            # repo read-only would leave every warmer silent.
+            try:
+                _t = STATIC_MRMS / ".write_test"
+                _t.write_text("ok")
+                _t.unlink()
+                _radar_diag.append("static dir writable: yes")
+            except Exception as _we:
+                _radar_diag.append(f"static dir writable: NO ({_we})")
+            # Which warmer threads are alive in this process, and what
+            # Homepage recorded when it started them.
+            try:
+                import threading as _th
+                _names = sorted(t.name for t in _th.enumerate()
+                                if t.name not in ("MainThread",))
+                _radar_diag.append("threads: " + (", ".join(_names) or "none"))
+            except Exception:
+                pass
+            try:
+                import __main__ as _hp
+                for _n in (getattr(_hp, "_warm_notes", None) or []):
+                    _radar_diag.append("homepage: " + str(_n))
+                if not getattr(_hp, "_warm_notes", None):
+                    _radar_diag.append("homepage: no warmer notes (the "
+                                       "running Homepage.py is not the "
+                                       "current one)")
+            except Exception as _he:
+                _radar_diag.append(f"homepage notes unavailable: {_he}")
+            try:
+                _ml = (STATIC_MRMS / "mrms_warmer.log").read_text().splitlines()
+                _radar_diag.extend("mrms log: " + ln for ln in _ml[-3:])
+            except OSError:
+                _radar_diag.append("mrms log: none")
             _radar_diag.append(f"MRMS newest: {stamp or 'none'}, "
                                f"{len(chunks) if chunks else 0} chunks")
             _radar_diag.append(f"page origin: {base or 'NONE (images cannot load)'}")
@@ -552,20 +587,22 @@ with c_rad:
                                       if getattr(l, "type", "") == "BitmapLayer"]
                                      + [-1]) + 1
                         layers.insert(_after, _l3)
-                        l3_txt = (f" · Level III {_man['site']} "
+                        l3_txt = (f" · NEXRAD {_man['site']} "
                                   f"{_l3s[9:11]}:{_l3s[11:13]}Z")
                     elif icao.upper() in L3.STATION_RADAR:
                         # Distinguish "the warmer has built nothing for
                         # this station" from "it looked and found no
                         # radar": the first is a warmer problem.
-                        l3_txt = (" · Level III: no frames yet (see Radar "
+                        l3_txt = (" · NEXRAD: no frames yet (see Radar "
                                   "status)" if not l3_frames else
-                                  " · Level III frames are stale")
+                                  " · NEXRAD frames are stale")
                 except Exception:
                     l3_txt = ""
         pod_title("Airport scope",
-                  f"20 nm · MRMS {stamp_txt or 'no current scan'}"
-                  + (l3_txt if coords else "")
+                  "20 nm"
+                  + ((f" · MRMS {stamp_txt or 'no current scan'}"
+                      if _want_mrms else l3_txt if _want_l3 else " · radar off")
+                     if coords else "")
                   + (f" · {len(ac)} aircraft" if coords and ac else ""))
         if coords and len(l3_frames) > 1:
             # Last hour of the airport's radar: drag to step back
@@ -583,13 +620,12 @@ with c_rad:
         _rc1, _rc2 = st.columns([2, 1])
         with _rc1:
             radar_mode = st.radio(
-                "Radar", ["Level III + MRMS", "MRMS only", "Off"],
+                "Radar", ["NEXRAD Radar", "MRMS Precipitation", "Off"],
                 horizontal=True, key="sf_radar_mode",
                 label_visibility="collapsed",
-                help="Level III + MRMS: the airport's nearest radar at "
-                     "250 m over the MRMS mosaic. MRMS only: the mosaic "
-                     "alone (the fallback when Level III is not "
-                     "available). Off: field and traffic on black.")
+                help="NEXRAD Radar: the airport's nearest radar (TDWR or "
+                     "NEXRAD) at 250 m. MRMS Precipitation: the 1 km "
+                     "mosaic. Off: field and traffic on black.")
         with _rc2:
             with st.expander("Radar status", expanded=False):
                 st.caption("\n".join(_radar_diag))
