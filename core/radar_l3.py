@@ -93,15 +93,87 @@ DOMAIN_LABEL = {"N90": "N90 - KOKX", "DCA": "DC - KLWX"}
 
 # STATION DOMAINS: one small box per hub on the Station Forecast page,
 # from the station's nearest NEXRAD, so the airport scope opens on a
-# 250 m picture that is already on disk. 75 km half-width covers the
-# 20 nm scope with room to pan; 600 x 600 px, ~30-60 KB a frame.
-# Newest scan only (no loop), see loop_minutes().
+# 250 m picture that is already on disk, with an hour's loop.
+#
+# WHICH RADAR. A station uses the nearest radar within STATION_MAX_MI
+# (130 mi) of the field that has a recent scan; only beyond that does
+# the scope fall back to MRMS. Candidates are listed nearest first,
+# so the airport's own TDWR (Terminal Doppler Weather Radar: a C-band
+# radar a few miles off the field, its long-range reflectivity
+# product TZL - 300 m gates, 1 deg radials, 416 km - posted to the
+# same bucket every ~6 min) is tried first and the NEXRAD covers when
+# the TDWR is down or absent. "T:JFK" is the TDWR filed under JFK,
+# "OKX" the NEXRAD KOKX.
+#
+# Box: 150 km half-width so zooming the scope out still shows the
+# radar, MRMS beyond it. 1200 x 1200 px, ~100-300 KB a frame.
+STATION_MAX_MI = float(os.environ.get("L3_STATION_MAX_MI", "130"))
 STATION_RADAR = {
-    "KJFK": "OKX", "KLGA": "OKX", "KEWR": "OKX", "KHPN": "OKX",
-    "KBOS": "BOX", "KBDL": "BOX", "KDCA": "LWX", "KMCO": "MLB",
-    "KFLL": "AMX", "KDJT": "AMX", "KTPA": "TBW", "KLAX": "SOX",
-    "KSFO": "MUX", "TJSJ": "JUA",
+    "KJFK": ["T:JFK", "OKX"], "KLGA": ["T:JFK", "OKX"],
+    "KEWR": ["T:EWR", "T:JFK", "OKX"], "KHPN": ["T:JFK", "OKX"],
+    "KBOS": ["T:BOS", "BOX"], "KBDL": ["T:BOS", "BOX"],
+    "KDCA": ["T:DCA", "T:IAD", "LWX"], "KMCO": ["T:MCO", "MLB"],
+    "KFLL": ["T:FLL", "T:MIA", "AMX"], "KDJT": ["T:PBI", "T:FLL", "AMX"],
+    "KTPA": ["T:TPA", "TBW"], "KLAX": ["SOX"], "KSFO": ["MUX"],
+    "TJSJ": ["T:SJU", "JUA"],
 }
+# Radar positions, for the 25-mile rule before any file is opened.
+# TDWR positions are the ones each site's own files report.
+RADAR_POS = {
+    "T:JFK": (40.589, -73.880), "T:EWR": (40.593, -74.270),
+    "T:BOS": (42.158, -70.933), "T:DCA": (38.759, -76.962),
+    "T:IAD": (39.084, -77.529), "T:MCO": (28.343, -81.325),
+    "T:FLL": (26.143, -80.344), "T:MIA": (25.758, -80.491),
+    "T:PBI": (26.688, -80.273), "T:TPA": (27.860, -82.518),
+    "T:SJU": (18.474, -66.179),
+    "OKX": (40.865, -72.864), "BOX": (41.956, -71.137),
+    "LWX": (38.976, -77.487), "MLB": (28.113, -80.654),
+    "AMX": (25.611, -80.413), "TBW": (27.705, -82.402),
+    "SOX": (33.818, -117.636), "MUX": (37.155, -121.898),
+    "JUA": (18.116, -66.078),
+}
+
+
+def is_tdwr(site: str) -> bool:
+    return site.startswith("T:")
+
+
+def bucket_site(site: str) -> str:
+    """The 3-letter id the bucket files it under."""
+    return site[2:] if is_tdwr(site) else site
+
+
+def product_for(site: str) -> str:
+    return "TZL" if is_tdwr(site) else PRODUCT
+
+
+def _mi(a, b) -> float:
+    import math
+    la1, la2 = math.radians(a[0]), math.radians(b[0])
+    dla, dlo = la2 - la1, math.radians(b[1] - a[1])
+    h = (math.sin(dla / 2) ** 2
+         + math.cos(la1) * math.cos(la2) * math.sin(dlo / 2) ** 2)
+    return 2 * 3958.8 * math.asin(min(1.0, math.sqrt(h)))
+
+
+def station_site(icao: str, now=None):
+    """The radar a station uses now: the nearest candidate within
+    STATION_MAX_MI with a scan in the last 20 min, or None (MRMS).
+    One list call per candidate, cached per pass by recent_keys."""
+    st_pos = STATION_LATLON.get(icao.upper())
+    if not st_pos:
+        return None
+    for site in STATION_RADAR.get(icao.upper(), []):
+        pos = RADAR_POS.get(site)
+        if not pos or _mi(st_pos, pos) > STATION_MAX_MI:
+            continue
+        try:
+            k = latest_key(bucket_site(site), product_for(site), now)
+        except Exception:
+            k = None
+        if k and age_s(key_stamp(k)) < 1200:
+            return site
+    return None
 STATION_LATLON = {
     "KJFK": (40.640, -73.779), "KLGA": (40.777, -73.872),
     "KEWR": (40.689, -74.175), "KHPN": (41.067, -73.708),
@@ -117,17 +189,25 @@ def station_domain(icao: str) -> str:
     return f"STN_{icao.upper()}"
 
 
-for _i, _r in STATION_RADAR.items():
+for _i, _cands in STATION_RADAR.items():
     _la, _lo = STATION_LATLON[_i]
-    DOMAINS[station_domain(_i)] = (_r, _la, _lo, 75.0, 75.0, 250.0)
-    DOMAIN_LABEL[station_domain(_i)] = f"{_i} - K{_r}"
+    # The site slot is resolved per pass by station_site(); the entry
+    # holds the first candidate as a placeholder.
+    DOMAINS[station_domain(_i)] = (_cands[0], _la, _lo, 150.0, 150.0, 250.0)
+    DOMAIN_LABEL[station_domain(_i)] = _i
+
+
+def domain_site(domain: str) -> str | None:
+    """Radar for a domain right now. Station domains apply the 25-mile
+    rule; the others are fixed."""
+    if domain.startswith("STN_"):
+        return station_site(domain[4:])
+    return DOMAINS[domain][0]
 
 
 def loop_minutes(domain: str) -> int:
-    """How far back a domain's loop reaches. Station boxes keep only
-    the newest scan: the scope shows one picture, and 14 hubs x an
-    hour of frames is work nobody would look at."""
-    return 0 if domain.startswith("STN_") else LOOP_MINUTES
+    """How far back a domain's loop reaches: an hour everywhere."""
+    return LOOP_MINUTES
 PRODUCT = "N0B"
 CC_PRODUCT = "N0C"
 CC_MIN = float(os.environ.get("L3_CC_MIN", "0.85"))
@@ -492,7 +572,8 @@ def _lock_for(domain: str) -> threading.Lock:
         return _build_locks.setdefault(domain, threading.Lock())
 
 
-def build(domain: str, outdir, wait: bool = True, key: str = None) -> tuple:
+def build(domain: str, outdir, wait: bool = True, key: str = None,
+          site: str = None) -> tuple:
     """Fetch, decode and render the newest scan. (stamp, note).
 
     One build per domain at a time: the page can build on demand
@@ -503,7 +584,7 @@ def build(domain: str, outdir, wait: bool = True, key: str = None) -> tuple:
     if not lk.acquire(blocking=wait):
         return None, "busy"
     try:
-        stamp, note = _build(domain, outdir, key)
+        stamp, note = _build(domain, outdir, key, site)
         STATUS[domain] = {"ok": stamp is not None, "note": note,
                           "at": time.time()}
         return stamp, note
@@ -515,16 +596,19 @@ def build(domain: str, outdir, wait: bool = True, key: str = None) -> tuple:
         lk.release()
 
 
-def _build(domain: str, outdir, key: str = None) -> tuple:
+def _build(domain: str, outdir, key: str = None, site: str = None) -> tuple:
     from PIL import Image
 
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    site = DOMAINS[domain][0]
+    site = site or domain_site(domain)
+    if site is None:
+        return None, f"{domain}: no radar within {STATION_MAX_MI:.0f} mi"
+    bsite, prod = bucket_site(site), product_for(site)
     t0 = time.time()
-    key = key or latest_key(site)
+    key = key or latest_key(bsite, prod)
     if not key:
-        return None, f"no {site} {PRODUCT} files listed"
+        return None, f"no {bsite} {prod} files listed"
     stamp = key_stamp(key)
     man = outdir / f"l3_{domain}_{stamp}.json"
     if man.exists():
@@ -548,7 +632,10 @@ def _build(domain: str, outdir, key: str = None) -> tuple:
         cc_note = f"no MRMS mask ({type(exc).__name__})"
     if mask is None and CC_FILTER:
         # Same volume, same timestamp in the key.
+        # TDWRs are single-pol: no CC product, so MRMS or nothing.
         try:
+            if is_tdwr(site):
+                raise LookupError("TDWR")
             cc = decode_cc(fetch(key.replace(f"_{PRODUCT}_",
                                              f"_{CC_PRODUCT}_")))
             cc_note = "CC filtered (no MRMS mask)"
@@ -567,12 +654,14 @@ def _build(domain: str, outdir, key: str = None) -> tuple:
     # Manifest LAST, so a reader never finds a half-written image.
     man.write_text(json.dumps({
         "style": RENDER_STYLE, "name": name, "bounds": bounds,
-        "site": f"K{site}", "product": PRODUCT, "stamp": stamp,
+        "site": (f"T{bsite}" if is_tdwr(site) else f"K{bsite}"),
+        "product": prod, "stamp": stamp,
         "elev": scan["elev"],
         "radar": [scan["lon"], scan["lat"]],
         "filter": ("mrms" if mask is not None
                    else "cc" if cc is not None else "none")}))
-    return stamp, (f"{domain} K{site} {stamp}: list {t1 - t0:.2f}s, "
+    return stamp, (f"{domain} {'T' if is_tdwr(site) else 'K'}{bsite} "
+                   f"{stamp}: list {t1 - t0:.2f}s, "
                    f"download {len(raw) // 1024} KB {t2 - t1:.2f}s, "
                    f"decode+filter {t3 - t2:.2f}s ({cc_note}), "
                    f"render {t4 - t3:.2f}s, "
@@ -615,13 +704,16 @@ def backfill(domain: str, outdir) -> int:
     """Build every scan of the last LOOP_MINUTES not built yet, newest
     first so the current frame is never the one waiting. Returns
     frames built. Each is ~0.5 s once the lookup tables exist."""
-    site = DOMAINS[domain][0]
+    site = domain_site(domain)
+    if site is None:
+        return 0
     built = 0
-    for key in reversed(loop_keys(site, loop_minutes(domain))):
+    for key in reversed(loop_keys(bucket_site(site), loop_minutes(domain),
+                                  product_for(site))):
         man = Path(outdir) / f"l3_{domain}_{key_stamp(key)}.json"
         if man.exists():
             continue
-        stamp, note = build(domain, outdir, key=key)
+        stamp, note = build(domain, outdir, key=key, site=site)
         if stamp and note != "cached":
             built += 1
             _log(outdir, note)
@@ -705,7 +797,7 @@ def _loop(outdir):
                 # after that, builds just the new scan (one list call,
                 # the rest are already on disk).
                 backfill(dom, outdir)
-                _prune(outdir, dom, 3 if dom.startswith("STN_") else KEEP)
+                _prune(outdir, dom, KEEP)
             except Exception as exc:
                 _log(outdir, f"FAILED {dom}: {type(exc).__name__}: {exc}")
         # Scans arrive every 2-6 min depending on VCP; polling every
@@ -723,3 +815,125 @@ def ensure_l3_warmer(outdir) -> bool:
                              name="l3-warmer").start()
             _warm["started"] = True
     return True
+
+
+# ---------------------------------------------------------------------------
+# Loop page (shared by the Level III page and the Station Forecast scope)
+# ---------------------------------------------------------------------------
+def loop_html(frames, base, clat, clon, zoom=7.3, height=720,
+              min_zoom=4.0, rings_nm=(), center_label="") -> str:
+    """MapLibre map + client-side loop. Every frame is an image source
+    loaded once; the loop only changes which one is opaque.
+
+    MapLibre with CARTO's vector dark style - the same basemap pydeck
+    uses, and keyless (CARTO's raster tiles now stamp "API KEY
+    REQUIRED" across the map). An image source is stretched between
+    its corners in Web Mercator, which is how radar_l3 lays out its
+    rows. Images come from this site's /app/static, the same origin
+    as the page, so WebGL accepts them as textures.
+
+    Served as a real file from /app/static and embedded by URL, not
+    inlined with components.html: inside components.html's srcdoc
+    frame MapLibre loads its style but never requests a tile, so the
+    map stayed blank. As a normal same-origin page it works.
+    Loop speed comes in the URL (?ms=), so one file serves every
+    viewer's speed setting."""
+    data = [{"url": f"{base}/app/static/{f['name']}",
+             "t": f"{f['stamp'][9:11]}:{f['stamp'][11:13]}Z",
+             "b": f["bounds"]} for f in frames]
+    radar = frames[-1].get("radar") if frames else None
+    style = os.environ.get(
+        "BLUEMET_MAP_STYLE",
+        "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json")
+    return f"""
+<!doctype html><html><head><meta charset="utf-8">
+<link rel="stylesheet"
+ href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
+<style>
+ html,body{{margin:0;background:#000;height:100%;}}
+ #m{{height:{height - 46}px;border:1px solid #333;border-radius:12px;
+     overflow:hidden;}}
+ .bar{{display:flex;align-items:center;gap:12px;height:42px;
+      font:bold 12px "Courier New",Courier,monospace;color:#fff;}}
+ .bar button{{font:bold 12px "Courier New",monospace;background:#0A0A0A;
+      color:#fff;border:1px solid #333;border-radius:6px;padding:5px 12px;
+      cursor:pointer;}}
+ .bar input[type=range]{{flex:1;accent-color:#00E5FF;}}
+ #t{{min-width:64px;}} #n{{color:#B8B8B8;min-width:150px;}}
+</style></head><body>
+<div class="bar">
+  <button id="pp">Pause</button><button id="pv">&#9664;</button>
+  <button id="nx">&#9654;</button>
+  <input id="sl" type="range" min="0" max="{max(len(data) - 1, 0)}"
+         value="{max(len(data) - 1, 0)}">
+  <span id="t"></span><span id="n"></span>
+</div>
+<div id="m"></div>
+<script>
+const F = {json.dumps(data)};
+const RINGS = {json.dumps(list(rings_nm))};
+const CENTER = {json.dumps(bool(center_label))};
+const MS = Math.max(100, +(new URLSearchParams(location.search).get('ms')) || 500);
+const map = new maplibregl.Map({{container:'m', style:{json.dumps(style)},
+  center:[{clon}, {clat}], zoom:{zoom}, minZoom:{min_zoom}, maxZoom:12, attributionControl:true}});
+map.addControl(new maplibregl.NavigationControl({{showCompass:false}}));
+let i = F.length - 1, playing = F.length > 1, tick = null, ready = false;
+const sl = document.getElementById('sl'), t = document.getElementById('t'),
+      n = document.getElementById('n'), pp = document.getElementById('pp');
+function show(k) {{
+  i = k; sl.value = k;
+  t.textContent = F.length ? F[k].t : 'no frames';
+  n.textContent = F.length ? `frame ${{k + 1}}/${{F.length}}` +
+    (k === F.length - 1 ? ' (latest)' : '') : '';
+  if (!ready) return;
+  F.forEach((f, j) => map.setPaintProperty('r' + j, 'raster-opacity',
+                                           j === k ? 0.9 : 0));
+}}
+function step() {{
+  show((i + 1) % F.length);
+  // Hold the latest frame three times as long.
+  tick = setTimeout(step, i === F.length - 1 ? MS * 3 : MS);
+}}
+function play(on) {{
+  playing = on; pp.textContent = on ? 'Pause' : 'Play';
+  clearTimeout(tick);
+  if (on && F.length > 1) tick = setTimeout(step, MS);
+}}
+map.on('load', () => {{
+  // Radar under the place labels, over everything else.
+  const firstSymbol = (map.getStyle().layers.find(l => l.type === 'symbol')
+                       || {{}}).id;
+  F.forEach((f, j) => {{
+    const [w, s, e, nn] = f.b;
+    map.addSource('s' + j, {{type:'image', url:f.url,
+      coordinates:[[w, nn], [e, nn], [e, s], [w, s]]}});
+    map.addLayer({{id:'r' + j, type:'raster', source:'s' + j,
+      paint:{{'raster-opacity':0, 'raster-fade-duration':0,
+              'raster-resampling':'nearest'}}}}, firstSymbol);
+  }});
+  {f"new maplibregl.Marker({{color:'#FFFFFF', scale:0.5}}).setLngLat([{radar[0]}, {radar[1]}]).addTo(map);" if radar else ""}
+  RINGS.forEach((nm, k) => {{
+    const pts = []; const R = nm * 1852.0;
+    for (let a = 0; a <= 360; a += 3) {{
+      const b = a * Math.PI / 180, dn = R * Math.cos(b), de = R * Math.sin(b);
+      pts.push([{clon} + de / (111320 * Math.cos({clat} * Math.PI / 180)),
+                {clat} + dn / 110540]);
+    }}
+    map.addSource('ring' + k, {{type:'geojson', data:{{type:'Feature',
+      geometry:{{type:'LineString', coordinates:pts}}}}}});
+    map.addLayer({{id:'ring' + k, type:'line', source:'ring' + k,
+      paint:{{'line-color':'#8A9BB0', 'line-width':1, 'line-dasharray':[3,3]}}}});
+  }});
+  if (CENTER) {{
+    new maplibregl.Marker({{color:'#00E5FF', scale:0.6}})
+      .setLngLat([{clon}, {clat}]).addTo(map);
+  }}
+  ready = true; show(i); play(playing);
+}});
+pp.onclick = () => play(!playing);
+document.getElementById('nx').onclick = () => {{ play(false); show((i + 1) % F.length); }};
+document.getElementById('pv').onclick = () => {{ play(false); show((i - 1 + F.length) % F.length); }};
+sl.oninput = () => {{ play(false); show(+sl.value); }};
+if (F.length) show(i);
+</script></body></html>"""
