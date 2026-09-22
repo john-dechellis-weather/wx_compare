@@ -171,6 +171,20 @@ except Exception as _exc:
     _warm_notes.append(f"Surface warmer FAILED: "
                        f"{type(_exc).__name__}: {_exc}")
 
+# Model comparison for every Station Forecast hub, built once per
+# cycle (core/compare_warm.py). Turns a 4-15 s compute on page load
+# into a file read. COMPARE_WARMER=off stops it.
+try:
+    from core.compare_warm import ensure_compare_warmer
+
+    if ensure_compare_warmer(CACHE_ROOT):
+        _warm_notes.append("Compare warmer started (model frames per hub)")
+    else:
+        _warm_notes.append("Compare warmer off (COMPARE_WARMER=off)")
+except Exception as _exc:
+    _warm_notes.append(f"Compare warmer FAILED: "
+                       f"{type(_exc).__name__}: {_exc}")
+
 # Echo-top tags for the CONUS map: every 18 dBZ top at or above FL320
 # with 30 nm spacing, from the same MRMS file the mosaic uses, written
 # to static/etop_tags.json. Cheap (150 KB, ~0.4 s) and I/O-bound.
@@ -224,6 +238,12 @@ def _warmer_status():
             from core.etop_tags import log_tail as _et_tail
             for _ln in _et_tail(4):
                 st.caption("echo tops: " + _ln)
+        except Exception:
+            pass
+        try:
+            from core.compare_warm import log_tail as _cw_tail
+            for _ln in _cw_tail(3):
+                st.caption("compare: " + _ln)
         except Exception:
             pass
         try:
