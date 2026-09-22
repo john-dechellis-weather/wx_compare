@@ -111,7 +111,7 @@ def _job_geom(key: str):
 # basemap plus a LUT-coloured data layer instead of contourf.
 # Visually close but not byte-identical, and the title is no
 # longer baked in, so old frames must not be mixed with new.
-WARM_STYLE = 12  # v12: 10 nm rings, tighter labels
+WARM_STYLE = 13  # v13: dark ground, N90 outline
 # ^^ THIS MUST BE BUMPED WHENEVER RENDER_FACTOR / WARM_ZOOM /
 # dpi CHANGE. Frame paths do NOT encode geometry and warm_get
 # does NOT check style - it serves whatever bytes sit on disk
@@ -228,11 +228,18 @@ WARM_MODELS = [m.strip() for m in
 # Warm JOBS: a job is "model" (legacy, product=WARM_PRODUCT) or
 # "model@PRODUCT". REFS jobs warm the flagship ensemble products
 # so hub loads scrub instantly, same as the deterministic grid.
+# The eight products the REFS pods offer, all warmed (22 Sep). Each
+# fast-path frame is ~0.5 s, so eight products to f60 is about
+# 4 min of render per 6-hour cycle.
 REFS_WARM_JOBS = [
     "refs_pmmn@REFC",
-    "refs_prob@PROB_CIG1000",
-    "refs_prob@PROB_VIS1",
     "refs_prob@PROB_REFC40",
+    "refs_prob@PROB_REFC50",
+    "refs_prob@PROB_CIG1000",
+    "refs_prob@PROB_CIG500",
+    "refs_prob@PROB_VIS1",
+    "refs_prob@PROB_VIS3",
+    "refs_prob@PROB_RETOP35",
 ]
 # Every aviation product, not just reflectivity. This was one
 # product because contourf cost ~10 s a frame and six products did

@@ -66,6 +66,7 @@ PRODUCT_LABELS = {
     "UGRD10": "10 m U wind (m/s)",
     "VGRD10": "10 m V wind (m/s)",
     "PROB_REFC40": "P(Composite Refl >= 40 dBZ)  %",
+    "PROB_REFC50": "P(Composite Refl >= 50 dBZ)  %",
     "PROB_CIG500": "P(Ceiling < 500 ft)  %",
     "PROB_CIG1000": "P(Ceiling < 1000 ft)  %",
     "PROB_CIG2000": "P(Ceiling < 2000 ft)  %",
@@ -94,6 +95,7 @@ PRODUCT_LABELS = {
 # 1/2sm=804.7  1sm=1609.3    3sm=4828
 PROB_DEFS = {
     "PROB_REFC40": ("REFC", "", ">", 40.0, 1.0),
+    "PROB_REFC50": ("REFC", "", ">", 50.0, 1.0),
     "PROB_CIG500": ("HGT", "cloud ceiling", "<", 152.4, 3.0),
     "PROB_CIG1000": ("HGT", "cloud ceiling", "<", 304.8, 3.0),
     "PROB_CIG2000": ("HGT", "cloud ceiling", "<", 609.6, 3.0),
@@ -216,8 +218,8 @@ MODELS = {
         "min_fhr": 1,
         "max_fhr": 60,
         "products": {
-            "PROB_REFC40", "PROB_CIG500", "PROB_CIG1000",
-            "PROB_CIG2000", "PROB_VIS05", "PROB_VIS1",
+            "PROB_REFC40", "PROB_REFC50", "PROB_CIG500",
+            "PROB_CIG1000", "PROB_CIG2000", "PROB_VIS05", "PROB_VIS1",
             "PROB_VIS3", "PROB_RETOP30", "PROB_RETOP35"},
         "note": "HREF successor (SCN 26-48), pre-implementation",
     },

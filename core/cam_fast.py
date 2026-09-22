@@ -88,7 +88,8 @@ PALETTES = {
              "scale": 1.943844},
 }
 # REFS probability fields share one ramp.
-for _pk in ("PROB_CIG1000", "PROB_VIS1", "PROB_REFC40", "PROB"):
+for _pk in ("PROB_CIG1000", "PROB_CIG500", "PROB_VIS1", "PROB_VIS3",
+            "PROB_REFC40", "PROB_REFC50", "PROB_RETOP35", "PROB"):
     PALETTES[_pk] = {
         "bounds": [5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
         "colors": ["#d1e9f7", "#8fcbe8", "#54a6d6", "#4bb84b",
@@ -102,7 +103,14 @@ for _pk in ("PROB_CIG1000", "PROB_VIS1", "PROB_REFC40", "PROB"):
 # below this, so isolated cells fade at their own size instead of
 # being inflated to full-strength discs.
 # Bump whenever the basemap's content changes.
-BASEMAP_STYLE = 5
+BASEMAP_STYLE = 6   # v6: dark ground, N90 outline, light furniture
+# The ground every frame is composited on. Dark grey, almost black,
+# so the fields read the way radar does on the other maps.
+GROUND = (11, 12, 14, 255)
+# N90 extent from static/n90_fixes.json ("hull": an approximation of
+# the delegated boundary), drawn on every basemap that covers it.
+N90_LINE = "#FFD400"
+N90_WIDTH_PT = 7.0   # ~3 px once a 1950 px frame is shown at pod size
 
 # Stations NOT drawn on the basemap. New York metro shows JFK only.
 STATION_SKIP = set(
@@ -268,20 +276,37 @@ def basemap(key: str, extent, width: int, height: int,
     ax.patch.set_alpha(0.0)
     ax.outline_patch.set_visible(False) if hasattr(
         ax, "outline_patch") else None
+    # Furniture in light greys: the ground is near-black now.
     try:
         ax.add_feature(cfeature.COASTLINE.with_scale("10m"),
-                       linewidth=0.9, edgecolor="#1a1a1a", zorder=5)
+                       linewidth=0.9, edgecolor="#8A96A6", zorder=5)
         ax.add_feature(cfeature.STATES.with_scale("10m"),
-                       linewidth=0.55, edgecolor="#444444", zorder=5)
+                       linewidth=0.6, edgecolor="#5C6673", zorder=5)
         ax.add_feature(cfeature.BORDERS.with_scale("10m"),
-                       linewidth=0.8, edgecolor="#1a1a1a", zorder=5)
+                       linewidth=0.8, edgecolor="#8A96A6", zorder=5)
     except Exception:
         pass
     gl = ax.gridlines(draw_labels=True, linewidth=0.3, linestyle=":",
-                      color="#777777", x_inline=True, y_inline=True,
+                      color="#3A424C", x_inline=True, y_inline=True,
                       zorder=6)
-    gl.xlabel_style = {"size": 7, "color": "#555"}
-    gl.ylabel_style = {"size": 7, "color": "#555"}
+    gl.xlabel_style = {"size": 7, "color": "#8A96A6"}
+    gl.ylabel_style = {"size": 7, "color": "#8A96A6"}
+
+    # N90 outline, 3 pt yellow, on every map that reaches it.
+    try:
+        import json as _json
+        _hull = _json.loads((Path(__file__).resolve().parent.parent
+                             / "static" / "n90_fixes.json").read_text()
+                            ).get("hull") or []
+        if len(_hull) >= 3:
+            xs = [pt[0] for pt in _hull]
+            ys = [pt[1] for pt in _hull]
+            if max(xs) > w and min(xs) < e and max(ys) > s and min(ys) < n:
+                ax.plot(xs, ys, color=N90_LINE, linewidth=N90_WIDTH_PT,
+                        solid_joinstyle="round", transform=ccrs.PlateCarree(),
+                        zorder=7)
+    except Exception:
+        pass
 
     # JetBlue stations: a blue dot and the three-letter identifier.
     # Drawn on the BASEMAP so they cost nothing per frame and sit
@@ -416,9 +441,11 @@ def render_fast(product: str, vals, lats, lons, center_lat: float,
 
     base = basemap(grid_key.split("|")[0], extent, width, height,
                    cache_dir=cache_dir)
-    # Furniture ON TOP of the field: coastlines must stay visible
-    # through heavy echo.
-    out = Image.alpha_composite(data_im, base)
+    # Ground, then the field, then the furniture on top: coastlines
+    # must stay visible through heavy echo.
+    out = Image.new("RGBA", data_im.size, GROUND)
+    out.alpha_composite(data_im)
+    out = Image.alpha_composite(out, base)
     buf = io.BytesIO()
     out.save(buf, "WEBP", quality=webp_q, method=4)
     return buf.getvalue()
