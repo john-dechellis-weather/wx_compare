@@ -289,8 +289,8 @@ PAGES = {
         # Station Quick View removed from navigation 21 Sep; the file
         # stays in pages/ unlisted. Its airport scope lives on in
         # Station Forecast, so the surface warmer above still runs.
-        st.Page("pages/8_JBU_Flight_Tracker.py",
-                title="JBU Flight Tracker"),
+        # JBU Flight Tracker removed 22 Sep (unused); delete
+        # pages/8_JBU_Flight_Tracker.py from the repo.
     ],
     # N90 Airspace removed from navigation. The page file stays in
     # pages/ and still works if reached directly, but it is not
