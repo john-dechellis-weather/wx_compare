@@ -436,12 +436,37 @@ with c_obs:
             st.caption("No ceiling/visibility guidance for this station and cycle.")
 
 
+def _search_fleet(q: str) -> list:
+    """JetBlue aircraft in the last fleet sweep matching a flight
+    number or callsign fragment ("1123", "JBU1123", "B61123")."""
+    import re as _re
+    q = (q or "").strip().upper()
+    if not q:
+        return []
+    digits = _re.sub(r"\D", "", q)
+    hits = []
+    try:
+        from core import fleet as _FL
+        res = _FL.STATE.get("res")
+        for r in (res[0] if res else []) or []:
+            cs = (r.get("callsign") or "").upper()
+            if q in cs or (digits and _re.sub(r"\D", "", cs) == digits):
+                hits.append(r)
+    except Exception:
+        return []
+    return hits[:5]
+
+
+# Read the search box's value before the scope draws, so the highlight
+# is on this run, not the next one.
+_ac_hits = _search_fleet(st.session_state.get("sf_ac_query", ""))
+
 with c_rad:
     with st.container(border=True):
         # The airport scope, exactly as Station Quick View draws it -
         # same runway table, same finals, same ATIS colouring - with
         # MRMS reflectivity underneath and no traffic, at 20 nm.
-        stamp_txt, cfg, l3_txt = "", {}, ""
+        stamp_txt, cfg, l3_txt, l3_frames, base = "", {}, "", [], ""
         if coords:
             from core import airport_scope as AS
             base = _origin()
@@ -473,11 +498,14 @@ with c_rad:
             # on page load. MRMS stays underneath for the area outside
             # the Level III box and as the fallback while it warms.
             l3_txt = ""
+            l3_frames = []
             if base and st.session_state.get("sf_mrms", True):
                 try:
                     from core import radar_l3 as L3
-                    _man, _l3s = L3.newest(STATIC_MRMS, L3.station_domain(icao))
-                    if _man and L3.age_s(_l3s) < 600:
+                    l3_frames = L3.frames(STATIC_MRMS, L3.station_domain(icao))
+                    _man = l3_frames[-1] if l3_frames else None
+                    _l3s = _man["stamp"] if _man else None
+                    if _man and L3.age_s(_l3s) < 1200:
                         _l3 = pdk.Layer(
                             "BitmapLayer", data=None,
                             image=f"{base}/app/static/{_man['name']}",
@@ -488,15 +516,29 @@ with c_rad:
                         layers.insert(_after, _l3)
                         l3_txt = (f" · Level III {_man['site']} "
                                   f"{_l3s[9:11]}:{_l3s[11:13]}Z")
+                    elif icao.upper() in L3.STATION_RADAR:
+                        l3_txt = (f" · MRMS only (no radar within "
+                                  f"{L3.STATION_MAX_MI:.0f} mi with a "
+                                  "current scan)")
                 except Exception:
                     l3_txt = ""
         pod_title("Airport scope",
                   f"20 nm · MRMS {stamp_txt or 'no current scan'}"
                   + (l3_txt if coords else "")
                   + (f" · {len(ac)} aircraft" if coords and ac else ""))
-        show_mrms = st.checkbox("MRMS reflectivity", value=True, key="sf_mrms",
-                                help="Radar mosaic under the scope. Off shows "
-                                     "the field and traffic on black.")
+        _sc1, _sc2 = st.columns([1, 1])
+        with _sc1:
+            show_mrms = st.checkbox("Radar", value=True, key="sf_mrms",
+                                    help="Level III from the airport's radar "
+                                         "(within 25 mi) over MRMS. Off shows "
+                                         "the field and traffic on black.")
+        with _sc2:
+            show_loop = st.checkbox("Radar loop (1 hr)", value=False,
+                                    key="sf_loop", disabled=not l3_frames,
+                                    help="Plays the last hour of the airport's "
+                                         "Level III radar on a map you can "
+                                         "zoom; the runway diagram and traffic "
+                                         "are on the scope, not the loop.")
         if coords:
             from core import station_status as SS
             _latest = obs[-1].raw_text if obs else ""
@@ -530,7 +572,38 @@ with c_rad:
                 unsafe_allow_html=True)
         elif coords:
             st.caption("No D-ATIS for this field \u2014 finals drawn off every end.")
-        if coords:
+        if coords and show_loop and l3_frames and base:
+            # THE LOOP: last hour of Level III, played in the browser.
+            # MapLibre with the same dark style; 20 nm ring and the
+            # field marked; zoom out as far as the 150 km box.
+            import streamlit.components.v1 as _components
+            _lname = f"sfloop_{icao}.html"
+            _ltmp = STATIC_MRMS / f".{_lname}.tmp"
+            _ltmp.write_text(L3.loop_html(
+                l3_frames, base, coords[0], coords[1], zoom=9.0,
+                height=620, min_zoom=6.5, rings_nm=(20,), center_label=icao))
+            os.replace(_ltmp, STATIC_MRMS / _lname)
+            _components.iframe(
+                f"{base}/app/static/{_lname}?ms=500&v={l3_frames[-1]['stamp']}",
+                height=620)
+        elif coords:
+            _hl = [{"position": [r["lon"], r["lat"]],
+                    "callsign": r.get("callsign", "")} for r in _ac_hits]
+            if _hl:
+                layers.append(pdk.Layer(
+                    "ScatterplotLayer", _hl, get_position="position",
+                    get_radius=1400, radius_min_pixels=14,
+                    radius_max_pixels=22, filled=False, stroked=True,
+                    get_line_color=[0, 229, 255, 255],
+                    line_width_min_pixels=2.5, pickable=False))
+                layers.append(pdk.Layer(
+                    "TextLayer", _hl, get_position="position",
+                    get_text="callsign", get_size=1400,
+                    size_min_pixels=0, size_max_pixels=13,
+                    get_color=[0, 229, 255, 255], font_weight="bold",
+                    get_pixel_offset=[0, -22],
+                    get_text_anchor='"middle"',
+                    get_alignment_baseline='"center"', pickable=False))
             style = None
             try:
                 host = st.context.headers.get("Host", "")
@@ -578,6 +651,59 @@ with c_rad:
             + (f" \u00b7 {_d['error']}" if _d.get("error") else ""))
 
 # ============================================================ row 2
+
+with c_rad:
+    with st.container(border=True):
+        # AIRCRAFT SEARCH. A flight number or callsign; the aircraft
+        # is highlighted on the scope above and described here. Any
+        # JetBlue aircraft the fleet sweep knows about is findable,
+        # not only those within the scope's pull.
+        pod_title("Aircraft search",
+                  "flight number or callsign · highlighted on the scope")
+        _q = st.text_input("Flight", value="", key="sf_ac_query",
+                           placeholder="e.g. 1123, JBU1123, B61123",
+                           label_visibility="collapsed").strip().upper()
+        if _q:
+            _hits = _ac_hits
+            if not _hits:
+                st.caption(f"No JetBlue aircraft matching {_q} in the last "
+                           "sweep (airborne aircraft only; positions "
+                           "refresh every 2 min).")
+            else:
+                for r in _hits[:5]:
+                    _d = _b = None
+                    if coords:
+                        try:
+                            _d = AS.distance_nm(coords[0], coords[1],
+                                                r["lat"], r["lon"])
+                            import math as _m
+                            _dl = _m.radians(r["lon"] - coords[1])
+                            _y = _m.sin(_dl) * _m.cos(_m.radians(r["lat"]))
+                            _x = (_m.cos(_m.radians(coords[0]))
+                                  * _m.sin(_m.radians(r["lat"]))
+                                  - _m.sin(_m.radians(coords[0]))
+                                  * _m.cos(_m.radians(r["lat"])) * _m.cos(_dl))
+                            _b = (_m.degrees(_m.atan2(_y, _x)) + 360) % 360
+                        except Exception:
+                            _d = _b = None
+                    _where = (f"{_d:.0f} nm on the {_b:03.0f}\u00b0 from {icao}"
+                              if _d is not None else "")
+                    _on = (" \u2014 on the scope" if _d is not None and _d <= 20
+                           else " \u2014 outside the 20 nm scope"
+                           if _d is not None else "")
+                    st.markdown(
+                        f'<div style="border:1px solid #00E5FF;padding:6px 10px;'
+                        f'margin-bottom:6px;color:{INK};font-size:12px;'
+                        'font-weight:700;font-family:DejaVu Sans Mono,monospace">'
+                        f'{r.get("callsign","")}'
+                        + (f' &rarr; {r["dest"]}' if r.get("dest") else "")
+                        + f' &middot; FL{int((r.get("alt") or 0) / 100):03d}'
+                        + (f' &middot; {int(r["gs"])} kt' if r.get("gs") else "")
+                        + (f' &middot; hdg {int(r["angle"]):03d}'
+                           if r.get("angle") is not None else "")
+                        + (f'<br>{_where}{_on}' if _where else "")
+                        + "</div>", unsafe_allow_html=True)
+
 c_wind, c_mos = st.columns(2, gap="small")
 
 with c_wind:

@@ -122,107 +122,6 @@ with c3:
                              index=2, horizontal=True, key="l3_cmp")
 
 
-def _loop_html(frames, base, domain, height=720) -> str:
-    """MapLibre map + client-side loop. Every frame is an image source
-    loaded once; the loop only changes which one is opaque.
-
-    MapLibre with CARTO's vector dark style - the same basemap pydeck
-    uses, and keyless (CARTO's raster tiles now stamp "API KEY
-    REQUIRED" across the map). An image source is stretched between
-    its corners in Web Mercator, which is how radar_l3 lays out its
-    rows. Images come from this site's /app/static, the same origin
-    as the page, so WebGL accepts them as textures.
-
-    Served as a real file from /app/static and embedded by URL, not
-    inlined with components.html: inside components.html's srcdoc
-    frame MapLibre loads its style but never requests a tile, so the
-    map stayed blank. As a normal same-origin page it works.
-    Loop speed comes in the URL (?ms=), so one file serves every
-    viewer's speed setting."""
-    _site, clat, clon, *_ = L3.DOMAINS[domain]
-    data = [{"url": f"{base}/app/static/{f['name']}",
-             "t": f"{f['stamp'][9:11]}:{f['stamp'][11:13]}Z",
-             "b": f["bounds"]} for f in frames]
-    radar = frames[-1].get("radar") if frames else None
-    style = os.environ.get(
-        "BLUEMET_MAP_STYLE",
-        "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json")
-    return f"""
-<!doctype html><html><head><meta charset="utf-8">
-<link rel="stylesheet"
- href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
-<style>
- html,body{{margin:0;background:#000;height:100%;}}
- #m{{height:{height - 46}px;border:1px solid #333;border-radius:12px;
-     overflow:hidden;}}
- .bar{{display:flex;align-items:center;gap:12px;height:42px;
-      font:bold 12px "Courier New",Courier,monospace;color:#fff;}}
- .bar button{{font:bold 12px "Courier New",monospace;background:#0A0A0A;
-      color:#fff;border:1px solid #333;border-radius:6px;padding:5px 12px;
-      cursor:pointer;}}
- .bar input[type=range]{{flex:1;accent-color:#00E5FF;}}
- #t{{min-width:64px;}} #n{{color:#B8B8B8;min-width:150px;}}
-</style></head><body>
-<div class="bar">
-  <button id="pp">Pause</button><button id="pv">&#9664;</button>
-  <button id="nx">&#9654;</button>
-  <input id="sl" type="range" min="0" max="{max(len(data) - 1, 0)}"
-         value="{max(len(data) - 1, 0)}">
-  <span id="t"></span><span id="n"></span>
-</div>
-<div id="m"></div>
-<script>
-const F = {json.dumps(data)};
-const MS = Math.max(100, +(new URLSearchParams(location.search).get('ms')) || 500);
-const map = new maplibregl.Map({{container:'m', style:{json.dumps(style)},
-  center:[{clon}, {clat}], zoom:7.3, attributionControl:true}});
-map.addControl(new maplibregl.NavigationControl({{showCompass:false}}));
-let i = F.length - 1, playing = F.length > 1, tick = null, ready = false;
-const sl = document.getElementById('sl'), t = document.getElementById('t'),
-      n = document.getElementById('n'), pp = document.getElementById('pp');
-function show(k) {{
-  i = k; sl.value = k;
-  t.textContent = F.length ? F[k].t : 'no frames';
-  n.textContent = F.length ? `frame ${{k + 1}}/${{F.length}}` +
-    (k === F.length - 1 ? ' (latest)' : '') : '';
-  if (!ready) return;
-  F.forEach((f, j) => map.setPaintProperty('r' + j, 'raster-opacity',
-                                           j === k ? 0.9 : 0));
-}}
-function step() {{
-  show((i + 1) % F.length);
-  // Hold the latest frame three times as long.
-  tick = setTimeout(step, i === F.length - 1 ? MS * 3 : MS);
-}}
-function play(on) {{
-  playing = on; pp.textContent = on ? 'Pause' : 'Play';
-  clearTimeout(tick);
-  if (on && F.length > 1) tick = setTimeout(step, MS);
-}}
-map.on('load', () => {{
-  // Radar under the place labels, over everything else.
-  const firstSymbol = (map.getStyle().layers.find(l => l.type === 'symbol')
-                       || {{}}).id;
-  F.forEach((f, j) => {{
-    const [w, s, e, nn] = f.b;
-    map.addSource('s' + j, {{type:'image', url:f.url,
-      coordinates:[[w, nn], [e, nn], [e, s], [w, s]]}});
-    map.addLayer({{id:'r' + j, type:'raster', source:'s' + j,
-      paint:{{'raster-opacity':0, 'raster-fade-duration':0,
-              'raster-resampling':'nearest'}}}}, firstSymbol);
-  }});
-  {f"new maplibregl.Marker({{color:'#FFFFFF', scale:0.5}}).setLngLat([{radar[0]}, {radar[1]}]).addTo(map);" if radar else ""}
-  ready = true; show(i); play(playing);
-}});
-pp.onclick = () => play(!playing);
-document.getElementById('nx').onclick = () => {{ play(false); show((i + 1) % F.length); }};
-document.getElementById('pv').onclick = () => {{ play(false); show((i - 1 + F.length) % F.length); }};
-sl.oninput = () => {{ play(false); show(+sl.value); }};
-if (F.length) show(i);
-</script></body></html>"""
-
-
 @st.fragment(run_every=60)
 def _body():
     base = _origin()
@@ -250,7 +149,8 @@ def _body():
         ms = {"Slow": 900, "Normal": 500, "Fast": 250}[speed]
         name = f"l3loop_{domain}.html"
         tmp = STATIC / f".{name}.tmp"
-        tmp.write_text(_loop_html(frames, base, domain))
+        _site, clat, clon, *_ = L3.DOMAINS[domain]
+        tmp.write_text(L3.loop_html(frames, base, clat, clon, zoom=7.3))
         os.replace(tmp, STATIC / name)
         v = frames[-1]["stamp"] if frames else "none"
         components.iframe(f"{base}/app/static/{name}?ms={ms}&v={v}",
