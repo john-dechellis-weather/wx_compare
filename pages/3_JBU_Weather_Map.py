@@ -1896,8 +1896,10 @@ with st.sidebar:
 # A press is remembered in session state so the timed app reruns
 # below keep the page in its run state. The query param is kept as
 # a fallback for a manual browser reload, which starts a new session.
-_auto = (st.session_state.get("_map_ran", False)
-         or st.query_params.get("auto") == "1")
+# OPENS RENDERED (22 Sep): the page draws the map with the default
+# thresholds on first open instead of showing an intro and waiting
+# for "Refresh alerts". The button still applies changed thresholds.
+_auto = True
 if run_button:
     st.session_state["_map_ran"] = True
     try:
@@ -1914,11 +1916,9 @@ if run_button or _auto:
     now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
     window_end = now + timedelta(hours=hours_ahead)
 
-    st.info(
-        f"Window: **{now:%Y-%m-%d %H:%M UTC}** to **{window_end:%H:%M UTC}** "
-        f"(next {hours_ahead}h) \u2014 "
-        "**if MRMS radar does not appear, refresh the page.**"
-    )
+    st.caption(
+        f"Window {now:%Y-%m-%d %H:%M}Z to {window_end:%H:%M}Z "
+        f"(next {hours_ahead} h)")
 
     # METAR fetch overlaps the TAF analysis (independent AWC
     # calls; the pool carries Streamlit's script context)
