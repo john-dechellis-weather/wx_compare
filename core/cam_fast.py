@@ -103,14 +103,14 @@ for _pk in ("PROB_CIG1000", "PROB_CIG500", "PROB_VIS1", "PROB_VIS3",
 # below this, so isolated cells fade at their own size instead of
 # being inflated to full-strength discs.
 # Bump whenever the basemap's content changes.
-BASEMAP_STYLE = 6   # v6: dark ground, N90 outline, light furniture
+BASEMAP_STYLE = 7   # v7: N90 outline red, half width
 # The ground every frame is composited on. Dark grey, almost black,
 # so the fields read the way radar does on the other maps.
 GROUND = (11, 12, 14, 255)
 # N90 extent from static/n90_fixes.json ("hull": an approximation of
 # the delegated boundary), drawn on every basemap that covers it.
-N90_LINE = "#FFD400"
-N90_WIDTH_PT = 7.0   # ~3 px once a 1950 px frame is shown at pod size
+N90_LINE = "#FF2A2A"
+N90_WIDTH_PT = 3.5   # ~1.5 px once a 1950 px frame is shown at pod size
 
 # Stations NOT drawn on the basemap. New York metro shows JFK only.
 STATION_SKIP = set(
