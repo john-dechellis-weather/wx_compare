@@ -526,19 +526,11 @@ with c_rad:
                   f"20 nm · MRMS {stamp_txt or 'no current scan'}"
                   + (l3_txt if coords else "")
                   + (f" · {len(ac)} aircraft" if coords and ac else ""))
-        _sc1, _sc2 = st.columns([1, 1])
-        with _sc1:
-            show_mrms = st.checkbox("Radar", value=True, key="sf_mrms",
-                                    help="Level III from the airport's radar "
-                                         "(within 25 mi) over MRMS. Off shows "
-                                         "the field and traffic on black.")
-        with _sc2:
-            show_loop = st.checkbox("Radar loop (1 hr)", value=False,
-                                    key="sf_loop", disabled=not l3_frames,
-                                    help="Plays the last hour of the airport's "
-                                         "Level III radar on a map you can "
-                                         "zoom; the runway diagram and traffic "
-                                         "are on the scope, not the loop.")
+        show_mrms = st.checkbox("Radar", value=True, key="sf_mrms",
+                                help="Current reflectivity: Level III from "
+                                     "the airport's nearest radar over MRMS. "
+                                     "Off shows the field and traffic on "
+                                     "black.")
         if coords:
             from core import station_status as SS
             _latest = obs[-1].raw_text if obs else ""
@@ -572,21 +564,7 @@ with c_rad:
                 unsafe_allow_html=True)
         elif coords:
             st.caption("No D-ATIS for this field \u2014 finals drawn off every end.")
-        if coords and show_loop and l3_frames and base:
-            # THE LOOP: last hour of Level III, played in the browser.
-            # MapLibre with the same dark style; 20 nm ring and the
-            # field marked; zoom out as far as the 150 km box.
-            import streamlit.components.v1 as _components
-            _lname = f"sfloop_{icao}.html"
-            _ltmp = STATIC_MRMS / f".{_lname}.tmp"
-            _ltmp.write_text(L3.loop_html(
-                l3_frames, base, coords[0], coords[1], zoom=9.0,
-                height=620, min_zoom=6.5, rings_nm=(20,), center_label=icao))
-            os.replace(_ltmp, STATIC_MRMS / _lname)
-            _components.iframe(
-                f"{base}/app/static/{_lname}?ms=500&v={l3_frames[-1]['stamp']}",
-                height=620)
-        elif coords:
+        if coords:
             _hl = [{"position": [r["lon"], r["lat"]],
                     "callsign": r.get("callsign", "")} for r in _ac_hits]
             if _hl:
