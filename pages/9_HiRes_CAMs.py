@@ -150,8 +150,9 @@ def _viewer(img: bytes, height: int = 560) -> None:
     mime = "image/webp" if img[:4] == b"RIFF" else "image/png"
     uri = f"data:{mime};base64," + _b64.b64encode(img).decode("ascii")
     _components.html(f"""
-<div id="w" style="width:100%;height:{height}px;overflow:hidden;
-     background:#0b0c0e;border-radius:8px;cursor:grab;position:relative">
+<div id="w" style="width:100%;max-width:{height}px;aspect-ratio:1/1;
+     margin:0 auto;overflow:hidden;background:#0b0c0e;border-radius:8px;
+     cursor:grab;position:relative">
  <img id="m" src="{uri}" draggable="false"
       style="position:absolute;left:0;top:0;width:100%;height:100%;
              transform-origin:0 0;user-select:none">

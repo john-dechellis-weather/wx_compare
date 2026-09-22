@@ -99,10 +99,12 @@ PRODUCTS = {
     "Probability visibility < 3 sm": ("refs_prob", "PROB_VIS3"),
     "Probability echo tops > FL350": ("refs_prob", "PROB_RETOP35"),
 }
+# Defaults: PMMN composite on the left, echo tops on the right, both
+# rows (Northeast on top, Florida below).
 _POD_DEFAULTS = ["PMMN composite reflectivity",
-                 "Probability REFC \u2265 40 dBZ",
-                 "Probability ceiling < 1000 ft",
-                 "Probability visibility < 3 sm"]
+                 "Probability echo tops > FL350",
+                 "PMMN composite reflectivity",
+                 "Probability echo tops > FL350"]
 
 # Run choice -> the forecast hour a run must have reached to count.
 # REFS runs 00Z and 12Z to f60, 06Z and 18Z to f48.
@@ -194,8 +196,9 @@ def _viewer(img: bytes, key: str, height: int = 560) -> None:
     mime = "image/webp" if img[:4] == b"RIFF" else "image/png"
     uri = f"data:{mime};base64," + _b64.b64encode(img).decode("ascii")
     _components.html(f"""
-<div id="w" style="width:100%;height:{height}px;overflow:hidden;
-     background:#0b0c0e;border-radius:8px;cursor:grab;position:relative">
+<div id="w" style="width:100%;max-width:{height}px;aspect-ratio:1/1;
+     margin:0 auto;overflow:hidden;background:#0b0c0e;border-radius:8px;
+     cursor:grab;position:relative">
  <img id="m" src="{uri}" draggable="false"
       style="position:absolute;left:0;top:0;width:100%;height:100%;
              transform-origin:0 0;user-select:none">
