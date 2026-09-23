@@ -268,17 +268,91 @@ def _airspace():
     return _AIRSPACE
 
 
-def _airspace_layers() -> list:
-    """Thin grey ARTCC outlines with a small bold label at the centre
-    of each, and jet routes in yellow at 50% - under the stations."""
+# SPC Day 1 categorical outlook, as a fill per ARTCC. SPC's own
+# colours; a centre is filled with the highest risk that covers at
+# least SPC_MIN_FRACTION of its area. Fetched from SPC every 10 min
+# (a 6-100 KB GeoJSON); the area sums are a few shapely intersections.
+SPC_URL = "https://www.spc.noaa.gov/products/outlook/day1otlk_cat.lyr.geojson"
+SPC_MIN_FRACTION = float(os.environ.get("BLUEMET_SPC_MIN_FRACTION", "0.20"))
+SPC_RANK = {"TSTM": 1, "MRGL": 2, "SLGT": 3, "ENH": 4, "MDT": 5, "HIGH": 6}
+SPC_COLOR = {"TSTM": "#C1E9C1", "MRGL": "#66A366", "SLGT": "#FFE066",
+             "ENH": "#FFA366", "MDT": "#E06666", "HIGH": "#EE99EE"}
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _spc_by_artcc(bucket: str) -> dict:
+    """{ARTCC ident: (risk label, fraction)} for centres whose highest
+    qualifying risk covers >= SPC_MIN_FRACTION of their area."""
+    import requests
+    from shapely.geometry import shape, Polygon
+    from shapely.ops import unary_union
+
+    r = requests.get(SPC_URL, timeout=15, headers={"User-Agent": "bluemet.org"})
+    r.raise_for_status()
+    feats = r.json().get("features", [])
+    # One geometry per risk label (SPC draws each category as its own
+    # polygon set; higher risks sit inside lower ones).
+    risk_geom = {}
+    for f in feats:
+        lab = (f.get("properties") or {}).get("LABEL")
+        if lab not in SPC_RANK:
+            continue
+        g = shape(f["geometry"]).buffer(0)
+        risk_geom[lab] = unary_union([risk_geom[lab], g]) if lab in risk_geom else g
+    if not risk_geom:
+        return {}
+    out = {}
     A = _airspace()
-    layers = []
-    if A["routes"]:
-        layers.append(pdk.Layer(
-            "PathLayer", A["routes"], get_path="path",
-            get_color=[255, 212, 0, 128], get_width=3000,
-            width_min_pixels=1, width_max_pixels=1.5,
-            pickable=False))
+    by_id = {}
+    for c in A["artcc"]:
+        poly = Polygon(c["path"]).buffer(0)
+        by_id[c["id"]] = unary_union([by_id[c["id"]], poly]) if c["id"] in by_id else poly
+    for ident, poly in by_id.items():
+        area = poly.area
+        if area <= 0:
+            continue
+        best = None
+        for lab in sorted(risk_geom, key=lambda k: -SPC_RANK[k]):
+            frac = poly.intersection(risk_geom[lab]).area / area
+            if frac >= SPC_MIN_FRACTION:
+                best = (lab, round(frac, 2))
+                break
+        if best:
+            out[ident] = best
+    return out
+
+
+def _spc_fill_layers() -> list:
+    """Filled ARTCC polygons coloured by SPC risk, under the outlines."""
+    from datetime import datetime, timezone
+    try:
+        risks = _spc_by_artcc(datetime.now(timezone.utc).strftime("%Y%m%d%H%M")[:-1])
+    except Exception:
+        return []
+    if not risks:
+        return []
+    A = _airspace()
+    rows = []
+    for c in A["artcc"]:
+        hit = risks.get(c["id"])
+        if not hit:
+            continue
+        rgb = _rgb(SPC_COLOR[hit[0]])
+        rows.append({"polygon": c["path"], "fill": rgb + [95],
+                     "tip": f"{c['id']}: SPC Day 1 {hit[0]} over "
+                            f"{hit[1]:.0%} of the centre"})
+    if not rows:
+        return []
+    return [pdk.Layer("PolygonLayer", rows, get_polygon="polygon",
+                      get_fill_color="fill", stroked=False, filled=True,
+                      pickable=False)]
+
+
+def _airspace_layers() -> list:
+    """SPC risk fills, then thin grey ARTCC outlines with a small bold
+    label at the centre of each - under the stations."""
+    A = _airspace()
+    layers = _spc_fill_layers()
     if A["artcc"]:
         layers.append(pdk.Layer(
             "PathLayer", A["artcc"], get_path="path",
@@ -428,7 +502,18 @@ def render() -> str | None:
         # and the station conditions. BLUEMET_LOGIN_MRMS=on and
         # BLUEMET_LOGIN_FLEET=on turn them back on.
         layers = _airspace_layers()
-        note = "ARTCC boundaries and jet routes"
+        note = "ARTCC boundaries \u00b7 fill: SPC Day 1 convective outlook"
+        try:
+            import datetime as _dtm
+            _rk = _spc_by_artcc(_dtm.datetime.now(_dtm.timezone.utc)
+                                .strftime("%Y%m%d%H%M")[:-1])
+            if _rk:
+                _top = max(set(v[0] for v in _rk.values()), key=SPC_RANK.get)
+                note += f" (up to {_top}, {len(_rk)} centres)"
+            else:
+                note += " (no risk covers 20% of any centre)"
+        except Exception:
+            pass
         if os.environ.get("BLUEMET_LOGIN_MRMS", "off").lower() == "on":
             mrms, stamp = _mrms_layers()
             layers = mrms + layers
