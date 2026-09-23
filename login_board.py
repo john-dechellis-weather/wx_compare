@@ -277,6 +277,54 @@ SPC_MIN_FRACTION = float(os.environ.get("BLUEMET_SPC_MIN_FRACTION", "0.20"))
 SPC_RANK = {"TSTM": 1, "MRGL": 2, "SLGT": 3, "ENH": 4, "MDT": 5, "HIGH": 6}
 SPC_COLOR = {"TSTM": "#C1E9C1", "MRGL": "#66A366", "SLGT": "#FFE066",
              "ENH": "#FFA366", "MDT": "#E06666", "HIGH": "#EE99EE"}
+# Legend, SPC's own: number in a coloured square, thunderstorms unnumbered.
+SPC_LEGEND = [("HIGH", "5", "HIGH"), ("MDT", "4", "MDT"),
+              ("ENH", "3", "ENH"), ("SLGT", "2", "Slight"),
+              ("MRGL", "1", "MRGL"), ("TSTM", "", "TSTM")]
+SPC_EDGE = {"TSTM": "#5BA85B", "MRGL": "#2F6B2F", "SLGT": "#C9A300",
+            "ENH": "#C26A1B", "MDT": "#A31F1F", "HIGH": "#B84AB8"}
+
+
+def _spc_badge_uri(label: str) -> str:
+    """SPC's legend entry as one icon: the coloured square with the
+    risk number in it (none for TSTM) and the word beside it. Drawn
+    at 2x for crispness; 100 x 26 units."""
+    import urllib.parse
+    num = dict((k, n) for k, n, _ in SPC_LEGEND)[label]
+    word = dict((k, w) for k, _, w in SPC_LEGEND)[label]
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="52" '
+           'viewBox="0 0 100 26">'
+           f'<rect x="1.5" y="2.5" width="21" height="21" rx="2.5" '
+           f'fill="{SPC_COLOR[label]}" stroke="{SPC_EDGE[label]}" '
+           'stroke-width="2"/>'
+           + (f'<text x="12" y="18.5" text-anchor="middle" font-size="14" '
+              'font-family="Arial, Helvetica, sans-serif" font-weight="700" '
+              f'fill="#000000">{num}</text>' if num else "")
+           + f'<text x="28" y="18.5" font-size="13.5" font-weight="700" '
+             'font-family="Arial, Helvetica, sans-serif" fill="#FFFFFF" '
+             'stroke="#000000" stroke-width="1.6" paint-order="stroke">'
+             f'{word}</text></svg>')
+    return "data:image/svg+xml;charset=utf-8," + urllib.parse.quote(svg)
+
+
+def spc_legend_html() -> str:
+    """The SPC categorical legend, one row under the map: squares
+    with the risk number and the word, TSTM first as SPC lays it out."""
+    cells = []
+    for key, num, word in reversed(SPC_LEGEND):
+        cells.append(
+            f'<span style="display:inline-flex;align-items:center;gap:6px;'
+            f'margin-right:18px"><span style="display:inline-flex;'
+            f'align-items:center;justify-content:center;width:18px;'
+            f'height:18px;border-radius:3px;background:{SPC_COLOR[key]};'
+            f'border:1.5px solid {SPC_EDGE[key]};color:#000;font:700 11px '
+            f'Arial,Helvetica,sans-serif">{num}</span>'
+            f'<span style="color:{T.TEXT};font-size:12px;font-weight:700">'
+            f'{word}</span></span>')
+    return (f'<div style="margin:6px 0 0 2px;color:{T.TEXT_2};font-size:12px;'
+            f'font-weight:700">SPC Day 1 outlook, filled where a risk covers '
+            f'&ge; {SPC_MIN_FRACTION:.0%} of a centre:&nbsp; '
+            + "".join(cells) + "</div>")
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -343,16 +391,35 @@ def _spc_fill_layers() -> list:
                             f"{hit[1]:.0%} of the centre"})
     if not rows:
         return []
-    return [pdk.Layer("PolygonLayer", rows, get_polygon="polygon",
-                      get_fill_color="fill", stroked=False, filled=True,
-                      pickable=False)]
+    # The legend entry (square + word) centred in each filled centre,
+    # just under its ident.
+    icons = {}
+    badges = []
+    for lb in A["labels"]:
+        hit = risks.get(lb["id"])
+        if not hit:
+            continue
+        icons.setdefault(hit[0], {"url": _spc_badge_uri(hit[0]), "width": 200,
+                                  "height": 52, "anchorX": 100, "anchorY": 26,
+                                  "mask": False})
+        badges.append({"position": lb["position"], "icon": icons[hit[0]]})
+    out = [pdk.Layer("PolygonLayer", rows, get_polygon="polygon",
+                     get_fill_color="fill", stroked=False, filled=True,
+                     pickable=False)]
+    if badges:
+        out.append(pdk.Layer(
+            "IconLayer", badges, get_position="position", get_icon="icon",
+            get_size=32344, size_units="meters", size_min_pixels=20,
+            size_max_pixels=24, get_pixel_offset=[0, 10], pickable=False))
+    return out
 
 
 def _airspace_layers() -> list:
     """SPC risk fills, then thin grey ARTCC outlines with a small bold
     label at the centre of each - under the stations."""
     A = _airspace()
-    layers = _spc_fill_layers()
+    _spc = _spc_fill_layers()
+    layers = _spc[:1]                      # the fill, under everything
     if A["artcc"]:
         layers.append(pdk.Layer(
             "PathLayer", A["artcc"], get_path="path",
@@ -362,11 +429,14 @@ def _airspace_layers() -> list:
         layers.append(pdk.Layer(
             "TextLayer", A["labels"], get_position="position",
             # Same sizing as the station labels beside it, which draw.
+            # Sits above the legend row when the centre has one.
             get_text="id", get_size=2600, size_min_pixels=0,
             size_max_pixels=11, get_color=[175, 185, 200, 230],
+            get_pixel_offset=[0, -10],
             get_text_anchor='"middle"',
             get_alignment_baseline='"center"',
             pickable=False))
+    layers += _spc[1:]                     # the badges, on top
     return layers
 
 
@@ -527,5 +597,6 @@ def render() -> str | None:
             f'margin:16px 0 6px 0">{note}</div>', unsafe_allow_html=True)
         st.pydeck_chart(_deck(layers), use_container_width=True,
                         height=MAP_MIN_PX)
+        st.markdown(spc_legend_html(), unsafe_allow_html=True)
 
     return pw or None
