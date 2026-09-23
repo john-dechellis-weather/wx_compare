@@ -391,26 +391,13 @@ def _spc_fill_layers() -> list:
                             f"{hit[1]:.0%} of the centre"})
     if not rows:
         return []
-    # The legend entry (square + word) centred in each filled centre,
-    # just under its ident.
-    icons = {}
-    badges = []
-    for lb in A["labels"]:
-        hit = risks.get(lb["id"])
-        if not hit:
-            continue
-        icons.setdefault(hit[0], {"url": _spc_badge_uri(hit[0]), "width": 200,
-                                  "height": 52, "anchorX": 100, "anchorY": 26,
-                                  "mask": False})
-        badges.append({"position": lb["position"], "icon": icons[hit[0]]})
     out = [pdk.Layer("PolygonLayer", rows, get_polygon="polygon",
                      get_fill_color="fill", stroked=False, filled=True,
                      pickable=False)]
-    if badges:
-        out.append(pdk.Layer(
-            "IconLayer", badges, get_position="position", get_icon="icon",
-            get_size=32344, size_units="meters", size_min_pixels=20,
-            size_max_pixels=24, get_pixel_offset=[0, 10], pickable=False))
+    # The words are drawn by _airspace_layers in the ident layer (one
+    # TextLayer, two lines) - a second TextLayer on this deck did not
+    # draw on the pydeck build in use.
+    out.append(risks)
     return out
 
 
@@ -420,6 +407,18 @@ def _airspace_layers() -> list:
     A = _airspace()
     _spc = _spc_fill_layers()
     layers = _spc[:1]                      # the fill, under everything
+    risks = _spc[1] if len(_spc) > 1 else {}
+    # One label per centre: the ident, and under it the SPC risk word
+    # in bold white when the centre is filled.
+    words = dict((k, w) for k, _, w in SPC_LEGEND)
+    labels = []
+    for lb in A["labels"]:
+        hit = risks.get(lb["id"])
+        labels.append({"position": lb["position"],
+                       "text": (f"{lb['id']}\n{words[hit[0]]}" if hit
+                                else lb["id"]),
+                       "color": ([255, 255, 255, 255] if hit
+                                 else [175, 185, 200, 230])})
     if A["artcc"]:
         layers.append(pdk.Layer(
             "PathLayer", A["artcc"], get_path="path",
@@ -427,16 +426,14 @@ def _airspace_layers() -> list:
             width_min_pixels=1, width_max_pixels=1.2,
             pickable=False))
         layers.append(pdk.Layer(
-            "TextLayer", A["labels"], get_position="position",
-            # Same sizing as the station labels beside it, which draw.
-            # Sits above the legend row when the centre has one.
-            get_text="id", get_size=2600, size_min_pixels=0,
-            size_max_pixels=11, get_color=[175, 185, 200, 230],
-            get_pixel_offset=[0, -10],
+            "TextLayer", labels, get_position="position",
+            # Pinned at 12 px: with a zero floor this build let the
+            # text shrink to specks at the CONUS zoom.
+            get_text="text", get_size=2600, size_min_pixels=12,
+            size_max_pixels=12, get_color="color", font_weight=700,
             get_text_anchor='"middle"',
             get_alignment_baseline='"center"',
             pickable=False))
-    layers += _spc[1:]                     # the badges, on top
     return layers
 
 
@@ -525,18 +522,15 @@ def render() -> str | None:
     a, b = st.columns([3, 1])
     with a:
         st.markdown(
-            f'<div style="font-size:44px;font-weight:700;color:{T.TEXT};'
-            f'letter-spacing:1px;line-height:1.1">BLUEMET</div>'
+            f'<div style="font-size:88px;font-weight:700;color:{T.TEXT};'
+            f'letter-spacing:2px;line-height:1.0">BLUEMET</div>'
             f'<div style="font-size:13px;color:{T.TEXT_2};margin-top:6px">'
             f'JetBlue System Operations weather</div>',
             unsafe_allow_html=True)
     with b:
-        st.markdown(
-            f'<div style="text-align:right">'
-            f'<div style="font-size:13px;color:{T.TEXT_2}">'
-            f'{now:%d %b %Y}</div>'
-            f'<div style="font-size:30px;font-weight:700;color:{T.TEXT}">'
-            f'{now:%H:%M}Z</div></div>', unsafe_allow_html=True)
+        # The Zulu/Eastern clock is the fixed one every page gets from
+        # dark_theme.apply_dark_theme(); nothing else up here.
+        st.markdown("", unsafe_allow_html=True)
 
     st.markdown(f'<hr style="border-color:{T.RULE};margin:18px 0 20px 0">',
                 unsafe_allow_html=True)
@@ -589,14 +583,17 @@ def render() -> str | None:
             layers = mrms + layers
             note += (f" \u00b7 MRMS {stamp[9:11]}:{stamp[11:13]}Z"
                      if stamp else " \u00b7 MRMS: no current scan")
-        layers += _station_layers(statuses)
+        # Stations are OFF the login map (23 Sep): the map is the SPC
+        # Day 1 outlook by centre and nothing else. The chips above
+        # carry the station conditions. BLUEMET_LOGIN_STATIONS=on
+        # restores the blue dots.
+        if os.environ.get("BLUEMET_LOGIN_STATIONS", "off").lower() == "on":
+            layers += _station_layers(statuses)
         if os.environ.get("BLUEMET_LOGIN_FLEET", "off").lower() == "on":
             layers += _fleet_layers()
-        st.markdown(
-            f'<div style="color:{T.TEXT_2};font-size:12px;font-weight:700;'
-            f'margin:16px 0 6px 0">{note}</div>', unsafe_allow_html=True)
+        st.markdown('<div style="margin-top:16px"></div>',
+                    unsafe_allow_html=True)
         st.pydeck_chart(_deck(layers), use_container_width=True,
                         height=MAP_MIN_PX)
-        st.markdown(spc_legend_html(), unsafe_allow_html=True)
 
     return pw or None

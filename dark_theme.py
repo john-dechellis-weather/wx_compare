@@ -487,8 +487,13 @@ span[data-testid="stIconMaterial"],
 
 
 def apply_dark_theme() -> None:
-    """Inject the Ops Black stylesheet. Call once, at the top of a page."""
+    """Inject the Ops Black stylesheet and the top-right clock. Call
+    once, at the top of a page."""
     st.markdown(_CSS, unsafe_allow_html=True)
+    try:
+        show_clock()
+    except Exception:
+        pass
 
 
 # --------------------------------------------------------------- helpers
@@ -502,3 +507,34 @@ def panel_open(title: str | None = None) -> str:
 
 
 PANEL_CLOSE = "</div>"
+
+
+# --------------------------------------------------------------- clock
+
+def clock_html(now=None, fixed: bool = True) -> str:
+    """Zulu and Eastern time, white 14 pt bold. fixed=True pins it to
+    the top right of the window (every page); fixed=False returns the
+    same text right-aligned in the flow (the login header)."""
+    from datetime import datetime, timezone
+    try:
+        from zoneinfo import ZoneInfo
+        _est = ZoneInfo("America/New_York")
+    except Exception:
+        _est = None
+    now = now or datetime.now(timezone.utc)
+    et = now.astimezone(_est) if _est else None
+    txt = f"{now:%H:%M}Z"
+    if et:
+        txt += f" &middot; {et:%-I:%M %p} {et:%Z}"
+    # Below Streamlit's own header bar (the Deploy menu), top right.
+    pos = ("position:fixed;top:52px;right:22px;z-index:999998;"
+           if fixed else "text-align:right;")
+    return (f'<div style="{pos}color:{TEXT};-webkit-text-fill-color:{TEXT};'
+            f'font-family:var(--bm-mono);font-size:14pt;font-weight:700;'
+            f'white-space:nowrap">{txt}</div>')
+
+
+def show_clock() -> None:
+    """Pin the Zulu/Eastern clock top right. Called by apply_dark_theme,
+    so every page has it; it re-renders on each rerun."""
+    st.markdown(clock_html(fixed=True), unsafe_allow_html=True)
