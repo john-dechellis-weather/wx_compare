@@ -1,9 +1,8 @@
 """BlueMet entry point and navigation router.
 
-Declares the sidebar's grouped navigation via st.navigation; the
-tool pages live in pages/ and are referenced here by path, with
-sidebar titles set explicitly (filename prefixes no longer control
-order or labels).
+Declares the pages via st.navigation (hidden) and draws the top
+navigation bar: big buttons for the main pages, a More menu for the
+rest. The tool pages live in pages/ and are referenced here by path.
 """
 
 import time
@@ -34,7 +33,7 @@ if "_cache_cleanup_done" not in st.session_state:
 st.set_page_config(
     page_title="BlueMet",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 from retro_theme import apply_retro_theme
@@ -210,10 +209,11 @@ except Exception as _exc:
 
 
 def _warmer_status():
-    """Warmer health, in a collapsed sidebar expander on every page.
+    """Warmer health, in a collapsed expander under the top bar's
+    More menu (the sidebar is gone, 23 Sep).
     This used to be the Home page's only content; the Home page is
     gone (login lands on Station Forecast), the diagnostics are not."""
-    with st.sidebar.expander("Background warmers", expanded=False):
+    with st.expander("Background warmers", expanded=False):
         for _n in _warm_notes:
             (st.error if "FAILED" in _n else st.caption)(_n)
         st.caption(
@@ -286,6 +286,9 @@ PAGES = {
     "Situational Awareness Products": [
         st.Page("pages/3_JBU_Weather_Map.py",
                 title="JBU Weather Map CONUS"),
+        # Full-size CONUS map; also the Aguacero API test bench (23 Sep).
+        st.Page("pages/Large_Scale_Map_of_North_America.py",
+                title="Large Scale Map of North America"),
         # Station Quick View removed from navigation 21 Sep; the file
         # stays in pages/ unlisted. Its airport scope lives on in
         # Station Forecast, so the surface warmer above still runs.
@@ -315,18 +318,91 @@ PAGES = {
     ],
 }
 
-st.markdown(
-    """
-    <style>
-    [data-testid="stNavSectionHeader"] {
-        font-weight: bold !important;
-        color: #FFFFFF !important;
-        font-size: 13px !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+# ---------------------------------------------------------------------------
+# Top navigation (23 Sep): big buttons across the top instead of the
+# sidebar list, so the pages get the full width. The main pages are
+# buttons; the Experimental and Archive pages sit under "More".
+# ---------------------------------------------------------------------------
+# (page title as declared in PAGES, button label)
+_TOP_BUTTONS = [
+    ("Station Forecast", "Station Forecast"),
+    ("JBU Weather Map CONUS", "JBU Weather Map"),
+    ("Large Scale Map of North America", "Large Scale Map"),
+    ("Hi-Res CAMs", "Hi-Res CAMs"),
+    ("REFS Ensemble", "REFS Ensemble"),
+    ("MOS Tables", "MOS Tables"),
+]
+_MORE_GROUPS = ("Experimental", "Archive Flight Conditions")
+
+_NAV_CSS = """
+<style>
+.st-key-bm_topnav { align-items:center; gap:8px !important;
+    padding:6px 0 10px 0; border-bottom:1px solid #2a2d33;
+    margin-bottom:10px; }
+.st-key-bm_topnav .bm-word { font:700 30px Roboto,sans-serif !important;
+    color:#fff !important; -webkit-text-fill-color:#fff !important;
+    margin-right:18px; white-space:nowrap; }
+.st-key-bm_topnav [data-testid="stPageLink"] a[href],
+.st-key-bm_topnav [data-testid="stPageLink"] a[href] * { text-decoration:none !important; }
+.st-key-bm_topnav [data-testid="stPageLink"] a,
+.st-key-bm_topnav .bm-active,
+.st-key-bm_topnav [data-testid="stPopover"] button {
+    display:flex; align-items:center; justify-content:center;
+    min-height:48px; padding:0 14px !important; border-radius:3px;
+    background:#111317 !important; border:2px solid #3a3f47 !important;
+    font:700 17px Roboto,sans-serif !important; color:#fff !important;
+    white-space:nowrap; text-decoration:none; }
+.st-key-bm_topnav [data-testid="stPageLink"] a:hover,
+.st-key-bm_topnav [data-testid="stPopover"] button:hover {
+    border-color:#22d3ee !important; }
+.st-key-bm_topnav [data-testid="stPageLink"] a:focus-visible {
+    outline:2px solid #22d3ee; outline-offset:2px; }
+.st-key-bm_topnav [data-testid="stPageLink"] p,
+.st-key-bm_topnav [data-testid="stPopover"] button p {
+    font:700 17px Roboto,sans-serif !important; color:#fff !important; margin:0; }
+/* Page links inside the More menu: white, no underline. */
+[data-testid="stPopoverBody"] [data-testid="stPageLink"] a,
+[data-testid="stPopoverBody"] [data-testid="stPageLink"] a * {
+    color:#fff !important; -webkit-text-fill-color:#fff !important;
+    text-decoration:none !important; font-weight:700 !important; }
+/* No sidebar anywhere (23 Sep): page settings are popovers under
+   each title, the warmer status is under More. */
+section[data-testid="stSidebar"],
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="stExpandSidebarButton"],
+[data-testid="stSidebarCollapseButton"] { display:none !important; }
+.st-key-bm_topnav .bm-active { background:#0e2a31 !important;
+    border-color:#22d3ee !important; }
+</style>
+"""
+
+
+def _top_nav(current):
+    """Wordmark, one big button per main page (the open page in cyan),
+    and a More menu for the rest."""
+    st.markdown(_NAV_CSS, unsafe_allow_html=True)
+    by_title = {p.title: p for ps in PAGES.values() for p in ps}
+    with st.container(horizontal=True, key="bm_topnav",
+                      vertical_alignment="center"):
+        st.markdown('<div class="bm-word">BlueMet</div>',
+                    unsafe_allow_html=True)
+        for _title, _label in _TOP_BUTTONS:
+            _pg = by_title.get(_title)
+            if _pg is None:
+                continue
+            if current is not None and _pg.url_path == current.url_path:
+                st.markdown(f'<div class="bm-active">{_label}</div>',
+                            unsafe_allow_html=True)
+            else:
+                st.page_link(_pg, label=_label)
+        with st.popover("More"):
+            for _grp in _MORE_GROUPS:
+                st.caption(_grp)
+                for _pg in PAGES.get(_grp, []):
+                    st.page_link(_pg, label=_pg.title)
+            st.divider()
+            _warmer_status()
+
 
 # ORDER MATTERS. st.navigation must run BEFORE the auth gate.
 #
@@ -342,10 +418,10 @@ st.markdown(
 # so nothing is reachable without the password. Every page also
 # calls check_password itself, so this is belt-and-braces rather
 # than the only guard.
-nav = st.navigation(PAGES)
+nav = st.navigation(PAGES, position="hidden")
 
 check_password()
 
-_warmer_status()
+_top_nav(nav)
 
 nav.run()
