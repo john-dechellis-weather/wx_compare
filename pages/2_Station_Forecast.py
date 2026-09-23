@@ -685,7 +685,7 @@ with c_rad:
                     "TextLayer", _hl, get_position="position",
                     get_text="callsign", get_size=1400,
                     size_min_pixels=0, size_max_pixels=13,
-                    get_color=[0, 229, 255, 255], font_weight="bold",
+                    get_color=[0, 229, 255, 255],
                     get_pixel_offset=[0, -22],
                     get_text_anchor='"middle"',
                     get_alignment_baseline='"center"', pickable=False))
@@ -750,7 +750,7 @@ with c_rad:
                     "TextLayer", _stn, get_position="position",
                     get_text="name", get_size=2600, size_min_pixels=0,
                     size_max_pixels=11, get_color=[77, 163, 255, 255],
-                    font_weight="bold", get_pixel_offset=[9, -6],
+                    get_pixel_offset=[9, -6],
                     get_text_anchor='"start"',
                     get_alignment_baseline='"center"', pickable=False))
             except Exception:
