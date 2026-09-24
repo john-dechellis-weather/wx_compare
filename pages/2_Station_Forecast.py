@@ -225,7 +225,9 @@ def _origin() -> str:
 
 
 # ------------------------------------------------------------- sidebar
-with st.sidebar:
+# Settings live in a popover under the title (23 Sep): the
+# sidebar is hidden site-wide so the pages get the full width.
+with st.popover("Station & plot settings"):
     st.header("Station")
     hub = st.selectbox("Hub", HUBS, index=0)
     typed = st.text_input("or any ICAO", value="", max_chars=4,

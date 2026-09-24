@@ -80,7 +80,9 @@ def cached_render_loop(
 st.title("Archive Radar Position")
 st.caption("Plot aircraft position on archived NEXRAD Level II radar imagery.")
 
-with st.sidebar:
+# Settings live in a popover under the title (23 Sep): the
+# sidebar is hidden site-wide so the pages get the full width.
+with st.popover("Date, time, position & radar"):
     st.header("Date & Time (UTC)")
     date_input = st.date_input(
         "Date",

@@ -78,7 +78,8 @@ def cached_refs_cycle(model: str, fhr: int, bucket: str):
 
 # ---------------------------------------------------------------------------
 # Six pods (23 Sep): three across, Northeast / Mid-Atlantic on top and
-# Florida below, both shown at once, one run and one valid hour for all.
+# Florida below, both shown at once. One run for the page; each row has
+# its own valid hour, shared by the three maps in that row.
 #
 # Each pod is cropped tight to its region. The warm store still holds
 # the same square hub frames (nothing in core/ or the warmer changed);
@@ -131,11 +132,30 @@ _RUNS = {"Latest run": 1,
 _INK, _INK2, _GOLD = "#FFFFFF", "#B8B8B8", "#FFD700"
 st.markdown(
     "<style>"
-    ".refs-head{font:700 18px Roboto,sans-serif;color:%s;margin:0 0 2px 0}"
-    ".refs-band{font:700 20px Roboto,sans-serif;color:#fff;margin:6px 0 4px 0}"
+    ".refs-head{font:700 18px Roboto,sans-serif;margin:0 0 2px 0;"
+    "color:%s !important;-webkit-text-fill-color:%s !important}"
+    ".refs-band{font:700 20px Roboto,sans-serif;background:#000;"
+    "color:#fff !important;-webkit-text-fill-color:#fff !important;"
+    "padding:4px 0;white-space:nowrap}"
+    ".refs-valid{font:700 16px Roboto,sans-serif;text-align:right;padding-top:6px;"
+    "color:#fff !important;-webkit-text-fill-color:#fff !important;white-space:nowrap}"
     ".refs-sep{height:6px;background:#9aa0a8;margin:14px 0 6px 0;border-radius:1px}"
-    "div[data-testid='stColumn'] div[data-testid='stSelectbox']{margin-bottom:-10px}"
-    "</style>" % _GOLD, unsafe_allow_html=True)
+    # pod titles (the product dropdowns): black box, white bold text
+    ".st-key-refs_pods [data-testid='stSelectbox'] div:has(> input){"
+    "background:#000 !important;border:1px solid #3a3f47 !important;"
+    "border-radius:3px !important}"
+    ".st-key-refs_pods [data-testid='stSelectbox'] input{background:#000 !important;"
+    "color:#fff !important;-webkit-text-fill-color:#fff !important;"
+    "font-family:Roboto,sans-serif !important;font-weight:700 !important;"
+    "font-size:15px !important}"
+    ".st-key-refs_pods [data-testid='stSelectbox'] button,"
+    ".st-key-refs_pods [data-testid='stSelectbox'] button svg{"
+    "background:#000 !important;color:#fff !important;fill:#fff !important}"
+    ".st-key-refs_pods [data-testid='stSelectbox']{margin-bottom:-10px}"
+    # let each map's wrapper follow the viewer's measured height
+    ".st-key-refs_pods [data-testid='stElementContainer']:has(> iframe){"
+    "height:auto !important;min-height:0 !important;flex:0 0 auto !important}"
+    "</style>" % (_GOLD, _GOLD), unsafe_allow_html=True)
 
 now = datetime.now(timezone.utc)
 bucket10 = now.strftime("%Y%m%d%H") + str(now.minute // 10)
@@ -152,11 +172,9 @@ def _cycle_for(need_fhr: int, bucket: str):
     return cached_refs_cycle("refs_prob", need_fhr, bucket)
 
 
-# ---- run toggle + the one forecast-hour slider --------------------------
-_h1, _h2 = st.columns([1.5, 2.5])
-with _h1:
-    run_choice = st.radio("Run", list(_RUNS), horizontal=True,
-                          key="refs_run", label_visibility="collapsed")
+# ---- run toggle (one run for the whole page) -----------------------------
+run_choice = st.radio("Run", list(_RUNS), horizontal=True,
+                      key="refs_run", label_visibility="collapsed")
 need_fhr = _RUNS[run_choice]
 
 cycle_iso = _cycle_for(need_fhr, bucket10)
@@ -165,17 +183,10 @@ if cycle_iso is None:
     st.stop()
 cyc = datetime.fromisoformat(cycle_iso)
 max_fhr = 60 if cyc.hour in (0, 12) else 48
-with _h2:
-    fhr = st.slider("Forecast hour", 1, max_fhr,
-                    max(1, min(int(st.session_state.get("refs_fhr", 1) or 1),
-                               max_fhr)),
-                    key="refs_fhr", label_visibility="collapsed")
-valid = cyc + timedelta(hours=fhr)
 
 st.markdown(
-    f'<div class="refs-head">REFS Ensemble &nbsp; F{fhr:02d} &nbsp; '
-    f'valid {valid:%HZ %a %d %b} &nbsp; run {cyc:%HZ}</div>',
-    unsafe_allow_html=True)
+    f'<div class="refs-head">REFS Ensemble &nbsp; run {cyc:%HZ %a %d %b}'
+    f' &nbsp; to F{max_fhr}</div>', unsafe_allow_html=True)
 
 
 @st.cache_data(ttl=10800, show_spinner=False, max_entries=800)
@@ -371,7 +382,13 @@ def _viewer(img: bytes, w: int, h: int, labels, field: str, key: str):
     try {{
       const fe = window.frameElement; if (!fe) return;
       const hh = Math.ceil(w.getBoundingClientRect().height);
-      if (hh > 0) fe.style.height = hh + 'px';
+      if (hh > 0) {{
+        fe.style.height = hh + 'px';
+        // Streamlit's element wrapper keeps the first-paint height;
+        // size it too, or a gap is left under the map.
+        const box = fe.closest('[data-testid="stElementContainer"]') || fe.parentElement;
+        if (box) {{ box.style.height = hh + 'px'; box.style.minHeight = '0'; }}
+      }}
     }} catch (_) {{}}
   }}
   new ResizeObserver(fit).observe(w); window.addEventListener('load', fit); fit();
@@ -379,7 +396,7 @@ def _viewer(img: bytes, w: int, h: int, labels, field: str, key: str):
 </script>""", height=guess_h)
 
 
-def _pod(region: str, col: int):
+def _pod(region: str, col: int, fhr: int):
     i = 0 if region == "NE" else 3
     key = f"refs_pod{i + col}"
     label = st.selectbox(
@@ -398,18 +415,36 @@ def _pod(region: str, col: int):
         st.warning(f"{label}: {type(exc).__name__}: {str(exc)[:160]}")
 
 
-for r, (region, banner) in enumerate(_ROWS):
-    if r:
-        st.markdown('<div class="refs-sep"></div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="refs-band">{banner}</div>',
-                unsafe_allow_html=True)
-    cols = st.columns(3, gap="small")
-    for c in range(3):
-        with cols[c]:
-            _pod(region, c)
+# Each ROW has its own valid hour (23 Sep): the three maps in a row are
+# always the same valid time, but the Northeast can sit at 18Z while
+# Florida sits at 22Z.
+with st.container(key="refs_pods"):
+    for r, (region, banner) in enumerate(_ROWS):
+        if r:
+            st.markdown('<div class="refs-sep"></div>',
+                        unsafe_allow_html=True)
+        _key = f"refs_fhr_{region}"
+        _fh = max(1, min(int(st.session_state.get(_key, 1) or 1), max_fhr))
+        b1, b2, b3 = st.columns([1.3, 3.2, 1.2], gap="small",
+                                vertical_alignment="center")
+        with b1:
+            st.markdown(f'<div class="refs-band">{banner}</div>',
+                        unsafe_allow_html=True)
+        with b2:
+            _fh = st.slider(f"{banner} forecast hour", 1, max_fhr, _fh,
+                            key=_key, label_visibility="collapsed")
+        with b3:
+            _v = cyc + timedelta(hours=_fh)
+            st.markdown(f'<div class="refs-valid">F{_fh:02d} &nbsp; valid '
+                        f'{_v:%HZ %a}</div>', unsafe_allow_html=True)
+        cols = st.columns(3, gap="small")
+        for c in range(3):
+            with cols[c]:
+                _pod(region, c, _fh)
 
 st.caption(
     "RRFS Ensemble Forecast System (HREF's successor, pre-implementation "
-    "feed). One run and one valid hour for all six maps. White boxes: "
+    "feed). One run for the page; each row has its own valid hour, "
+    "shared by its three maps. White boxes: "
     "the highest colour band inside each station's 10 nm ring. Red "
     "outline: N90. Wheel to zoom, drag to pan, double-click to reset.")

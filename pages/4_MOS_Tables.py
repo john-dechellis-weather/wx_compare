@@ -736,7 +736,9 @@ def make_th(text, is_row_label=False):
 st.title("MOS Tables")
 st.caption("Side-by-side hourly NBM + GFS LAMP for one airport.")
 
-with st.sidebar:
+# Settings live in a popover under the title (23 Sep): the
+# sidebar is hidden site-wide so the pages get the full width.
+with st.popover("Airport"):
     st.header("Airport")
     icao_input = st.text_input("ICAO code", value="KJFK", max_chars=4).strip().upper()
     st.divider()

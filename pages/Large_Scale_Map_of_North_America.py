@@ -34,7 +34,7 @@ st.markdown(
       .stApp { background:#000; }
       html, body, [class*="css"], label, .stMarkdown {
           font-family:'Roboto',sans-serif !important; font-weight:700 !important; color:#fff !important; }
-      .lsm-title { color:#FFD700; font-size:16pt; font-weight:700; margin:0 0 4px 0; }
+      .lsm-title { color:#FFD700 !important; -webkit-text-fill-color:#FFD700 !important; font-size:16pt; font-weight:700; margin:0 0 4px 0; }
       .block-container { padding-top:1rem; padding-bottom:0; }
     </style>
     """,

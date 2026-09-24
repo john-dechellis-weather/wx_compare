@@ -1836,7 +1836,9 @@ st.caption(
     "airports forecast to see low visibility, low ceilings, or thunderstorms."
 )
 
-with st.sidebar:
+# Settings live in a popover under the title (23 Sep): the
+# sidebar is hidden site-wide so the pages get the full width.
+with st.popover("Alert thresholds & map settings"):
     st.header("Alert thresholds")
 
     vis_threshold = st.slider(
