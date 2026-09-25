@@ -268,6 +268,10 @@ def _warmer_status():
 
 
 PAGES = {
+    # Product selection, where the login lands (24 Sep).
+    "Home": [
+        st.Page("pages/0_Home.py", title="Home", default=True),
+    ],
     "Forecast Tools": [
         st.Page("pages/9_HiRes_CAMs.py",
                 title="Hi-Res CAMs"),
@@ -277,9 +281,8 @@ PAGES = {
         # Flight Conditions: both plots, the NBM and LAMP grids, the
         # METAR/TAF, a radar snapshot and the JetBlue movement board
         # for one station on one page.
-        # DEFAULT: the login lands here. There is no Home page.
         st.Page("pages/2_Station_Forecast.py",
-                title="Station Forecast", default=True),
+                title="Station Forecast"),
         st.Page("pages/4_MOS_Tables.py",
                 title="MOS Tables"),
     ],
@@ -325,6 +328,7 @@ PAGES = {
 # ---------------------------------------------------------------------------
 # (page title as declared in PAGES, button label)
 _TOP_BUTTONS = [
+    ("Home", "Home"),
     ("Station Forecast", "Station Forecast"),
     ("JBU Weather Map CONUS", "JBU Weather Map"),
     ("Large Scale Map of North America", "Large Scale Map"),
@@ -418,10 +422,44 @@ def _top_nav(current):
 # so nothing is reachable without the password. Every page also
 # calls check_password itself, so this is belt-and-braces rather
 # than the only guard.
+# ---------------------------------------------------------------------------
+# Text size (24 Sep): Smaller / Medium (default) / Large, chosen on the
+# Home page, moves BODY text by 2 pt on every page - values, labels,
+# descriptions, table cells. Titles (h1-h3, the nav, class-styled
+# headings) and box sizes do not move. Medium adds nothing, so the
+# default look is exactly what it was.
+#
+# How: the retro stylesheet pins p/div/span/label to 13px !important
+# and the dark theme sets table cells and inputs to 12px. At Smaller
+# or Large those same element rules are restated 2 pt down or up,
+# one step more specific (html p ...) so they win, but still below any
+# class rule, so titles, the nav and the pods keep their size.
+# --bm-dt carries the offset for classes that opt in (Home page text).
+# ---------------------------------------------------------------------------
+_TEXT_DT = {"Smaller": -2, "Medium (default)": 0, "Large": 2}
+
+
+def _text_size_css():
+    dt = _TEXT_DT.get(st.session_state.get("bm_text_size",
+                                           "Medium (default)"), 0)
+    css = f":root{{--bm-dt:{dt}pt}}"
+    if dt:
+        # "html x" is one step more specific than the retro rule, so
+        # it wins even though each page re-injects that stylesheet
+        # after this one; still below any class rule (titles, nav).
+        css += (f"html p,html div,html span,html label,html li{{"
+                f"font-size:calc(13px + {dt}pt) !important}}"
+                f"html td,html th,html input,html textarea{{"
+                f"font-size:calc(12px + {dt}pt) !important}}")
+    st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
+
+
 nav = st.navigation(PAGES, position="hidden")
 
 check_password()
 
 _top_nav(nav)
+
+_text_size_css()
 
 nav.run()
