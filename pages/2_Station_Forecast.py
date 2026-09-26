@@ -74,8 +74,14 @@ SCOPE_H = int(os.environ.get("BLUEMET_SF_SCOPE_H", "1000"))
 # beside it; raise or lower with the env var if a station's TAF runs
 # long or short.
 SF_TEXT_PX = int(os.environ.get("BLUEMET_SF_TEXT_PX", "15"))
-PLOT_H = 620          # wind, level with the two grids beside it
-CV_H = 420            # ceiling & visibility, under the strip
+
+# The Wind & Flight Conditions meteogram (c_wind, row 2) stacks four
+# pieces in one pod: the direction/speed/gust text row, the speed +
+# gust plot, the consensus category bar, then ceiling and vis plots.
+# Heights are for the two plotly charts only - the text rows and bar
+# size themselves to their content.
+WIND_H = 300          # speed + gust
+CIGVIS_H = 240        # each of ceiling and vis
 
 HUBS = ["KJFK", "KBOS", "KFLL", "KMCO", "KEWR", "KLGA", "KDCA", "KLAX",
         "KSFO", "KTPA", "KDJT", "KBDL", "KHPN", "TJSJ"]
@@ -144,16 +150,6 @@ def cached_coords(icao: str):
 
 @st.cache_data(ttl=300, show_spinner=False, max_entries=10)
 def cached_latest_cycle(icao: str) -> str | None:
-    # The compare warmer (core/compare_warm.py) already found it - no
-    # NOMADS probing on the request path. Falls through to probing
-    # only when the warmer has not run yet.
-    try:
-        from core.compare_warm import latest_cycle
-        _c = latest_cycle(CACHE_ROOT)
-        if _c:
-            return _c
-    except Exception:
-        pass
     from core.stations import StationResolver
     from core.cycle_select import find_latest_complete
     from models import GfsMos, GfsLamp, Hrrr, Nbm
@@ -174,18 +170,7 @@ def cached_latest_cycle(icao: str) -> str | None:
 @st.cache_data(ttl=600, show_spinner=False, max_entries=20)
 def cached_compare(icao: str, cycle_iso: str):
     """Every model, one station, one cycle - the frame both plots and
-    both grids read from. One fetch, four consumers.
-
-    Read from the compare warmer's saved frame when it has one (a few
-    ms); computed here only for a station or cycle it has not built
-    yet (4-15 s)."""
-    try:
-        from core.compare_warm import read_frame
-        _hit = read_frame(CACHE_ROOT, icao, cycle_iso)
-        if _hit is not None:
-            return _hit
-    except Exception:
-        pass
+    both grids read from. One fetch, four consumers."""
     from compare import compare_icaos
     cycle = datetime.fromisoformat(cycle_iso)
     df, resolved, _ = compare_icaos(icaos=[icao], cycle=cycle,
@@ -225,9 +210,7 @@ def _origin() -> str:
 
 
 # ------------------------------------------------------------- sidebar
-# Settings live in a popover under the title (23 Sep): the
-# sidebar is hidden site-wide so the pages get the full width.
-with st.popover("Station & plot settings"):
+with st.sidebar:
     st.header("Station")
     hub = st.selectbox("Hub", HUBS, index=0)
     typed = st.text_input("or any ICAO", value="", max_chars=4,
@@ -405,71 +388,18 @@ with c_obs:
         else:
             st.caption("No ceiling/visibility guidance for this station and cycle.")
 
-    with st.container(border=True):
-        pod_title("Ceiling & visibility", f"by model · {cyc_txt}")
-        if ok and len(df) and {"ceiling_ft", "vsby_sm"} <= set(df.columns):
-            # THE ORIGINAL FIGURE, as the wind pod beside it already
-            # does: compare.plot_comparison_interactive is what the
-            # VIS/CIG page drew. A hand-built version here stacked
-            # every point on one timestamp and put the axes on a log
-            # scale; this is the plot people know.
-            from compare import plot_comparison_interactive
-            try:
-                from core.metar import filter_since, metars_to_df
-                mdf = metars_to_df(filter_since(
-                    {icao: cached_metars(icao, 48)}, cycle))
-            except Exception:
-                mdf = None
-            fig = plot_comparison_interactive(
-                df, icao, cycle=cycle, hours_ahead=horizon, metars_df=mdf)
-            # Same dark restyle the wind pod applies; the traces, axes
-            # and category bands are the original's.
-            fig.update_layout(
-                title=None,
-                height=CV_H, width=None, autosize=True, paper_bgcolor=PANEL,
-                plot_bgcolor="#05070B",
-                font=dict(color=INK2, size=11, family="Roboto, Arial"),
-                margin=dict(l=40, r=16, t=24, b=30),
-                legend=dict(bgcolor="rgba(0,0,0,0)"))
-            fig.update_xaxes(gridcolor="#1A2233", zerolinecolor="#1A2233")
-            fig.update_yaxes(gridcolor="#1A2233", zerolinecolor="#1A2233")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.caption("No ceiling/visibility guidance for this station and cycle.")
-
-
-def _search_fleet(q: str) -> list:
-    """JetBlue aircraft in the last fleet sweep matching a flight
-    number or callsign fragment ("1123", "JBU1123", "B61123")."""
-    import re as _re
-    q = (q or "").strip().upper()
-    if not q:
-        return []
-    digits = _re.sub(r"\D", "", q)
-    hits = []
-    try:
-        from core import fleet as _FL
-        res = _FL.STATE.get("res")
-        for r in (res[0] if res else []) or []:
-            cs = (r.get("callsign") or "").upper()
-            if q in cs or (digits and _re.sub(r"\D", "", cs) == digits):
-                hits.append(r)
-    except Exception:
-        return []
-    return hits[:5]
-
-
-# Read the search box's value before the scope draws, so the highlight
-# is on this run, not the next one.
-_ac_hits = _search_fleet(st.session_state.get("sf_ac_query", ""))
+    # Ceiling & visibility used to be its own pod here; it now lives
+    # inside the Wind & Flight Conditions meteogram below (c_wind),
+    # stacked under the wind plot so the consensus line that drives
+    # the category bar sits right above ceiling and vis instead of
+    # in a separate pod the dispatcher has to cross-reference.
 
 with c_rad:
     with st.container(border=True):
         # The airport scope, exactly as Station Quick View draws it -
         # same runway table, same finals, same ATIS colouring - with
         # MRMS reflectivity underneath and no traffic, at 20 nm.
-        stamp_txt, cfg, l3_txt, l3_frames, base = "", {}, "", [], ""
-        _radar_diag = []
+        stamp_txt, cfg = "", {}
         if coords:
             from core import airport_scope as AS
             base = _origin()
@@ -490,161 +420,22 @@ with c_rad:
                   or (a.get("airline")
                       and AS.distance_nm(coords[0], coords[1],
                                          a["position"][1], a["position"][0]) <= 20)]
-            _mode = st.session_state.get("sf_radar_mode", "NEXRAD Radar")
-            # NEXRAD shows the single-site picture only; MRMS shows the
-            # mosaic only. Each is one thing.
-            _want_mrms = _mode == "MRMS Precipitation"
-            _want_l3 = _mode == "NEXRAD Radar"
             layers, cfg = AS.mini_layers(
                 icao, surface, coords[0], coords[1],
-                mrms_chunks=(chunks if _want_mrms else None),
+                mrms_chunks=(chunks if st.session_state.get("sf_mrms", True)
+                             else None),
                 base_url=base, range_nm=20, ac=ac)
-            # LEVEL III on top of MRMS: the station's nearest NEXRAD at
-            # 250 m, built by the L3 warmer for every hub (core/radar_l3
-            # STATION_DOMAINS), read here as one image - no radar work
-            # on page load. MRMS stays underneath for the area outside
-            # the Level III box and as the fallback while it warms.
-            l3_txt = ""
-            l3_frames = []
-            # Diagnostics for the "Radar status" expander: everything
-            # the scope needed and what it found, so a missing radar
-            # can be read off the page instead of the server log.
-            _radar_diag.append(f"static dir: {STATIC_MRMS} "
-                               f"({'exists' if STATIC_MRMS.exists() else 'MISSING'})")
-            # Can this process write there? A deploy that mounts the
-            # repo read-only would leave every warmer silent.
-            try:
-                _t = STATIC_MRMS / ".write_test"
-                _t.write_text("ok")
-                _t.unlink()
-                _radar_diag.append("static dir writable: yes")
-            except Exception as _we:
-                _radar_diag.append(f"static dir writable: NO ({_we})")
-            # Which warmer threads are alive in this process, and what
-            # Homepage recorded when it started them.
-            try:
-                import threading as _th
-                _names = sorted(t.name for t in _th.enumerate()
-                                if t.name not in ("MainThread",))
-                _radar_diag.append("threads: " + (", ".join(_names) or "none"))
-            except Exception:
-                pass
-            try:
-                import __main__ as _hp
-                for _n in (getattr(_hp, "_warm_notes", None) or []):
-                    _radar_diag.append("homepage: " + str(_n))
-                if not getattr(_hp, "_warm_notes", None):
-                    _radar_diag.append("homepage: no warmer notes (the "
-                                       "running Homepage.py is not the "
-                                       "current one)")
-            except Exception as _he:
-                _radar_diag.append(f"homepage notes unavailable: {_he}")
-            try:
-                _ml = (STATIC_MRMS / "mrms_warmer.log").read_text().splitlines()
-                _radar_diag.extend("mrms log: " + ln for ln in _ml[-3:])
-            except OSError:
-                _radar_diag.append("mrms log: none")
-            _radar_diag.append(f"MRMS newest: {stamp or 'none'}, "
-                               f"{len(chunks) if chunks else 0} chunks")
-            _radar_diag.append(f"page origin: {base or 'NONE (images cannot load)'}")
-            try:
-                from core import radar_l3 as L3
-                _dom = L3.station_domain(icao)
-                _all = sorted(STATIC_MRMS.glob(f"l3_{_dom}_*.json"))
-                _radar_diag.append(
-                    f"Level III domain {_dom}: {len(_all)} manifests on disk"
-                    + (f", newest {_all[-1].name}" if _all else ""))
-                _st = L3.STATUS.get(_dom)
-                if _st:
-                    _radar_diag.append(f"last build: {_st.get('note')}")
-                try:
-                    _lg = (STATIC_MRMS / "l3_warmer.log").read_text().splitlines()
-                    _radar_diag.extend("log: " + ln for ln in _lg[-4:])
-                except OSError:
-                    _radar_diag.append("log: no l3_warmer.log yet (warmer "
-                                       "has not started or cannot write)")
-            except Exception as _de:
-                _radar_diag.append(f"radar_l3 import/diag failed: {_de}")
-            if base and _want_l3:
-                try:
-                    from core import radar_l3 as L3
-                    l3_frames = L3.frames(STATIC_MRMS, L3.station_domain(icao))
-                    # RADAR LOOP SLIDER (drawn above the scope, below):
-                    # which of the last hour's frames to show. The
-                    # slider's value is read here so this run draws it;
-                    # 0 = oldest ... n-1 = latest. Latest by default and
-                    # whenever the airport changes.
-                    _n = len(l3_frames)
-                    _pick = st.session_state.get(f"sf_l3_slider_{icao}")
-                    if _pick is None or _pick >= _n:
-                        _pick = _n - 1
-                    _man = l3_frames[_pick] if _n else None
-                    _l3s = _man["stamp"] if _man else None
-                    if _man and L3.age_s(_l3s) < 4800:
-                        _l3 = pdk.Layer(
-                            "BitmapLayer", data=None,
-                            image=f"{base}/app/static/{_man['name']}",
-                            bounds=_man["bounds"], opacity=1.0)
-                        _after = max([i for i, l in enumerate(layers)
-                                      if getattr(l, "type", "") == "BitmapLayer"]
-                                     + [-1]) + 1
-                        layers.insert(_after, _l3)
-                        l3_txt = (f" · NEXRAD {_man['site']} "
-                                  f"{_l3s[9:11]}:{_l3s[11:13]}Z")
-                    elif icao.upper() in L3.STATION_RADAR:
-                        # Distinguish "the warmer has built nothing for
-                        # this station" from "it looked and found no
-                        # radar": the first is a warmer problem.
-                        l3_txt = (" · NEXRAD: no frames yet (see Radar "
-                                  "status)" if not l3_frames else
-                                  " · NEXRAD frames are stale")
-                except Exception:
-                    l3_txt = ""
         pod_title("Airport scope",
-                  "20 nm"
-                  + ((f" · MRMS {stamp_txt or 'no current scan'}"
-                      if _want_mrms else l3_txt if _want_l3 else " · radar off")
-                     if coords else "")
+                  f"20 nm · MRMS {stamp_txt or 'no current scan'}"
                   + (f" · {len(ac)} aircraft" if coords and ac else ""))
-        if coords and len(l3_frames) > 1:
-            # Last hour of the airport's radar: drag to step back
-            # through the frames. Labels are the scan times.
-            _lab = [f"{f['stamp'][9:11]}:{f['stamp'][11:13]}Z"
-                    for f in l3_frames]
-            _k = f"sf_l3_slider_{icao}"
-            if st.session_state.get(_k, len(_lab)) >= len(_lab):
-                st.session_state[_k] = len(_lab) - 1
-            st.select_slider(
-                "Radar time (last hour)", options=list(range(len(_lab))),
-                format_func=lambda k: _lab[k], key=_k,
-                help="Level III frames from the last hour, oldest to "
-                     "newest. MRMS underneath stays current.")
-        _rc1, _rc2 = st.columns([2, 1])
-        with _rc1:
-            radar_mode = st.radio(
-                "Radar", ["NEXRAD Radar", "MRMS Precipitation", "Off"],
-                horizontal=True, key="sf_radar_mode",
-                label_visibility="collapsed",
-                help="NEXRAD Radar: the airport's nearest radar (TDWR or "
-                     "NEXRAD) at 250 m. MRMS Precipitation: the 1 km "
-                     "mosaic. Off: field and traffic on black.")
-        with _rc2:
-            with st.expander("Radar status", expanded=False):
-                st.caption("\n".join(_radar_diag))
-        _eta = []
+        show_mrms = st.checkbox("MRMS reflectivity", value=True, key="sf_mrms",
+                                help="Radar mosaic under the scope. Off shows "
+                                     "the field and traffic on black.")
         if coords:
-            # Kept apart from the map: a failure here (a missing helper
-            # in an older core module, say) used to stop the script
-            # before the scope was drawn - the blank pod.
-            try:
-                from core import station_status as SS
-                _latest = obs[-1].raw_text if obs else ""
-                _alert = SS.alert_for(_latest)
-                _eta = AS.inbound_eta(_all, coords[0], coords[1], max_min=60)
-            except Exception as _ee:
-                _alert, _eta = None, []
-                st.caption(f"arrivals banner unavailable: "
-                           f"{type(_ee).__name__}: {str(_ee)[:120]}")
+            from core import station_status as SS
+            _latest = obs[-1].raw_text if obs else ""
+            _alert = SS.alert_for(_latest)
+            _eta = AS.inbound_eta(_all, coords[0], coords[1], max_min=60)
             if _eta:
                 _items = " &nbsp;|&nbsp; ".join(
                     f"{r['callsign']} Arrival ETA: "
@@ -674,23 +465,6 @@ with c_rad:
         elif coords:
             st.caption("No D-ATIS for this field \u2014 finals drawn off every end.")
         if coords:
-            _hl = [{"position": [r["lon"], r["lat"]],
-                    "callsign": r.get("callsign", "")} for r in _ac_hits]
-            if _hl:
-                layers.append(pdk.Layer(
-                    "ScatterplotLayer", _hl, get_position="position",
-                    get_radius=1400, radius_min_pixels=14,
-                    radius_max_pixels=22, filled=False, stroked=True,
-                    get_line_color=[0, 229, 255, 255],
-                    line_width_min_pixels=2.5, pickable=False))
-                layers.append(pdk.Layer(
-                    "TextLayer", _hl, get_position="position",
-                    get_text="callsign", get_size=1400,
-                    size_min_pixels=0, size_max_pixels=13,
-                    get_color=[0, 229, 255, 255],
-                    get_pixel_offset=[0, -22],
-                    get_text_anchor='"middle"',
-                    get_alignment_baseline='"center"', pickable=False))
             style = None
             try:
                 host = st.context.headers.get("Host", "")
@@ -703,71 +477,10 @@ with c_rad:
                 cl = AS.coast_layer(icao)
                 if cl is not None:
                     layers = [cl] + layers
-            # WHOLE FLEET + STATIONS (22 Sep): every JetBlue aircraft
-            # from the fleet sweep (one icon layer, ~130 rows, no
-            # extra fetch) and every JBU station as a blue dot with a
-            # blue label, so zooming out shows the network. The
-            # scope's own traffic layer keeps the local detail.
-            try:
-                from core import fleet as _FL2
-                from core import station_status as _SS2
-                _fr = _FL2.STATE.get("res")
-                _fleet_rows = [{"position": [r["lon"], r["lat"]],
-                                "angle": float(r.get("angle") or 0.0),
-                                "callsign": r.get("callsign", ""),
-                                "type": "", "alt": r.get("alt", ""),
-                                "gs": int(r.get("gs") or 0)}
-                               for r in ((_fr[0] if _fr else []) or [])
-                               if r.get("lat") is not None]
-                if _fleet_rows:
-                    import urllib.parse as _up
-                    _svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="64" '
-                            'height="64" viewBox="-11 -11 22 22"><path d="M0,-10 '
-                            'L0.35,-9.6 L0.55,-8.8 L0.6,-6 L0.6,-1.6 L9.2,3.2 '
-                            'L9.6,3.4 L9.6,4 L9.1,4.1 L2.6,3.3 L0.6,3.1 L0.6,6.4 '
-                            'L3.3,8.2 L3.3,9 L0.5,8.5 L0.45,9.4 L0,9.7 L-0.45,9.4 '
-                            'L-0.5,8.5 L-3.3,9 L-3.3,8.2 L-0.6,6.4 L-0.6,3.1 '
-                            'L-2.6,3.3 L-9.1,4.1 L-9.6,4 L-9.6,3.4 L-9.2,3.2 '
-                            'L-0.6,-1.6 L-0.6,-6 L-0.55,-8.8 L-0.35,-9.6 Z" '
-                            'fill="#4DA3FF" stroke="#000" stroke-width="0.6"/></svg>')
-                    _icon = {"url": "data:image/svg+xml;charset=utf-8,"
-                                    + _up.quote(_svg), "width": 64, "height": 64,
-                             "anchorX": 32, "anchorY": 32, "mask": False}
-                    for r in _fleet_rows:
-                        r["icon"] = _icon
-                    layers.append(pdk.Layer(
-                        "IconLayer", _fleet_rows, get_position="position",
-                        get_icon="icon", get_angle="angle",
-                        get_size=32344, size_units="meters",
-                        size_min_pixels=9, size_max_pixels=18,
-                        pickable=True))
-                _stn = [{"position": [lo, la], "name": k}
-                        for k, (la, lo) in _SS2.STATION_LATLON.items()]
-                layers.append(pdk.Layer(
-                    "ScatterplotLayer", _stn, get_position="position",
-                    get_radius=1200, radius_min_pixels=3,
-                    radius_max_pixels=5, get_fill_color=[77, 163, 255, 255],
-                    pickable=False))
-                layers.append(pdk.Layer(
-                    "TextLayer", _stn, get_position="position",
-                    get_text="name", get_size=2600, size_min_pixels=0,
-                    size_max_pixels=11, get_color=[77, 163, 255, 255],
-                    get_pixel_offset=[9, -6],
-                    get_text_anchor='"start"',
-                    get_alignment_baseline='"center"', pickable=False))
-            except Exception:
-                pass
-            _vs = AS.view(coords[0], coords[1], width_px=780, width_nm=20)
-            # Zoom out to about a 300-mile radius (~600 mi across the
-            # 780 px view), no further.
-            import math as _mz
-            _vs.min_zoom = round(_mz.log2(
-                156543.03 * _mz.cos(_mz.radians(coords[0])) * 780
-                / (600 * 1609.34)), 2)
-            try:
-              st.pydeck_chart(pdk.Deck(
+            st.pydeck_chart(pdk.Deck(
                 layers=layers,
-                initial_view_state=_vs,
+                initial_view_state=AS.view(coords[0], coords[1], width_px=780,
+                                           width_nm=20),
                 # Interactive: drag to pan, wheel to zoom. The view
                 # state only sets where it opens.
                 views=[pdk.View(type="MapView",
@@ -783,10 +496,7 @@ with c_rad:
                                    "border": f"1px solid {EDGE}",
                                    "fontSize": "12px"}},
                 parameters={"clearColor": [0, 0, 0, 1]},
-              ), use_container_width=True, height=SCOPE_H)
-            except Exception as _de:
-                st.error(f"Scope did not draw: {type(_de).__name__}: "
-                         f"{str(_de)[:200]}")
+            ), use_container_width=True, height=SCOPE_H)
         else:
             st.caption(f"No coordinates for {icao}.")
 
@@ -802,89 +512,195 @@ with c_rad:
             + (f" \u00b7 {_d['error']}" if _d.get("error") else ""))
 
 # ============================================================ row 2
-
-with c_rad:
-    with st.container(border=True):
-        # AIRCRAFT SEARCH. A flight number or callsign; the aircraft
-        # is highlighted on the scope above and described here. Any
-        # JetBlue aircraft the fleet sweep knows about is findable,
-        # not only those within the scope's pull.
-        pod_title("Aircraft search",
-                  "flight number or callsign · highlighted on the scope")
-        _q = st.text_input("Flight", value="", key="sf_ac_query",
-                           placeholder="e.g. 1123, JBU1123, B61123",
-                           label_visibility="collapsed").strip().upper()
-        if _q:
-            _hits = _ac_hits
-            if not _hits:
-                st.caption(f"No JetBlue aircraft matching {_q} in the last "
-                           "sweep (airborne aircraft only; positions "
-                           "refresh every 2 min).")
-            else:
-                for r in _hits[:5]:
-                    _d = _b = None
-                    if coords:
-                        try:
-                            _d = AS.distance_nm(coords[0], coords[1],
-                                                r["lat"], r["lon"])
-                            import math as _m
-                            _dl = _m.radians(r["lon"] - coords[1])
-                            _y = _m.sin(_dl) * _m.cos(_m.radians(r["lat"]))
-                            _x = (_m.cos(_m.radians(coords[0]))
-                                  * _m.sin(_m.radians(r["lat"]))
-                                  - _m.sin(_m.radians(coords[0]))
-                                  * _m.cos(_m.radians(r["lat"])) * _m.cos(_dl))
-                            _b = (_m.degrees(_m.atan2(_y, _x)) + 360) % 360
-                        except Exception:
-                            _d = _b = None
-                    _where = (f"{_d:.0f} nm on the {_b:03.0f}\u00b0 from {icao}"
-                              if _d is not None else "")
-                    _on = (" \u2014 on the scope" if _d is not None and _d <= 20
-                           else " \u2014 outside the 20 nm scope"
-                           if _d is not None else "")
-                    st.markdown(
-                        f'<div style="border:1px solid #00E5FF;padding:6px 10px;'
-                        f'margin-bottom:6px;color:{INK};font-size:12px;'
-                        'font-weight:700;font-family:DejaVu Sans Mono,monospace">'
-                        f'{r.get("callsign","")}'
-                        + (f' &rarr; {r["dest"]}' if r.get("dest") else "")
-                        + f' &middot; FL{int((r.get("alt") or 0) / 100):03d}'
-                        + (f' &middot; {int(r["gs"])} kt' if r.get("gs") else "")
-                        + (f' &middot; hdg {int(r["angle"]):03d}'
-                           if r.get("angle") is not None else "")
-                        + (f'<br>{_where}{_on}' if _where else "")
-                        + "</div>", unsafe_allow_html=True)
-
 c_wind, c_mos = st.columns(2, gap="small")
 
 with c_wind:
     with st.container(border=True):
-        pod_title("Wind", f"speed, gust, direction · {cyc_txt}")
-        if ok and len(df):
-            from compare import plot_wind_comparison_interactive
+        pod_title("Wind & Flight Conditions",
+                  f"consensus meteogram · {cyc_txt}")
+        have_wind = ok and len(df) and {"wind_speed_kt", "wind_dir_deg"} <= set(df.columns)
+        have_cv = ok and len(df) and {"ceiling_ft", "vsby_sm"} <= set(df.columns)
+        if not (have_wind or have_cv):
+            st.caption("No model data for this station and cycle.")
+        else:
+            import plotly.graph_objects as go
+            from plotly.subplots import make_subplots
+
+            d = df[(df["station_id"] == icao)
+                   & (df["valid_time"] <= cycle + pd.Timedelta(hours=horizon))].copy()
+            d["valid_time"] = pd.to_datetime(d["valid_time"])
+            d["hour"] = d["valid_time"].dt.floor("h")
+            models = [m for m in MODELS if m in set(d["model"])]
+            times = [cycle + pd.Timedelta(hours=h) for h in range(0, horizon + 1)]
+            cols = [pd.Timestamp(t).floor("h") for t in times]
+
             try:
                 from core.metar import filter_since, metars_to_df
                 mdf = metars_to_df(filter_since(
-                    {icao: cached_metars(icao, 48)}, cycle))
+                    {icao: cached_metars(icao, 48)}, cycle - pd.Timedelta(hours=6)))
             except Exception:
                 mdf = None
-            fig = plot_wind_comparison_interactive(
-                df, icao, cycle=cycle, speed_ylim=(0, speed_max),
-                hours_ahead=horizon, metars_df=mdf)
-            fig.update_layout(
-                # No figure title: the pod header carries it, and the
-                # title sat on top of the "Wind speed (kt)" panel title.
-                title=None,
-                height=PLOT_H, width=None, autosize=True, paper_bgcolor=PANEL,
-                plot_bgcolor="#05070B",
-                font=dict(color=INK2, size=11, family="Roboto, Arial"),
-                margin=dict(l=40, r=16, t=24, b=30),
-                legend=dict(bgcolor="rgba(0,0,0,0)"))
-            fig.update_xaxes(gridcolor="#1A2233", zerolinecolor="#1A2233")
-            fig.update_yaxes(gridcolor="#1A2233", zerolinecolor="#1A2233")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.caption("No model data for this station and cycle.")
+
+            def _series(colname, agg="mean"):
+                if colname not in d.columns:
+                    return pd.Series(dtype=float)
+                if agg == "circular":
+                    return d.groupby("hour")[colname].apply(
+                        lambda s: G.circular_mean_deg(s.tolist()))
+                return d.groupby("hour")[colname].mean()
+
+            def _aligned(s):
+                return [None if pd.isna(v) else float(v) for v in s.reindex(cols)]
+
+            # ---- consensus (average-across-models) series - this is
+            # the SAME averaging that feeds the direction/speed/gust
+            # row above and the category bar below, so the bold line
+            # in every plot on this pod is one consistent trend.
+            cons_dir = _aligned(_series("wind_dir_deg", "circular")) if have_wind else [None] * len(cols)
+            cons_spd = _aligned(_series("wind_speed_kt")) if have_wind else [None] * len(cols)
+            cons_gst = _aligned(_series("wind_gust_kt")) if have_wind else [None] * len(cols)
+
+            if have_cv:
+                unl = (d["ceiling_unlimited"].astype(bool) if "ceiling_unlimited" in d
+                       else pd.Series(False, index=d.index))
+                d["_cig_eff"] = d["ceiling_ft"].where(~unl, 12000)
+                cons_cig = _aligned(_series("_cig_eff"))
+                cons_vis = _aligned(_series("vsby_sm"))
+            else:
+                cons_cig = cons_vis = [None] * len(cols)
+
+            # ---------------------------------------------- 1. wind row
+            if have_wind:
+                st.markdown(G.wind_text_row(cols, cons_dir, cons_spd, cons_gst),
+                            unsafe_allow_html=True)
+                st.caption("Direction-speed-gust, averaged across "
+                           f"{', '.join(m.replace('_', ' ') for m in models)} · "
+                           "highlighted yellow ≥25kt, orange ≥30kt, red ≥35kt")
+
+            # ------------------------------------------ 2. speed & gust
+            if have_wind:
+                fig_w = go.Figure()
+                for lo, hi, c in ((25, 30, "#FFD400"), (30, 35, "#FF8A00"),
+                                  (35, 200, "#FF3B30")):
+                    fig_w.add_hrect(y0=lo, y1=hi, fillcolor=c, opacity=0.06,
+                                    line_width=0)
+                for m in models:
+                    dm = d[d["model"] == m].sort_values("valid_time")
+                    fig_w.add_trace(go.Scatter(
+                        x=dm["valid_time"], y=dm["wind_speed_kt"], mode="lines",
+                        line=dict(color=MODELS[m], width=1, dash="solid"),
+                        opacity=0.45, name=f"{m.replace('_', ' ')} sustained",
+                        showlegend=True))
+                    if "wind_gust_kt" in dm.columns and dm["wind_gust_kt"].notna().any():
+                        fig_w.add_trace(go.Scatter(
+                            x=dm["valid_time"], y=dm["wind_gust_kt"], mode="lines",
+                            line=dict(color=MODELS[m], width=1, dash="dot"),
+                            opacity=0.35, showlegend=False))
+                fig_w.add_trace(go.Scatter(
+                    x=cols, y=cons_spd, mode="lines",
+                    line=dict(color=INK, width=3),
+                    name="Consensus sustained (avg of all models)"))
+                if any(v is not None for v in cons_gst):
+                    fig_w.add_trace(go.Scatter(
+                        x=cols, y=cons_gst, mode="lines",
+                        line=dict(color="#FF8A00", width=2.5, dash="dash"),
+                        name="Consensus gust (avg of models w/ gust)"))
+                if mdf is not None and len(mdf) and "wind_speed_kt" in mdf.columns:
+                    fig_w.add_trace(go.Scatter(
+                        x=mdf["obs_time"], y=mdf["wind_speed_kt"], mode="markers",
+                        marker=dict(color=INK, size=6, symbol="circle"),
+                        name="Observed"))
+                    if "wind_gust_kt" in mdf.columns:
+                        fig_w.add_trace(go.Scatter(
+                            x=mdf["obs_time"], y=mdf["wind_gust_kt"], mode="markers",
+                            marker=dict(color="#FF8A00", size=6, symbol="triangle-up"),
+                            showlegend=False))
+                fig_w.add_vline(x=cycle, line=dict(color="#00E5FF", width=1))
+                fig_w.update_layout(
+                    height=WIND_H, autosize=True, paper_bgcolor=PANEL,
+                    plot_bgcolor="#05070B",
+                    font=dict(color=INK2, size=11, family="Roboto, Arial"),
+                    margin=dict(l=40, r=16, t=10, b=10),
+                    legend=dict(orientation="h", y=-0.22, bgcolor="rgba(0,0,0,0)",
+                                font=dict(size=9)))
+                fig_w.update_xaxes(gridcolor="#1A2233", zerolinecolor="#1A2233",
+                                   tickformat="%HZ", dtick=3 * 3600e3)
+                fig_w.update_yaxes(gridcolor="#1A2233", zerolinecolor="#1A2233",
+                                   title="kt", range=[0, speed_max])
+                st.plotly_chart(fig_w, use_container_width=True)
+
+            # -------------------------------------- 3. category bar
+            if have_cv:
+                st.markdown(G.consensus_category_row(cols, cons_cig, cons_vis),
+                            unsafe_allow_html=True)
+                st.caption("Category above comes from the averaged "
+                           "(consensus) ceiling & visibility trend below — "
+                           "the same bold line in each plot, not any single "
+                           "model.")
+
+            # -------------------------------------- 4. ceiling & vis
+            if have_cv:
+                fig_cv = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                                       row_heights=[0.5, 0.5], vertical_spacing=0.06)
+                for lo, hi, c in ((150, 500, CAT["LIFR"]), (500, 1000, CAT["IFR"]),
+                                  (1000, 3000, CAT["MVFR"]), (3000, 12000, CAT["VFR"])):
+                    fig_cv.add_hrect(y0=lo, y1=hi, fillcolor=c, opacity=0.07,
+                                     line_width=0, row=1, col=1)
+                for lo, hi, c in ((0, 1, CAT["LIFR"]), (1, 3, CAT["IFR"]),
+                                  (3, 5, CAT["MVFR"]), (5, 10, CAT["VFR"])):
+                    fig_cv.add_hrect(y0=lo, y1=hi, fillcolor=c, opacity=0.07,
+                                     line_width=0, row=2, col=1)
+                for m in models:
+                    dm = d[d["model"] == m].sort_values("valid_time")
+                    fig_cv.add_trace(go.Scatter(
+                        x=dm["valid_time"], y=dm["_cig_eff"], mode="lines",
+                        line=dict(color=MODELS[m], width=1), opacity=0.45,
+                        name=m.replace("_", " ")), row=1, col=1)
+                    fig_cv.add_trace(go.Scatter(
+                        x=dm["valid_time"], y=dm["vsby_sm"].clip(upper=10),
+                        mode="lines", line=dict(color=MODELS[m], width=1),
+                        opacity=0.45, showlegend=False), row=2, col=1)
+                fig_cv.add_trace(go.Scatter(
+                    x=cols, y=cons_cig, mode="lines",
+                    line=dict(color=INK, width=3),
+                    name="Consensus (avg) — feeds the category bar above"),
+                    row=1, col=1)
+                fig_cv.add_trace(go.Scatter(
+                    x=cols, y=[None if v is None else min(v, 10) for v in cons_vis],
+                    mode="lines", line=dict(color=INK, width=3),
+                    showlegend=False), row=2, col=1)
+                if mdf is not None and len(mdf) and "ceiling_ft" in mdf.columns:
+                    fig_cv.add_trace(go.Scatter(
+                        x=mdf["obs_time"], y=mdf["ceiling_ft"], mode="markers",
+                        marker=dict(color=INK, size=5, symbol="circle-open"),
+                        name="Observed"), row=1, col=1)
+                    if "vsby_sm" in mdf.columns:
+                        fig_cv.add_trace(go.Scatter(
+                            x=mdf["obs_time"], y=mdf["vsby_sm"], mode="markers",
+                            marker=dict(color=INK, size=5, symbol="circle-open"),
+                            showlegend=False), row=2, col=1)
+                fig_cv.add_vline(x=cycle, line=dict(color="#00E5FF", width=1))
+                fig_cv.update_yaxes(type="log", range=[2.2, 4.08], title="ceiling ft",
+                                    tickvals=[200, 500, 1000, 3000, 10000],
+                                    row=1, col=1)
+                fig_cv.update_yaxes(range=[0, 10], title="vis SM",
+                                    tickvals=[0, 1, 3, 5, 10], row=2, col=1)
+                for y, lab, c in ((260, "LIFR", CAT["LIFR"]), (700, "IFR", CAT["IFR"]),
+                                  (1700, "MVFR", CAT["MVFR"]), (6000, "VFR", CAT["VFR"])):
+                    fig_cv.add_annotation(x=1, xref="paper", y=__import__("math").log10(y),
+                                          text=lab, showarrow=False, xanchor="right",
+                                          font=dict(color=c, size=10), row=1, col=1)
+                fig_cv.update_layout(
+                    height=CIGVIS_H * 2, autosize=True, paper_bgcolor=PANEL,
+                    plot_bgcolor="#05070B",
+                    font=dict(color=INK2, size=11, family="Roboto, Arial"),
+                    margin=dict(l=40, r=16, t=10, b=30),
+                    legend=dict(orientation="h", y=-0.10, bgcolor="rgba(0,0,0,0)",
+                                font=dict(size=9)))
+                fig_cv.update_xaxes(gridcolor="#1A2233", tickformat="%HZ",
+                                    dtick=3 * 3600e3)
+                fig_cv.update_yaxes(gridcolor="#1A2233")
+                st.plotly_chart(fig_cv, use_container_width=True)
 
 with c_mos:
     for model, label, rows_fn in (("NBM", "NBM hourly", G.nbm_rows),
