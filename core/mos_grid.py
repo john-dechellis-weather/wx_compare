@@ -55,6 +55,17 @@ def gust_fill(g):
     return RED if g >= 35 else ORANGE if g >= 30 else None
 
 
+def wind_tier_fill(g):
+    """Threshold ladder for the Wind meteogram's direction/speed/gust
+    row (core/mos_grid.py:wind_text_row) — deliberately separate from
+    gust_fill() above, which the NBM/LAMP GST rows already use and
+    which stays put. Yellow 25-29, orange 30-34, red 35+; below 25,
+    no highlight."""
+    if g is None:
+        return None
+    return RED if g >= 35 else ORANGE if g >= 30 else YELLOW if g >= 25 else None
+
+
 def prob_fill(p, threshold=25):
     return RED if p is not None and p >= threshold else None
 
@@ -90,6 +101,73 @@ def f_wdr(d):
 def f_gust(g):
     n = _num(g)
     return "NG" if n is None or n < 15 else f"{int(round(n))}"
+
+
+# ------------------------------------------------------ wind consensus row
+
+_COMPASS8 = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+
+
+def compass8(deg) -> str:
+    n = _num(deg)
+    if n is None:
+        return ""
+    return _COMPASS8[int(((n % 360) + 22.5) // 45) % 8]
+
+
+def circular_mean_deg(degs) -> float | None:
+    """Vector-mean of a list of headings (degrees), so 350 and 10
+    average to 0 rather than 180. None for an empty/all-null list."""
+    xs, ys = [], []
+    for d in degs:
+        n = _num(d)
+        if n is None:
+            continue
+        xs.append(math.cos(math.radians(n)))
+        ys.append(math.sin(math.radians(n)))
+    if not xs:
+        return None
+    return math.degrees(math.atan2(sum(ys) / len(ys), sum(xs) / len(xs))) % 360.0
+
+
+def wind_cell_text(dir_deg, spd, gust=None) -> str:
+    """'093°-14kt-E' or, with a reporting model, '093°-14kt-E G28'."""
+    d, s = _num(dir_deg), _num(spd)
+    if d is None or s is None:
+        return ""
+    txt = f"{int(round(d)):03d}°-{int(round(s))}kt-{compass8(d)}"
+    g = _num(gust)
+    if g is not None:
+        txt += f" G{int(round(g))}"
+    return txt
+
+
+def wind_text_row(times, dirs, spds, gusts, label: str = "WIND (avg)",
+                   font_px: int = 12) -> str:
+    """One-row grid: consensus direction-speed(-gust) per hour, colour
+    keyed off wind_tier_fill() (gust when a model reports one that
+    hour, else sustained speed)."""
+    cells = []
+    for d, s, g in zip(dirs, spds, gusts):
+        text = wind_cell_text(d, s, g)
+        key = _num(g) if _num(g) is not None else _num(s)
+        cells.append((text, wind_tier_fill(key)))
+    return grid(times, [(label, cells)], font_px=font_px)
+
+
+def consensus_category_row(times, cig, vis, label: str = "CATEGORY (avg)",
+                            font_px: int = 12) -> str:
+    """One-row grid: flight category from the AVERAGED ceiling/vis
+    trend across models (the same series the bold consensus line on
+    the ceiling & visibility plots draws) rather than any one model."""
+    cells = []
+    for c, v in zip(cig, vis):
+        if _num(c) is None and _num(v) is None:
+            cells.append(("", None))
+            continue
+        cat = category(c, False, v)
+        cells.append((cat, CAT_FILL[cat]))
+    return grid(times, [(label, cells)], font_px=font_px)
 
 
 # --------------------------------------------------------------- grid
