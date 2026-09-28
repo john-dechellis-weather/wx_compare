@@ -1,10 +1,10 @@
-"""Large Scale Map - tomorrow.io tiles over every JetBlue destination
-except Europe (125W-50W, 52N-5S) plus the Canadian alternates.
+"""Large Scale Map - tomorrow.io tiles over CONUS (125W-66W, 24N-50N)
+plus the Canadian alternates in range.
 
 The frames are built by the tomorrow.io warmer in core/tio_map.py
 (started from Homepage.py) and stitched into WebPs under static/.
 This page only writes the MapLibre viewer to static/ and embeds it;
-field, time step, opacity, station and route toggles are handled in the
+field, time step, opacity and station toggles are handled in the
 browser, so nothing here reruns while the map is used. The fragment
 re-runs every 60 s to pick up newly warmed frames.
 """
@@ -15,7 +15,7 @@ from pathlib import Path
 import streamlit as st
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Large Scale Map", layout="wide")
+st.set_page_config(page_title="Custom Tomorrow.io Map", layout="wide")
 
 from retro_theme import apply_retro_theme
 
@@ -32,25 +32,93 @@ check_password()
 from core import tio_map as TIO
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
-# Same cache root as the CONUS map, so the routes come from the same
-# NASR/AIS build (core/navdata) it draws.
-_persist = Path("/opt/render/project/src/cache")
-CACHE_ROOT = _persist if _persist.exists() else Path("/tmp/wx_compare_cache")
-CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 HEIGHT = int(os.environ.get("TIO_PAGE_HEIGHT", "860"))
 
 # The warmer normally starts on Homepage; this is the belt to that
 # brace for a direct deep link after a restart.
 TIO.ensure_tio_warmer(STATIC)
 
-st.markdown(
-    '<div style="font-size:16px;font-weight:700;color:#FFFFFF;'
-    'margin:0 0 2px 0">LARGE SCALE MAP</div>'
-    '<div style="font-size:11px;font-weight:700;color:#B8B8B8;'
-    'margin:0 0 8px 0">tomorrow.io weather tiles &middot; JetBlue '
-    'network (ex-Europe) and Canadian alternates &middot; '
-    'now and forecast steps</div>',
-    unsafe_allow_html=True)
+# Two views behind one switch (28 Sep). TOMORROW.IO (default): the
+# warmed tile map - five layers that stack, an hourly TIME slider to
+# +24 h then 3-hourly to +72 h, one model - NextGen (a FOCUS switch
+# appears if TIO_MODELS names both; see core/tio_map.py). Its 2-panel
+# button opens a meteogram of the layers that are on for any station
+# you click, from warmed tomorrow.io point forecasts. NOAA MODELS: a
+# CONUS frame of RRFS / HRRR / NAM nest from core/model_map.py - the
+# lightning source, since tomorrow.io tiles are spent on the other
+# five fields.
+_h1, _h2 = st.columns([2, 1.6])
+with _h1:
+    st.markdown(
+        '<div style="font-size:16px;font-weight:700;color:#FFFFFF;'
+        'margin:0 0 2px 0">CUSTOM TOMORROW.IO MAP</div>'
+        '<div style="font-size:11px;font-weight:700;color:#B8B8B8;'
+        'margin:0 0 8px 0">tomorrow.io: reflectivity &middot; ceiling '
+        '&middot; visibility &middot; wind speed &middot; wind gust, hourly '
+        'to +24 h, 3-hourly to +72 h &nbsp;|&nbsp; NOAA models: RRFS '
+        '&middot; HRRR &middot; NAM nest incl. lightning</div>',
+        unsafe_allow_html=True)
+with _h2:
+    view = st.radio("View", ["tomorrow.io", "NOAA models"],
+                    horizontal=True, key="lsm_view",
+                    label_visibility="collapsed")
+
+if view == "NOAA models":
+    from core import model_map as _MM
+
+    _MM.render()
+    st.stop()
+
+# Model switch: a page control, not a per-viewer toggle, because the
+# warmer serves ONE model and a switch re-warms every frame (~1,280
+# requests). Shown only when TIO_MODELS names more than one.
+_active = TIO.active_model(STATIC)
+if len(TIO.MODELS) > 1:
+    _m1, _m2 = st.columns([1.2, 3])
+    with _m1:
+        _pick = st.radio("Model", list(TIO.MODELS),
+                         index=list(TIO.MODELS).index(_active),
+                         format_func=TIO.model_label, horizontal=True,
+                         key="tio_model_pick")
+    if _pick != _active:
+        _u = TIO.usage(STATIC)
+        _cost = (TIO.tile_count(TIO.FCST_ZOOM) * len(TIO.FCST_HOURS)
+                 + TIO.tile_count(TIO.NOW_ZOOM)) * len(TIO.FIELDS)
+        with _m2:
+            if _u["count"] + _cost > TIO.DAILY_CAP:
+                st.warning(f"Switching to {TIO.model_label(_pick)} needs "
+                           f"~{_cost:,} requests; {_u['count']:,} of "
+                           f"{TIO.DAILY_CAP:,} already used today - the "
+                           "warmer would stop at the cap. It switches "
+                           "anyway at 00Z.")
+            else:
+                st.caption(f"Switching to {TIO.model_label(_pick)}: the "
+                           f"warmer re-warms all frames (~{_cost:,} "
+                           "requests); the nearest hours arrive first.")
+        TIO.set_model(STATIC, _pick)
+        _active = _pick
+
+# High-resolution sector: one at a time, warmed at zoom 6 on the "now"
+# cadence for TIO_HIRES_FIELDS; "None" spends nothing.
+_sector = TIO.active_sector(STATIC)
+if TIO.HIRES_ON and TIO.SECTORS:
+    _s1, _s2 = st.columns([1.2, 3])
+    _opts = [""] + list(TIO.SECTORS)
+    with _s1:
+        _sp = st.selectbox("Hi-res sector", _opts,
+                           index=_opts.index(_sector) if _sector in _opts else 0,
+                           format_func=lambda k: "None" if not k else TIO.SECTORS[k][0],
+                           key="tio_sector_pick")
+    with _s2:
+        if _sp:
+            st.caption(f"{TIO.SECTORS[_sp][0]}: zoom {TIO.HIRES_ZOOM} "
+                       f"({TIO.tile_count(TIO.HIRES_ZOOM, TIO.SECTORS[_sp][1])} tiles) "
+                       f"for {', '.join(TIO.HIRES_FIELDS)} every {TIO.HIRES_MIN} min "
+                       f"\u2248 +{TIO.sector_estimate(_sp):,} requests/day, shown "
+                       "over the CONUS frame once the map is zoomed past 5.5.")
+    if _sp != _sector:
+        TIO.set_sector(STATIC, _sp)
+        _sector = _sp
 
 
 def _origin() -> str:
@@ -70,25 +138,44 @@ def _origin() -> str:
 def _body():
     base = _origin()
     man = TIO.manifest(STATIC)
-    n = sum(len(v) for v in man.values())
-    if not TIO.api_key():
+    # man[_active] holds one {step: entry} dict per field, PLUS a
+    # "hires:<hub>" key nested one level deeper ({field: {step: entry}})
+    # for the sector pass. Excluded here and below so a hi-res sector
+    # doesn't get its field dicts mistaken for frame entries.
+    _fc = {k: v for k, v in (man.get(_active) or {}).items()
+           if not k.startswith("hires:")}
+    n = sum(len(v) for v in _fc.values())
+    if TIO.DEMO:
+        st.warning("TIO_DEMO=on: synthetic tiles and station series, no "
+                   "tomorrow.io calls. Remove the env var for live data.")
+    elif not TIO.api_key():
         st.error("TOMORROWIO_API_KEY is not set - the warmer cannot "
                  "fetch tiles.")
     elif n == 0:
-        st.info("No frames yet - the tomorrow.io warmer builds the first "
-                "set about 10 s after the app starts (64 tiles for the "
-                "current frame, 16 per forecast step). Refresh in a "
-                "minute." + (f"  Last error: {TIO.STATUS['err']}"
-                              if TIO.STATUS.get("err") else ""))
+        st.info(f"No {TIO.model_label(_active)} frames yet - the warmer "
+                "builds the current hour for every layer first, then walks "
+                "out through the forecast (about a minute per hour of "
+                "forecast at zoom 3). Refresh in a minute."
+                + (f"  Last error: {TIO.STATUS['err']}"
+                   if TIO.STATUS.get("err") else "")
+                + ((f"  tomorrow.io rate limit: the warmer resumes in "
+                    + (f"{TIO.in_backoff() / 3600:.1f} h" if TIO.in_backoff() > 3600
+                       else f"{TIO.in_backoff() / 60:.0f} min") + ".")
+                   if TIO.in_backoff() else ""))
     try:
+        _pt = TIO.points(STATIC, _active)
+        _no = TIO.noaa(STATIC)
         html = TIO.map_html(man, base, TIO.stations_geojson(STATIC),
-                            routes=TIO.routes_geojson(CACHE_ROOT),
-                            height=HEIGHT)
+                            height=HEIGHT, model=_active,
+                            pt_built=_pt.get("built", ""),
+                            noaa_built=_no.get("built", ""),
+                            sector=_sector)
         name = "tio_map.html"
         tmp = STATIC / f".{name}.tmp"
         tmp.write_text(html)
         os.replace(tmp, STATIC / name)
-        newest = max((e["built"] for v in man.values() for e in v.values()),
+        newest = max([e["built"] for v in _fc.values()
+                      for e in v.values()] + [_pt.get("built", "")],
                      default="none")
         components.iframe(f"{base}/app/static/{name}?v={newest}",
                           height=HEIGHT)
@@ -100,13 +187,16 @@ _body()
 
 with st.expander("tomorrow.io warmer status", expanded=False):
     u = TIO.usage(STATIC)
-    st.caption(f"Requests today ({u['day']} UTC): {u['count']} / "
-               f"{TIO.DAILY_CAP} cap  |  fields {', '.join(TIO.FIELDS)}  |  "
+    st.caption(f"Requests today ({u['day']} UTC): {u['count']:,} / "
+               f"{TIO.DAILY_CAP:,} cap  |  model {TIO.model_label(_active)}  |  "
+               f"fields {', '.join(TIO.FIELDS)}  |  "
                f"now z{TIO.NOW_ZOOM} ({TIO.tile_count(TIO.NOW_ZOOM)} tiles) "
-               f"every {TIO.NOW_MIN} min  |  forecast "
-               f"{', '.join('+%d' % h for h in TIO.FCST_HOURS)} h z{TIO.FCST_ZOOM} "
-               f"({TIO.tile_count(TIO.FCST_ZOOM)} tiles each) every "
-               f"{TIO.FCST_MIN} min")
+               f"every {TIO.NOW_MIN} min  |  forecast {len(TIO.FCST_HOURS)} steps "
+               f"to +{TIO.FCST_HOURS[-1] if TIO.FCST_HOURS else 0} h "
+               f"z{TIO.FCST_ZOOM} ({TIO.tile_count(TIO.FCST_ZOOM)} tiles each) "
+               f"every {TIO.FCST_MIN} min  |  hi-res sector "
+               f"{TIO.SECTORS[_sector][0] if _sector in TIO.SECTORS else 'none'}"
+               f"  |  ~{TIO.daily_estimate() + TIO.sector_estimate(_sector):,}/day")
     if TIO.STATUS.get("err"):
         st.error(TIO.STATUS["err"])
     lines = TIO.log_tail(STATIC, 15)

@@ -313,7 +313,7 @@ PAGES = {
         st.Page("pages/3_JBU_Weather_Map.py",
                 title="JBU Weather Map CONUS"),
         st.Page("pages/15_Large_Scale_Map.py",
-                title="Large Scale Map"),
+                title="Custom Tomorrow.io Map"),
         # Station Quick View removed from navigation 21 Sep; the file
         # stays in pages/ unlisted. Its airport scope lives on in
         # Station Forecast, so the surface warmer above still runs.

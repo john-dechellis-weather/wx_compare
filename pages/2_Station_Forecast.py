@@ -110,10 +110,28 @@ def _category_strip(d, models, times, obs=(), font_px=12) -> str:
         last_day = t.day
         hdr.append(f'<th style="{head}">{day}{t:%H}</th>')
 
-    def _cat_cell(cat):
+    def _cat_cell(cat, tip=""):
+        """One-line cell as before; the numbers behind the category are
+        the mouse-over (28 Sep)."""
         col = CAT.get(cat, "#8A93A6")
         return (f'<td style="{cell};background:{col};color:#000000;'
-                f'-webkit-text-fill-color:#000000">{cat}</td>')
+                f'-webkit-text-fill-color:#000000;cursor:default"'
+                f' title="{tip}">{cat}</td>')
+
+    def _cv_tip(cig, unl, vis):
+        c = None if (unl or cig is None or (isinstance(cig, float) and math.isnan(cig))) else float(cig)
+        v = None if (vis is None or (isinstance(vis, float) and math.isnan(vis))) else float(vis)
+        ct = "no ceiling" if c is None else f"ceiling {int(round(c / 100.0) * 100):,} ft"
+        if v is None:
+            vt = ""
+        elif v >= 10:
+            vt = "vis 10+ sm"
+        elif v < 1:
+            q = max(1, int(round(v * 4)))
+            vt = "vis " + {1: "1/4", 2: "1/2", 3: "3/4", 4: "1"}[q] + " sm"
+        else:
+            vt = f"vis {round(v * 2) / 2:g} sm"
+        return f"{ct}  \u00b7  {vt}" if vt else ct
 
     beyond = (f'<td style="{cell};background:#101418;color:{MUTED};'
               f'-webkit-text-fill-color:{MUTED};font-size:{max(7, hf - 4)}px">'
@@ -141,10 +159,10 @@ def _category_strip(d, models, times, obs=(), font_px=12) -> str:
             if r is None:
                 cells.append(beyond)
                 continue
-            cat = _flight_cat(r.get("ceiling_ft"),
-                              bool(r.get("ceiling_unlimited", False)),
-                              r.get("vsby_sm"))
-            cells.append(_cat_cell(cat))
+            _u = bool(r.get("ceiling_unlimited", False))
+            cat = _flight_cat(r.get("ceiling_ft"), _u, r.get("vsby_sm"))
+            cells.append(_cat_cell(cat, f"{m.replace('_', ' ')} {t:%d/%HZ}: "
+                                   + _cv_tip(r.get("ceiling_ft"), _u, r.get("vsby_sm"))))
         rows.append(f'<tr><td style="{rowlab}">{m.replace("_", " ")}</td>'
                     + "".join(cells) + "</tr>")
     if obs:
@@ -164,7 +182,8 @@ def _category_strip(d, models, times, obs=(), font_px=12) -> str:
                 cells.append(beyond)
                 continue
             o = cand[-1]
-            cells.append(_cat_cell(_flight_cat(o[1], o[2], o[3])))
+            cells.append(_cat_cell(_flight_cat(o[1], o[2], o[3]),
+                                   f"OBS {o[0]:%d/%H%MZ}: " + _cv_tip(o[1], o[2], o[3])))
         rows.append(f'<tr><td style="{rowlab}">OBS</td>'
                     + "".join(cells) + "</tr>")
     return (f'<div style="overflow-x:auto"><table style="border-collapse:'
@@ -185,8 +204,14 @@ SCOPE_H = int(os.environ.get("BLUEMET_SF_SCOPE_H", "1000"))
 # beside it; raise or lower with the env var if a station's TAF runs
 # long or short.
 SF_TEXT_PX = int(os.environ.get("BLUEMET_SF_TEXT_PX", "15"))
-PLOT_H = 620          # wind, level with the two grids beside it
-CV_H = 420            # ceiling & visibility, under the strip
+
+# The Wind & Flight Conditions meteogram (c_wind, row 2) stacks four
+# pieces in one pod: the direction/speed/gust text row, the speed +
+# gust plot, the consensus category bar, then ceiling and vis plots.
+# Heights are for the two plotly charts only - the text rows and bar
+# size themselves to their content.
+WIND_H = 300          # speed + gust
+CIGVIS_H = 240        # each of ceiling and vis
 
 HUBS = ["KJFK", "KBOS", "KFLL", "KMCO", "KEWR", "KLGA", "KDCA", "KLAX",
         "KSFO", "KTPA", "KDJT", "KBDL", "KHPN", "TJSJ"]
@@ -438,7 +463,11 @@ def _board_table(rows, kind: str, inbound=None) -> str:
 # -------------------------------------------------------------- header
 h1, h2 = st.columns([3, 2])
 with h1:
-    st.title("Station Forecast")
+    st.markdown(
+        f'<div style="font-size:3.2rem;font-weight:700;line-height:1.1;'
+        f'color:{INK};-webkit-text-fill-color:{INK};margin:0">'
+        f'Station Forecast: {icao[1:] if icao[0] == "K" and len(icao) == 4 else icao}'
+        '</div>', unsafe_allow_html=True)
     st.caption("Multi-model guidance, observations and radar for one airport")
 with h2:
     chips = "".join(
@@ -482,15 +511,43 @@ with c_obs:
 
     with st.container(border=True):
         taf = cached_taf(icao)
+        # D-ATIS beside the TAF (28 Sep): the current broadcast as
+        # bullet points, one per sentence, in the space to the right.
+        _atis_raw, _atis_code = "", ""
+        try:
+            from core import atis as _AT
+            _ac = _AT.config(icao)
+            _atis_raw, _atis_code = _ac.get("raw", ""), _ac.get("code", "")
+        except Exception:
+            pass
         if taf:
             first = taf.strip().split("\n")[0]
-            pod_title("TAF", first[:60])
-            st.markdown(wx_colored_box(taf.splitlines(), taf_mode=True,
-                                       font_px=SF_TEXT_PX),
-                        unsafe_allow_html=True)
+            pod_title("TAF" + (f" \u00b7 ATIS {_atis_code}" if _atis_code else ""),
+                      first[:60])
         else:
-            pod_title("TAF")
-            st.warning("No TAF available (station may not be a TAF site).")
+            pod_title("TAF" + (f" \u00b7 ATIS {_atis_code}" if _atis_code else ""))
+        _tc1, _tc2 = st.columns([1.15, 1], gap="small")
+        with _tc1:
+            if taf:
+                st.markdown(wx_colored_box(taf.splitlines(), taf_mode=True,
+                                           font_px=SF_TEXT_PX),
+                            unsafe_allow_html=True)
+            else:
+                st.warning("No TAF available (station may not be a TAF site).")
+        with _tc2:
+            if _atis_raw:
+                import re as _re_atis
+                _bul = [b.strip(" .") for b in _re_atis.split(
+                    r"\.{2,}|(?<=[A-Z0-9])\.\s+|\n+", _atis_raw) if b.strip(" .")]
+                st.markdown(
+                    f'<div style="border:1px solid {EDGE};padding:8px 10px 8px 4px;'
+                    f'font-family:DejaVu Sans Mono,Menlo,monospace;font-size:{SF_TEXT_PX - 2}px;'
+                    f'font-weight:700;color:{INK};-webkit-text-fill-color:{INK};'
+                    f'line-height:1.35"><ul style="margin:0;padding-left:18px">'
+                    + "".join(f"<li>{b}</li>" for b in _bul[:18])
+                    + "</ul></div>", unsafe_allow_html=True)
+            else:
+                st.caption("No D-ATIS for this field.")
 
     with st.container(border=True):
         pod_title("Flight conditions",
@@ -498,7 +555,9 @@ with c_obs:
         if ok and len(df) and {"ceiling_ft", "vsby_sm"} <= set(df.columns):
             d = df[(df["station_id"] == icao)
                    & (df["valid_time"] <= cycle + pd.Timedelta(hours=horizon))]
-            models = [m for m in MODELS if m in set(d["model"])]
+            # GFS MOS is 3-hourly and coarse; it stays in the consensus
+            # but not in this table (28 Sep).
+            models = [m for m in MODELS if m in set(d["model"]) and m != "GFS_MOS"]
             times = [cycle + pd.Timedelta(hours=h) for h in range(0, horizon + 1)]
             obs_rows = []
             try:
@@ -514,37 +573,133 @@ with c_obs:
         else:
             st.caption("No ceiling/visibility guidance for this station and cycle.")
 
+
     with st.container(border=True):
-        pod_title("Ceiling & visibility", f"by model · {cyc_txt}")
-        if ok and len(df) and {"ceiling_ft", "vsby_sm"} <= set(df.columns):
-            # THE ORIGINAL FIGURE, as the wind pod beside it already
-            # does: compare.plot_comparison_interactive is what the
-            # VIS/CIG page drew. A hand-built version here stacked
-            # every point on one timestamp and put the axes on a log
-            # scale; this is the plot people know.
-            from compare import plot_comparison_interactive
+        pod_title("Consensus \u00b7 all models",
+                  f"wind and flight category, averaged \u00b7 {cyc_txt}")
+        have_wind = ok and len(df) and {"wind_speed_kt", "wind_dir_deg"} <= set(df.columns)
+        have_cv = ok and len(df) and {"ceiling_ft", "vsby_sm"} <= set(df.columns)
+        if not (have_wind or have_cv):
+            st.caption("No model data for this station and cycle.")
+        else:
+            import plotly.graph_objects as go
+
+            d = df[(df["station_id"] == icao)
+                   & (df["valid_time"] <= cycle + pd.Timedelta(hours=horizon))].copy()
+            d["valid_time"] = pd.to_datetime(d["valid_time"])
+            d["hour"] = d["valid_time"].dt.floor("h")
+            models = [m for m in MODELS if m in set(d["model"])]
+            times = [cycle + pd.Timedelta(hours=h) for h in range(0, horizon + 1)]
+            cols = [pd.Timestamp(t).floor("h") for t in times]
+
             try:
                 from core.metar import filter_since, metars_to_df
                 mdf = metars_to_df(filter_since(
-                    {icao: cached_metars(icao, 48)}, cycle))
+                    {icao: cached_metars(icao, 48)}, cycle - pd.Timedelta(hours=6)))
             except Exception:
                 mdf = None
-            fig = plot_comparison_interactive(
-                df, icao, cycle=cycle, hours_ahead=horizon, metars_df=mdf)
-            # Same dark restyle the wind pod applies; the traces, axes
-            # and category bands are the original's.
-            fig.update_layout(
-                title=None,
-                height=CV_H, width=None, autosize=True, paper_bgcolor=PANEL,
-                plot_bgcolor="#05070B",
-                font=dict(color=INK2, size=11, family="Roboto, Arial"),
-                margin=dict(l=40, r=16, t=24, b=30),
-                legend=dict(bgcolor="rgba(0,0,0,0)"))
-            fig.update_xaxes(gridcolor="#1A2233", zerolinecolor="#1A2233")
-            fig.update_yaxes(gridcolor="#1A2233", zerolinecolor="#1A2233")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.caption("No ceiling/visibility guidance for this station and cycle.")
+
+            def _series(colname, agg="mean"):
+                if colname not in d.columns:
+                    return pd.Series(dtype=float)
+                if agg == "circular":
+                    return d.groupby("hour")[colname].apply(
+                        lambda s: G.circular_mean_deg(s.tolist()))
+                return d.groupby("hour")[colname].mean()
+
+            def _aligned(s):
+                return [None if pd.isna(v) else float(v) for v in s.reindex(cols)]
+
+            # ---- consensus (average-across-models) series - this is
+            # the SAME averaging that feeds the direction/speed/gust
+            # row above and the category bar below, so the bold line
+            # in every plot on this pod is one consistent trend.
+            cons_dir = _aligned(_series("wind_dir_deg", "circular")) if have_wind else [None] * len(cols)
+            cons_spd = _aligned(_series("wind_speed_kt")) if have_wind else [None] * len(cols)
+            cons_gst = _aligned(_series("wind_gust_kt")) if have_wind else [None] * len(cols)
+
+            if have_cv:
+                unl = (d["ceiling_unlimited"].astype(bool) if "ceiling_unlimited" in d
+                       else pd.Series(False, index=d.index))
+                d["_cig_eff"] = d["ceiling_ft"].where(~unl, 12000)
+                cons_cig = _aligned(_series("_cig_eff"))
+                cons_vis = _aligned(_series("vsby_sm"))
+            else:
+                cons_cig = cons_vis = [None] * len(cols)
+
+            # ------------------------------------ 1. wind, three rows
+            if have_wind:
+                st.markdown(G.wind_rows(cols, cons_dir, cons_spd, cons_gst,
+                                        font_px=SF_TEXT_PX - 3),
+                            unsafe_allow_html=True)
+
+            # -------------------------------------- 3. category bar
+            if have_cv:
+                st.markdown(G.consensus_category_row(cols, cons_cig, cons_vis,
+                                                     font_px=SF_TEXT_PX - 3),
+                            unsafe_allow_html=True)
+            st.caption("Averaged across "
+                       f"{', '.join(m.replace('_', ' ') for m in models)}: "
+                       "direction to the nearest 5\u00b0; speed and gust "
+                       "highlighted yellow \u226525 kt, orange \u226530, red "
+                       "\u226535; the category comes from the averaged "
+                       "ceiling and visibility, not any single model.")
+
+            # ------------------------------------------ 2. speed & gust
+            if have_wind:
+                fig_w = go.Figure()
+                for lo, hi, c in ((25, 30, "#FFD400"), (30, 35, "#FF8A00"),
+                                  (35, 200, "#FF3B30")):
+                    fig_w.add_hrect(y0=lo, y1=hi, fillcolor=c, opacity=0.06,
+                                    line_width=0)
+                for m in models:
+                    dm = d[d["model"] == m].sort_values("valid_time")
+                    fig_w.add_trace(go.Scatter(
+                        x=dm["valid_time"], y=dm["wind_speed_kt"], mode="lines",
+                        line=dict(color=MODELS[m], width=1, dash="solid"),
+                        opacity=0.45, name=f"{m.replace('_', ' ')} sustained",
+                        showlegend=True))
+                    if "wind_gust_kt" in dm.columns and dm["wind_gust_kt"].notna().any():
+                        fig_w.add_trace(go.Scatter(
+                            x=dm["valid_time"], y=dm["wind_gust_kt"], mode="lines",
+                            line=dict(color=MODELS[m], width=1, dash="dot"),
+                            opacity=0.35, showlegend=False))
+                fig_w.add_trace(go.Scatter(
+                    x=cols, y=cons_spd, mode="lines",
+                    line=dict(color=INK, width=3),
+                    name="Consensus sustained (avg of all models)"))
+                if any(v is not None for v in cons_gst):
+                    fig_w.add_trace(go.Scatter(
+                        x=cols, y=cons_gst, mode="lines",
+                        line=dict(color="#FF8A00", width=2.5, dash="dash"),
+                        name="Consensus gust (avg of models w/ gust)"))
+                if mdf is not None and len(mdf) and "wind_speed_kt" in mdf.columns:
+                    fig_w.add_trace(go.Scatter(
+                        x=mdf["obs_time"], y=mdf["wind_speed_kt"], mode="markers",
+                        marker=dict(color=INK, size=6, symbol="circle"),
+                        name="Observed"))
+                    if "wind_gust_kt" in mdf.columns:
+                        fig_w.add_trace(go.Scatter(
+                            x=mdf["obs_time"], y=mdf["wind_gust_kt"], mode="markers",
+                            marker=dict(color="#FF8A00", size=6, symbol="triangle-up"),
+                            showlegend=False))
+                fig_w.add_vline(x=cycle, line=dict(color="#00E5FF", width=1))
+                fig_w.update_layout(
+                    height=WIND_H, autosize=True, paper_bgcolor=PANEL,
+                    plot_bgcolor="#05070B",
+                    font=dict(color=INK2, size=11, family="Roboto, Arial"),
+                    margin=dict(l=40, r=16, t=10, b=10),
+                    legend=dict(orientation="h", y=-0.22, bgcolor="rgba(0,0,0,0)",
+                                font=dict(size=9)))
+                fig_w.update_xaxes(gridcolor="#1A2233", zerolinecolor="#1A2233",
+                                   tickformat="%HZ", dtick=3 * 3600e3)
+                fig_w.update_yaxes(gridcolor="#1A2233", zerolinecolor="#1A2233",
+                                   title="kt", range=[0, speed_max])
+                st.plotly_chart(fig_w, use_container_width=True)
+
+    # The ceiling & visibility plots came out on 28 Sep: the category
+    # row and the numbers under each cell in Flight conditions carry
+    # what they showed, in less height.
 
 
 def _search_fleet(q: str) -> list:
@@ -572,13 +727,23 @@ def _search_fleet(q: str) -> list:
 # is on this run, not the next one.
 _ac_hits = _search_fleet(st.session_state.get("sf_ac_query", ""))
 
-with c_rad:
+def _scope_pod():
+    """The airport scope pod. A function so it can run as a fragment:
+    with the radar loop on it re-runs every 2 s to advance the frame
+    (and only this pod re-runs, not the page)."""
     with st.container(border=True):
         # The airport scope, exactly as Station Quick View draws it -
         # same runway table, same finals, same ATIS colouring - with
         # MRMS reflectivity underneath and no traffic, at 20 nm.
         stamp_txt, cfg, l3_txt, l3_frames, base = "", {}, "", [], ""
         _radar_diag = []
+        _ph = None
+        if coords and not st.session_state.get(f"sf_scope_drawn_{icao}"):
+            _ph = st.empty()
+            _ph.markdown(
+                f'<div style="font-size:2.4rem;font-weight:700;color:{INK2};'
+                f'-webkit-text-fill-color:{INK2};padding:60px 0;text-align:center">'
+                'Rendering Airport Scope\u2026</div>', unsafe_allow_html=True)
         if coords:
             from core import airport_scope as AS
             base = _origin()
@@ -684,9 +849,15 @@ with c_rad:
                     # 0 = oldest ... n-1 = latest. Latest by default and
                     # whenever the airport changes.
                     _n = len(l3_frames)
-                    _pick = st.session_state.get(f"sf_l3_slider_{icao}")
-                    if _pick is None or _pick >= _n:
-                        _pick = _n - 1
+                    if st.session_state.get("sf_l3_loop", True) and _n:
+                        # looping: the frame advances with the clock,
+                        # oldest to newest, one step per fragment run
+                        import time as _tm
+                        _pick = int(_tm.time() // 2) % _n
+                    else:
+                        _pick = st.session_state.get(f"sf_l3_slider_{icao}")
+                        if _pick is None or _pick >= _n:
+                            _pick = _n - 1
                     _man = l3_frames[_pick] if _n else None
                     _l3s = _man["stamp"] if _man else None
                     if _man and L3.age_s(_l3s) < 4800:
@@ -709,13 +880,26 @@ with c_rad:
                                   " · NEXRAD frames are stale")
                 except Exception:
                     l3_txt = ""
+        _rate_txt = ""
+        if coords and icao.upper() in ("KJFK", "KEWR", "KLGA", "KHPN"):
+            # observed arrival rate: distinct aircraft seen on final in
+            # the last hour (core.runways), not the published AAR
+            try:
+                from core import runways as _RW
+                _n, _cov = _RW.arrival_rate(icao[1:] if icao[0] == "K" else icao)
+                _rate_txt = (f" · arrivals {_n}/h observed" if _cov >= 55
+                             else f" · {_n} arrivals in {_cov} min" if _cov > 0
+                             else "")
+            except Exception:
+                _rate_txt = ""
         pod_title("Airport scope",
                   "20 nm"
                   + ((f" · MRMS {stamp_txt or 'no current scan'}"
                       if _want_mrms else l3_txt if _want_l3 else " · radar off")
                      if coords else "")
-                  + (f" · {len(ac)} aircraft" if coords and ac else ""))
-        if coords and len(l3_frames) > 1:
+                  + (f" · {len(ac)} aircraft" if coords and ac else "")
+                  + _rate_txt)
+        if coords and len(l3_frames) > 1 and not st.session_state.get("sf_l3_loop", True):
             # Last hour of the airport's radar: drag to step back
             # through the frames. Labels are the scan times.
             _lab = [f"{f['stamp'][9:11]}:{f['stamp'][11:13]}Z"
@@ -728,9 +912,18 @@ with c_rad:
                 format_func=lambda k: _lab[k], key=_k,
                 help="Level III frames from the last hour, oldest to "
                      "newest. MRMS underneath stays current.")
-        _rc1, _rc2 = st.columns([2, 1])
+        _rc1, _rc0, _rc2 = st.columns([1.7, 0.6, 1])
+        with _rc0:
+            st.checkbox("Loop", key="sf_l3_loop", value=True,
+                        help="Animate the last hour of NEXRAD frames, 2 s a "
+                             "step. Off: pick a frame with the slider and "
+                             "the map keeps your pan and zoom.")
+            # The loop decides whether this pod IS a fragment (see the
+            # call site), so a change needs the page, not just the pod.
+            if bool(st.session_state.get("sf_l3_loop", True)) != _loop_on:
+                st.rerun(scope="app")
         with _rc1:
-            radar_mode = st.radio(
+            st.radio(
                 "Radar", ["NEXRAD Radar", "MRMS Precipitation", "Off"],
                 horizontal=True, key="sf_radar_mode",
                 label_visibility="collapsed",
@@ -866,6 +1059,41 @@ with c_rad:
                     get_alignment_baseline='"center"', pickable=False))
             except Exception:
                 pass
+            # N90 (28 Sep): for JFK, EWR, LGA and HPN the TRACON lateral
+            # boundary (static/n90_boundary.json, FAA 2012 map) in 3 px
+            # dark red, and every arrival / departure gate and
+            # coordination fix from static/n90_fixes.json.
+            if icao.upper() in ("KJFK", "KEWR", "KLGA", "KHPN"):
+                try:
+                    import json as _n90j
+                    _sd = Path(__file__).resolve().parent.parent / "static"
+                    _bnd = _n90j.loads((_sd / "n90_boundary.json").read_text())["polygon"]
+                    layers.append(pdk.Layer(
+                        "PathLayer", [{"path": _bnd + [_bnd[0]]}],
+                        get_path="path", get_color=[160, 0, 0, 255],
+                        get_width=3, width_units="pixels",
+                        width_min_pixels=3, width_max_pixels=3,
+                        pickable=False))
+                    _fx = _n90j.loads((_sd / "n90_fixes.json").read_text())["fixes"]
+                    _role_col = {"dep": [61, 220, 132, 255], "both": [255, 212, 0, 255],
+                                 "coord": [154, 160, 166, 255]}
+                    _gates = [{"position": [f["lon"], f["lat"]], "name": f["name"],
+                               "color": _role_col.get(f.get("role"), [154, 160, 166, 255])}
+                              for f in _fx]
+                    layers.append(pdk.Layer(
+                        "ScatterplotLayer", _gates, get_position="position",
+                        get_radius=900, radius_min_pixels=3, radius_max_pixels=6,
+                        get_fill_color="color", get_line_color=[0, 0, 0, 255],
+                        stroked=True, line_width_min_pixels=1, pickable=False))
+                    layers.append(pdk.Layer(
+                        "TextLayer", _gates, get_position="position",
+                        get_text="name", get_color="color",
+                        get_size=2200, size_units="meters", size_min_pixels=0,
+                        size_max_pixels=11, get_pixel_offset=[8, -6],
+                        get_text_anchor='"start"',
+                        get_alignment_baseline='"center"', pickable=False))
+                except Exception as _n90e:
+                    st.caption(f"N90 overlay unavailable: {type(_n90e).__name__}")
             _vs = AS.view(coords[0], coords[1], width_px=780, width_nm=20)
             # Zoom out to about a 300-mile radius (~600 mi across the
             # 780 px view), no further.
@@ -873,6 +1101,12 @@ with c_rad:
             _vs.min_zoom = round(_mz.log2(
                 156543.03 * _mz.cos(_mz.radians(coords[0])) * 780
                 / (600 * 1609.34)), 2)
+            # Opens fully zoomed out (28 Sep): the ~600-mile view, the
+            # network and the whole radar picture; wheel in for the field.
+            _vs.zoom = _vs.min_zoom
+            if _ph is not None:
+                _ph.empty()
+                st.session_state[f"sf_scope_drawn_{icao}"] = True
             try:
               st.pydeck_chart(pdk.Deck(
                 layers=layers,
@@ -892,7 +1126,16 @@ with c_rad:
                                    "border": f"1px solid {EDGE}",
                                    "fontSize": "12px"}},
                 parameters={"clearColor": [0, 0, 0, 1]},
-              ), use_container_width=True, height=SCOPE_H)
+              # A fixed key (28 Sep): without one, Streamlit hashes the
+              # chart's own args to build the frontend component's key,
+              # and a new radar frame every 2 s changes that hash. A
+              # changed key tears the component down and remounts it -
+              # a fresh WebGL context and a reloaded basemap, which is
+              # the grey flash the loop caused. A stable key keeps the
+              # same component instance across fragment reruns, so
+              # only the changed layers update.
+              ), use_container_width=True, height=SCOPE_H,
+                key=f"scope_pydeck_{icao}")
             except Exception as _de:
                 st.error(f"Scope did not draw: {type(_de).__name__}: "
                          f"{str(_de)[:200]}")
@@ -909,6 +1152,25 @@ with c_rad:
             f"{_d['kept']} with callsign \u00b7 "
             f"{sum(1 for a in ac if a.get('jbu'))} JetBlue"
             + (f" \u00b7 {_d['error']}" if _d.get("error") else ""))
+
+
+# Radar loop on by default (28 Sep): the pod is a 2-second fragment
+# that steps through the last hour's Level III frames. Off, it draws
+# once and the time slider picks the frame - and pan/zoom stick.
+#
+# The pod is a fragment either way (28 Sep, slider fix): dragging the
+# radar-time slider is a widget change *inside* the pod, and a widget
+# inside a plain (non-fragment) block reruns the whole page - every
+# METAR/TAF fetch, every model comparison - just to swap one frame.
+# Wrapped in a fragment with no run_every, that widget change reruns
+# only the pod. run_every="2s" is added on top of that when looping.
+_loop_on = bool(st.session_state.get("sf_l3_loop", True))
+from core import airport_scope as AS   # row 2 uses AS.distance_nm too
+with c_rad:
+    if coords:
+        st.fragment(run_every="2s" if _loop_on else None)(_scope_pod)()
+    else:
+        _scope_pod()
 
 # ============================================================ row 2
 
@@ -964,40 +1226,11 @@ with c_rad:
                         + (f'<br>{_where}{_on}' if _where else "")
                         + "</div>", unsafe_allow_html=True)
 
-c_wind, c_mos = st.columns(2, gap="small")
-
-with c_wind:
-    with st.container(border=True):
-        pod_title("Wind", f"speed, gust, direction · {cyc_txt}")
-        if ok and len(df):
-            from compare import plot_wind_comparison_interactive
-            try:
-                from core.metar import filter_since, metars_to_df
-                mdf = metars_to_df(filter_since(
-                    {icao: cached_metars(icao, 48)}, cycle))
-            except Exception:
-                mdf = None
-            fig = plot_wind_comparison_interactive(
-                df, icao, cycle=cycle, speed_ylim=(0, speed_max),
-                hours_ahead=horizon, metars_df=mdf)
-            fig.update_layout(
-                # No figure title: the pod header carries it, and the
-                # title sat on top of the "Wind speed (kt)" panel title.
-                title=None,
-                height=PLOT_H, width=None, autosize=True, paper_bgcolor=PANEL,
-                plot_bgcolor="#05070B",
-                font=dict(color=INK2, size=11, family="Roboto, Arial"),
-                margin=dict(l=40, r=16, t=24, b=30),
-                legend=dict(bgcolor="rgba(0,0,0,0)"))
-            fig.update_xaxes(gridcolor="#1A2233", zerolinecolor="#1A2233")
-            fig.update_yaxes(gridcolor="#1A2233", zerolinecolor="#1A2233")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.caption("No model data for this station and cycle.")
-
-with c_mos:
-    for model, label, rows_fn in (("NBM", "NBM hourly", G.nbm_rows),
-                                  ("GFS_LAMP", "GFS LAMP", G.lamp_rows)):
+_g1, _g2 = st.columns(2, gap="small")
+for _col, (model, label, rows_fn) in zip(
+        (_g1, _g2), (("NBM", "NBM hourly", G.nbm_rows),
+                     ("GFS_LAMP", "GFS LAMP", G.lamp_rows))):
+    with _col:
         with st.container(border=True):
             pod_title(label, f"{cyc_txt} · next 24 h")
             if ok and len(df):
@@ -1011,28 +1244,5 @@ with c_mos:
                     st.caption(f"No {label} rows for this cycle.")
             else:
                 st.caption("No model data.")
+with _g2:
     st.markdown(G.legend(), unsafe_allow_html=True)
-
-# ============================================================ row 4
-# JetBlue board: the last 3 h from BlueMet's own movement sampler,
-# the next 3 h from what is actually inbound right now.
-with st.container(border=True):
-    pod_title("JetBlue arrivals & departures",
-              "past 3 h derived \u00b7 inbound now from live ADS-B")
-    _movements, _since = cached_movements(icao, 3, now.strftime("%Y%m%d%H%M")[:11])
-    _arr = [m for m in _movements if m["kind"] == "ARR"]
-    _dep = [m for m in _movements if m["kind"] == "DEP"]
-    _inbound = _inbound_now(icao, coords, now) if coords else []
-    if not _SAMPLER_OK:
-        st.caption(f"Movement sampler unavailable ({_SAMPLER_ERR})")
-    elif not is_sampled(icao):
-        st.caption(f"{icao} is not a JetBlue destination; the sampler "
-                   "does not cover it.")
-    ca, cd = st.columns(2)
-    with ca:
-        st.markdown(_board_table(_arr, "Arrived", inbound=_inbound),
-                    unsafe_allow_html=True)
-    with cd:
-        st.markdown(_board_table(_dep, "Departed"), unsafe_allow_html=True)
-
-

@@ -250,22 +250,36 @@ _BANNER = ('<div style="font:700 15px DejaVu Sans Mono,monospace;color:#FFFFFF;'
 # THREE PODS PER ROW, always: st.columns keeps three columns at any
 # window width, so the maps shrink rather than wrap. Each pod is the
 # size of its map (the viewer fills the column and stays square).
-st.markdown(_BANNER.format("NORTHEAST / MID-ATLANTIC"), unsafe_allow_html=True)
-_r1 = st.columns(3, gap="small")
-for _i in range(3):
-    with _r1[_i]:
-        _pod(_i)
-
-# THE HOUR, between the rows: one slider for all six pods.
+# THE HOUR, at the top (28 Sep): one slider for all six pods, with a
+# tick under it at each model's last hour for the chosen run, so the
+# end of an HRRR run is visible before the pod says "run ends at".
 _sa, _sb = st.columns([5, 1.2])
 with _sa:
     st.slider("Forecast hour", 1, max_fhr, min(fhr, max_fhr),
               key="cam_fhr", label_visibility="collapsed")
+    _ticks = sorted({(_max_fhr(m, c), _MODEL_LABEL[m]) for m, c in _cycles.items() if c})
+    # Streamlit's slider has no tick marks; a ruler under it, scaled to
+    # the same 1..max_fhr span (the thumb track has ~8 px margins).
+    _marks = "".join(
+        f'<div style="position:absolute;left:calc(8px + (100% - 16px) * {(h - 1) / max(1, max_fhr - 1):.4f});'
+        f'transform:translateX(-50%);text-align:center;color:{_INK2};'
+        f'font:bold 10px DejaVu Sans Mono,monospace">'
+        f'<div style="width:2px;height:8px;background:#00E5FF;margin:0 auto 2px"></div>'
+        f'{lab} f{h:02d}</div>'
+        for h, lab in _ticks)
+    st.markdown(f'<div style="position:relative;height:30px;margin-top:-14px">{_marks}</div>',
+                unsafe_allow_html=True)
 with _sb:
     st.markdown(
         f'<div style="font:bold 13px DejaVu Sans Mono,monospace;'
         f'color:{_INK2};margin-top:10px">f{fhr:02d}</div>',
         unsafe_allow_html=True)
+
+st.markdown(_BANNER.format("NORTHEAST / MID-ATLANTIC"), unsafe_allow_html=True)
+_r1 = st.columns(3, gap="small")
+for _i in range(3):
+    with _r1[_i]:
+        _pod(_i)
 
 st.markdown(_BANNER.format("FLORIDA"), unsafe_allow_html=True)
 _r2 = st.columns(3, gap="small")
