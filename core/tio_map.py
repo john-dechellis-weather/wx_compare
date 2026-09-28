@@ -2,8 +2,9 @@
 
 Target path: core/tio_map.py
 
-The page covers every JetBlue destination except Europe, plus the
-Canadian alternates: 125W-50W, 52N-5S, Web Mercator. The tomorrow.io
+The page covers CONUS (125W-66W, 24N-50N; was the whole JetBlue
+network to 5S until 28 Sep - tiles over ocean and South America were
+most of the spend), Web Mercator. The tomorrow.io
 Weather Maps API serves 256 px PNG tiles
 
     https://api.tomorrow.io/v4/map/tile/{z}/{x}/{y}/{field}/{time}.png?apikey=KEY
@@ -16,15 +17,16 @@ stitches each set into one WebP under static/, and the page shows
 those. The key never leaves the server and the spend is predictable.
 
 28 SEP: five fields, an hourly timeline to +24 h then 3-hourly to
-+72 h (40 forecast steps), layers that stack, and ONE model at a
-time (FOCUS / NextGen, see MODELS). Budget against the 9,000/day cap:
++72 h (40 forecast steps), layers that stack, and ONE model - NextGen
+(see MODELS). Budget against the 9,000/day cap, CONUS at zoom 4 (8
+tiles):
 
-    forecast pass   zoom 3, 6 tiles x 40 steps x 5 fields = 1,200,
-                    every TIO_FCST_MIN (360) min             -> 4,800/day
-    "now" frame     zoom 4, 16 tiles x 5 fields,
-                    every TIO_NOW_MIN (60) min               -> 1,920/day
+    forecast pass   8 tiles x 40 steps x 5 fields = 1,600,
+                    every TIO_FCST_MIN (360) min             -> 6,400/day
+    "now" frame     8 tiles x 5 fields,
+                    every TIO_NOW_MIN (60) min               ->   960/day
                                                                 ---------
-                                                                 6,720/day
+                                                                 7,360/day
 
 precipitationReflectivity is one of tomorrow.io's "advanced weather
 layers" - served by the tile endpoint, not in the public field list.
@@ -41,11 +43,15 @@ Env
     TIO_FIELDS           comma list; default the five below
     TIO_FCST_HOURLY_TO / TIO_FCST_STEP / TIO_FCST_MAX   24 / 3 / 72
     TIO_FCST_HOURS       explicit comma list, overrides the three above
-    TIO_MODELS           "key:label:query|key:label:query", e.g.
-                         "focus:FOCUS:includedLayers=focus|nextgen:NextGen:includedLayers=nextgen"
-                         The query is appended to every tile URL for that
-                         model. Empty (default) = one unnamed model, no
-                         extra parameter - what the API served before.
+    TIO_MODEL_QUERY      query appended to every tile URL to select the
+                         model, e.g. "includedLayers=nextgen"; empty
+                         (default) until the tile endpoint's spelling is
+                         confirmed - the tiles are then whatever the key
+                         serves by default.
+    TIO_MODELS           several models, "key:label:query|key:label:query",
+                         e.g. "focus:FOCUS:includedLayers=focus|nextgen:
+                         NextGen:includedLayers=nextgen"; the page then
+                         shows a switch. Overrides TIO_MODEL_QUERY.
     TIO_NOW_MIN / TIO_FCST_MIN / TIO_NOW_ZOOM / TIO_FCST_ZOOM
     TIO_DAILY_CAP
 """
@@ -64,7 +70,7 @@ from pathlib import Path
 
 # ---------------------------------------------------------------- domain
 
-W, E, S, N = -125.0, -50.0, -5.0, 52.0
+W, E, S, N = -125.0, -66.0, 24.0, 50.0
 TILE = 256
 
 # Order matters twice: it is the layer menu order, and (reversed) the
@@ -109,7 +115,7 @@ FCST_HOURS = _steps()
 NOW_MIN = int(os.environ.get("TIO_NOW_MIN", "60"))
 FCST_MIN = int(os.environ.get("TIO_FCST_MIN", "360"))
 NOW_ZOOM = int(os.environ.get("TIO_NOW_ZOOM", "4"))
-FCST_ZOOM = int(os.environ.get("TIO_FCST_ZOOM", "3"))
+FCST_ZOOM = int(os.environ.get("TIO_FCST_ZOOM", "4"))
 DAILY_CAP = int(os.environ.get("TIO_DAILY_CAP", "9000"))
 KEEP_FRAMES = 2          # per model/field/step, newest kept
 
@@ -128,7 +134,8 @@ def _parse_models() -> dict:
         query = bits[2].strip().lstrip("?&") if len(bits) > 2 else ""
         if key:
             out[key] = (label, query)
-    return out or {"tio": ("tomorrow.io", "")}
+    return out or {"nextgen": ("NextGen",
+                               os.environ.get("TIO_MODEL_QUERY", "").strip().lstrip("?&"))}
 
 
 MODELS = _parse_models()
@@ -541,7 +548,7 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
 </div>
 <div id="m"><div class="lg" id="lg"><span class="d" style="background:#4DA3FF"></span>JBU station &nbsp;
  <span class="d" style="background:#9AA0A6"></span>Canadian alternate<br>
- <span style="color:#6E6E6E">tomorrow.io {model_label(model)} tiles · 125W-50W 52N-5S · hourly to +{int(os.environ.get("TIO_FCST_HOURLY_TO", "24"))} h, 3-hourly to +{FCST_HOURS[-1] if FCST_HOURS else 0} h</span></div></div>
+ <span style="color:#6E6E6E">tomorrow.io {model_label(model)} tiles · CONUS · hourly to +{int(os.environ.get("TIO_FCST_HOURLY_TO", "24"))} h, 3-hourly to +{FCST_HOURS[-1] if FCST_HOURS else 0} h</span></div></div>
 <script>
 const F = {json.dumps(frames)};
 const ST = {json.dumps(stations)};

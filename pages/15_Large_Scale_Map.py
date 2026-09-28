@@ -1,5 +1,5 @@
-"""Large Scale Map - tomorrow.io tiles over every JetBlue destination
-except Europe (125W-50W, 52N-5S) plus the Canadian alternates.
+"""Large Scale Map - tomorrow.io tiles over CONUS (125W-66W, 24N-50N)
+plus the Canadian alternates in range.
 
 The frames are built by the tomorrow.io warmer in core/tio_map.py
 (started from Homepage.py) and stitched into WebPs under static/.
@@ -40,8 +40,8 @@ TIO.ensure_tio_warmer(STATIC)
 
 # Two views behind one switch (28 Sep). TOMORROW.IO (default): the
 # warmed tile map - five layers that stack, an hourly TIME slider to
-# +24 h then 3-hourly to +72 h, one model at a time (FOCUS / NextGen
-# once TIO_MODELS names them; see core/tio_map.py). NOAA MODELS: a
+# +24 h then 3-hourly to +72 h, one model - NextGen (a FOCUS switch
+# appears if TIO_MODELS names both; see core/tio_map.py). NOAA MODELS: a
 # CONUS frame of RRFS / HRRR / NAM nest from core/model_map.py - the
 # lightning source, since tomorrow.io tiles are spent on the other
 # five fields.
