@@ -138,7 +138,13 @@ def _origin() -> str:
 def _body():
     base = _origin()
     man = TIO.manifest(STATIC)
-    n = sum(len(v) for v in (man.get(_active) or {}).values())
+    # man[_active] holds one {step: entry} dict per field, PLUS a
+    # "hires:<hub>" key nested one level deeper ({field: {step: entry}})
+    # for the sector pass. Excluded here and below so a hi-res sector
+    # doesn't get its field dicts mistaken for frame entries.
+    _fc = {k: v for k, v in (man.get(_active) or {}).items()
+           if not k.startswith("hires:")}
+    n = sum(len(v) for v in _fc.values())
     if TIO.DEMO:
         st.warning("TIO_DEMO=on: synthetic tiles and station series, no "
                    "tomorrow.io calls. Remove the env var for live data.")
@@ -168,7 +174,7 @@ def _body():
         tmp = STATIC / f".{name}.tmp"
         tmp.write_text(html)
         os.replace(tmp, STATIC / name)
-        newest = max([e["built"] for v in (man.get(_active) or {}).values()
+        newest = max([e["built"] for v in _fc.values()
                       for e in v.values()] + [_pt.get("built", "")],
                      default="none")
         components.iframe(f"{base}/app/static/{name}?v={newest}",
