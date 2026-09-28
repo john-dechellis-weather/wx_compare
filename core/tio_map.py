@@ -30,13 +30,16 @@ tiles):
                                                                 ---------
                                                                  8,696/day
 
-HIGH-RESOLUTION HUBS (TIO_HIRES=on, off by default - there is no room
-under 9,000): "now" frames at zoom TIO_HIRES_ZOOM (6) for the boxes in
-TIO_HIRES_HUBS, for the fields in TIO_HIRES_FIELDS, every
-TIO_HIRES_MIN (30) min. The viewer shows them over the CONUS frame
-once the map is zoomed past 5.5. Northeast + Florida at zoom 6 is
-~14 + 6 tiles; one field every 30 min is ~960/day, so the cap needs
-to move to ~10,000 for one field, ~16,000 for all seven.
+HIGH-RESOLUTION SECTOR: one sector at a time (a page control, like
+the model), "now" frames at zoom TIO_HIRES_ZOOM (6 - a tile pixel is
+~2.4 km there, which already resolves NextGen's grid; higher zooms
+are tomorrow.io interpolating, and we interpolate for free) for the
+fields in TIO_HIRES_FIELDS, every TIO_HIRES_MIN (15) min. The
+stitched image is upscaled 2x bicubic and lightly blurred before it
+is published, and the viewer shows it over the CONUS frame past zoom
+5.5. Northeast at zoom 6 is 9 tiles: one field every 15 min is ~860
+requests/day; all seven ~6,000, which needs the cap raised. No sector
+selected = no spend. TIO_HIRES=off disables regardless.
 
 NOAA POINT SERIES (no tomorrow.io spend): for the 14 compare-warmer
 hubs the meteogram can overlay NBM ceiling / visibility / wind from
@@ -76,7 +79,8 @@ Env
                          shows a switch. Overrides TIO_MODEL_QUERY.
     TIO_NOW_MIN / TIO_FCST_MIN / TIO_NOW_ZOOM / TIO_FCST_ZOOM
     TIO_PT_MIN           station-point refresh (180); TIO_POINTS=off skips
-    TIO_HIRES / TIO_HIRES_HUBS / TIO_HIRES_ZOOM / TIO_HIRES_FIELDS / TIO_HIRES_MIN
+    TIO_HIRES / TIO_SECTORS ("key:label:w,s,e,n|...") / TIO_HIRES_ZOOM /
+    TIO_HIRES_FIELDS / TIO_HIRES_MIN
     TIO_NOAA=off         skip the NBM / REFS point series
     TIO_DAILY_CAP
 """
@@ -164,31 +168,58 @@ def point_fields() -> list:
     return out
 
 
-# High-resolution hub "now" frames. "key:w,s,e,n|key:w,s,e,n".
-HIRES_ON = os.environ.get("TIO_HIRES", "off").lower() == "on"
+# High-resolution sector "now" frames. "key:label:w,s,e,n|...".
+HIRES_ON = os.environ.get("TIO_HIRES", "on").lower() != "off"
 HIRES_ZOOM = int(os.environ.get("TIO_HIRES_ZOOM", "6"))
-HIRES_MIN = int(os.environ.get("TIO_HIRES_MIN", "30"))
+HIRES_MIN = int(os.environ.get("TIO_HIRES_MIN", "15"))
 HIRES_FIELDS = [f.strip() for f in os.environ.get(
     "TIO_HIRES_FIELDS", "precipitationReflectivity").split(",") if f.strip()]
 
 
-def _parse_hubs() -> dict:
-    raw = os.environ.get("TIO_HIRES_HUBS",
-                         "NE:-80.5,38,-69,45.5|FL:-84,24.2,-79,31")
+def _parse_sectors() -> dict:
+    raw = os.environ.get(
+        "TIO_SECTORS",
+        "NE:Northeast:-80.5,38,-69,45.5|MA:Mid-Atlantic:-80,35.5,-72,40.5|"
+        "FL:Florida:-84,24.2,-79,31|TX:Texas:-100,26,-93,33|"
+        "WC:West Coast:-124.5,32.5,-116,41")
     out = {}
     for part in raw.split("|"):
-        if ":" not in part:
+        bits = part.split(":", 2)
+        if len(bits) != 3:
             continue
-        k, box = part.split(":", 1)
+        k, label, box = (b.strip() for b in bits)
         try:
             w, s_, e, n = [float(x) for x in box.split(",")]
-            out[k.strip()] = (w, s_, e, n)
+            out[k] = (label, (w, s_, e, n))
         except ValueError:
             continue
     return out
 
 
-HIRES_HUBS = _parse_hubs()
+SECTORS = _parse_sectors()
+HIRES_HUBS = {k: v[1] for k, v in SECTORS.items()}
+
+
+def _sector_path(outdir):
+    return Path(outdir) / "tio_sector.txt"
+
+
+def active_sector(outdir) -> str:
+    """The one sector being warmed at high resolution, or ''."""
+    try:
+        k = _sector_path(outdir).read_text().strip()
+        return k if k in SECTORS else ""
+    except Exception:
+        return ""
+
+
+def set_sector(outdir, key: str) -> None:
+    if key and key not in SECTORS:
+        raise ValueError(key)
+    p = _sector_path(outdir)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(key or "")
+    os.replace(tmp, p)
 NOAA_ON = os.environ.get("TIO_NOAA", "on").lower() != "off"
 NOAA_MIN = int(os.environ.get("TIO_NOAA_MIN", "20"))
 
@@ -317,11 +348,15 @@ def daily_estimate() -> int:
         # station count without reading the file: 72 JBU + 7 alternates
         # in the box today; the log line has the real number
         pt = 79 * (1440 // max(1, PT_MIN))
-    hr = 0
-    if HIRES_ON:
-        hr = sum(tile_count(HIRES_ZOOM, b) for b in HIRES_HUBS.values()) \
-            * len(HIRES_FIELDS) * (1440 // max(1, HIRES_MIN))
-    return fc + nw + pt + hr
+    return fc + nw + pt
+
+
+def sector_estimate(key: str) -> int:
+    """Requests/day one sector adds at the current settings."""
+    if not (HIRES_ON and key in SECTORS):
+        return 0
+    return (tile_count(HIRES_ZOOM, SECTORS[key][1]) * len(HIRES_FIELDS)
+            * (1440 // max(1, HIRES_MIN)))
 
 
 def _fetch_tile(z, x, y, field, tstr, key, query=""):
@@ -447,6 +482,13 @@ def build_frame(outdir, model: str, field: str, step: int, z: int,
     for (x, y), b in zip(jobs, blobs):
         img.paste(Image.open(io.BytesIO(b)).convert("RGBA"),
                   ((x - x0) * TILE, (y - y0) * TILE))
+    if hub:
+        # Past the tiles' native scale the browser would just upscale
+        # the pixels; do it here once, bicubic 2x with a light blur,
+        # so the close-up view is smooth rather than blocky.
+        from PIL import ImageFilter
+        img = img.resize((img.width * 2, img.height * 2), Image.BICUBIC)
+        img = img.filter(ImageFilter.GaussianBlur(radius=1.2))
     stamp = now.strftime("%Y%m%d-%H%M")
     tag = f"{model}_{field}" if not hub else f"{model}_h{hub}_{field}"
     name = f"tio_{tag}_{step:02d}_{stamp}.webp"
@@ -571,7 +613,10 @@ def build_points(outdir, model) -> int:
 
 
 def _hires_pass(outdir, model):
-    for hub in HIRES_HUBS:
+    sec = active_sector(outdir)
+    if not sec:
+        return
+    for hub in [sec]:
         for field in HIRES_FIELDS:
             try:
                 build_frame(outdir, model, field, 0, HIRES_ZOOM, hub=hub)
@@ -711,6 +756,7 @@ def _loop(outdir):
                  f"~{daily_estimate()}/day, cap {DAILY_CAP}/day")
     next_now = next_fc = next_pt = next_hr = next_noaa = 0.0
     last_model = None
+    last_sector = None
 
     def _pts(model):
         if not POINTS_ON:
@@ -741,7 +787,11 @@ def _loop(outdir):
             except Exception as exc:
                 _log(outdir, f"FAILED noaa: {type(exc).__name__}: {exc}")
             next_noaa = time.time() + NOAA_MIN * 60
-        if HIRES_ON and t >= next_hr:
+        sec = active_sector(outdir)
+        if sec != last_sector:
+            last_sector = sec
+            next_hr = 0.0
+        if HIRES_ON and sec and t >= next_hr:
             _hires_pass(outdir, model)
             next_hr = time.time() + HIRES_MIN * 60
         if t >= next_fc:
@@ -796,7 +846,8 @@ def stations_geojson(static_dir) -> dict:
 
 
 def map_html(man: dict, base: str, stations: dict, height: int = 860,
-             model: str = None, pt_built: str = "", noaa_built: str = "") -> str:
+             model: str = None, pt_built: str = "", noaa_built: str = "",
+             sector: str = "") -> str:
     """MapLibre page: CARTO dark vector basemap, the active model's
     warmed frames as image sources (added lazily, first time a layer
     and hour are shown), layer toggles with their own opacity, an
@@ -816,7 +867,7 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
     # High-resolution hub frames ("now" only): same field, drawn over
     # the CONUS frame once the map is zoomed in.
     for k, v in mman.items():
-        if not k.startswith("hires:"):
+        if not k.startswith("hires:") or k[6:] != sector:
             continue
         for field, steps in v.items():
             for step, e in steps.items():
@@ -898,7 +949,7 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
 <div id="wrap">
 <div id="m"><div class="lg" id="lg"><span class="d" style="background:#4DA3FF"></span>JBU station &nbsp;
  <span class="d" style="background:#9AA0A6"></span>Canadian alternate<br>
- <span style="color:#6E6E6E">tomorrow.io {model_label(model)} tiles · CONUS · hourly to +{int(os.environ.get("TIO_FCST_HOURLY_TO", "24"))} h, 3-hourly to +{FCST_HOURS[-1] if FCST_HOURS else 0} h</span></div></div>
+ <span style="color:#6E6E6E">tomorrow.io {model_label(model)} tiles · CONUS{(" · " + SECTORS[sector][0] + " hi-res past zoom 5.5") if sector in SECTORS else ""} · hourly to +{int(os.environ.get("TIO_FCST_HOURLY_TO", "24"))} h, 3-hourly to +{FCST_HOURS[-1] if FCST_HOURS else 0} h</span></div></div>
 <div id="mg">
   <div id="mgh"><label>STATION</label><select id="mgsel"><option value="">click a dot…</option></select>
     <details class="dd" id="ddm"><summary id="ddms">Elements &#9662;</summary><div class="menu">{mrows}

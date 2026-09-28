@@ -98,6 +98,28 @@ if len(TIO.MODELS) > 1:
         TIO.set_model(STATIC, _pick)
         _active = _pick
 
+# High-resolution sector: one at a time, warmed at zoom 6 on the "now"
+# cadence for TIO_HIRES_FIELDS; "None" spends nothing.
+_sector = TIO.active_sector(STATIC)
+if TIO.HIRES_ON and TIO.SECTORS:
+    _s1, _s2 = st.columns([1.2, 3])
+    _opts = [""] + list(TIO.SECTORS)
+    with _s1:
+        _sp = st.selectbox("Hi-res sector", _opts,
+                           index=_opts.index(_sector) if _sector in _opts else 0,
+                           format_func=lambda k: "None" if not k else TIO.SECTORS[k][0],
+                           key="tio_sector_pick")
+    with _s2:
+        if _sp:
+            st.caption(f"{TIO.SECTORS[_sp][0]}: zoom {TIO.HIRES_ZOOM} "
+                       f"({TIO.tile_count(TIO.HIRES_ZOOM, TIO.SECTORS[_sp][1])} tiles) "
+                       f"for {', '.join(TIO.HIRES_FIELDS)} every {TIO.HIRES_MIN} min "
+                       f"\u2248 +{TIO.sector_estimate(_sp):,} requests/day, shown "
+                       "over the CONUS frame once the map is zoomed past 5.5.")
+    if _sp != _sector:
+        TIO.set_sector(STATIC, _sp)
+        _sector = _sp
+
 
 def _origin() -> str:
     """Same-origin base URL for /app/static images."""
@@ -133,7 +155,8 @@ def _body():
         html = TIO.map_html(man, base, TIO.stations_geojson(STATIC),
                             height=HEIGHT, model=_active,
                             pt_built=_pt.get("built", ""),
-                            noaa_built=_no.get("built", ""))
+                            noaa_built=_no.get("built", ""),
+                            sector=_sector)
         name = "tio_map.html"
         tmp = STATIC / f".{name}.tmp"
         tmp.write_text(html)
@@ -158,9 +181,9 @@ with st.expander("tomorrow.io warmer status", expanded=False):
                f"every {TIO.NOW_MIN} min  |  forecast {len(TIO.FCST_HOURS)} steps "
                f"to +{TIO.FCST_HOURS[-1] if TIO.FCST_HOURS else 0} h "
                f"z{TIO.FCST_ZOOM} ({TIO.tile_count(TIO.FCST_ZOOM)} tiles each) "
-               f"every {TIO.FCST_MIN} min  |  hi-res hubs "
-               f"{'on z' + str(TIO.HIRES_ZOOM) if TIO.HIRES_ON else 'off (TIO_HIRES=on)'}"
-               f"  |  ~{TIO.daily_estimate():,}/day")
+               f"every {TIO.FCST_MIN} min  |  hi-res sector "
+               f"{TIO.SECTORS[_sector][0] if _sector in TIO.SECTORS else 'none'}"
+               f"  |  ~{TIO.daily_estimate() + TIO.sector_estimate(_sector):,}/day")
     if TIO.STATUS.get("err"):
         st.error(TIO.STATUS["err"])
     lines = TIO.log_tail(STATIC, 15)
