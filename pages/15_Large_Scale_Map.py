@@ -41,7 +41,9 @@ TIO.ensure_tio_warmer(STATIC)
 # Two views behind one switch (28 Sep). TOMORROW.IO (default): the
 # warmed tile map - five layers that stack, an hourly TIME slider to
 # +24 h then 3-hourly to +72 h, one model - NextGen (a FOCUS switch
-# appears if TIO_MODELS names both; see core/tio_map.py). NOAA MODELS: a
+# appears if TIO_MODELS names both; see core/tio_map.py). Its 2-panel
+# button opens a meteogram of the layers that are on for any station
+# you click, from warmed tomorrow.io point forecasts. NOAA MODELS: a
 # CONUS frame of RRFS / HRRR / NAM nest from core/model_map.py - the
 # lightning source, since tomorrow.io tiles are spent on the other
 # five fields.
@@ -126,14 +128,17 @@ def _body():
                 + (f"  Last error: {TIO.STATUS['err']}"
                    if TIO.STATUS.get("err") else ""))
     try:
+        _pt = TIO.points(STATIC, _active)
         html = TIO.map_html(man, base, TIO.stations_geojson(STATIC),
-                            height=HEIGHT, model=_active)
+                            height=HEIGHT, model=_active,
+                            pt_built=_pt.get("built", ""))
         name = "tio_map.html"
         tmp = STATIC / f".{name}.tmp"
         tmp.write_text(html)
         os.replace(tmp, STATIC / name)
-        newest = max((e["built"] for v in (man.get(_active) or {}).values()
-                      for e in v.values()), default="none")
+        newest = max([e["built"] for v in (man.get(_active) or {}).values()
+                      for e in v.values()] + [_pt.get("built", "")],
+                     default="none")
         components.iframe(f"{base}/app/static/{name}?v={newest}",
                           height=HEIGHT)
     except Exception as exc:

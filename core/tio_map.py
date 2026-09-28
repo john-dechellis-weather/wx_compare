@@ -25,8 +25,16 @@ tiles):
                     every TIO_FCST_MIN (360) min             -> 6,400/day
     "now" frame     8 tiles x 5 fields,
                     every TIO_NOW_MIN (60) min               ->   960/day
+    station points  one /v4/timelines call per station (~79),
+                    every TIO_PT_MIN (180) min               ->   632/day
                                                                 ---------
-                                                                 7,360/day
+                                                                 7,992/day
+
+The station points feed the 2-PANEL mode: click a station dot and the
+right panel draws a meteogram of the layers that are switched on,
+from the same tomorrow.io source as the tiles (hourly to +72 h, all
+five fields in one call). Warmed like the tiles, so a click costs
+nothing and the key stays on the server.
 
 precipitationReflectivity is one of tomorrow.io's "advanced weather
 layers" - served by the tile endpoint, not in the public field list.
@@ -53,6 +61,7 @@ Env
                          NextGen:includedLayers=nextgen"; the page then
                          shows a switch. Overrides TIO_MODEL_QUERY.
     TIO_NOW_MIN / TIO_FCST_MIN / TIO_NOW_ZOOM / TIO_FCST_ZOOM
+    TIO_PT_MIN           station-point refresh (180); TIO_POINTS=off skips
     TIO_DAILY_CAP
 """
 
@@ -118,6 +127,12 @@ NOW_ZOOM = int(os.environ.get("TIO_NOW_ZOOM", "4"))
 FCST_ZOOM = int(os.environ.get("TIO_FCST_ZOOM", "4"))
 DAILY_CAP = int(os.environ.get("TIO_DAILY_CAP", "9000"))
 KEEP_FRAMES = 2          # per model/field/step, newest kept
+PT_MIN = int(os.environ.get("TIO_PT_MIN", "180"))
+POINTS_ON = os.environ.get("TIO_POINTS", "on").lower() != "off"
+# Tile layer -> timelines field. The reflectivity tile has no point
+# equivalent, so the meteogram shows precipitation intensity for it.
+POINT_FIELD = {"precipitationReflectivity": "precipitationIntensity"}
+PT_MAX_H = int(os.environ.get("TIO_FCST_MAX", "72"))
 
 
 def _parse_models() -> dict:
@@ -237,7 +252,12 @@ def daily_estimate() -> int:
     nf = len(FIELDS)
     fc = tile_count(FCST_ZOOM) * len(FCST_HOURS) * nf * (1440 // max(1, FCST_MIN))
     nw = tile_count(NOW_ZOOM) * nf * (1440 // max(1, NOW_MIN))
-    return fc + nw
+    pt = 0
+    if POINTS_ON:
+        # station count without reading the file: 72 JBU + 7 alternates
+        # in the box today; the log line has the real number
+        pt = 79 * (1440 // max(1, PT_MIN))
+    return fc + nw + pt
 
 
 def _fetch_tile(z, x, y, field, tstr, key, query=""):
@@ -387,6 +407,98 @@ def build_frame(outdir, model: str, field: str, step: int, z: int) -> dict:
     return ent
 
 
+# ------------------------------------------------------------- points
+
+def _points(static_dir) -> list:
+    """[(icao, lat, lon)] for every station the map shows."""
+    out = []
+    for f in stations_geojson(static_dir)["features"]:
+        lo, la = f["geometry"]["coordinates"]
+        out.append((f["properties"]["id"], la, lo))
+    return out
+
+
+def _pt_path(outdir, model):
+    return Path(outdir) / f"tio_pt_{model}.json"
+
+
+def points(outdir, model) -> dict:
+    try:
+        return json.loads(_pt_path(outdir, model).read_text())
+    except Exception:
+        return {}
+
+
+def _fetch_point(icao, lat, lon, fields, key, query):
+    """One /v4/timelines call: hourly, now to +PT_MAX_H h, metric.
+    Returns {"t": [iso...], field: [values...]}."""
+    import requests
+
+    url = f"https://api.tomorrow.io/v4/timelines?apikey={key}"
+    body = {"location": f"{lat:.4f},{lon:.4f}", "fields": fields,
+            "timesteps": ["1h"], "units": "metric",
+            "startTime": "now", "endTime": f"nowPlus{PT_MAX_H}h"}
+    # The model selector rides in the body on timelines (the tile
+    # query "includedLayers=x" becomes "includedLayers": ["x"]).
+    if query:
+        for kv in query.split("&"):
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                body[k] = [v] if k == "includedLayers" else v
+    r = requests.post(url, json=body, timeout=25)
+    if r.status_code != 200:
+        raise RuntimeError(f"{icao}: HTTP {r.status_code} {r.text[:120]}")
+    iv = r.json()["data"]["timelines"][0]["intervals"]
+    out = {"t": [x["startTime"] for x in iv]}
+    for f in fields:
+        out[f] = [x["values"].get(f) for x in iv]
+    return out
+
+
+def build_points(outdir, model) -> int:
+    """All stations' point forecasts for `model` into one JSON.
+    Charged one request per station, up front, like the tiles."""
+    key = api_key()
+    if not key:
+        raise RuntimeError("no TOMORROWIO_API_KEY")
+    outdir = Path(outdir)
+    _label, query = MODELS[model]
+    fields = sorted({POINT_FIELD.get(f, f) for f in FIELDS})
+    pts = _points(outdir)
+    u = usage(outdir)
+    if u["count"] + len(pts) > DAILY_CAP:
+        raise RuntimeError(f"daily cap: {u['count']}+{len(pts)} > {DAILY_CAP}")
+    _add_usage(outdir, len(pts))
+    t0 = time.time()
+    got, bad = {}, []
+
+    def one(p):
+        try:
+            got[p[0]] = _fetch_point(p[0], p[1], p[2], fields, key, query)
+        except Exception as exc:
+            bad.append(f"{type(exc).__name__}: {exc}"[:100])
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        list(ex.map(one, pts))
+    if not got:
+        raise RuntimeError("points: every station failed - "
+                           + (bad[0] if bad else "?"))
+    now = datetime.now(timezone.utc)
+    doc = {"model": model, "built": now.strftime("%Y-%m-%dT%H:%MZ"),
+           "fields": fields, "units": {"windSpeed": "m/s", "windGust": "m/s",
+                                       "visibility": "km", "cloudCeiling": "km",
+                                       "precipitationIntensity": "mm/h"},
+           "stations": got}
+    p = _pt_path(outdir, model)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(doc))
+    os.replace(tmp, p)
+    _log(outdir, f"{model} points {len(got)}/{len(pts)} stations "
+                 f"{time.time() - t0:.1f}s"
+                 + (f", {len(bad)} failed ({bad[0]})" if bad else "")
+                 + f", day {usage(outdir)['count']}/{DAILY_CAP}")
+    return len(got)
+
+
 def _pass(outdir, model, steps):
     """Steps in TIME order across fields, so when the cap stops a
     pass mid-way the near hours exist for every layer rather than
@@ -425,8 +537,18 @@ def _loop(outdir):
                  f"(to +{FCST_HOURS[-1] if FCST_HOURS else 0}h) models={list(MODELS)} "
                  f"now z{NOW_ZOOM}/{NOW_MIN}min fcst z{FCST_ZOOM}/{FCST_MIN}min "
                  f"~{daily_estimate()}/day, cap {DAILY_CAP}/day")
-    next_now = next_fc = 0.0
+    next_now = next_fc = next_pt = 0.0
     last_model = None
+
+    def _pts(model):
+        if not POINTS_ON:
+            return
+        try:
+            build_points(outdir, model)
+        except Exception as exc:
+            STATUS["err"] = f"{type(exc).__name__}: {exc}"
+            _log(outdir, f"FAILED {model} points: {STATUS['err']}")
+
     while True:
         t = time.time()
         model = active_model(outdir)
@@ -435,7 +557,12 @@ def _loop(outdir):
             # first pass, or the page switched model: full re-warm
             _log(outdir, f"model -> {model}: full pass")
             last_model = model
-            next_fc = 0.0
+            next_fc = next_pt = 0.0
+        if t >= next_pt:
+            # points first: 79 small calls, and the meteogram is
+            # usable before the first forecast frames land
+            _pts(model)
+            next_pt = time.time() + PT_MIN * 60
         if t >= next_fc:
             _pass(outdir, model, [0] + FCST_HOURS)
             next_now = time.time() + NOW_MIN * 60
@@ -488,7 +615,7 @@ def stations_geojson(static_dir) -> dict:
 
 
 def map_html(man: dict, base: str, stations: dict, height: int = 860,
-             model: str = None) -> str:
+             model: str = None, pt_built: str = "") -> str:
     """MapLibre page: CARTO dark vector basemap, the active model's
     warmed frames as image sources (added lazily, first time a layer
     and hour are shown), layer toggles with their own opacity, an
@@ -509,6 +636,7 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
         "BLUEMET_MAP_STYLE",
         "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json")
     labels = {f: FIELD_LABEL.get(f, f) for f in FIELDS}
+    pt_url = f"{base}/app/static/tio_pt_{model}.json?v={pt_built}" if pt_built else ""
     # Layer rows: checkbox + opacity. Precipitation on by default.
     rows = "".join(
         f'<span class="ly"><label><input type="checkbox" data-f="{f}"'
@@ -519,9 +647,18 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.2/plotly.min.js"></script>
 <style>
  html,body{{margin:0;background:#000;height:100%;font:bold 12px "DejaVu Sans Mono","Courier New",monospace;color:#fff}}
- #m{{height:{height - 92}px;border:1px solid #333;border-radius:10px;overflow:hidden}}
+ #wrap{{display:flex;gap:8px;height:{height - 92}px}}
+ #m{{flex:1 1 auto;min-width:0;height:100%;border:1px solid #333;border-radius:10px;overflow:hidden;position:relative}}
+ #mg{{display:none;flex:0 0 46%;height:100%;border:1px solid #333;border-radius:10px;background:#0A0A0A;overflow:hidden;flex-direction:column}}
+ body.two #mg{{display:flex}}
+ #mgh{{display:flex;align-items:center;gap:10px;padding:6px 10px;border-bottom:1px solid #222}}
+ #mgh select{{font:bold 12px "DejaVu Sans Mono",monospace;background:#0A0A0A;color:#fff;border:1px solid #333;border-radius:6px;padding:4px 8px}}
+ #mgt{{color:#FFD400}} #mgs{{color:#B8B8B8;font-weight:normal}}
+ #mgc{{flex:1;min-height:0}}
+ #mgn{{color:#B8B8B8;padding:20px;font-weight:normal}}
  .bar{{display:flex;align-items:center;gap:10px;height:44px;padding:0 4px;flex-wrap:nowrap;white-space:nowrap}}
  .bar button{{font:bold 12px "DejaVu Sans Mono",monospace;background:#0A0A0A;color:#fff;border:1px solid #333;border-radius:6px;padding:5px 10px}}
  .bar button.on{{border-color:#00E5FF;background:#1C1C22}}
@@ -539,21 +676,31 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
   <label>LAYERS</label>{rows}
   <span class="sp"></span><span id="mdl">{model_label(model)}</span>
   <button id="bst" class="on">Stations</button><button id="balt" class="on">CA alternates</button>
-  <button id="bfit">Fit</button>
+  <button id="bfit">Fit</button><button id="b2" title="Map + meteogram of the layers that are on, for a station you click">2-panel</button>
 </div>
 <div class="bar">
   <label>TIME</label><button id="bprev">&#9664;</button><button id="bplay">Play</button><button id="bnext">&#9654;</button>
   <input id="tm" type="range" min="0" max="{len(steps_all) - 1}" value="0" step="1">
   <span id="valid"></span><span id="built"></span>
 </div>
+<div id="wrap">
 <div id="m"><div class="lg" id="lg"><span class="d" style="background:#4DA3FF"></span>JBU station &nbsp;
  <span class="d" style="background:#9AA0A6"></span>Canadian alternate<br>
  <span style="color:#6E6E6E">tomorrow.io {model_label(model)} tiles · CONUS · hourly to +{int(os.environ.get("TIO_FCST_HOURLY_TO", "24"))} h, 3-hourly to +{FCST_HOURS[-1] if FCST_HOURS else 0} h</span></div></div>
+<div id="mg">
+  <div id="mgh"><label>STATION</label><select id="mgsel"><option value="">click a dot…</option></select>
+    <span id="mgt"></span><span class="sp"></span><span id="mgs"></span></div>
+  <div id="mgc"></div><div id="mgn"></div>
+</div>
+</div>
 <script>
 const F = {json.dumps(frames)};
 const ST = {json.dumps(stations)};
 const FIELDS = {json.dumps(FIELDS)};
 const STEPS = {json.dumps(steps_all)};
+const PT_URL = {json.dumps(pt_url)};
+const LABELS = {json.dumps(labels)};
+const PT_FIELD = {json.dumps({f: POINT_FIELD.get(f, f) for f in FIELDS})};
 const BB = [[{W},{S}],[{E},{N}]];
 const map = new maplibregl.Map({{container:'m', style:{json.dumps(style)},
   bounds:BB, fitBoundsOptions:{{padding:8}}, minZoom:2.2, maxZoom:9,
@@ -602,7 +749,105 @@ function draw() {{
   if (ready) added.forEach(k => {{ if (map.getLayer(k)) map.setPaintProperty(k, 'raster-opacity', visible.has(k) ? op[k.split('_')[1]] : 0); }});
   $('valid').textContent = (step ? '+' + step + ' h' : 'now') + (valid ? '  valid ' + valid : '  (no frame yet)');
   $('built').textContent = built ? ' · built ' + built : '';
+  if (two && PT && sel) drawMg();
 }}
+// ---- 2-panel meteogram -------------------------------------------------
+// Point forecasts for every station (one tomorrow.io timelines call
+// each, warmed server-side) drawn with plotly: one panel per layer
+// that is switched on, in the map's layer order, with the TIME
+// slider's hour as a cursor. Click a dot or pick from the list.
+let PT = null, two = false, sel = '';
+const KT = 1.943844, SM = 0.621371, FT = 3280.84;
+const CAT = {{VFR:'#00FF7F', MVFR:'#FFD400', IFR:'#FF8A00', LIFR:'#FF00C8'}};
+function cat(cig_ft, vis_sm) {{
+  const c = cig_ft == null ? 1e9 : cig_ft, v = vis_sm == null ? 99 : vis_sm;
+  if (c < 500 || v < 1) return 'LIFR'; if (c < 1000 || v < 3) return 'IFR';
+  if (c <= 3000 || v <= 5) return 'MVFR'; return 'VFR';
+}}
+function cursorTime(st) {{
+  const step = STEPS[ti]; const t = st.t;
+  return t[Math.min(t.length - 1, step)] || t[0];
+}}
+// Panels for the layers that are on. Wind speed and gust share one.
+function panels(st) {{
+  const out = [], wind = [];
+  FIELDS.forEach(f => {{
+    if (!on[f]) return;
+    const pf = PT_FIELD[f], v = st[pf]; if (!v) return;
+    if (f === 'windSpeed' || f === 'windGust') {{ wind.push([f, v.map(x => x == null ? null : x * KT)]); return; }}
+    if (f === 'cloudCeiling') out.push({{title:'ceiling (ft)', log:true, traces:[[LABELS[f], v.map(x => x == null ? null : Math.min(25000, x * FT)), '#4FA8E8', 'lines+markers']]}});
+    else if (f === 'visibility') out.push({{title:'vis (sm)', range:[0, 10.5], traces:[[LABELS[f], v.map(x => x == null ? null : Math.min(10, x * SM)), '#B388FF', 'lines+markers']]}});
+    else out.push({{title: pf === 'precipitationIntensity' ? 'precip (mm/h)' : LABELS[f], bar:true, traces:[[LABELS[f], v, '#00E5FF', 'bar']]}});
+  }});
+  if (wind.length) {{
+    const cols = {{windSpeed:'#FFFFFF', windGust:'#FF8A00'}};
+    out.push({{title:'wind (kt)', rangemode:'tozero', traces: wind.map(([f, v]) => [LABELS[f], v, cols[f], 'lines+markers'])}});
+  }}
+  return out;
+}}
+function drawMg() {{
+  if (!two) return;
+  const box = $('mgc'), note = $('mgn');
+  if (!PT) {{ note.textContent = PT_URL ? 'loading station forecasts…' : 'no station forecasts yet - the warmer builds them on its first pass'; box.innerHTML = ''; return; }}
+  const st = PT.stations[sel];
+  if (!st) {{ note.textContent = 'click a station dot on the map'; box.innerHTML = ''; $('mgt').textContent = ''; return; }}
+  const ps = panels(st);
+  if (!ps.length) {{ note.textContent = 'switch a layer on to see it here'; box.innerHTML = ''; return; }}
+  note.textContent = '';
+  $('mgt').textContent = sel; $('mgs').textContent = PT.model + ' · built ' + PT.built + 'Z';
+  const t = st.t.map(x => x.replace('Z', ''));
+  const cig = st.cloudCeiling, vis = st.visibility;
+  const haveCat = cig && vis;
+  const n = ps.length + (haveCat ? 1 : 0);
+  const data = [], layout = {{paper_bgcolor:'#0A0A0A', plot_bgcolor:'#05070B', margin:{{l:52, r:14, t:8, b:34}},
+    font:{{color:'#B8B8B8', size:11, family:'DejaVu Sans Mono, monospace'}}, showlegend:false, hovermode:'x unified',
+    shapes:[], annotations:[]}};
+  let row = 1;
+  const yax = (i) => 'y' + (i === 1 ? '' : i), xax = (i) => 'x' + (i === 1 ? '' : i);
+  if (haveCat) {{
+    const cats = t.map((_, k) => cat(cig[k] == null ? null : cig[k] * FT, vis[k] == null ? null : vis[k] * SM));
+    data.push({{type:'bar', x:t, y:t.map(() => 1), marker:{{color:cats.map(c => CAT[c])}}, text:cats, hovertemplate:'%{{text}}<extra></extra>',
+      xaxis:xax(row), yaxis:yax(row), width:3600e3}});
+    layout['yaxis' + (row === 1 ? '' : row)] = {{domain:[1 - 0.055, 1], anchor:xax(row), showticklabels:false, fixedrange:true, title:{{text:'cat', standoff:4}}}};
+    layout['xaxis' + (row === 1 ? '' : row)] = {{anchor:yax(row), showticklabels:false, matches:'x' + (n === 1 ? '' : n), showgrid:false}};
+    row++;
+  }}
+  ps.forEach((p, k) => {{
+    const i = row + k;
+    p.traces.forEach(([name, y, color, mode]) => data.push(mode === 'bar'
+      ? {{type:'bar', name, x:t, y, marker:{{color}}, xaxis:xax(i), yaxis:yax(i), width:3600e3}}
+      : {{type:'scatter', name, x:t, y, mode, line:{{color, width:2}}, marker:{{size:4}}, connectgaps:false, xaxis:xax(i), yaxis:yax(i)}}));
+    const h = haveCat ? (1 - 0.07) / ps.length : 1 / ps.length;
+    const top = (haveCat ? 1 - 0.07 : 1) - k * h;
+    const ya = {{domain:[top - h + 0.035, top], anchor:xax(i), gridcolor:'#1A2233', zerolinecolor:'#1A2233', title:{{text:p.title, standoff:6}}}};
+    if (p.log) ya.type = 'log'; if (p.range) ya.range = p.range; if (p.rangemode) ya.rangemode = p.rangemode;
+    layout['yaxis' + (i === 1 ? '' : i)] = ya;
+    layout['xaxis' + (i === 1 ? '' : i)] = {{anchor:yax(i), gridcolor:'#1A2233', showticklabels: k === ps.length - 1, tickformat:'%HZ<br>%d', matches: k === ps.length - 1 ? undefined : xax(row + ps.length - 1)}};
+    if (p.log) {{ [500, 1000, 3000].forEach(v => layout.shapes.push({{type:'line', xref:'paper', x0:0, x1:1, yref:yax(i), y0:v, y1:v, line:{{color:'#3A424C', width:1, dash:'dot'}}}})); }}
+  }});
+  const ct = cursorTime(st).replace('Z', '');
+  layout.shapes.push({{type:'line', xref:'x' + (n === 1 ? '' : n), x0:ct, x1:ct, yref:'paper', y0:0, y1:1, line:{{color:'#FFD400', width:1.5}}}});
+  Plotly.react(box, data, layout, {{displayModeBar:false, responsive:true}});
+  box.removeAllListeners && box.removeAllListeners('plotly_click');
+  box.on('plotly_click', ev => {{
+    const k = ev.points[0].pointIndex; const h = Math.max(0, k);
+    let best = 0; STEPS.forEach((s, i) => {{ if (Math.abs(s - h) < Math.abs(STEPS[best] - h)) best = i; }});
+    ti = best; $('tm').value = ti; draw();
+  }});
+}}
+function pick(icao) {{ sel = icao; $('mgsel').value = icao; drawMg(); }}
+function fillSel() {{
+  const ids = PT ? Object.keys(PT.stations).sort() : [];
+  $('mgsel').innerHTML = '<option value="">station…</option>' + ids.map(i => `<option value="${{i}}">${{i}}</option>`).join('');
+  if (sel) $('mgsel').value = sel;
+}}
+$('mgsel').onchange = e => pick(e.target.value);
+$('b2').onclick = () => {{
+  two = !two; $('b2').classList.toggle('on', two); document.body.classList.toggle('two', two);
+  setTimeout(() => map.resize(), 30);
+  if (two && !PT && PT_URL) fetch(PT_URL).then(r => r.json()).then(j => {{ PT = j; fillSel(); drawMg(); }}).catch(() => {{ $('mgn').textContent = 'station forecasts failed to load'; }});
+  drawMg();
+}};
 map.on('load', () => {{
   map.addSource('st', {{type:'geojson', data:ST}});
   map.addLayer({{id:'st-dot', type:'circle', source:'st',
@@ -614,6 +859,9 @@ map.on('load', () => {{
              'text-anchor':'bottom-left', 'text-font':['Open Sans Bold'], 'text-allow-overlap':false}},
     paint:{{'text-color':['case', ['==', ['get','kind'], 'jbu'], '#FFFFFF', '#B8B8B8'],
             'text-halo-color':'#000', 'text-halo-width':1.4}}}});
+  map.on('click', 'st-dot', e => {{ const id = e.features[0].properties.id; if (!two) $('b2').onclick(); pick(id); }});
+  map.on('mouseenter', 'st-dot', () => map.getCanvas().style.cursor = 'pointer');
+  map.on('mouseleave', 'st-dot', () => map.getCanvas().style.cursor = '');
   ready = true; draw();
 }});
 $('tm').oninput = e => {{ ti = +e.target.value; draw(); }};
