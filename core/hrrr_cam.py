@@ -54,19 +54,6 @@ PRODUCT_PARAMS = {
     # and the same instant.
     "UGRD10": ({"var_UGRD": "on"}, [{"lev_10_m_above_ground": "on"}]),
     "VGRD10": ({"var_VGRD": "on"}, [{"lev_10_m_above_ground": "on"}]),
-    # Composite lightning threat (McCaul et al. graupel/updraft
-    # diagnostic). Confirmed present in both HRRR and RRFS idx
-    # sidecars as "LTNG:entire atmosphere" (28 Sep probe); the CGI
-    # var name below mirrors that spelling but is UNVERIFIED against
-    # the live filter (a 302 came back on a quick probe, same as it
-    # would for any transient NOMADS hiccup) - harmless if wrong,
-    # since _idx_resolved already routes every model through
-    # _fetch_field_idx (IDX_MATCHERS) after the first latest_cycle()
-    # call, which is the path this actually runs on.
-    "LTNG": ({"var_LTNG": "on"}, [
-        {"lev_entire_atmosphere": "on"},
-        {"lev_entire_atmosphere_(considered_as_a_single_layer)": "on"},
-    ]),
 }
 
 PRODUCT_LABELS = {
@@ -78,7 +65,6 @@ PRODUCT_LABELS = {
     "GUST": "10 m Wind Gust (kt)",
     "UGRD10": "10 m U wind (m/s)",
     "VGRD10": "10 m V wind (m/s)",
-    "LTNG": "Lightning threat (flashes/km²/5 min)",
     "PROB_REFC40": "P(Composite Refl >= 40 dBZ)  %",
     "PROB_REFC50": "P(Composite Refl >= 50 dBZ)  %",
     "PROB_CIG500": "P(Ceiling < 500 ft)  %",
@@ -132,10 +118,6 @@ IDX_MATCHERS = {
     "GUST": [("GUST", "surface")],
     "UGRD10": [("UGRD", "10 m above ground")],
     "VGRD10": [("VGRD", "10 m above ground")],
-    # HRRR: "LTNG:entire atmosphere:1 hour fcst"; RRFS: "LTNG:entire
-    # atmosphere:2-3 hour max fcst". The step text differs but the
-    # matcher only reads VAR and LEVEL, so one entry covers both.
-    "LTNG": [("LTNG", "entire atmosphere")],
 }
 
 MODELS = {
@@ -149,8 +131,7 @@ MODELS = {
                 ".grib2.idx"),
         "cycles": list(range(24)),
         "max_fhr": 18,
-        "products": {"REFD", "REFC", "RETOP", "VIS", "CEIL", "GUST",
-                     "LTNG"},
+        "products": {"REFD", "REFC", "RETOP", "VIS", "CEIL", "GUST"},
         "note": "",
     },
     "rrfs": {
@@ -177,7 +158,7 @@ MODELS = {
         "probe_back": 31,
         "max_fhr": 84,
         "products": {"REFD", "REFC", "RETOP", "VIS", "CEIL",
-                     "GUST", "LTNG"},
+                     "GUST"},
         "note": ("pre-operational prototype; availability "
                  "follows the experimental schedule"),
     },
@@ -779,17 +760,14 @@ STATION_RING_NM = float(os.environ.get("CAM_STATION_RING_NM", "10"))
 
 
 def draw_stations(ax, w: float, s: float, e: float, n: float,
-                  skip=None, pad: float = 0.15, labels: bool = True,
-                  dot_pt: float = None) -> int:
+                  skip=None, pad: float = 0.15) -> int:
     """JetBlue station dots and identifiers on a cartopy axis.
 
     Shared by the matplotlib renderer here and the fast composite
     renderer in cam_fast, so the warmed frames and the live-render
     fallback show the same marks in the same places. New York metro
     shows JFK only — LGA and EWR overlap it at every zoom these
-    pages use. labels=False draws the dots alone (CONUS frames,
-    where fifty identifiers would overprint the Northeast); dot_pt
-    overrides the dot size for the same reason.
+    pages use.
     """
     import math
 
@@ -803,7 +781,6 @@ def draw_stations(ax, w: float, s: float, e: float, n: float,
         skip = set(x.strip().upper() for x in _os.environ.get(
             "CAM_STATION_SKIP", "KLGA,KEWR").split(",") if x.strip())
     drawn = 0
-    _dot = STATION_DOT_PT if dot_pt is None else float(dot_pt)
     for icao, (sla, slo) in JBU_STATIONS.items():
         if icao in skip:
             continue
@@ -818,25 +795,22 @@ def draw_stations(ax, w: float, s: float, e: float, n: float,
         # stretched in longitude by 1/cos(lat) so it is not an
         # ellipse on the map. Thin and translucent — a reference
         # mark, not a symbol.
-        if STATION_RING_NM > 0 and labels:
+        if STATION_RING_NM > 0:
             r_lat = STATION_RING_NM / 60.0
             r_lon = r_lat / max(0.2, math.cos(math.radians(sla)))
             th = np.linspace(0.0, 2.0 * np.pi, 73)
             ax.plot(slo + r_lon * np.cos(th), sla + r_lat * np.sin(th),
                     color="#003B8E", linewidth=0.9, alpha=0.75,
                     transform=ccrs.PlateCarree(), zorder=6)
-        ax.plot(slo, sla, marker="o", markersize=_dot,
+        ax.plot(slo, sla, marker="o", markersize=STATION_DOT_PT,
                 markerfacecolor="#005ADC", markeredgecolor="white",
-                markeredgewidth=1.4 if labels else 0.8, linestyle="none",
+                markeredgewidth=1.4, linestyle="none",
                 transform=ccrs.PlateCarree(), zorder=7)
-        drawn += 1
-        if not labels:
-            continue
         # Label just clear of the dot: offset is the dot radius plus
         # a small gap, in degrees, computed from the figure's own
         # points-per-degree so it stays tight at any size.
         _pt_per_deg = (ax.figure.get_size_inches()[1] * 72.0) / (n - s)
-        _gap_deg = (_dot / 2.0 + 3.0) / _pt_per_deg
+        _gap_deg = (STATION_DOT_PT / 2.0 + 3.0) / _pt_per_deg
         ax.text(slo, sla + _gap_deg,
                 icao[1:] if icao.startswith("K") else icao,
                 fontsize=STATION_FONT_PT, color="#003B8E",
@@ -844,6 +818,7 @@ def draw_stations(ax, w: float, s: float, e: float, n: float,
                 transform=ccrs.PlateCarree(), zorder=7,
                 path_effects=[_pe.withStroke(linewidth=2.5,
                                              foreground="white")])
+        drawn += 1
     return drawn
 
 
