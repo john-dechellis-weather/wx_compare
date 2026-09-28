@@ -103,7 +103,7 @@ for _pk in ("PROB_CIG1000", "PROB_CIG500", "PROB_VIS1", "PROB_VIS3",
 # below this, so isolated cells fade at their own size instead of
 # being inflated to full-strength discs.
 # Bump whenever the basemap's content changes.
-BASEMAP_STYLE = 7   # v7: N90 outline red, half width
+BASEMAP_STYLE = 7   # v7: N90 outline red, half width (values are drawn per frame, not in the basemap)
 # The ground every frame is composited on. Dark grey, almost black,
 # so the fields read the way radar does on the other maps.
 GROUND = (11, 12, 14, 255)
@@ -446,9 +446,75 @@ def render_fast(product: str, vals, lats, lons, center_lat: float,
     out = Image.new("RGBA", data_im.size, GROUND)
     out.alpha_composite(data_im)
     out = Image.alpha_composite(out, base)
+    # STATION VALUES (23 Sep): the product's value at each JetBlue
+    # station, as a small white tag under the station label, read
+    # from the smoothed field g at the station's pixel.
+    try:
+        _draw_station_values(out, g, blank, product, extent, width, height)
+    except Exception:
+        pass
     buf = io.BytesIO()
     out.save(buf, "WEBP", quality=webp_q, method=4)
     return buf.getvalue()
+
+
+# Units for the station value tag, per product. Fields are in the
+# palette's display units by this point (cam_fast scales them).
+_VALUE_FMT = {
+    "REFD": ("{:.0f} dBZ", 0), "REFC": ("{:.0f} dBZ", 0),
+    "RETOP": ("FL{:03.0f}", 1), "VIS": ("{:.1f} sm", 2),
+    "CEIL": ("{:.0f}00 ft", 3), "GUST": ("{:.0f} kt", 4),
+}
+STATION_VALUES = os.environ.get("CAM_STATION_VALUES", "on").lower() != "off"
+
+
+def _draw_station_values(out, g, blank, product: str, extent, width, height):
+    """White value tag under each station in view."""
+    if not STATION_VALUES:
+        return
+    import numpy as np
+    from PIL import ImageDraw, ImageFont
+
+    from core.hrrr_cam import JBU_STATIONS
+
+    skip = set(x.strip().upper() for x in os.environ.get(
+        "CAM_STATION_SKIP", "KLGA,KEWR").split(",") if x.strip())
+    w, s_, e, n = extent
+    if product in _VALUE_FMT:
+        fmt, _ = _VALUE_FMT[product]
+    elif product.startswith("PROB"):
+        fmt = "{:.0f}%"
+    else:
+        fmt = "{:.0f}"
+    # 26 px on a ~2000 px frame reads at pod size; scale with width.
+    size = max(14, int(width * 0.013))
+    try:
+        font = ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", size)
+    except Exception:
+        font = ImageFont.load_default()
+    draw = ImageDraw.Draw(out)
+    r = 3   # sample a 7x7 block: the station's local maximum
+    for icao, (sla, slo) in JBU_STATIONS.items():
+        if icao in skip or not (w <= slo <= e and s_ <= sla <= n):
+            continue
+        px = int((slo - w) / (e - w) * width)
+        py = int((n - sla) / (n - s_) * height)
+        y0, y1 = max(0, py - r), min(height, py + r + 1)
+        x0, x1 = max(0, px - r), min(width, px + r + 1)
+        blk = g[y0:y1, x0:x1]
+        msk = ~blank[y0:y1, x0:x1] & np.isfinite(blk)
+        if not msk.any():
+            continue                    # nothing at the station
+        v = float(np.nanmax(np.where(msk, blk, np.nan)))
+        txt = fmt.format(v)
+        # under the station label (dot at py; label sits ~1.6 sizes
+        # above), boxed for contrast on any fill
+        tw, th = draw.textbbox((0, 0), txt, font=font)[2:]
+        bx, by = px - tw // 2, py + int(size * 0.7)
+        draw.rectangle([bx - 4, by - 2, bx + tw + 4, by + th + 2],
+                       fill=(0, 0, 0, 200), outline=(255, 255, 255, 230))
+        draw.text((bx, by), txt, font=font, fill=(255, 255, 255, 255))
 
 
 def supports(product: str) -> bool:
