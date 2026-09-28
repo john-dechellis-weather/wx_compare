@@ -86,6 +86,15 @@ PALETTES = {
                         "#FFC90E", "#FF9900", "#FF4040", "#B21E28",
                         "#A349A4"],
              "scale": 1.943844},
+    # Composite lightning threat, flashes/km^2/5 min (HRRR/RRFS LTNG).
+    # Bands follow the usual public HRRR lightning-threat displays;
+    # nothing below 0.1 draws. Recalibrate against real frames if
+    # storms read too hot or too quiet.
+    "LTNG": {"bounds": [0.1, 0.5, 1, 2, 4, 8, 12, 16, 20],
+             "colors": ["#4B2A8C", "#7A3DB8", "#B347C9", "#E04FA8",
+                        "#FF5A6E", "#FF8A3D", "#FFC21F", "#FFF36B",
+                        "#FFFFFF"],
+             "below": 0.1},
 }
 # REFS probability fields share one ramp.
 for _pk in ("PROB_CIG1000", "PROB_CIG500", "PROB_VIS1", "PROB_VIS3",
@@ -142,6 +151,15 @@ SPECKLE_MIN_CELLS = int(os.environ.get("CAM_SPECKLE_MIN_CELLS", "10"))
 SPECKLE_MAX_DBZ = float(os.environ.get("CAM_SPECKLE_MAX_DBZ", "35"))
 COVERAGE_MIN = float(os.environ.get("CAM_COVERAGE_MIN", "0.15"))
 COVERAGE_FLOOR = float(os.environ.get("CAM_COVERAGE_FLOOR", "0.45"))
+# MODEL EDGE. The nearest-neighbour resample below always finds SOME
+# source cell, so a target pixel past the model's real edge used to
+# take the value of the last row of the grid and smear it outward.
+# Invisible on the hub crops (always deep inside the domain); obvious
+# on a CONUS frame, whose rectangle overhangs the Lambert-conformal
+# domain at every corner. A pixel whose nearest cell is more than
+# EDGE_MULT native grid spacings away is outside the model and draws
+# nothing, so the frame's data edge IS the model's boundary.
+EDGE_MULT = float(os.environ.get("CAM_DOMAIN_EDGE_MULT", "3.0"))
 
 _LUT_CACHE = {}
 
@@ -212,12 +230,14 @@ def regrid_index(key: str, lats, lons, extent, width: int,
     gx = np.linspace(w, e, width)
     gy = np.linspace(n, s, height)      # image rows run north->south
     GX, GY = np.meshgrid(gx, gy)
-    tree = cKDTree(np.column_stack([lo.ravel(), la.ravel()]))
+    src_pts = np.column_stack([lo.ravel(), la.ravel()])
+    tree = cKDTree(src_pts)
     # REGRID_K neighbours with inverse-distance weights. Default 1
     # (nearest); see the constant for why interpolation was rejected
     # for reflectivity. The k=4 path is kept for smooth fields.
     dist, idx = tree.query(np.column_stack([GX.ravel(), GY.ravel()]),
                            k=REGRID_K, workers=-1)
+    near = (dist if dist.ndim == 1 else dist[:, 0]).astype("float32")
     if REGRID_K == 1:
         idx = idx.reshape(-1, 1)
         wts = np.ones_like(idx, dtype="float32")
@@ -226,12 +246,23 @@ def regrid_index(key: str, lats, lons, extent, width: int,
         # gets that cell almost entirely.
         wts = 1.0 / np.maximum(dist, 1e-9) ** 2
         wts = (wts / wts.sum(axis=1, keepdims=True)).astype("float32")
-    _INDEX_CACHE[key] = ((idx, wts), (width, height))
-    return idx, wts
+    # Native spacing in degrees, measured from the grid itself (a
+    # sample of cells' nearest OTHER cell), so it is right for any
+    # model and any WIDE_DECIM without a hardcoded "3 km".
+    if len(src_pts) > 1:
+        rng = np.random.default_rng(0)
+        pick = rng.choice(len(src_pts), size=min(500, len(src_pts)),
+                          replace=False)
+        sd, _ = tree.query(src_pts[pick], k=2, workers=-1)
+        spacing = float(np.median(sd[:, 1]))
+    else:
+        spacing = float("inf")
+    _INDEX_CACHE[key] = ((idx, wts, near, spacing), (width, height))
+    return idx, wts, near, spacing
 
 
 def basemap(key: str, extent, width: int, height: int,
-            cache_dir=None):
+            cache_dir=None, stations: str = "full"):
     """Map furniture on a transparent canvas, cached on disk.
 
     The axes fill the figure exactly ([0, 0, 1, 1]) so the mapping
@@ -239,10 +270,13 @@ def basemap(key: str, extent, width: int, height: int,
     Anything drawn outside the axes — a colourbar in a margin, edge
     tick labels — would break that alignment, so the colourbar is an
     inset and the gridline labels are inline.
+
+    stations: "full" (dot, ring, identifier - the hub default),
+    "dots" (small dots only, for CONUS frames) or "none".
     """
     from PIL import Image
 
-    mem = _BASEMAP_MEM.get((key, width, height))
+    mem = _BASEMAP_MEM.get((key, width, height, stations))
     if mem is not None:
         return mem
     path = None
@@ -253,12 +287,14 @@ def basemap(key: str, extent, width: int, height: int,
         # because the region hash still matches.
         tag = hashlib.md5(
             f"{key}|{extent}|{width}x{height}|v{BASEMAP_STYLE}|"
-            f"{','.join(sorted(STATION_SKIP))}".encode()).hexdigest()[:12]
+            f"{','.join(sorted(STATION_SKIP))}"
+            f"{'' if stations == 'full' else '|' + stations}"
+            .encode()).hexdigest()[:12]
         path = Path(cache_dir) / f"basemap_{tag}.png"
         if path.exists():
             try:
                 im = Image.open(path).convert("RGBA")
-                _BASEMAP_MEM[(key, width, height)] = im
+                _BASEMAP_MEM[(key, width, height, stations)] = im
                 return im
             except Exception:
                 pass
@@ -316,12 +352,17 @@ def basemap(key: str, extent, width: int, height: int,
     # New York metro shows JFK only. LGA and EWR are inside the
     # same 3 km cell cluster at every zoom this page uses, and
     # three overlapping labels read as a smudge.
-    try:
-        from core.hrrr_cam import draw_stations
+    if stations != "none":
+        try:
+            from core.hrrr_cam import draw_stations
 
-        draw_stations(ax, w, s, e, n, skip=STATION_SKIP)
-    except Exception:
-        pass          # a basemap without stations is still a basemap
+            if stations == "dots":
+                draw_stations(ax, w, s, e, n, skip=set(), labels=False,
+                              dot_pt=5.0)
+            else:
+                draw_stations(ax, w, s, e, n, skip=STATION_SKIP)
+        except Exception:
+            pass      # a basemap without stations is still a basemap
 
     buf = io.BytesIO()
     fig.savefig(buf, format="png", transparent=True, dpi=100)
@@ -334,18 +375,20 @@ def basemap(key: str, extent, width: int, height: int,
             im.save(path, "PNG", optimize=True)
         except OSError:
             pass
-    _BASEMAP_MEM[(key, width, height)] = im
+    _BASEMAP_MEM[(key, width, height, stations)] = im
     return im
 
 
 def render_fast(product: str, vals, lats, lons, center_lat: float,
                 center_lon: float, zoom_deg: float, grid_key: str,
                 ppd: int = 150, cache_dir=None, smooth: float = 1.2,
-                webp_q: int = 88) -> bytes:
+                webp_q: int = 88, stations: str = "full") -> bytes:
     """One frame: resample, colourise, composite. Returns WebP bytes.
 
     `grid_key` must identify the region AND the source grid, because
-    the index map is cached against it.
+    the index map is cached against it. `stations` is passed to
+    basemap() - CONUS frames use "dots"; station value tags are
+    skipped when the stations are not labelled.
     """
     import numpy as np
     from PIL import Image
@@ -360,7 +403,8 @@ def render_fast(product: str, vals, lats, lons, center_lat: float,
     extent = (center_lon - zoom_deg, center_lat - zoom_deg,
               center_lon + zoom_deg, center_lat + zoom_deg)
     width = height = int(2 * zoom_deg * ppd)
-    idx, wts = regrid_index(grid_key, lats, lons, extent, width, height)
+    idx, wts, near, spacing = regrid_index(grid_key, lats, lons, extent,
+                                           width, height)
 
     src = np.asarray(vals, dtype="float32").ravel()
     nb = src[idx]                                  # (N, k)
@@ -388,6 +432,9 @@ def render_fast(product: str, vals, lats, lons, center_lat: float,
         blank |= g < float(spec["below"])
     if "above" in spec:
         blank |= g > float(spec["above"])
+    # Outside the model's own domain: draw nothing (see EDGE_MULT).
+    if EDGE_MULT > 0 and np.isfinite(spacing):
+        blank |= (near > spacing * EDGE_MULT).reshape(height, width)
 
     if SPECKLE_MIN_CELLS > 0 and product in ("REFD", "REFC"):
         # Label connected echo regions on the TARGET grid; a source
@@ -440,7 +487,7 @@ def render_fast(product: str, vals, lats, lons, center_lat: float,
     data_im = Image.fromarray(lut[band], mode="RGBA")
 
     base = basemap(grid_key.split("|")[0], extent, width, height,
-                   cache_dir=cache_dir)
+                   cache_dir=cache_dir, stations=stations)
     # Ground, then the field, then the furniture on top: coastlines
     # must stay visible through heavy echo.
     out = Image.new("RGBA", data_im.size, GROUND)
@@ -449,10 +496,12 @@ def render_fast(product: str, vals, lats, lons, center_lat: float,
     # STATION VALUES (23 Sep): the product's value at each JetBlue
     # station, as a small white tag under the station label, read
     # from the smoothed field g at the station's pixel.
-    try:
-        _draw_station_values(out, g, blank, product, extent, width, height)
-    except Exception:
-        pass
+    if stations == "full":
+        try:
+            _draw_station_values(out, g, blank, product, extent, width,
+                                 height)
+        except Exception:
+            pass
     buf = io.BytesIO()
     out.save(buf, "WEBP", quality=webp_q, method=4)
     return buf.getvalue()

@@ -185,8 +185,14 @@ SCOPE_H = int(os.environ.get("BLUEMET_SF_SCOPE_H", "1000"))
 # beside it; raise or lower with the env var if a station's TAF runs
 # long or short.
 SF_TEXT_PX = int(os.environ.get("BLUEMET_SF_TEXT_PX", "15"))
-PLOT_H = 620          # wind, level with the two grids beside it
-CV_H = 420            # ceiling & visibility, under the strip
+
+# The Wind & Flight Conditions meteogram (c_wind, row 2) stacks four
+# pieces in one pod: the direction/speed/gust text row, the speed +
+# gust plot, the consensus category bar, then ceiling and vis plots.
+# Heights are for the two plotly charts only - the text rows and bar
+# size themselves to their content.
+WIND_H = 300          # speed + gust
+CIGVIS_H = 240        # each of ceiling and vis
 
 HUBS = ["KJFK", "KBOS", "KFLL", "KMCO", "KEWR", "KLGA", "KDCA", "KLAX",
         "KSFO", "KTPA", "KDJT", "KBDL", "KHPN", "TJSJ"]
@@ -514,37 +520,11 @@ with c_obs:
         else:
             st.caption("No ceiling/visibility guidance for this station and cycle.")
 
-    with st.container(border=True):
-        pod_title("Ceiling & visibility", f"by model · {cyc_txt}")
-        if ok and len(df) and {"ceiling_ft", "vsby_sm"} <= set(df.columns):
-            # THE ORIGINAL FIGURE, as the wind pod beside it already
-            # does: compare.plot_comparison_interactive is what the
-            # VIS/CIG page drew. A hand-built version here stacked
-            # every point on one timestamp and put the axes on a log
-            # scale; this is the plot people know.
-            from compare import plot_comparison_interactive
-            try:
-                from core.metar import filter_since, metars_to_df
-                mdf = metars_to_df(filter_since(
-                    {icao: cached_metars(icao, 48)}, cycle))
-            except Exception:
-                mdf = None
-            fig = plot_comparison_interactive(
-                df, icao, cycle=cycle, hours_ahead=horizon, metars_df=mdf)
-            # Same dark restyle the wind pod applies; the traces, axes
-            # and category bands are the original's.
-            fig.update_layout(
-                title=None,
-                height=CV_H, width=None, autosize=True, paper_bgcolor=PANEL,
-                plot_bgcolor="#05070B",
-                font=dict(color=INK2, size=11, family="Roboto, Arial"),
-                margin=dict(l=40, r=16, t=24, b=30),
-                legend=dict(bgcolor="rgba(0,0,0,0)"))
-            fig.update_xaxes(gridcolor="#1A2233", zerolinecolor="#1A2233")
-            fig.update_yaxes(gridcolor="#1A2233", zerolinecolor="#1A2233")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.caption("No ceiling/visibility guidance for this station and cycle.")
+    # Ceiling & visibility used to be its own pod here; it now lives
+    # inside the Wind & Flight Conditions meteogram below (c_wind),
+    # stacked under the wind plot so the consensus line that drives
+    # the category bar sits right above ceiling and vis instead of
+    # in a separate pod the dispatcher has to cross-reference.
 
 
 def _search_fleet(q: str) -> list:
@@ -968,32 +948,191 @@ c_wind, c_mos = st.columns(2, gap="small")
 
 with c_wind:
     with st.container(border=True):
-        pod_title("Wind", f"speed, gust, direction · {cyc_txt}")
-        if ok and len(df):
-            from compare import plot_wind_comparison_interactive
+        pod_title("Wind & Flight Conditions",
+                  f"consensus meteogram · {cyc_txt}")
+        have_wind = ok and len(df) and {"wind_speed_kt", "wind_dir_deg"} <= set(df.columns)
+        have_cv = ok and len(df) and {"ceiling_ft", "vsby_sm"} <= set(df.columns)
+        if not (have_wind or have_cv):
+            st.caption("No model data for this station and cycle.")
+        else:
+            import plotly.graph_objects as go
+            from plotly.subplots import make_subplots
+
+            d = df[(df["station_id"] == icao)
+                   & (df["valid_time"] <= cycle + pd.Timedelta(hours=horizon))].copy()
+            d["valid_time"] = pd.to_datetime(d["valid_time"])
+            d["hour"] = d["valid_time"].dt.floor("h")
+            models = [m for m in MODELS if m in set(d["model"])]
+            times = [cycle + pd.Timedelta(hours=h) for h in range(0, horizon + 1)]
+            cols = [pd.Timestamp(t).floor("h") for t in times]
+
             try:
                 from core.metar import filter_since, metars_to_df
                 mdf = metars_to_df(filter_since(
-                    {icao: cached_metars(icao, 48)}, cycle))
+                    {icao: cached_metars(icao, 48)}, cycle - pd.Timedelta(hours=6)))
             except Exception:
                 mdf = None
-            fig = plot_wind_comparison_interactive(
-                df, icao, cycle=cycle, speed_ylim=(0, speed_max),
-                hours_ahead=horizon, metars_df=mdf)
-            fig.update_layout(
-                # No figure title: the pod header carries it, and the
-                # title sat on top of the "Wind speed (kt)" panel title.
-                title=None,
-                height=PLOT_H, width=None, autosize=True, paper_bgcolor=PANEL,
-                plot_bgcolor="#05070B",
-                font=dict(color=INK2, size=11, family="Roboto, Arial"),
-                margin=dict(l=40, r=16, t=24, b=30),
-                legend=dict(bgcolor="rgba(0,0,0,0)"))
-            fig.update_xaxes(gridcolor="#1A2233", zerolinecolor="#1A2233")
-            fig.update_yaxes(gridcolor="#1A2233", zerolinecolor="#1A2233")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.caption("No model data for this station and cycle.")
+
+            def _series(colname, agg="mean"):
+                if colname not in d.columns:
+                    return pd.Series(dtype=float)
+                if agg == "circular":
+                    return d.groupby("hour")[colname].apply(
+                        lambda s: G.circular_mean_deg(s.tolist()))
+                return d.groupby("hour")[colname].mean()
+
+            def _aligned(s):
+                return [None if pd.isna(v) else float(v) for v in s.reindex(cols)]
+
+            # ---- consensus (average-across-models) series - this is
+            # the SAME averaging that feeds the direction/speed/gust
+            # row above and the category bar below, so the bold line
+            # in every plot on this pod is one consistent trend.
+            cons_dir = _aligned(_series("wind_dir_deg", "circular")) if have_wind else [None] * len(cols)
+            cons_spd = _aligned(_series("wind_speed_kt")) if have_wind else [None] * len(cols)
+            cons_gst = _aligned(_series("wind_gust_kt")) if have_wind else [None] * len(cols)
+
+            if have_cv:
+                unl = (d["ceiling_unlimited"].astype(bool) if "ceiling_unlimited" in d
+                       else pd.Series(False, index=d.index))
+                d["_cig_eff"] = d["ceiling_ft"].where(~unl, 12000)
+                cons_cig = _aligned(_series("_cig_eff"))
+                cons_vis = _aligned(_series("vsby_sm"))
+            else:
+                cons_cig = cons_vis = [None] * len(cols)
+
+            # ---------------------------------------------- 1. wind row
+            if have_wind:
+                st.markdown(G.wind_text_row(cols, cons_dir, cons_spd, cons_gst),
+                            unsafe_allow_html=True)
+                st.caption("Direction-speed-gust, averaged across "
+                           f"{', '.join(m.replace('_', ' ') for m in models)} · "
+                           "highlighted yellow ≥25kt, orange ≥30kt, red ≥35kt")
+
+            # ------------------------------------------ 2. speed & gust
+            if have_wind:
+                fig_w = go.Figure()
+                for lo, hi, c in ((25, 30, "#FFD400"), (30, 35, "#FF8A00"),
+                                  (35, 200, "#FF3B30")):
+                    fig_w.add_hrect(y0=lo, y1=hi, fillcolor=c, opacity=0.06,
+                                    line_width=0)
+                for m in models:
+                    dm = d[d["model"] == m].sort_values("valid_time")
+                    fig_w.add_trace(go.Scatter(
+                        x=dm["valid_time"], y=dm["wind_speed_kt"], mode="lines",
+                        line=dict(color=MODELS[m], width=1, dash="solid"),
+                        opacity=0.45, name=f"{m.replace('_', ' ')} sustained",
+                        showlegend=True))
+                    if "wind_gust_kt" in dm.columns and dm["wind_gust_kt"].notna().any():
+                        fig_w.add_trace(go.Scatter(
+                            x=dm["valid_time"], y=dm["wind_gust_kt"], mode="lines",
+                            line=dict(color=MODELS[m], width=1, dash="dot"),
+                            opacity=0.35, showlegend=False))
+                fig_w.add_trace(go.Scatter(
+                    x=cols, y=cons_spd, mode="lines",
+                    line=dict(color=INK, width=3),
+                    name="Consensus sustained (avg of all models)"))
+                if any(v is not None for v in cons_gst):
+                    fig_w.add_trace(go.Scatter(
+                        x=cols, y=cons_gst, mode="lines",
+                        line=dict(color="#FF8A00", width=2.5, dash="dash"),
+                        name="Consensus gust (avg of models w/ gust)"))
+                if mdf is not None and len(mdf) and "wind_speed_kt" in mdf.columns:
+                    fig_w.add_trace(go.Scatter(
+                        x=mdf["obs_time"], y=mdf["wind_speed_kt"], mode="markers",
+                        marker=dict(color=INK, size=6, symbol="circle"),
+                        name="Observed"))
+                    if "wind_gust_kt" in mdf.columns:
+                        fig_w.add_trace(go.Scatter(
+                            x=mdf["obs_time"], y=mdf["wind_gust_kt"], mode="markers",
+                            marker=dict(color="#FF8A00", size=6, symbol="triangle-up"),
+                            showlegend=False))
+                fig_w.add_vline(x=cycle, line=dict(color="#00E5FF", width=1))
+                fig_w.update_layout(
+                    height=WIND_H, autosize=True, paper_bgcolor=PANEL,
+                    plot_bgcolor="#05070B",
+                    font=dict(color=INK2, size=11, family="Roboto, Arial"),
+                    margin=dict(l=40, r=16, t=10, b=10),
+                    legend=dict(orientation="h", y=-0.22, bgcolor="rgba(0,0,0,0)",
+                                font=dict(size=9)))
+                fig_w.update_xaxes(gridcolor="#1A2233", zerolinecolor="#1A2233",
+                                   tickformat="%HZ", dtick=3 * 3600e3)
+                fig_w.update_yaxes(gridcolor="#1A2233", zerolinecolor="#1A2233",
+                                   title="kt", range=[0, speed_max])
+                st.plotly_chart(fig_w, use_container_width=True)
+
+            # -------------------------------------- 3. category bar
+            if have_cv:
+                st.markdown(G.consensus_category_row(cols, cons_cig, cons_vis),
+                            unsafe_allow_html=True)
+                st.caption("Category above comes from the averaged "
+                           "(consensus) ceiling & visibility trend below — "
+                           "the same bold line in each plot, not any single "
+                           "model.")
+
+            # -------------------------------------- 4. ceiling & vis
+            if have_cv:
+                fig_cv = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                                       row_heights=[0.5, 0.5], vertical_spacing=0.06)
+                for lo, hi, c in ((150, 500, CAT["LIFR"]), (500, 1000, CAT["IFR"]),
+                                  (1000, 3000, CAT["MVFR"]), (3000, 12000, CAT["VFR"])):
+                    fig_cv.add_hrect(y0=lo, y1=hi, fillcolor=c, opacity=0.07,
+                                     line_width=0, row=1, col=1)
+                for lo, hi, c in ((0, 1, CAT["LIFR"]), (1, 3, CAT["IFR"]),
+                                  (3, 5, CAT["MVFR"]), (5, 10, CAT["VFR"])):
+                    fig_cv.add_hrect(y0=lo, y1=hi, fillcolor=c, opacity=0.07,
+                                     line_width=0, row=2, col=1)
+                for m in models:
+                    dm = d[d["model"] == m].sort_values("valid_time")
+                    fig_cv.add_trace(go.Scatter(
+                        x=dm["valid_time"], y=dm["_cig_eff"], mode="lines",
+                        line=dict(color=MODELS[m], width=1), opacity=0.45,
+                        name=m.replace("_", " ")), row=1, col=1)
+                    fig_cv.add_trace(go.Scatter(
+                        x=dm["valid_time"], y=dm["vsby_sm"].clip(upper=10),
+                        mode="lines", line=dict(color=MODELS[m], width=1),
+                        opacity=0.45, showlegend=False), row=2, col=1)
+                fig_cv.add_trace(go.Scatter(
+                    x=cols, y=cons_cig, mode="lines",
+                    line=dict(color=INK, width=3),
+                    name="Consensus (avg) — feeds the category bar above"),
+                    row=1, col=1)
+                fig_cv.add_trace(go.Scatter(
+                    x=cols, y=[None if v is None else min(v, 10) for v in cons_vis],
+                    mode="lines", line=dict(color=INK, width=3),
+                    showlegend=False), row=2, col=1)
+                if mdf is not None and len(mdf) and "ceiling_ft" in mdf.columns:
+                    fig_cv.add_trace(go.Scatter(
+                        x=mdf["obs_time"], y=mdf["ceiling_ft"], mode="markers",
+                        marker=dict(color=INK, size=5, symbol="circle-open"),
+                        name="Observed"), row=1, col=1)
+                    if "vsby_sm" in mdf.columns:
+                        fig_cv.add_trace(go.Scatter(
+                            x=mdf["obs_time"], y=mdf["vsby_sm"], mode="markers",
+                            marker=dict(color=INK, size=5, symbol="circle-open"),
+                            showlegend=False), row=2, col=1)
+                fig_cv.add_vline(x=cycle, line=dict(color="#00E5FF", width=1))
+                fig_cv.update_yaxes(type="log", range=[2.2, 4.08], title="ceiling ft",
+                                    tickvals=[200, 500, 1000, 3000, 10000],
+                                    row=1, col=1)
+                fig_cv.update_yaxes(range=[0, 10], title="vis SM",
+                                    tickvals=[0, 1, 3, 5, 10], row=2, col=1)
+                for y, lab, c in ((260, "LIFR", CAT["LIFR"]), (700, "IFR", CAT["IFR"]),
+                                  (1700, "MVFR", CAT["MVFR"]), (6000, "VFR", CAT["VFR"])):
+                    fig_cv.add_annotation(x=1, xref="paper", y=__import__("math").log10(y),
+                                          text=lab, showarrow=False, xanchor="right",
+                                          font=dict(color=c, size=10), row=1, col=1)
+                fig_cv.update_layout(
+                    height=CIGVIS_H * 2, autosize=True, paper_bgcolor=PANEL,
+                    plot_bgcolor="#05070B",
+                    font=dict(color=INK2, size=11, family="Roboto, Arial"),
+                    margin=dict(l=40, r=16, t=10, b=30),
+                    legend=dict(orientation="h", y=-0.10, bgcolor="rgba(0,0,0,0)",
+                                font=dict(size=9)))
+                fig_cv.update_xaxes(gridcolor="#1A2233", tickformat="%HZ",
+                                    dtick=3 * 3600e3)
+                fig_cv.update_yaxes(gridcolor="#1A2233")
+                st.plotly_chart(fig_cv, use_container_width=True)
 
 with c_mos:
     for model, label, rows_fn in (("NBM", "NBM hourly", G.nbm_rows),

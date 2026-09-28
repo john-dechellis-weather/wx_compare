@@ -38,14 +38,31 @@ HEIGHT = int(os.environ.get("TIO_PAGE_HEIGHT", "860"))
 # brace for a direct deep link after a restart.
 TIO.ensure_tio_warmer(STATIC)
 
-st.markdown(
-    '<div style="font-size:16px;font-weight:700;color:#FFFFFF;'
-    'margin:0 0 2px 0">LARGE SCALE MAP</div>'
-    '<div style="font-size:11px;font-weight:700;color:#B8B8B8;'
-    'margin:0 0 8px 0">tomorrow.io weather tiles &middot; JetBlue '
-    'network (ex-Europe) and Canadian alternates &middot; '
-    'now and forecast steps</div>',
-    unsafe_allow_html=True)
+# Two views behind one switch (28 Sep). MODEL FORECAST is the default:
+# a CONUS frame of RRFS / HRRR / NAM nest, hour by hour on a slider,
+# with a layer menu (reflectivity, ceiling, visibility, lightning);
+# see core/model_map.py. TOMORROW.IO TILES is the warmed tile map
+# below, unchanged - its warmer still starts from Homepage either way.
+_h1, _h2 = st.columns([2, 1.6])
+with _h1:
+    st.markdown(
+        '<div style="font-size:16px;font-weight:700;color:#FFFFFF;'
+        'margin:0 0 2px 0">LARGE SCALE MAP</div>'
+        '<div style="font-size:11px;font-weight:700;color:#B8B8B8;'
+        'margin:0 0 8px 0">model forecast: RRFS &middot; HRRR &middot; NAM '
+        'nest, hour by hour &nbsp;|&nbsp; tomorrow.io tiles: JetBlue '
+        'network (ex-Europe) and Canadian alternates</div>',
+        unsafe_allow_html=True)
+with _h2:
+    view = st.radio("View", ["Model forecast", "tomorrow.io tiles"],
+                    horizontal=True, key="lsm_view",
+                    label_visibility="collapsed")
+
+if view == "Model forecast":
+    from core import model_map as _MM
+
+    _MM.render()
+    st.stop()
 
 
 def _origin() -> str:
