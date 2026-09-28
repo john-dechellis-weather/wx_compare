@@ -1126,7 +1126,16 @@ def _scope_pod():
                                    "border": f"1px solid {EDGE}",
                                    "fontSize": "12px"}},
                 parameters={"clearColor": [0, 0, 0, 1]},
-              ), use_container_width=True, height=SCOPE_H)
+              # A fixed key (28 Sep): without one, Streamlit hashes the
+              # chart's own args to build the frontend component's key,
+              # and a new radar frame every 2 s changes that hash. A
+              # changed key tears the component down and remounts it -
+              # a fresh WebGL context and a reloaded basemap, which is
+              # the grey flash the loop caused. A stable key keeps the
+              # same component instance across fragment reruns, so
+              # only the changed layers update.
+              ), use_container_width=True, height=SCOPE_H,
+                key=f"scope_pydeck_{icao}")
             except Exception as _de:
                 st.error(f"Scope did not draw: {type(_de).__name__}: "
                          f"{str(_de)[:200]}")
@@ -1148,11 +1157,18 @@ def _scope_pod():
 # Radar loop on by default (28 Sep): the pod is a 2-second fragment
 # that steps through the last hour's Level III frames. Off, it draws
 # once and the time slider picks the frame - and pan/zoom stick.
+#
+# The pod is a fragment either way (28 Sep, slider fix): dragging the
+# radar-time slider is a widget change *inside* the pod, and a widget
+# inside a plain (non-fragment) block reruns the whole page - every
+# METAR/TAF fetch, every model comparison - just to swap one frame.
+# Wrapped in a fragment with no run_every, that widget change reruns
+# only the pod. run_every="2s" is added on top of that when looping.
 _loop_on = bool(st.session_state.get("sf_l3_loop", True))
 from core import airport_scope as AS   # row 2 uses AS.distance_nm too
 with c_rad:
-    if _loop_on and coords:
-        st.fragment(run_every="2s")(_scope_pod)()
+    if coords:
+        st.fragment(run_every="2s" if _loop_on else None)(_scope_pod)()
     else:
         _scope_pod()
 
