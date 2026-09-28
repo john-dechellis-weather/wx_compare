@@ -1,8 +1,9 @@
 """BlueMet entry point and navigation router.
 
-Declares the pages via st.navigation (hidden) and draws the top
-navigation bar: big buttons for the main pages, a More menu for the
-rest. The tool pages live in pages/ and are referenced here by path.
+Declares the sidebar's grouped navigation via st.navigation; the
+tool pages live in pages/ and are referenced here by path, with
+sidebar titles set explicitly (filename prefixes no longer control
+order or labels).
 """
 
 import time
@@ -33,7 +34,7 @@ if "_cache_cleanup_done" not in st.session_state:
 st.set_page_config(
     page_title="BlueMet",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 from retro_theme import apply_retro_theme
@@ -198,6 +199,22 @@ except Exception as _exc:
     _warm_notes.append(f"Echo-top tag warmer FAILED: "
                        f"{type(_exc).__name__}: {_exc}")
 
+# tomorrow.io tiles for the Large Scale Map (core/tio_map.py): the
+# fixed tile set for 125W-50W / 52N-5S, stitched into WebPs under
+# static/. Keeps the API key server-side and the spend fixed (about
+# 6,900 requests/day of the 10,000 plan; TIO_DAILY_CAP stops it at
+# 9,000). I/O-bound. TIO_WARMER=off stops it.
+try:
+    from core.tio_map import ensure_tio_warmer
+
+    if ensure_tio_warmer(_static_mrms):
+        _warm_notes.append("tomorrow.io warmer started (Large Scale Map)")
+    else:
+        _warm_notes.append("tomorrow.io warmer off (TIO_WARMER=off)")
+except Exception as _exc:
+    _warm_notes.append(f"tomorrow.io warmer FAILED: "
+                       f"{type(_exc).__name__}: {_exc}")
+
 # The CAM-overlay and radar warmers were started here for the N90
 # Airspace page, which is no longer in the navigation. Both imports
 # are gone rather than merely disabled: an import of core.radar_l2
@@ -209,11 +226,10 @@ except Exception as _exc:
 
 
 def _warmer_status():
-    """Warmer health, in a collapsed expander under the top bar's
-    More menu (the sidebar is gone, 23 Sep).
+    """Warmer health, in a collapsed sidebar expander on every page.
     This used to be the Home page's only content; the Home page is
     gone (login lands on Station Forecast), the diagnostics are not."""
-    with st.expander("Background warmers", expanded=False):
+    with st.popover("Warmers", help="Background warmer status"):
         for _n in _warm_notes:
             (st.error if "FAILED" in _n else st.caption)(_n)
         st.caption(
@@ -265,13 +281,19 @@ def _warmer_status():
                 st.caption("level III: " + _ln)
         except Exception:
             pass
+        try:
+            from core import tio_map as _tio
+            _u = _tio.usage(Path(__file__).resolve().parent / "static")
+            st.caption(f"tomorrow.io: {_u['count']}/{_tio.DAILY_CAP} "
+                       "requests today")
+            for _ln in _tio.log_tail(
+                    Path(__file__).resolve().parent / "static", 2):
+                st.caption("tomorrow.io: " + _ln)
+        except Exception:
+            pass
 
 
 PAGES = {
-    # Product selection, where the login lands (24 Sep).
-    "Home": [
-        st.Page("pages/0_Home.py", title="Home", default=True),
-    ],
     "Forecast Tools": [
         st.Page("pages/9_HiRes_CAMs.py",
                 title="Hi-Res CAMs"),
@@ -281,17 +303,17 @@ PAGES = {
         # Flight Conditions: both plots, the NBM and LAMP grids, the
         # METAR/TAF, a radar snapshot and the JetBlue movement board
         # for one station on one page.
+        # DEFAULT: the login lands here. There is no Home page.
         st.Page("pages/2_Station_Forecast.py",
-                title="Station Forecast"),
+                title="Station Forecast", default=True),
         st.Page("pages/4_MOS_Tables.py",
                 title="MOS Tables"),
     ],
-    "Situational Awareness Products": [
+    "Situational Awareness": [
         st.Page("pages/3_JBU_Weather_Map.py",
                 title="JBU Weather Map CONUS"),
-        # Full-size CONUS map; also the Aguacero API test bench (23 Sep).
-        st.Page("pages/Large_Scale_Map_of_North_America.py",
-                title="Large Scale Map of North America"),
+        st.Page("pages/15_Large_Scale_Map.py",
+                title="Large Scale Map"),
         # Station Quick View removed from navigation 21 Sep; the file
         # stays in pages/ unlisted. Its airport scope lives on in
         # Station Forecast, so the surface warmer above still runs.
@@ -313,7 +335,7 @@ PAGES = {
         st.Page("pages/14_L3_Radar_N90.py",
                 title="Level III Radar"),
     ],
-    "Archive Flight Conditions": [
+    "Archive": [
         st.Page("pages/5_Archive_Satellite_Position.py",
                 title="Archive Satellite"),
         st.Page("pages/6_Archive_Radar_Position.py",
@@ -321,92 +343,18 @@ PAGES = {
     ],
 }
 
-# ---------------------------------------------------------------------------
-# Top navigation (23 Sep): big buttons across the top instead of the
-# sidebar list, so the pages get the full width. The main pages are
-# buttons; the Experimental and Archive pages sit under "More".
-# ---------------------------------------------------------------------------
-# (page title as declared in PAGES, button label)
-_TOP_BUTTONS = [
-    ("Home", "Home"),
-    ("Station Forecast", "Station Forecast"),
-    ("JBU Weather Map CONUS", "JBU Weather Map"),
-    ("Large Scale Map of North America", "Large Scale Map"),
-    ("Hi-Res CAMs", "Hi-Res CAMs"),
-    ("REFS Ensemble", "REFS Ensemble"),
-    ("MOS Tables", "MOS Tables"),
-]
-_MORE_GROUPS = ("Experimental", "Archive Flight Conditions")
-
-_NAV_CSS = """
-<style>
-.st-key-bm_topnav { align-items:center; gap:8px !important;
-    padding:6px 0 10px 0; border-bottom:1px solid #2a2d33;
-    margin-bottom:10px; }
-.st-key-bm_topnav .bm-word { font:700 30px Roboto,sans-serif !important;
-    color:#fff !important; -webkit-text-fill-color:#fff !important;
-    margin-right:18px; white-space:nowrap; }
-.st-key-bm_topnav [data-testid="stPageLink"] a[href],
-.st-key-bm_topnav [data-testid="stPageLink"] a[href] * { text-decoration:none !important; }
-.st-key-bm_topnav [data-testid="stPageLink"] a,
-.st-key-bm_topnav .bm-active,
-.st-key-bm_topnav [data-testid="stPopover"] button {
-    display:flex; align-items:center; justify-content:center;
-    min-height:48px; padding:0 14px !important; border-radius:3px;
-    background:#111317 !important; border:2px solid #3a3f47 !important;
-    font:700 17px Roboto,sans-serif !important; color:#fff !important;
-    white-space:nowrap; text-decoration:none; }
-.st-key-bm_topnav [data-testid="stPageLink"] a:hover,
-.st-key-bm_topnav [data-testid="stPopover"] button:hover {
-    border-color:#22d3ee !important; }
-.st-key-bm_topnav [data-testid="stPageLink"] a:focus-visible {
-    outline:2px solid #22d3ee; outline-offset:2px; }
-.st-key-bm_topnav [data-testid="stPageLink"] p,
-.st-key-bm_topnav [data-testid="stPopover"] button p {
-    font:700 17px Roboto,sans-serif !important; color:#fff !important; margin:0; }
-/* Page links inside the More menu: white, no underline. */
-[data-testid="stPopoverBody"] [data-testid="stPageLink"] a,
-[data-testid="stPopoverBody"] [data-testid="stPageLink"] a * {
-    color:#fff !important; -webkit-text-fill-color:#fff !important;
-    text-decoration:none !important; font-weight:700 !important; }
-/* No sidebar anywhere (23 Sep): page settings are popovers under
-   each title, the warmer status is under More. */
-section[data-testid="stSidebar"],
-[data-testid="stSidebarCollapsedControl"],
-[data-testid="stExpandSidebarButton"],
-[data-testid="stSidebarCollapseButton"] { display:none !important; }
-.st-key-bm_topnav .bm-active { background:#0e2a31 !important;
-    border-color:#22d3ee !important; }
-</style>
-"""
-
-
-def _top_nav(current):
-    """Wordmark, one big button per main page (the open page in cyan),
-    and a More menu for the rest."""
-    st.markdown(_NAV_CSS, unsafe_allow_html=True)
-    by_title = {p.title: p for ps in PAGES.values() for p in ps}
-    with st.container(horizontal=True, key="bm_topnav",
-                      vertical_alignment="center"):
-        st.markdown('<div class="bm-word">BlueMet</div>',
-                    unsafe_allow_html=True)
-        for _title, _label in _TOP_BUTTONS:
-            _pg = by_title.get(_title)
-            if _pg is None:
-                continue
-            if current is not None and _pg.url_path == current.url_path:
-                st.markdown(f'<div class="bm-active">{_label}</div>',
-                            unsafe_allow_html=True)
-            else:
-                st.page_link(_pg, label=_label)
-        with st.popover("More"):
-            for _grp in _MORE_GROUPS:
-                st.caption(_grp)
-                for _pg in PAGES.get(_grp, []):
-                    st.page_link(_pg, label=_pg.title)
-            st.divider()
-            _warmer_status()
-
+st.markdown(
+    """
+    <style>
+    [data-testid="stNavSectionHeader"] {
+        font-weight: bold !important;
+        color: #FFFFFF !important;
+        font-size: 13px !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # ORDER MATTERS. st.navigation must run BEFORE the auth gate.
 #
@@ -422,44 +370,90 @@ def _top_nav(current):
 # so nothing is reachable without the password. Every page also
 # calls check_password itself, so this is belt-and-braces rather
 # than the only guard.
-# ---------------------------------------------------------------------------
-# Text size (24 Sep): Smaller / Medium (default) / Large, chosen on the
-# Home page, moves BODY text by 2 pt on every page - values, labels,
-# descriptions, table cells. Titles (h1-h3, the nav, class-styled
-# headings) and box sizes do not move. Medium adds nothing, so the
-# default look is exactly what it was.
-#
-# How: the retro stylesheet pins p/div/span/label to 13px !important
-# and the dark theme sets table cells and inputs to 12px. At Smaller
-# or Large those same element rules are restated 2 pt down or up,
-# one step more specific (html p ...) so they win, but still below any
-# class rule, so titles, the nav and the pods keep their size.
-# --bm-dt carries the offset for classes that opt in (Home page text).
-# ---------------------------------------------------------------------------
-_TEXT_DT = {"Smaller": -2, "Medium (default)": 0, "Large": 2}
-
-
-def _text_size_css():
-    dt = _TEXT_DT.get(st.session_state.get("bm_text_size",
-                                           "Medium (default)"), 0)
-    css = f":root{{--bm-dt:{dt}pt}}"
-    if dt:
-        # "html x" is one step more specific than the retro rule, so
-        # it wins even though each page re-injects that stylesheet
-        # after this one; still below any class rule (titles, nav).
-        css += (f"html p,html div,html span,html label,html li{{"
-                f"font-size:calc(13px + {dt}pt) !important}}"
-                f"html td,html th,html input,html textarea{{"
-                f"font-size:calc(12px + {dt}pt) !important}}")
-    st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
-
-
+# TOP NAVIGATION (23 Sep). The sidebar is gone; the pages are a tab
+# bar under the header: the wordmark, then every page as a tab with
+# its group name in small grey type before the group, the current
+# page underlined in cyan. Streamlit's own routing is kept (the
+# navigation is declared with position="hidden" and the tabs are
+# st.page_link), so nothing about the pages changes.
 nav = st.navigation(PAGES, position="hidden")
 
 check_password()
 
-_top_nav(nav)
 
-_text_size_css()
+def _slug(title: str) -> str:
+    return "".join(c if c.isalnum() else "_" for c in title.lower())
+
+
+def _top_nav(current) -> None:
+    _cur = _slug(current.title) if current is not None else ""
+    css = [
+        # the sidebar and its toggle
+        '[data-testid="stSidebar"],[data-testid="stSidebarCollapsedControl"],'
+        '[data-testid="collapsedControl"]{display:none !important}',
+        # the bar
+        '.st-key-topnav{background:#0A0A0A;border-bottom:1px solid #333;'
+        'margin:-8px 0 14px 0;padding:0 6px}',
+        '.st-key-topnav [data-testid="stHorizontalBlock"]{gap:0 !important;'
+        'align-items:stretch !important;flex-wrap:wrap !important}',
+        # every item takes its natural width: no equal-share columns,
+        # no clipping of the tab text
+        '.st-key-topnav [data-testid="stHorizontalBlock"] > div,'
+        '.st-key-topnav [data-testid="stElementContainer"],'
+        '.st-key-topnav [data-testid="stVerticalBlock"],'
+        '.st-key-topnav [data-testid="stVerticalBlockBorderWrapper"]{'
+        'flex:0 0 auto !important;width:auto !important;min-width:0 !important}',
+        # a tab
+        'div.st-key-topnav a[data-testid="stPageLink-NavLink"]{padding:11px 9px !important;display:inline-block;'
+        'border-bottom:3px solid transparent !important;border-radius:0 !important;'
+        'background:transparent !important;white-space:nowrap;'
+        'text-decoration:none !important}',
+        'div.st-key-topnav a[data-testid="stPageLink-NavLink"], div.st-key-topnav a[data-testid="stPageLink-NavLink"] *{'
+        'color:#B8B8B8 !important;-webkit-text-fill-color:#B8B8B8 !important;'
+        'font-family:Barlow,"DejaVu Sans",sans-serif !important;'
+        'font-size:13px !important;font-weight:600 !important;'
+        'text-decoration:none !important}',
+        'div.st-key-topnav a[data-testid="stPageLink-NavLink"]:hover, div.st-key-topnav a[data-testid="stPageLink-NavLink"]:hover *{'
+        'color:#FFFFFF !important;-webkit-text-fill-color:#FFFFFF !important}',
+        # the current page
+        f'div.st-key-nav_{_cur} a[data-testid="stPageLink-NavLink"]{{border-bottom:3px solid #00E5FF !important}}',
+        f'div.st-key-nav_{_cur} a[data-testid="stPageLink-NavLink"], div.st-key-nav_{_cur} a[data-testid="stPageLink-NavLink"] *{{'
+        'color:#FFFFFF !important;-webkit-text-fill-color:#FFFFFF !important}',
+        # group labels and the wordmark
+        'div.st-key-topnav div.bm-grp{font-family:Barlow,"DejaVu Sans",sans-serif !important;'
+        'font-size:10px !important;font-weight:700 !important;color:#6E6E6E !important;'
+        '-webkit-text-fill-color:#6E6E6E !important;letter-spacing:1px;'
+        'text-transform:uppercase;padding:16px 2px 0 10px;white-space:nowrap}',
+        'div.st-key-topnav div.bm-brand{font-family:Barlow,"DejaVu Sans",sans-serif !important;'
+        'font-size:22px !important;font-weight:700 !important;color:#FFFFFF !important;'
+        '-webkit-text-fill-color:#FFFFFF !important;letter-spacing:1px;'
+        'padding:8px 14px 0 6px;white-space:nowrap}',
+        'div.st-key-topnav div.bm-brand span{color:#4DA3FF !important;'
+        '-webkit-text-fill-color:#4DA3FF !important;font-size:22px !important}',
+        # the page body starts closer to the bar
+        '.stApp .block-container{padding-top:2.6rem !important}',
+        '.st-key-nav_warmers{margin-left:14px;padding-top:6px}',
+        '.st-key-nav_warmers button{background:transparent !important;'
+        'border:1px solid #333 !important;font-size:11px !important;'
+        'padding:2px 10px !important}',
+    ]
+    st.markdown("<style>" + "".join(css) + "</style>", unsafe_allow_html=True)
+    with st.container(key="topnav"):
+        with st.container(horizontal=True, horizontal_alignment="left",
+                          vertical_alignment="bottom"):
+            st.markdown('<div class="bm-brand">BLUE<span>MET</span></div>',
+                        unsafe_allow_html=True)
+            for group, pages in PAGES.items():
+                st.markdown(f'<div class="bm-grp">{group}</div>',
+                            unsafe_allow_html=True)
+                for pg in pages:
+                    with st.container(key=f"nav_{_slug(pg.title)}"):
+                        st.page_link(pg, label=pg.title)
+            # warmer status, at the end of the bar
+            with st.container(key="nav_warmers"):
+                _warmer_status()
+
+
+_top_nav(nav)
 
 nav.run()

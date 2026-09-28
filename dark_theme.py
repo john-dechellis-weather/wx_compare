@@ -43,11 +43,8 @@ RED       = "#FF3B30"
 JBU_BLUE  = "#4DA3FF"
 
 # Type scale. Body is the floor; headings step up from it.
-# Body and table text follow the site Text size (Home page, 24 Sep):
-# --bm-dt is 0pt at Medium, -2pt Smaller, +2pt Large, set by
-# Homepage.py. Titles (FS_H1-3) do not follow it.
-FS_BODY   = "calc(12px + var(--bm-dt, 0pt))"
-FS_TABLE  = "calc(12px + var(--bm-dt, 0pt))"
+FS_BODY   = "12px"
+FS_TABLE  = "12px"
 FS_H3     = "16px"
 FS_H2     = "20px"
 FS_H1     = "26px"
@@ -428,7 +425,7 @@ html, body, .stApp,
    of the page for exactly that long - no JavaScript, nothing a page
    has to call. */
 .stApp:has([data-testid="stStatusWidget"])::before {{
-  content: "Loading \2026  refresh the page after 1 min if it does not render";
+  content: "Loading ... refresh the page after 1 min if it does not render";
   position: fixed;
   top: 0; left: 0; right: 0;
   z-index: 999999;

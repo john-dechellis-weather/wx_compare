@@ -46,21 +46,11 @@ VIEW_ZOOM = float(os.environ.get("BLUEMET_LOGIN_ZOOM", "3.3"))
 # Map height: 75% of the window height left below the board, never
 # below MAP_MIN_PX. MAP_TOP_PX is roughly what sits above the map
 # (wordmark, chips, rules, page padding).
-MAP_FILL = float(os.environ.get("BLUEMET_LOGIN_MAP_FILL", "0.75"))
-MAP_TOP_PX = int(os.environ.get("BLUEMET_LOGIN_MAP_TOP_PX", "560"))
-MAP_MIN_PX = int(os.environ.get("BLUEMET_LOGIN_MAP_MIN_PX", "380"))
-
-# SCALE (23 Sep). The layout as drawn at SCALE_REF_PX wide is the
-# minimum; on a wider window every size grows in proportion to the
-# window width. _s(px) is that rule for one size: px at or below the
-# reference width, px * width / SCALE_REF_PX above it. Font sizes are
-# passed as --fs:<size> and applied by one rule in render().
-SCALE_REF_PX = int(os.environ.get("BLUEMET_LOGIN_SCALE_REF_PX", "1440"))
-
-
-def _s(px: float) -> str:
-    return f"max({px:g}px,{px * 100.0 / SCALE_REF_PX:.4f}vw)"
-
+# 25% larger than before (23 Sep): 0.94 of the height left under the
+# board, floor 475 px. The map follows the window; width is the column.
+MAP_FILL = float(os.environ.get("BLUEMET_LOGIN_MAP_FILL", "0.94"))
+MAP_TOP_PX = int(os.environ.get("BLUEMET_LOGIN_MAP_TOP_PX", "470"))
+MAP_MIN_PX = int(os.environ.get("BLUEMET_LOGIN_MAP_MIN_PX", "475"))
 
 MAP_STYLE = os.environ.get(
     "BLUEMET_MAP_STYLE",
@@ -477,23 +467,22 @@ def _deck(layers) -> pdk.Deck:
 
 def _chips(statuses) -> str:
     """Identifier, colour bar, and the ONE value that set the colour.
-    The full reason is still on hover. Sizes follow the window (_s)."""
+    The full reason is still on hover."""
     cells = "".join(
         f'<div title="{s.icao}: {s.reason}" '
-        f'style="flex:0 0 auto;min-width:{_s(92)};background:{T.PANEL};'
-        f'border:1px solid {T.RULE};border-radius:3px;'
-        f'padding:{_s(10)} {_s(12)};cursor:help">'
-        f'<div style="color:{T.TEXT};--fs:{_s(17)};font-weight:700;'
+        f'style="flex:0 0 auto;min-width:92px;background:{T.PANEL};'
+        f'border:1px solid {T.RULE};border-radius:3px;padding:10px 12px;'
+        f'cursor:help">'
+        f'<div style="color:{T.TEXT};font-size:17px;font-weight:700;'
         f'letter-spacing:.5px">{s.icao}</div>'
-        f'<div style="height:{_s(6)};margin:{_s(10)} 0 {_s(6)} 0;'
-        f'background:{s.color}"></div>'
+        f'<div style="height:6px;margin:10px 0 6px 0;background:{s.color}">'
+        f'</div>'
         f'<div style="color:{s.color};-webkit-text-fill-color:{s.color};'
-        f'--fs:{_s(12)};font-weight:700;white-space:nowrap">'
+        f'font-size:12px;font-weight:700;white-space:nowrap">'
         f'{getattr(s, "label", "") or s.name.upper()}</div>'
         f'</div>'
         for s in statuses)
-    return (f'<div style="display:flex;gap:{_s(9)};flex-wrap:wrap">'
-            f'{cells}</div>')
+    return f'<div style="display:flex;gap:9px;flex-wrap:wrap">{cells}</div>'
 
 
 def render() -> str | None:
@@ -502,20 +491,8 @@ def render() -> str | None:
     st.markdown(
         "<style>"
         '[data-testid="stSidebar"]{display:none}'
-        # The retro stylesheet pins every div/span to 13px Times with
-        # !important; the board's sizes are inline !important so they
-        # win, and the face is Roboto like the rest of Ops Black.
-        '.stApp p,.stApp div,.stApp span,.stApp label,.stApp input{'
-        'font-family:Roboto,Arial,sans-serif !important}'
-        # Sizes ride in a --fs custom property (inline !important is
-        # dropped by the markdown renderer); this rule applies them
-        # and outranks the retro 13px rule.
-        '.stApp [style*="--fs"]{font-size:var(--fs) !important}'
         # ~16 characters wide, as the old login form was.
-        f'[data-testid="stTextInput"]{{max-width:{_s(200)} !important;}}'
-        f'[data-testid="stTextInput"] label p{{font-size:{_s(13)} !important;}}'
-        f'[data-testid="stTextInput"] input{{font-size:{_s(16)} !important;'
-        f'height:{_s(40)} !important;}}'
+        '[data-testid="stTextInput"]{max-width:200px !important;}'
         '[data-testid="InputInstructions"]{display:none !important;}'
         # The eye toggle draws as the word "visibility" without the
         # icon font, which looks like stray text in the box.
@@ -529,7 +506,7 @@ def render() -> str | None:
         '[data-testid="stDeckGlJsonChart"] #deckgl-wrapper,'
         '[data-testid="stDeckGlJsonChart"] .mapboxgl-map,'
         '[data-testid="stDeckGlJsonChart"] .maplibregl-map{'
-        f"height:max({MAP_MIN_PX}px,calc((100vh - {_s(MAP_TOP_PX)}) * "
+        f"height:max({MAP_MIN_PX}px,calc((100vh - {MAP_TOP_PX}px) * "
         f"{MAP_FILL})) !important;}}"
         "</style>", unsafe_allow_html=True)
 
@@ -544,50 +521,29 @@ def render() -> str | None:
 
     now = _dt.datetime.now(_dt.timezone.utc)
 
-    # "Login Page", centred at the top in big bold white (23 Sep).
-    st.markdown(
-        f'<div style="text-align:center;--fs:{_s(32)};font-weight:700;'
-        f'color:#FFFFFF;-webkit-text-fill-color:#FFFFFF;line-height:1.1;'
-        f'margin:0 0 {_s(10)} 0">Login Page</div>',
-        unsafe_allow_html=True)
+    a, b = st.columns([3, 1])
+    with a:
+        st.markdown(
+            f'<div style="font-size:88px;font-weight:700;color:{T.TEXT};'
+            f'letter-spacing:2px;line-height:1.0">BLUEMET</div>'
+            f'<div style="font-size:13px;color:{T.TEXT_2};margin-top:6px">'
+            f'JetBlue System Operations weather</div>',
+            unsafe_allow_html=True)
+    with b:
+        # The Zulu/Eastern clock is the fixed one every page gets from
+        # dark_theme.apply_dark_theme(); nothing else up here.
+        st.markdown("", unsafe_allow_html=True)
 
-    st.markdown(
-        f'<div style="--fs:{_s(56)};font-weight:700;color:{T.TEXT};'
-        f'letter-spacing:2px;line-height:1.0">BLUEMET</div>'
-        f'<div style="--fs:{_s(13)};color:{T.TEXT_2};margin-top:{_s(6)}">'
-        f'JetBlue System Operations weather</div>',
-        unsafe_allow_html=True)
-    # Date and time, top right, twice the size of the small clock
-    # every other page carries (24 Sep); that one is hidden here.
-    try:
-        from zoneinfo import ZoneInfo as _ZI
-        _et = now.astimezone(_ZI("America/New_York"))
-        _et_txt = f" &middot; {_et:%-I:%M %p} {_et:%Z}"
-    except Exception:
-        _et_txt = ""
-    _d = now.day
-    _sfx = ("th" if 11 <= _d % 100 <= 13
-            else {1: "st", 2: "nd", 3: "rd"}.get(_d % 10, "th"))
-    st.markdown(
-        '<style>.stApp div[style*="999998"]{display:none !important}'
-        '</style>'
-        f'<div style="position:fixed;top:52px;right:22px;z-index:999999;'
-        f'text-align:right;--fs:{_s(26)};font-weight:700;line-height:1.25;'
-        f'color:#FFFFFF;-webkit-text-fill-color:#FFFFFF;white-space:nowrap">'
-        f'{now:%H:%M}Z{_et_txt}<br>{now:%B} {_d}{_sfx}, {now:%Y}</div>',
-        unsafe_allow_html=True)
-
-    st.markdown(f'<hr style="border-color:{T.RULE};'
-                f'margin:{_s(18)} 0 {_s(20)} 0">', unsafe_allow_html=True)
+    st.markdown(f'<hr style="border-color:{T.RULE};margin:18px 0 20px 0">',
+                unsafe_allow_html=True)
 
     statuses = S.board(S.LOGIN_STATIONS, _metars())
     st.markdown(
-        f'<div style="color:{T.TEXT_2};--fs:{_s(12)};font-weight:700;'
-        f'margin-bottom:{_s(8)}">Network conditions</div>' + _chips(statuses),
+        f'<div style="color:{T.TEXT_2};font-size:12px;font-weight:700;'
+        f'margin-bottom:8px">Network conditions</div>' + _chips(statuses),
         unsafe_allow_html=True)
 
-    st.markdown(f'<hr style="border-color:{T.RULE};'
-                f'margin:{_s(24)} 0 {_s(8)} 0">',
+    st.markdown(f'<hr style="border-color:{T.RULE};margin:24px 0 8px 0">',
                 unsafe_allow_html=True)
 
     # Narrow sign-in column; the map takes the rest of the width.
@@ -595,17 +551,16 @@ def render() -> str | None:
 
     with left:
         st.markdown(
-            f'<div style="--fs:{_s(22)};font-weight:700;color:{T.TEXT};'
-            f'margin-top:{_s(16)}">Sign in to continue</div>'
-            f'<div style="--fs:{_s(13)};color:{T.TEXT_2};'
-            f'margin:{_s(8)} 0 {_s(14)} 0">This site is for authorized users '
+            f'<div style="font-size:22px;font-weight:700;color:{T.TEXT};'
+            f'margin-top:16px">Sign in to continue</div>'
+            f'<div style="font-size:13px;color:{T.TEXT_2};'
+            f'margin:8px 0 14px 0">This site is for authorized users '
             f'only.</div>', unsafe_allow_html=True)
         pw = st.text_input("Password", type="password",
                            key="password_input")
         st.markdown(
-            f'<div style="color:{T.MUTED};--fs:{_s(12)};'
-            f'margin-top:{_s(18)}">bluemet.org</div>',
-            unsafe_allow_html=True)
+            f'<div style="color:{T.MUTED};font-size:12px;margin-top:18px">'
+            f'bluemet.org</div>', unsafe_allow_html=True)
 
     with right:
         # MRMS and the live fleet are OFF on the login map (21 Sep):
@@ -638,8 +593,20 @@ def render() -> str | None:
             layers += _station_layers(statuses)
         if os.environ.get("BLUEMET_LOGIN_FLEET", "off").lower() == "on":
             layers += _fleet_layers()
-        st.markdown('<div style="margin-top:16px"></div>',
-                    unsafe_allow_html=True)
+        # Title and subtitle above the map. Selectors carry .stApp so
+        # they out-rank the theme's per-div colour rule.
+        st.markdown(
+            '<style>'
+            '.stApp div.bm-map-title{color:#FFD400 !important;'
+            '-webkit-text-fill-color:#FFD400 !important;font-size:14pt !important;'
+            'font-weight:700 !important;letter-spacing:.5px;margin:34px 0 0 0}'
+            '.stApp div.bm-map-sub{color:#FFFFFF !important;'
+            '-webkit-text-fill-color:#FFFFFF !important;font-size:10pt !important;'
+            'font-weight:700 !important;margin:2px 0 10px 0}'
+            '</style>'
+            '<div class="bm-map-title">SPC DAY-1 CONVECTIVE OUTLOOK</div>'
+            '<div class="bm-map-sub">ARTCC centers affected</div>',
+            unsafe_allow_html=True)
         st.pydeck_chart(_deck(layers), use_container_width=True,
                         height=MAP_MIN_PX)
 
