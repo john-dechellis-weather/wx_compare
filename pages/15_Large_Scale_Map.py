@@ -40,7 +40,7 @@ TIO.ensure_tio_warmer(STATIC)
 
 # Two views behind one switch (28 Sep). TOMORROW.IO (default): the
 # warmed tile map - five layers that stack, an hourly TIME slider to
-# +48 h then 3-hourly to +72 h, one model at a time (FOCUS / NextGen
+# +24 h then 3-hourly to +72 h, one model at a time (FOCUS / NextGen
 # once TIO_MODELS names them; see core/tio_map.py). NOAA MODELS: a
 # CONUS frame of RRFS / HRRR / NAM nest from core/model_map.py - the
 # lightning source, since tomorrow.io tiles are spent on the other
@@ -51,9 +51,9 @@ with _h1:
         '<div style="font-size:16px;font-weight:700;color:#FFFFFF;'
         'margin:0 0 2px 0">LARGE SCALE MAP</div>'
         '<div style="font-size:11px;font-weight:700;color:#B8B8B8;'
-        'margin:0 0 8px 0">tomorrow.io: precipitation &middot; ceiling '
+        'margin:0 0 8px 0">tomorrow.io: reflectivity &middot; ceiling '
         '&middot; visibility &middot; wind speed &middot; wind gust, hourly '
-        'to +48 h, 3-hourly to +72 h &nbsp;|&nbsp; NOAA models: RRFS '
+        'to +24 h, 3-hourly to +72 h &nbsp;|&nbsp; NOAA models: RRFS '
         '&middot; HRRR &middot; NAM nest incl. lightning</div>',
         unsafe_allow_html=True)
 with _h2:
@@ -68,7 +68,7 @@ if view == "NOAA models":
     st.stop()
 
 # Model switch: a page control, not a per-viewer toggle, because the
-# warmer serves ONE model and a switch re-warms every frame (~1,760
+# warmer serves ONE model and a switch re-warms every frame (~1,280
 # requests). Shown only when TIO_MODELS names more than one.
 _active = TIO.active_model(STATIC)
 if len(TIO.MODELS) > 1:

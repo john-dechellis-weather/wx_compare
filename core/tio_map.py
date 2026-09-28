@@ -15,19 +15,22 @@ quota. So a warmer thread fetches a FIXED tile set for the domain,
 stitches each set into one WebP under static/, and the page shows
 those. The key never leaves the server and the spend is predictable.
 
-28 SEP: five fields, an hourly timeline to +48 h then 3-hourly to
-+72 h (56 forecast steps), layers that stack, and ONE model at a
+28 SEP: five fields, an hourly timeline to +24 h then 3-hourly to
++72 h (40 forecast steps), layers that stack, and ONE model at a
 time (FOCUS / NextGen, see MODELS). Budget against the 9,000/day cap:
 
-    forecast pass   zoom 3, 6 tiles x 56 steps x 5 fields = 1,680,
-                    every TIO_FCST_MIN (360) min             -> 6,720/day
+    forecast pass   zoom 3, 6 tiles x 40 steps x 5 fields = 1,200,
+                    every TIO_FCST_MIN (360) min             -> 4,800/day
     "now" frame     zoom 4, 16 tiles x 5 fields,
                     every TIO_NOW_MIN (60) min               -> 1,920/day
                                                                 ---------
-                                                                 8,640/day
+                                                                 6,720/day
+
+precipitationReflectivity is one of tomorrow.io's "advanced weather
+layers" - served by the tile endpoint, not in the public field list.
 
 Switching model re-warms everything for the new model (one forecast
-pass plus a now pass, ~1,760 requests), so the switch is a page
+pass plus a now pass, ~1,280 requests), so the switch is a page
 control, not a per-viewer toggle, and the cap still governs it.
 TIO_DAILY_CAP is a hard stop: the warmer counts every request in
 static/tio_usage.json by UTC day and skips a pass rather than cross it.
@@ -36,7 +39,7 @@ Env
     TOMORROWIO_API_KEY   (or TOMORROW_API_KEY)  the key
     TIO_WARMER=off       stop the warmer without a deploy
     TIO_FIELDS           comma list; default the five below
-    TIO_FCST_HOURLY_TO / TIO_FCST_STEP / TIO_FCST_MAX   48 / 3 / 72
+    TIO_FCST_HOURLY_TO / TIO_FCST_STEP / TIO_FCST_MAX   24 / 3 / 72
     TIO_FCST_HOURS       explicit comma list, overrides the three above
     TIO_MODELS           "key:label:query|key:label:query", e.g.
                          "focus:FOCUS:includedLayers=focus|nextgen:NextGen:includedLayers=nextgen"
@@ -69,10 +72,11 @@ TILE = 256
 # on top, the ceiling and visibility fills sit underneath.
 FIELDS = [f.strip() for f in os.environ.get(
     "TIO_FIELDS",
-    "precipitationIntensity,cloudCeiling,visibility,windSpeed,windGust"
+    "precipitationReflectivity,cloudCeiling,visibility,windSpeed,windGust"
 ).split(",") if f.strip()]
 FIELD_LABEL = {
-    "precipitationIntensity": "Precipitation",
+    "precipitationReflectivity": "Precipitation reflectivity",
+    "precipitationIntensity": "Precipitation intensity",
     "precipitationType": "Precipitation type",
     "cloudCover": "Cloud cover",
     "windSpeed": "Wind speed",
@@ -90,7 +94,7 @@ def _steps() -> list:
     raw = os.environ.get("TIO_FCST_HOURS", "").strip()
     if raw:
         return sorted({int(h) for h in raw.split(",") if h.strip()})
-    hourly_to = int(os.environ.get("TIO_FCST_HOURLY_TO", "48"))
+    hourly_to = int(os.environ.get("TIO_FCST_HOURLY_TO", "24"))
     step = max(1, int(os.environ.get("TIO_FCST_STEP", "3")))
     mx = int(os.environ.get("TIO_FCST_MAX", "72"))
     out = list(range(1, min(hourly_to, mx) + 1))
@@ -537,7 +541,7 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
 </div>
 <div id="m"><div class="lg" id="lg"><span class="d" style="background:#4DA3FF"></span>JBU station &nbsp;
  <span class="d" style="background:#9AA0A6"></span>Canadian alternate<br>
- <span style="color:#6E6E6E">tomorrow.io {model_label(model)} tiles · 125W-50W 52N-5S · hourly to +48 h, 3-hourly to +{FCST_HOURS[-1] if FCST_HOURS else 0} h</span></div></div>
+ <span style="color:#6E6E6E">tomorrow.io {model_label(model)} tiles · 125W-50W 52N-5S · hourly to +{int(os.environ.get("TIO_FCST_HOURLY_TO", "24"))} h, 3-hourly to +{FCST_HOURS[-1] if FCST_HOURS else 0} h</span></div></div>
 <script>
 const F = {json.dumps(frames)};
 const ST = {json.dumps(stations)};
