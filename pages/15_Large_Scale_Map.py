@@ -152,8 +152,10 @@ def _body():
                 "forecast at zoom 3). Refresh in a minute."
                 + (f"  Last error: {TIO.STATUS['err']}"
                    if TIO.STATUS.get("err") else "")
-                + (f"  tomorrow.io rate limit: the warmer resumes in "
-                   f"{TIO.in_backoff() / 60:.0f} min." if TIO.in_backoff() else ""))
+                + ((f"  tomorrow.io rate limit: the warmer resumes in "
+                    + (f"{TIO.in_backoff() / 3600:.1f} h" if TIO.in_backoff() > 3600
+                       else f"{TIO.in_backoff() / 60:.0f} min") + ".")
+                   if TIO.in_backoff() else ""))
     try:
         _pt = TIO.points(STATIC, _active)
         _no = TIO.noaa(STATIC)

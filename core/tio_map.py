@@ -247,7 +247,21 @@ _backoff = {"until": 0.0, "n": 0}
 
 
 class RateLimited(RuntimeError):
-    pass
+    """A 429. retry_after: seconds until the bucket refills, from
+    the response's Retry-After header when tomorrow.io sends one (it
+    does: the daily bucket says exactly when it resets)."""
+
+    def __init__(self, msg, retry_after=None):
+        super().__init__(msg)
+        self.retry_after = retry_after
+
+
+def _retry_after(r):
+    try:
+        return int(float(r.headers.get("retry-after") or
+                         r.headers.get("ratelimit-reset") or 0)) or None
+    except (TypeError, ValueError):
+        return None
 
 
 DEMO = os.environ.get("TIO_DEMO", "off").lower() == "on"
@@ -361,13 +375,20 @@ def _restore(outdir) -> int:
     return n
 
 
-def _rate_limited(outdir, where: str) -> None:
+def _rate_limited(outdir, where: str, retry_after=None) -> None:
     _backoff["n"] += 1
-    wait = min(3600, BACKOFF_S * (2 ** (_backoff["n"] - 1)))
+    if retry_after:
+        # the API said when: sleep to the reset (+1 min), not a guess
+        wait = min(26 * 3600, int(retry_after) + 60)
+    else:
+        wait = min(3600, BACKOFF_S * (2 ** (_backoff["n"] - 1)))
     _backoff["until"] = time.time() + wait
-    STATUS["err"] = f"429 from tomorrow.io ({where}); waiting {wait // 60} min"
-    _log(outdir, f"RATE LIMITED at {where}: backing off {wait // 60} min "
-                 f"(day {usage(outdir)['count']}/{DAILY_CAP})")
+    STATUS["err"] = (f"429 from tomorrow.io ({where}); the daily quota resets in "
+                     f"{wait // 3600} h {(wait % 3600) // 60} min" if retry_after and wait > 3600
+                     else f"429 from tomorrow.io ({where}); waiting {wait // 60} min")
+    _log(outdir, f"RATE LIMITED at {where}: waiting {wait // 60} min"
+                 + (" (Retry-After)" if retry_after else "")
+                 + f" (day {usage(outdir)['count']}/{DAILY_CAP})")
 
 
 def in_backoff() -> float:
@@ -526,7 +547,7 @@ def _fetch_tile(z, x, y, field, tstr, key, query=""):
                 return r.content
             last = f"HTTP {r.status_code}"
             if r.status_code == 429:
-                raise RateLimited(f"tile {z}/{x}/{y}: 429 {r.text[:80]}")
+                raise RateLimited(f"tile {z}/{x}/{y}: 429 {r.text[:80]}", _retry_after(r))
             if r.status_code in (400, 401, 403):
                 break
         except RateLimited:
@@ -726,7 +747,7 @@ def _fetch_point(icao, lat, lon, fields, key, query):
                 body[k] = [v] if k == "includedLayers" else v
     r = requests.post(url, json=body, timeout=25)
     if r.status_code == 429:
-        raise RateLimited(f"{icao}: 429 {r.text[:100]}")
+        raise RateLimited(f"{icao}: 429 {r.text[:100]}", _retry_after(r))
     if r.status_code != 200:
         raise RuntimeError(f"{icao}: HTTP {r.status_code} {r.text[:120]}")
     iv = r.json()["data"]["timelines"][0]["intervals"]
@@ -762,16 +783,16 @@ def build_points(outdir, model) -> int:
         try:
             got[p[0]] = _fetch_point(p[0], p[1], p[2], fields, key, query)
         except RateLimited as exc:
-            limited.append(str(exc))
+            limited.append(exc)
         except Exception as exc:
             bad.append(f"{type(exc).__name__}: {exc}"[:100])
         time.sleep(0.25)          # timelines is the stricter endpoint
     with ThreadPoolExecutor(max_workers=2) as ex:
         list(ex.map(one, pts))
     if limited:
-        _rate_limited(outdir, "points")
+        _rate_limited(outdir, "points", limited[0].retry_after)
         if not got:
-            raise RateLimited(limited[0])
+            raise limited[0]
     if not got:
         raise RuntimeError("points: every station failed - "
                            + (bad[0] if bad else "?"))
@@ -801,8 +822,8 @@ def _hires_pass(outdir, model):
         for field in HIRES_FIELDS:
             try:
                 build_frame(outdir, model, field, 0, HIRES_ZOOM, hub=hub)
-            except RateLimited:
-                _rate_limited(outdir, f"hires {hub} {field}")
+            except RateLimited as rl:
+                _rate_limited(outdir, f"hires {hub} {field}", rl.retry_after)
                 return
             except Exception as exc:
                 STATUS["err"] = f"{type(exc).__name__}: {exc}"
@@ -913,8 +934,8 @@ def _pass(outdir, model, steps):
                 STATUS["last"] = time.time()
                 STATUS["err"] = None
                 _backoff["n"] = 0
-            except RateLimited:
-                _rate_limited(outdir, f"{field} +{step:02d}h")
+            except RateLimited as rl:
+                _rate_limited(outdir, f"{field} +{step:02d}h", rl.retry_after)
                 return
             except Exception as exc:
                 STATUS["err"] = f"{type(exc).__name__}: {exc}"
