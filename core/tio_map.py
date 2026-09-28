@@ -15,25 +15,34 @@ quota. So a warmer thread fetches a FIXED tile set for the domain,
 stitches each set into one WebP under static/, and the page shows
 those. The key never leaves the server and the spend is predictable.
 
-Budget (plan: 10,000 requests/day, 9,999/hour, 50/s):
+28 SEP: five fields, an hourly timeline to +48 h then 3-hourly to
++72 h (56 forecast steps), layers that stack, and ONE model at a
+time (FOCUS / NextGen, see MODELS). Budget against the 9,000/day cap:
 
-    "now" frame      zoom 5, 56 tiles, every TIO_NOW_MIN (15) min  ->  5,376/day
-    forecast steps   zoom 4, 16 tiles x 4 steps, every TIO_FCST_MIN
-                     (60) min                                        ->  1,536/day
-                                                                        -------
-                                                                         6,912/day
+    forecast pass   zoom 3, 6 tiles x 56 steps x 5 fields = 1,680,
+                    every TIO_FCST_MIN (360) min             -> 6,720/day
+    "now" frame     zoom 4, 16 tiles x 5 fields,
+                    every TIO_NOW_MIN (60) min               -> 1,920/day
+                                                                ---------
+                                                                 8,640/day
 
-for one field (precipitationIntensity). TIO_DAILY_CAP (9,000) is a
-hard stop: the warmer counts every request in static/tio_usage.json
-by UTC day and skips a pass rather than cross it. Adding a second
-field to TIO_FIELDS doubles the spend, so drop TIO_NOW_MIN to 30 or
-the forecast cadence to 120 when you do.
+Switching model re-warms everything for the new model (one forecast
+pass plus a now pass, ~1,760 requests), so the switch is a page
+control, not a per-viewer toggle, and the cap still governs it.
+TIO_DAILY_CAP is a hard stop: the warmer counts every request in
+static/tio_usage.json by UTC day and skips a pass rather than cross it.
 
 Env
     TOMORROWIO_API_KEY   (or TOMORROW_API_KEY)  the key
     TIO_WARMER=off       stop the warmer without a deploy
-    TIO_FIELDS           comma list, default precipitationIntensity
-    TIO_FCST_HOURS       default 6,12,24,48
+    TIO_FIELDS           comma list; default the five below
+    TIO_FCST_HOURLY_TO / TIO_FCST_STEP / TIO_FCST_MAX   48 / 3 / 72
+    TIO_FCST_HOURS       explicit comma list, overrides the three above
+    TIO_MODELS           "key:label:query|key:label:query", e.g.
+                         "focus:FOCUS:includedLayers=focus|nextgen:NextGen:includedLayers=nextgen"
+                         The query is appended to every tile URL for that
+                         model. Empty (default) = one unnamed model, no
+                         extra parameter - what the API served before.
     TIO_NOW_MIN / TIO_FCST_MIN / TIO_NOW_ZOOM / TIO_FCST_ZOOM
     TIO_DAILY_CAP
 """
@@ -55,10 +64,15 @@ from pathlib import Path
 W, E, S, N = -125.0, -50.0, -5.0, 52.0
 TILE = 256
 
+# Order matters twice: it is the layer menu order, and (reversed) the
+# stacking order on the map - precipitation is listed first and drawn
+# on top, the ceiling and visibility fills sit underneath.
 FIELDS = [f.strip() for f in os.environ.get(
-    "TIO_FIELDS", "precipitationIntensity").split(",") if f.strip()]
+    "TIO_FIELDS",
+    "precipitationIntensity,cloudCeiling,visibility,windSpeed,windGust"
+).split(",") if f.strip()]
 FIELD_LABEL = {
-    "precipitationIntensity": "Precipitation intensity",
+    "precipitationIntensity": "Precipitation",
     "precipitationType": "Precipitation type",
     "cloudCover": "Cloud cover",
     "windSpeed": "Wind speed",
@@ -70,14 +84,50 @@ FIELD_LABEL = {
     "pressureSeaLevel": "MSL pressure",
     "dewPoint": "Dew point",
 }
-FCST_HOURS = [int(h) for h in os.environ.get(
-    "TIO_FCST_HOURS", "6,12,24,48").split(",") if h.strip()]
-NOW_MIN = int(os.environ.get("TIO_NOW_MIN", "15"))
-FCST_MIN = int(os.environ.get("TIO_FCST_MIN", "60"))
-NOW_ZOOM = int(os.environ.get("TIO_NOW_ZOOM", "5"))
-FCST_ZOOM = int(os.environ.get("TIO_FCST_ZOOM", "4"))
+
+
+def _steps() -> list:
+    raw = os.environ.get("TIO_FCST_HOURS", "").strip()
+    if raw:
+        return sorted({int(h) for h in raw.split(",") if h.strip()})
+    hourly_to = int(os.environ.get("TIO_FCST_HOURLY_TO", "48"))
+    step = max(1, int(os.environ.get("TIO_FCST_STEP", "3")))
+    mx = int(os.environ.get("TIO_FCST_MAX", "72"))
+    out = list(range(1, min(hourly_to, mx) + 1))
+    h = hourly_to + step
+    while h <= mx:
+        out.append(h)
+        h += step
+    return out
+
+
+FCST_HOURS = _steps()
+NOW_MIN = int(os.environ.get("TIO_NOW_MIN", "60"))
+FCST_MIN = int(os.environ.get("TIO_FCST_MIN", "360"))
+NOW_ZOOM = int(os.environ.get("TIO_NOW_ZOOM", "4"))
+FCST_ZOOM = int(os.environ.get("TIO_FCST_ZOOM", "3"))
 DAILY_CAP = int(os.environ.get("TIO_DAILY_CAP", "9000"))
-KEEP_FRAMES = 3          # per field/step, newest kept
+KEEP_FRAMES = 2          # per model/field/step, newest kept
+
+
+def _parse_models() -> dict:
+    """{key: (label, query)} in menu order; always at least one."""
+    raw = os.environ.get("TIO_MODELS", "").strip()
+    out = {}
+    for part in raw.split("|"):
+        part = part.strip()
+        if not part:
+            continue
+        bits = part.split(":", 2)
+        key = bits[0].strip()
+        label = bits[1].strip() if len(bits) > 1 and bits[1].strip() else key
+        query = bits[2].strip().lstrip("?&") if len(bits) > 2 else ""
+        if key:
+            out[key] = (label, query)
+    return out or {"tio": ("tomorrow.io", "")}
+
+
+MODELS = _parse_models()
 
 #: Canadian alternates, not in jbu_airports.json.
 CAN_ALT = {
@@ -95,7 +145,7 @@ NO_LABEL = {"KLGA", "KEWR", "KHPN", "KISP", "KMDW", "KONT", "KBUR",
             "KSJC", "KRSW", "MDST", "MDPP", "TJBQ", "TJPS", "TISX",
             "TNCB", "TNCC", "TIST"}
 
-STATUS: dict = {"started": False, "last": None, "err": None}
+STATUS: dict = {"started": False, "last": None, "err": None, "model": None}
 _lock = threading.Lock()
 _started = False
 
@@ -103,6 +153,37 @@ _started = False
 def api_key() -> str:
     return (os.environ.get("TOMORROWIO_API_KEY")
             or os.environ.get("TOMORROW_API_KEY") or "").strip()
+
+
+# ---------------------------------------------------------------- model
+
+def _model_path(outdir):
+    return Path(outdir) / "tio_model.txt"
+
+
+def active_model(outdir) -> str:
+    """The one model being warmed. A page control writes it; the
+    warmer reads it every pass."""
+    try:
+        k = _model_path(outdir).read_text().strip()
+        if k in MODELS:
+            return k
+    except Exception:
+        pass
+    return next(iter(MODELS))
+
+
+def set_model(outdir, key: str) -> None:
+    if key not in MODELS:
+        raise ValueError(key)
+    p = _model_path(outdir)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(key)
+    os.replace(tmp, p)
+
+
+def model_label(key: str) -> str:
+    return MODELS.get(key, (key, ""))[0]
 
 
 # ---------------------------------------------------------------- tiles
@@ -140,11 +221,19 @@ def tile_count(z: int) -> int:
     return (x1 - x0 + 1) * (y1 - y0 + 1)
 
 
-def _fetch_tile(z, x, y, field, tstr, key):
+def daily_estimate() -> int:
+    """Requests/day the current settings spend for one model."""
+    nf = len(FIELDS)
+    fc = tile_count(FCST_ZOOM) * len(FCST_HOURS) * nf * (1440 // max(1, FCST_MIN))
+    nw = tile_count(NOW_ZOOM) * nf * (1440 // max(1, NOW_MIN))
+    return fc + nw
+
+
+def _fetch_tile(z, x, y, field, tstr, key, query=""):
     import requests
 
     url = (f"https://api.tomorrow.io/v4/map/tile/{z}/{x}/{y}/{field}/"
-           f"{tstr}.png?apikey={key}")
+           f"{tstr}.png?apikey={key}" + (f"&{query}" if query else ""))
     last = None
     for _ in range(2):
         try:
@@ -207,8 +296,10 @@ def log_tail(outdir, n=6) -> list:
         return []
 
 
+# Manifest v2: {model: {field: {step: entry}}}. A new file name so the
+# single-model v1 manifest (field -> step) is never misread.
 def _manifest_path(outdir):
-    return Path(outdir) / "tio_manifest.json"
+    return Path(outdir) / "tio_manifest2.json"
 
 
 def manifest(outdir) -> dict:
@@ -225,7 +316,7 @@ def _save_manifest(outdir, man):
     os.replace(tmp, p)
 
 
-def build_frame(outdir, field: str, step: int, z: int) -> dict:
+def build_frame(outdir, model: str, field: str, step: int, z: int) -> dict:
     """Fetch and stitch one frame. step 0 = now; otherwise hours
     ahead, on the hour. Returns the manifest entry."""
     from PIL import Image
@@ -234,6 +325,7 @@ def build_frame(outdir, field: str, step: int, z: int) -> dict:
     if not key:
         raise RuntimeError("no TOMORROWIO_API_KEY")
     outdir = Path(outdir)
+    _label, query = MODELS[model]
     x0, x1, y0, y1, bounds = tile_grid(z)
     now = datetime.now(timezone.utc)
     if step == 0:
@@ -251,67 +343,94 @@ def build_frame(outdir, field: str, step: int, z: int) -> dict:
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=8) as ex:
         blobs = list(ex.map(lambda xy: _fetch_tile(z, xy[0], xy[1], field,
-                                                   tstr, key), jobs))
+                                                   tstr, key, query), jobs))
     img = Image.new("RGBA", ((x1 - x0 + 1) * TILE, (y1 - y0 + 1) * TILE),
                     (0, 0, 0, 0))
     for (x, y), b in zip(jobs, blobs):
         img.paste(Image.open(io.BytesIO(b)).convert("RGBA"),
                   ((x - x0) * TILE, (y - y0) * TILE))
     stamp = now.strftime("%Y%m%d-%H%M")
-    name = f"tio_{field}_{step:02d}_{stamp}.webp"
+    name = f"tio_{model}_{field}_{step:02d}_{stamp}.webp"
     tmp = outdir / f".{name}.tmp"
     img.save(tmp, "WEBP", quality=88, method=4)
     os.replace(tmp, outdir / name)
-    ent = {"name": name, "field": field, "step": step, "zoom": z,
+    ent = {"name": name, "model": model, "field": field, "step": step,
+           "zoom": z,
            "valid": valid.strftime("%Y-%m-%dT%H:%MZ"),
            "built": now.strftime("%Y-%m-%dT%H:%MZ"),
            "bounds": bounds, "px": [img.width, img.height]}
     man = manifest(outdir)
-    man.setdefault(field, {})[str(step)] = ent
+    man.setdefault(model, {}).setdefault(field, {})[str(step)] = ent
     _save_manifest(outdir, man)
-    # prune older frames of this field/step
-    olds = sorted(outdir.glob(f"tio_{field}_{step:02d}_*.webp"))
+    # prune older frames of this model/field/step
+    olds = sorted(outdir.glob(f"tio_{model}_{field}_{step:02d}_*.webp"))
     for p in olds[:-KEEP_FRAMES]:
         try:
             p.unlink()
         except Exception:
             pass
-    _log(outdir, f"{field} +{step:02d}h z{z} {n} tiles {time.time() - t0:.1f}s "
-                 f"-> {name} ({(outdir / name).stat().st_size // 1024} KB), "
+    _log(outdir, f"{model} {field} +{step:02d}h z{z} {n} tiles "
+                 f"{time.time() - t0:.1f}s -> {name} "
+                 f"({(outdir / name).stat().st_size // 1024} KB), "
                  f"day {usage(outdir)['count']}/{DAILY_CAP}")
     return ent
 
 
-def _pass(outdir, steps):
-    for field in FIELDS:
-        for step in steps:
+def _pass(outdir, model, steps):
+    """Steps in TIME order across fields, so when the cap stops a
+    pass mid-way the near hours exist for every layer rather than
+    the whole run for one."""
+    for step in steps:
+        for field in FIELDS:
             try:
-                build_frame(outdir, field, step, NOW_ZOOM if step == 0 else FCST_ZOOM)
+                build_frame(outdir, model, field, step,
+                            NOW_ZOOM if step == 0 else FCST_ZOOM)
                 STATUS["last"] = time.time()
                 STATUS["err"] = None
             except Exception as exc:
                 STATUS["err"] = f"{type(exc).__name__}: {exc}"
-                _log(outdir, f"FAILED {field} +{step:02d}h: {STATUS['err']}")
+                _log(outdir, f"FAILED {model} {field} +{step:02d}h: {STATUS['err']}")
                 if "daily cap" in str(exc) or "no TOMORROWIO" in str(exc):
                     return
+
+
+def _prune_v1(outdir):
+    """Frames from the single-model layout (tio_<field>_NN_*.webp) are
+    unreachable now; drop them once."""
+    for f in FIELD_LABEL:
+        for p in Path(outdir).glob(f"tio_{f}_[0-9][0-9]_*.webp"):
+            try:
+                p.unlink()
+            except Exception:
+                pass
 
 
 def _loop(outdir):
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     time.sleep(8)          # let the page-3 warmers get in first
-    _log(outdir, f"warmer start: fields={FIELDS} fcst={FCST_HOURS} "
+    _prune_v1(outdir)
+    _log(outdir, f"warmer start: fields={FIELDS} steps={len(FCST_HOURS)} "
+                 f"(to +{FCST_HOURS[-1] if FCST_HOURS else 0}h) models={list(MODELS)} "
                  f"now z{NOW_ZOOM}/{NOW_MIN}min fcst z{FCST_ZOOM}/{FCST_MIN}min "
-                 f"cap {DAILY_CAP}/day")
+                 f"~{daily_estimate()}/day, cap {DAILY_CAP}/day")
     next_now = next_fc = 0.0
+    last_model = None
     while True:
         t = time.time()
+        model = active_model(outdir)
+        STATUS["model"] = model
+        if model != last_model:
+            # first pass, or the page switched model: full re-warm
+            _log(outdir, f"model -> {model}: full pass")
+            last_model = model
+            next_fc = 0.0
         if t >= next_fc:
-            _pass(outdir, [0] + FCST_HOURS)
+            _pass(outdir, model, [0] + FCST_HOURS)
             next_now = time.time() + NOW_MIN * 60
             next_fc = time.time() + FCST_MIN * 60
         elif t >= next_now:
-            _pass(outdir, [0])
+            _pass(outdir, model, [0])
             next_now = time.time() + NOW_MIN * 60
         time.sleep(20)
 
@@ -357,14 +476,20 @@ def stations_geojson(static_dir) -> dict:
     return {"type": "FeatureCollection", "features": feats}
 
 
-def map_html(man: dict, base: str, stations: dict, height: int = 860) -> str:
-    """MapLibre page: CARTO dark vector basemap, one image source per
-    warmed frame, station dots and labels. Served from /app/static and
-    embedded by URL (see radar_l3.loop_html for why not srcdoc)."""
+def map_html(man: dict, base: str, stations: dict, height: int = 860,
+             model: str = None) -> str:
+    """MapLibre page: CARTO dark vector basemap, the active model's
+    warmed frames as image sources (added lazily, first time a layer
+    and hour are shown), layer toggles with their own opacity, an
+    hourly TIME slider, station dots and labels. Served from
+    /app/static and embedded by URL (see radar_l3.loop_html for why
+    not srcdoc)."""
+    model = model or next(iter(MODELS))
+    mman = man.get(model) or {}
     frames = []
     for field in FIELDS:
         for step in [0] + FCST_HOURS:
-            e = (man.get(field) or {}).get(str(step))
+            e = (mman.get(field) or {}).get(str(step))
             if e:
                 frames.append({"url": f"{base}/app/static/{e['name']}?v={e['built']}",
                                "field": field, "step": step, "valid": e["valid"],
@@ -373,65 +498,101 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860) -> str:
         "BLUEMET_MAP_STYLE",
         "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json")
     labels = {f: FIELD_LABEL.get(f, f) for f in FIELDS}
+    # Layer rows: checkbox + opacity. Precipitation on by default.
+    rows = "".join(
+        f'<span class="ly"><label><input type="checkbox" data-f="{f}"'
+        f'{" checked" if i == 0 else ""}> {labels[f]}</label>'
+        f'<input type="range" data-f="{f}" min="10" max="100" value="{85 if i == 0 else 70}"></span>'
+        for i, f in enumerate(FIELDS))
+    steps_all = [0] + FCST_HOURS
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
 <style>
  html,body{{margin:0;background:#000;height:100%;font:bold 12px "DejaVu Sans Mono","Courier New",monospace;color:#fff}}
- #m{{height:{height - 48}px;border:1px solid #333;border-radius:10px;overflow:hidden}}
+ #m{{height:{height - 92}px;border:1px solid #333;border-radius:10px;overflow:hidden}}
  .bar{{display:flex;align-items:center;gap:10px;height:44px;padding:0 4px;flex-wrap:nowrap;white-space:nowrap}}
- .bar select,.bar button{{font:bold 12px "DejaVu Sans Mono",monospace;background:#0A0A0A;color:#fff;border:1px solid #333;border-radius:6px;padding:5px 10px}}
+ .bar button{{font:bold 12px "DejaVu Sans Mono",monospace;background:#0A0A0A;color:#fff;border:1px solid #333;border-radius:6px;padding:5px 10px}}
  .bar button.on{{border-color:#00E5FF;background:#1C1C22}}
- .bar input[type=range]{{accent-color:#00E5FF;width:110px}}
- #valid{{color:#FFD400}} #built{{color:#B8B8B8}}
+ .bar input[type=range]{{accent-color:#00E5FF}}
+ .ly{{display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border:1px solid #333;border-radius:6px;background:#0A0A0A}}
+ .ly input[type=range]{{width:56px}} .ly label{{color:#fff;cursor:pointer}}
+ .ly.off label{{color:#6E6E6E}} .ly.none label{{color:#FF00C8}}
+ #tm{{flex:1;min-width:160px}}
+ #valid{{color:#FFD400;min-width:250px}} #built{{color:#B8B8B8}} #mdl{{color:#00E5FF}}
  label{{color:#B8B8B8}} .sp{{flex:1}}
  .lg{{position:absolute;left:10px;bottom:24px;background:rgba(0,0,0,.85);border:1px solid #333;border-radius:6px;padding:8px 10px;font-size:11px;z-index:5}}
  .lg .d{{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;border:1px solid #000}}
 </style></head><body>
 <div class="bar">
-  <label>FIELD</label><select id="fld">{"".join(f'<option value="{f}">{labels[f]}</option>' for f in FIELDS)}</select>
-  <label>TIME</label><span id="steps"></span>
-  <span id="valid"></span><span id="built"></span>
-  <span class="sp"></span>
-  <label>OPACITY</label><input id="op" type="range" min="20" max="100" value="85">
+  <label>LAYERS</label>{rows}
+  <span class="sp"></span><span id="mdl">{model_label(model)}</span>
   <button id="bst" class="on">Stations</button><button id="balt" class="on">CA alternates</button>
   <button id="bfit">Fit</button>
 </div>
+<div class="bar">
+  <label>TIME</label><button id="bprev">&#9664;</button><button id="bplay">Play</button><button id="bnext">&#9654;</button>
+  <input id="tm" type="range" min="0" max="{len(steps_all) - 1}" value="0" step="1">
+  <span id="valid"></span><span id="built"></span>
+</div>
 <div id="m"><div class="lg" id="lg"><span class="d" style="background:#4DA3FF"></span>JBU station &nbsp;
  <span class="d" style="background:#9AA0A6"></span>Canadian alternate<br>
- <span style="color:#6E6E6E">tomorrow.io tiles · 125W-50W 52N-5S</span></div></div>
+ <span style="color:#6E6E6E">tomorrow.io {model_label(model)} tiles · 125W-50W 52N-5S · hourly to +48 h, 3-hourly to +{FCST_HOURS[-1] if FCST_HOURS else 0} h</span></div></div>
 <script>
 const F = {json.dumps(frames)};
 const ST = {json.dumps(stations)};
+const FIELDS = {json.dumps(FIELDS)};
+const STEPS = {json.dumps(steps_all)};
 const BB = [[{W},{S}],[{E},{N}]];
 const map = new maplibregl.Map({{container:'m', style:{json.dumps(style)},
   bounds:BB, fitBoundsOptions:{{padding:8}}, minZoom:2.2, maxZoom:9,
   maxBounds:[[{W - 25},{S - 15}],[{E + 25},{N + 8}]], attributionControl:true}});
 map.addControl(new maplibregl.NavigationControl({{showCompass:false}}));
-let field = F.length ? F[0].field : '', step = 0, ready = false;
 const $ = id => document.getElementById(id);
+let ready = false, ti = 0, timer = null;
+const on = {{}}, op = {{}};
+document.querySelectorAll('.ly input[type=checkbox]').forEach(c => {{ on[c.dataset.f] = c.checked; c.onchange = () => {{ on[c.dataset.f] = c.checked; draw(); }}; }});
+document.querySelectorAll('.ly input[type=range]').forEach(r => {{ op[r.dataset.f] = +r.value / 100; r.oninput = () => {{ op[r.dataset.f] = +r.value / 100; draw(); }}; }});
 function key(f) {{ return 'tio_' + f.field + '_' + f.step; }}
-function cur() {{ return F.find(f => f.field === field && f.step === step) || F.find(f => f.field === field); }}
-function draw() {{
-  const c = cur();
-  const op = (+$('op').value) / 100;
-  if (ready) F.forEach(f => map.setPaintProperty(key(f), 'raster-opacity', c && key(f) === key(c) ? op : 0));
-  $('valid').textContent = c ? 'valid ' + c.valid + (c.step ? ' (+' + c.step + ' h)' : ' (now)') : 'no frames yet';
-  $('built').textContent = c ? ' · built ' + c.built : '';
-  [...$('steps').querySelectorAll('button')].forEach(b => b.classList.toggle('on', +b.dataset.s === (c ? c.step : -1)));
+function frame(field, step) {{ return F.find(f => f.field === field && f.step === step); }}
+// Frames become map sources the first time they are shown, not all
+// at page load: 5 fields x 57 steps is a lot of WebP to pull for a
+// viewer who only looks at the next six hours.
+const added = new Set();
+function ensure(f) {{
+  if (added.has(key(f))) return;
+  added.add(key(f));
+  map.addSource(key(f), {{type:'image', url:f.url,
+    coordinates:[[f.b[0], f.b[3]], [f.b[2], f.b[3]], [f.b[2], f.b[1]], [f.b[0], f.b[1]]]}});
+  // insert under the station layers so dots stay on top, and in field
+  // order so precipitation (FIELDS[0]) ends up above the fills
+  const before = map.getLayer('st-dot') ? 'st-dot' : undefined;
+  map.addLayer({{id:key(f), type:'raster', source:key(f),
+    paint:{{'raster-opacity':0, 'raster-fade-duration':0, 'raster-resampling':'linear'}}}}, before);
+  // re-order: later fields in FIELDS go UNDER earlier ones
+  const shown = [...added].filter(k => map.getLayer(k));
+  shown.sort((a, b) => FIELDS.indexOf(a.split('_')[1]) - FIELDS.indexOf(b.split('_')[1]));
+  // moveLayer(id, beforeId): walk from the bottom-most field up
+  for (let i = shown.length - 1; i >= 0; i--) map.moveLayer(shown[i], before);
 }}
-function buildSteps() {{
-  const steps = [...new Set(F.filter(f => f.field === field).map(f => f.step))].sort((a, b) => a - b);
-  $('steps').innerHTML = steps.map(s => `<button data-s="${{s}}">${{s ? '+' + s + ' h' : 'now'}}</button>`).join('');
-  [...$('steps').querySelectorAll('button')].forEach(b => b.onclick = () => {{ step = +b.dataset.s; draw(); }});
+function draw() {{
+  const step = STEPS[ti];
+  let valid = '', built = '';
+  const visible = new Set();
+  FIELDS.forEach(field => {{
+    const box = document.querySelector('.ly input[data-f="' + field + '"]').parentElement.parentElement;
+    const f = frame(field, step);
+    box.classList.toggle('off', !on[field]);
+    box.classList.toggle('none', on[field] && !f);
+    if (!on[field] || !f) return;
+    if (ready) {{ ensure(f); visible.add(key(f)); }}
+    if (!valid) {{ valid = f.valid; built = f.built; }}
+  }});
+  if (ready) added.forEach(k => {{ if (map.getLayer(k)) map.setPaintProperty(k, 'raster-opacity', visible.has(k) ? op[k.split('_')[1]] : 0); }});
+  $('valid').textContent = (step ? '+' + step + ' h' : 'now') + (valid ? '  valid ' + valid : '  (no frame yet)');
+  $('built').textContent = built ? ' · built ' + built : '';
 }}
 map.on('load', () => {{
-  F.forEach(f => {{
-    map.addSource(key(f), {{type:'image', url:f.url,
-      coordinates:[[f.b[0], f.b[3]], [f.b[2], f.b[3]], [f.b[2], f.b[1]], [f.b[0], f.b[1]]]}});
-    map.addLayer({{id:key(f), type:'raster', source:key(f),
-      paint:{{'raster-opacity':0, 'raster-fade-duration':0, 'raster-resampling':'linear'}}}});
-  }});
   map.addSource('st', {{type:'geojson', data:ST}});
   map.addLayer({{id:'st-dot', type:'circle', source:'st',
     paint:{{'circle-radius':['case', ['==', ['get','kind'], 'jbu'], 4, 3.5],
@@ -444,8 +605,16 @@ map.on('load', () => {{
             'text-halo-color':'#000', 'text-halo-width':1.4}}}});
   ready = true; draw();
 }});
-$('fld').onchange = e => {{ field = e.target.value; buildSteps(); draw(); }};
-$('op').oninput = draw;
+$('tm').oninput = e => {{ ti = +e.target.value; draw(); }};
+function stepBy(d) {{ ti = Math.max(0, Math.min(STEPS.length - 1, ti + d)); $('tm').value = ti; draw(); }}
+$('bprev').onclick = () => stepBy(-1);
+$('bnext').onclick = () => stepBy(1);
+$('bplay').onclick = () => {{
+  if (timer) {{ clearInterval(timer); timer = null; $('bplay').textContent = 'Play'; $('bplay').classList.remove('on'); return; }}
+  $('bplay').textContent = 'Pause'; $('bplay').classList.add('on');
+  timer = setInterval(() => {{ if (ti >= STEPS.length - 1) ti = -1; stepBy(1); }}, 700);
+}};
+document.addEventListener('keydown', e => {{ if (e.key === 'ArrowLeft') stepBy(-1); if (e.key === 'ArrowRight') stepBy(1); }});
 $('bst').onclick = () => {{ $('bst').classList.toggle('on'); applyFilter(); }};
 $('balt').onclick = () => {{ $('balt').classList.toggle('on'); applyFilter(); }};
 function applyFilter() {{
@@ -455,5 +624,5 @@ function applyFilter() {{
     map.setLayoutProperty(l, 'visibility', kinds.length ? 'visible' : 'none'); }});
 }}
 $('bfit').onclick = () => map.fitBounds(BB, {{padding:8}});
-buildSteps(); draw();
+draw();
 </script></body></html>"""
