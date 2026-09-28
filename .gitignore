@@ -14,3 +14,12 @@ wx_compare_cache/
 .streamlit/secrets.toml
 # MRMS chunks and manifests, any product (warmer output)
 static/mrms*
+# Level III radar warmer output (core/radar_l3.py): frames, manifests,
+# lookup tables, log - rebuilt on every host, never committed
+static/l3_*
+static/l3lut_*
+# tomorrow.io tile warmer output (core/tio_map.py): frames, manifest,
+# usage counter, model choice, log
+static/tio_*
+# echo-top tag cache (core/etop_tags.py)
+static/etop_tags.json
