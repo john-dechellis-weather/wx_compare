@@ -511,15 +511,43 @@ with c_obs:
 
     with st.container(border=True):
         taf = cached_taf(icao)
+        # D-ATIS beside the TAF (28 Sep): the current broadcast as
+        # bullet points, one per sentence, in the space to the right.
+        _atis_raw, _atis_code = "", ""
+        try:
+            from core import atis as _AT
+            _ac = _AT.config(icao)
+            _atis_raw, _atis_code = _ac.get("raw", ""), _ac.get("code", "")
+        except Exception:
+            pass
         if taf:
             first = taf.strip().split("\n")[0]
-            pod_title("TAF", first[:60])
-            st.markdown(wx_colored_box(taf.splitlines(), taf_mode=True,
-                                       font_px=SF_TEXT_PX),
-                        unsafe_allow_html=True)
+            pod_title("TAF" + (f" \u00b7 ATIS {_atis_code}" if _atis_code else ""),
+                      first[:60])
         else:
-            pod_title("TAF")
-            st.warning("No TAF available (station may not be a TAF site).")
+            pod_title("TAF" + (f" \u00b7 ATIS {_atis_code}" if _atis_code else ""))
+        _tc1, _tc2 = st.columns([1.15, 1], gap="small")
+        with _tc1:
+            if taf:
+                st.markdown(wx_colored_box(taf.splitlines(), taf_mode=True,
+                                           font_px=SF_TEXT_PX),
+                            unsafe_allow_html=True)
+            else:
+                st.warning("No TAF available (station may not be a TAF site).")
+        with _tc2:
+            if _atis_raw:
+                import re as _re_atis
+                _bul = [b.strip(" .") for b in _re_atis.split(
+                    r"\.{2,}|(?<=[A-Z0-9])\.\s+|\n+", _atis_raw) if b.strip(" .")]
+                st.markdown(
+                    f'<div style="border:1px solid {EDGE};padding:8px 10px 8px 4px;'
+                    f'font-family:DejaVu Sans Mono,Menlo,monospace;font-size:{SF_TEXT_PX - 2}px;'
+                    f'font-weight:700;color:{INK};-webkit-text-fill-color:{INK};'
+                    f'line-height:1.35"><ul style="margin:0;padding-left:18px">'
+                    + "".join(f"<li>{b}</li>" for b in _bul[:18])
+                    + "</ul></div>", unsafe_allow_html=True)
+            else:
+                st.caption("No D-ATIS for this field.")
 
     with st.container(border=True):
         pod_title("Flight conditions",
@@ -852,12 +880,25 @@ def _scope_pod():
                                   " · NEXRAD frames are stale")
                 except Exception:
                     l3_txt = ""
+        _rate_txt = ""
+        if coords and icao.upper() in ("KJFK", "KEWR", "KLGA", "KHPN"):
+            # observed arrival rate: distinct aircraft seen on final in
+            # the last hour (core.runways), not the published AAR
+            try:
+                from core import runways as _RW
+                _n, _cov = _RW.arrival_rate(icao[1:] if icao[0] == "K" else icao)
+                _rate_txt = (f" · arrivals {_n}/h observed" if _cov >= 55
+                             else f" · {_n} arrivals in {_cov} min" if _cov > 0
+                             else "")
+            except Exception:
+                _rate_txt = ""
         pod_title("Airport scope",
                   "20 nm"
                   + ((f" · MRMS {stamp_txt or 'no current scan'}"
                       if _want_mrms else l3_txt if _want_l3 else " · radar off")
                      if coords else "")
-                  + (f" · {len(ac)} aircraft" if coords and ac else ""))
+                  + (f" · {len(ac)} aircraft" if coords and ac else "")
+                  + _rate_txt)
         if coords and len(l3_frames) > 1 and not st.session_state.get("sf_l3_loop", True):
             # Last hour of the airport's radar: drag to step back
             # through the frames. Labels are the scan times.
@@ -1018,6 +1059,41 @@ def _scope_pod():
                     get_alignment_baseline='"center"', pickable=False))
             except Exception:
                 pass
+            # N90 (28 Sep): for JFK, EWR, LGA and HPN the TRACON lateral
+            # boundary (static/n90_boundary.json, FAA 2012 map) in 3 px
+            # dark red, and every arrival / departure gate and
+            # coordination fix from static/n90_fixes.json.
+            if icao.upper() in ("KJFK", "KEWR", "KLGA", "KHPN"):
+                try:
+                    import json as _n90j
+                    _sd = Path(__file__).resolve().parent.parent / "static"
+                    _bnd = _n90j.loads((_sd / "n90_boundary.json").read_text())["polygon"]
+                    layers.append(pdk.Layer(
+                        "PathLayer", [{"path": _bnd + [_bnd[0]]}],
+                        get_path="path", get_color=[160, 0, 0, 255],
+                        get_width=3, width_units="pixels",
+                        width_min_pixels=3, width_max_pixels=3,
+                        pickable=False))
+                    _fx = _n90j.loads((_sd / "n90_fixes.json").read_text())["fixes"]
+                    _role_col = {"dep": [61, 220, 132, 255], "both": [255, 212, 0, 255],
+                                 "coord": [154, 160, 166, 255]}
+                    _gates = [{"position": [f["lon"], f["lat"]], "name": f["name"],
+                               "color": _role_col.get(f.get("role"), [154, 160, 166, 255])}
+                              for f in _fx]
+                    layers.append(pdk.Layer(
+                        "ScatterplotLayer", _gates, get_position="position",
+                        get_radius=900, radius_min_pixels=3, radius_max_pixels=6,
+                        get_fill_color="color", get_line_color=[0, 0, 0, 255],
+                        stroked=True, line_width_min_pixels=1, pickable=False))
+                    layers.append(pdk.Layer(
+                        "TextLayer", _gates, get_position="position",
+                        get_text="name", get_color="color",
+                        get_size=2200, size_units="meters", size_min_pixels=0,
+                        size_max_pixels=11, get_pixel_offset=[8, -6],
+                        get_text_anchor='"start"',
+                        get_alignment_baseline='"center"', pickable=False))
+                except Exception as _n90e:
+                    st.caption(f"N90 overlay unavailable: {type(_n90e).__name__}")
             _vs = AS.view(coords[0], coords[1], width_px=780, width_nm=20)
             # Zoom out to about a 300-mile radius (~600 mi across the
             # 780 px view), no further.

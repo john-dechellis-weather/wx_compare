@@ -15,7 +15,7 @@ from pathlib import Path
 import streamlit as st
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Large Scale Map", layout="wide")
+st.set_page_config(page_title="Custom Tomorrow.io Map", layout="wide")
 
 from retro_theme import apply_retro_theme
 
@@ -51,7 +51,7 @@ _h1, _h2 = st.columns([2, 1.6])
 with _h1:
     st.markdown(
         '<div style="font-size:16px;font-weight:700;color:#FFFFFF;'
-        'margin:0 0 2px 0">LARGE SCALE MAP</div>'
+        'margin:0 0 2px 0">CUSTOM TOMORROW.IO MAP</div>'
         '<div style="font-size:11px;font-weight:700;color:#B8B8B8;'
         'margin:0 0 8px 0">tomorrow.io: reflectivity &middot; ceiling '
         '&middot; visibility &middot; wind speed &middot; wind gust, hourly '

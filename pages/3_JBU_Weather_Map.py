@@ -2271,14 +2271,14 @@ if run_button or _auto:
             # fixes are the ones a dispatcher wants first; navaids
             # next; then every fix on a drawn route. Off is a tier
             # too, so this replaces the on/off checkbox.
-            _FIX_TIERS = ["Off", "Holds", "Holds + navaids",
-                          "+ Route fixes"]
+            # "+ Route fixes" tier removed 28 Sep: every fix on every
+            # drawn route was clutter at any zoom the map is used at.
+            _FIX_TIERS = ["Off", "Holds", "Holds + navaids"]
             _fix_lab = st.select_slider(
                 "Fixes", options=_FIX_TIERS, value="Off",
                 key="fix_density", label_visibility="collapsed",
                 help="Fix density. Holds: published holding fixes. "
-                     "Then VOR-class navaids. Then every fix on a "
-                     "drawn route. Labels scale with zoom.")
+                     "Then VOR-class navaids. Labels scale with zoom.")
             fix_tier = _FIX_TIERS.index(_fix_lab)
             show_fixes = fix_tier > 0
         with _ctl[4]:
@@ -2563,12 +2563,13 @@ if run_button or _auto:
                         pickable=True,
                     ))
 
-                    # LABELS ALONG THE ROUTE, repeated every ~90 nm
-                    # and rotated to follow the line, the way a chart
-                    # labels an airway. One label at the midpoint was
-                    # unreadable on a long route and useless once you
-                    # had zoomed in past it.
-                    def _rt_labels(path, ident, every_nm=90.0):
+                    # LABELS ALONG THE ROUTE, repeated every ~350 nm
+                    # (~400 statute miles, 28 Sep - 90 nm crowded the
+                    # Northeast) and rotated to follow the line, the way
+                    # a chart labels an airway. One label at the midpoint
+                    # was unreadable on a long route and useless once
+                    # you had zoomed in past it.
+                    def _rt_labels(path, ident, every_nm=350.0):
                         out = []
                         acc = every_nm / 2.0     # first label mid-leg
                         for (x0, y0), (x1, y1) in zip(path, path[1:]):
