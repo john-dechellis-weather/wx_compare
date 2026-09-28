@@ -61,9 +61,8 @@ for _m in ("hrrr", "rrfs"):
     for _p in ("REFD", "REFC", "RETOP", "VIS", "CEIL", "GUST"):
         if _p in MODELS[_m]["products"]:
             PRODUCTS[f"{_MODEL_LABEL[_m]} \u00b7 {_PRODUCT_LABEL[_p]}"] = (_m, _p)
-_POD_DEFAULTS = ["HRRR \u00b7 1 km reflectivity", "RRFS \u00b7 Composite reflectivity",
-                 "HRRR \u00b7 1 km reflectivity", "RRFS \u00b7 Composite reflectivity"]
-_POD_REGION = ["NE", "NE", "FL", "FL"]
+_POD_DEFAULTS = ["HRRR \u00b7 1 km reflectivity", "RRFS \u00b7 Composite reflectivity", "HRRR \u00b7 Echo tops", "HRRR \u00b7 1 km reflectivity", "RRFS \u00b7 Composite reflectivity", "HRRR \u00b7 Echo tops"]
+_POD_REGION = ["NE", "NE", "NE", "FL", "FL", "FL"]
 
 # Run choice -> the forecast hour a run must have reached. HRRR runs
 # to 18 every hour and to 48 at 00/06/12/18Z; RRFS to 84 every run.
@@ -86,8 +85,10 @@ with _h1:
     run_choice = st.radio("Run", list(_RUNS), horizontal=True, key="cam_run",
                           label_visibility="collapsed")
 with _h2:
-    pod_pct = st.slider("Pod size", 40, 100, 100, 5, key="cam_pod_pct",
-                        format="%d%%")
+    # Map size in pixels: each pod is exactly its map. Three per row
+    # is fixed, so pick a size that fits the window (the map can be
+    # no wider than its column; below that the pod just gets shorter).
+    pod_px = st.slider("Map size (px)", 220, 640, 340, 10, key="cam_pod_px")
 
 
 @st.cache_data(ttl=600, show_spinner=False, max_entries=48)
@@ -150,7 +151,7 @@ def _viewer(img: bytes, height: int = 560) -> None:
     mime = "image/webp" if img[:4] == b"RIFF" else "image/png"
     uri = f"data:{mime};base64," + _b64.b64encode(img).decode("ascii")
     _components.html(f"""
-<div id="w" style="width:100%;max-width:{height}px;aspect-ratio:1/1;
+<div id="w" style="width:100%;max-width:{height}px;height:{height}px;max-height:100%;aspect-ratio:1/1;
      margin:0 auto;overflow:hidden;background:#0b0c0e;border-radius:8px;
      cursor:grab;position:relative">
  <img id="m" src="{uri}" draggable="false"
@@ -234,7 +235,7 @@ def _pod(i: int):
         try:
             with st.spinner(""):
                 img, src = _frame(region, model, field, h, cycle_iso)
-            _viewer(img, height=int(560 * pod_pct / 100))
+            _viewer(img, height=pod_px)
             st.markdown(_colorbar(field), unsafe_allow_html=True)
             if src == "live":
                 st.caption("rendered on demand (not yet in the warm store)")
@@ -242,32 +243,35 @@ def _pod(i: int):
             st.warning(f"{label}: {type(exc).__name__}: {str(exc)[:160]}")
 
 
-_side = max(0.001, (100 - pod_pct) / 2)
-_spec = [_side, pod_pct / 2, pod_pct / 2, _side]
+_BANNER = ('<div style="font:700 15px DejaVu Sans Mono,monospace;color:#FFFFFF;'
+           '-webkit-text-fill-color:#FFFFFF;letter-spacing:.5px;margin:10px 0 6px 2px;'
+           'border-bottom:1px solid #333;padding-bottom:4px">{}</div>')
 
-_r1 = st.columns(_spec, gap="small")
-with _r1[1]:
-    _pod(0)
-with _r1[2]:
-    _pod(1)
+# THREE PODS PER ROW, always: st.columns keeps three columns at any
+# window width, so the maps shrink rather than wrap. Each pod is the
+# size of its map (the viewer fills the column and stays square).
+st.markdown(_BANNER.format("NORTHEAST / MID-ATLANTIC"), unsafe_allow_html=True)
+_r1 = st.columns(3, gap="small")
+for _i in range(3):
+    with _r1[_i]:
+        _pod(_i)
 
-_s1, _s2, _s3 = st.columns([_side, pod_pct, _side], gap="small")
-with _s2:
-    _sa, _sb = st.columns([5, 1.2])
-    with _sa:
-        st.slider("Forecast hour", 1, max_fhr, min(fhr, max_fhr),
-                  key="cam_fhr", label_visibility="collapsed")
-    with _sb:
-        st.markdown(
-            f'<div style="font:bold 13px DejaVu Sans Mono,monospace;'
-            f'color:{_INK2};margin-top:10px">f{fhr:02d}</div>',
-            unsafe_allow_html=True)
+# THE HOUR, between the rows: one slider for all six pods.
+_sa, _sb = st.columns([5, 1.2])
+with _sa:
+    st.slider("Forecast hour", 1, max_fhr, min(fhr, max_fhr),
+              key="cam_fhr", label_visibility="collapsed")
+with _sb:
+    st.markdown(
+        f'<div style="font:bold 13px DejaVu Sans Mono,monospace;'
+        f'color:{_INK2};margin-top:10px">f{fhr:02d}</div>',
+        unsafe_allow_html=True)
 
-_r2 = st.columns(_spec, gap="small")
-with _r2[1]:
-    _pod(2)
-with _r2[2]:
-    _pod(3)
+st.markdown(_BANNER.format("FLORIDA"), unsafe_allow_html=True)
+_r2 = st.columns(3, gap="small")
+for _i in range(3):
+    with _r2[_i]:
+        _pod(_i + 3)
 
 st.caption(
     "One run and one forecast hour for all four pods; RRFS pods snap to "
