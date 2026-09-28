@@ -110,35 +110,28 @@ def _category_strip(d, models, times, obs=(), font_px=12) -> str:
         last_day = t.day
         hdr.append(f'<th style="{head}">{day}{t:%H}</th>')
 
-    def _cat_cell(cat, sub=""):
+    def _cat_cell(cat, tip=""):
+        """One-line cell as before; the numbers behind the category are
+        the mouse-over (28 Sep)."""
         col = CAT.get(cat, "#8A93A6")
-        small = (f'<div style="font-size:{max(7, hf - 5)}px;font-weight:700;'
-                 f'line-height:1.1">{sub}</div>' if sub else "")
         return (f'<td style="{cell};background:{col};color:#000000;'
-                f'-webkit-text-fill-color:#000000">{cat}{small}</td>')
+                f'-webkit-text-fill-color:#000000;cursor:default"'
+                f' title="{tip}">{cat}</td>')
 
-    def _cv_text(cig, unl, vis):
-        """'300ft 1/2sm' under the category - the numbers behind it."""
+    def _cv_tip(cig, unl, vis):
         c = None if (unl or cig is None or (isinstance(cig, float) and math.isnan(cig))) else float(cig)
         v = None if (vis is None or (isinstance(vis, float) and math.isnan(vis))) else float(vis)
-        if c is None:
-            ct = "UNL"
-        elif c >= 10000:
-            ct = "10k+"
-        else:
-            ct = f"{int(round(c / 100.0) * 100)}ft"
+        ct = "no ceiling" if c is None else f"ceiling {int(round(c / 100.0) * 100):,} ft"
         if v is None:
             vt = ""
         elif v >= 10:
-            vt = "10sm"
+            vt = "vis 10+ sm"
         elif v < 1:
             q = max(1, int(round(v * 4)))
-            vt = {1: "1/4", 2: "1/2", 3: "3/4", 4: "1"}[q] + "sm"
-        elif v < 3:
-            vt = f"{round(v * 2) / 2:g}sm"
+            vt = "vis " + {1: "1/4", 2: "1/2", 3: "3/4", 4: "1"}[q] + " sm"
         else:
-            vt = f"{int(round(v))}sm"
-        return f"{ct} {vt}".strip()
+            vt = f"vis {round(v * 2) / 2:g} sm"
+        return f"{ct}  \u00b7  {vt}" if vt else ct
 
     beyond = (f'<td style="{cell};background:#101418;color:{MUTED};'
               f'-webkit-text-fill-color:{MUTED};font-size:{max(7, hf - 4)}px">'
@@ -168,8 +161,8 @@ def _category_strip(d, models, times, obs=(), font_px=12) -> str:
                 continue
             _u = bool(r.get("ceiling_unlimited", False))
             cat = _flight_cat(r.get("ceiling_ft"), _u, r.get("vsby_sm"))
-            cells.append(_cat_cell(cat, _cv_text(r.get("ceiling_ft"), _u,
-                                                 r.get("vsby_sm"))))
+            cells.append(_cat_cell(cat, f"{m.replace('_', ' ')} {t:%d/%HZ}: "
+                                   + _cv_tip(r.get("ceiling_ft"), _u, r.get("vsby_sm"))))
         rows.append(f'<tr><td style="{rowlab}">{m.replace("_", " ")}</td>'
                     + "".join(cells) + "</tr>")
     if obs:
@@ -190,7 +183,7 @@ def _category_strip(d, models, times, obs=(), font_px=12) -> str:
                 continue
             o = cand[-1]
             cells.append(_cat_cell(_flight_cat(o[1], o[2], o[3]),
-                                   _cv_text(o[1], o[2], o[3])))
+                                   f"OBS {o[0]:%d/%H%MZ}: " + _cv_tip(o[1], o[2], o[3])))
         rows.append(f'<tr><td style="{rowlab}">OBS</td>'
                     + "".join(cells) + "</tr>")
     return (f'<div style="overflow-x:auto"><table style="border-collapse:'
