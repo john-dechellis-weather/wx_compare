@@ -16,19 +16,33 @@ quota. So a warmer thread fetches a FIXED tile set for the domain,
 stitches each set into one WebP under static/, and the page shows
 those. The key never leaves the server and the spend is predictable.
 
-28 SEP: five fields, an hourly timeline to +24 h then 3-hourly to
+28 SEP: seven fields, an hourly timeline to +24 h then 3-hourly to
 +72 h (40 forecast steps), layers that stack, and ONE model - NextGen
 (see MODELS). Budget against the 9,000/day cap, CONUS at zoom 4 (8
 tiles):
 
-    forecast pass   8 tiles x 40 steps x 5 fields = 1,600,
-                    every TIO_FCST_MIN (360) min             -> 6,400/day
-    "now" frame     8 tiles x 5 fields,
-                    every TIO_NOW_MIN (60) min               ->   960/day
+    forecast pass   8 tiles x 40 steps x 7 fields = 2,240,
+                    every TIO_FCST_MIN (480) min             -> 6,720/day
+    "now" frame     8 tiles x 7 fields,
+                    every TIO_NOW_MIN (60) min               -> 1,344/day
     station points  one /v4/timelines call per station (~79),
                     every TIO_PT_MIN (180) min               ->   632/day
                                                                 ---------
-                                                                 7,992/day
+                                                                 8,696/day
+
+HIGH-RESOLUTION HUBS (TIO_HIRES=on, off by default - there is no room
+under 9,000): "now" frames at zoom TIO_HIRES_ZOOM (6) for the boxes in
+TIO_HIRES_HUBS, for the fields in TIO_HIRES_FIELDS, every
+TIO_HIRES_MIN (30) min. The viewer shows them over the CONUS frame
+once the map is zoomed past 5.5. Northeast + Florida at zoom 6 is
+~14 + 6 tiles; one field every 30 min is ~960/day, so the cap needs
+to move to ~10,000 for one field, ~16,000 for all seven.
+
+NOAA POINT SERIES (no tomorrow.io spend): for the 14 compare-warmer
+hubs the meteogram can overlay NBM ceiling / visibility / wind from
+the Station Forecast frames and REFS P(CIG < 1000 ft) / P(VIS < 3 sm)
+from core.refs_point, built into static/tio_noaa.json by this
+warmer as each cycle lands.
 
 The station points feed the 2-PANEL mode: click a station dot and the
 right panel draws a meteogram of the layers that are switched on,
@@ -62,6 +76,8 @@ Env
                          shows a switch. Overrides TIO_MODEL_QUERY.
     TIO_NOW_MIN / TIO_FCST_MIN / TIO_NOW_ZOOM / TIO_FCST_ZOOM
     TIO_PT_MIN           station-point refresh (180); TIO_POINTS=off skips
+    TIO_HIRES / TIO_HIRES_HUBS / TIO_HIRES_ZOOM / TIO_HIRES_FIELDS / TIO_HIRES_MIN
+    TIO_NOAA=off         skip the NBM / REFS point series
     TIO_DAILY_CAP
 """
 
@@ -87,11 +103,14 @@ TILE = 256
 # on top, the ceiling and visibility fills sit underneath.
 FIELDS = [f.strip() for f in os.environ.get(
     "TIO_FIELDS",
-    "precipitationReflectivity,cloudCeiling,visibility,windSpeed,windGust"
+    "precipitationReflectivity,precipitationIntensity,thunderstormProbability,"
+    "cloudCeiling,visibility,windSpeed,windGust"
 ).split(",") if f.strip()]
 FIELD_LABEL = {
     "precipitationReflectivity": "Precipitation reflectivity",
     "precipitationIntensity": "Precipitation intensity",
+    "thunderstormProbability": "Thunderstorm probability",
+    "windDirection": "Wind direction",
     "precipitationType": "Precipitation type",
     "cloudCover": "Cloud cover",
     "windSpeed": "Wind speed",
@@ -122,7 +141,7 @@ def _steps() -> list:
 
 FCST_HOURS = _steps()
 NOW_MIN = int(os.environ.get("TIO_NOW_MIN", "60"))
-FCST_MIN = int(os.environ.get("TIO_FCST_MIN", "360"))
+FCST_MIN = int(os.environ.get("TIO_FCST_MIN", "480"))
 NOW_ZOOM = int(os.environ.get("TIO_NOW_ZOOM", "4"))
 FCST_ZOOM = int(os.environ.get("TIO_FCST_ZOOM", "4"))
 DAILY_CAP = int(os.environ.get("TIO_DAILY_CAP", "9000"))
@@ -132,7 +151,46 @@ POINTS_ON = os.environ.get("TIO_POINTS", "on").lower() != "off"
 # Tile layer -> timelines field. The reflectivity tile has no point
 # equivalent, so the meteogram shows precipitation intensity for it.
 POINT_FIELD = {"precipitationReflectivity": "precipitationIntensity"}
+# Extra point-only fields for the meteogram menu (no tile).
+POINT_EXTRA = ["windDirection"]
 PT_MAX_H = int(os.environ.get("TIO_FCST_MAX", "72"))
+
+
+def point_fields() -> list:
+    out = []
+    for f in [POINT_FIELD.get(f, f) for f in FIELDS] + POINT_EXTRA:
+        if f not in out:
+            out.append(f)
+    return out
+
+
+# High-resolution hub "now" frames. "key:w,s,e,n|key:w,s,e,n".
+HIRES_ON = os.environ.get("TIO_HIRES", "off").lower() == "on"
+HIRES_ZOOM = int(os.environ.get("TIO_HIRES_ZOOM", "6"))
+HIRES_MIN = int(os.environ.get("TIO_HIRES_MIN", "30"))
+HIRES_FIELDS = [f.strip() for f in os.environ.get(
+    "TIO_HIRES_FIELDS", "precipitationReflectivity").split(",") if f.strip()]
+
+
+def _parse_hubs() -> dict:
+    raw = os.environ.get("TIO_HIRES_HUBS",
+                         "NE:-80.5,38,-69,45.5|FL:-84,24.2,-79,31")
+    out = {}
+    for part in raw.split("|"):
+        if ":" not in part:
+            continue
+        k, box = part.split(":", 1)
+        try:
+            w, s_, e, n = [float(x) for x in box.split(",")]
+            out[k.strip()] = (w, s_, e, n)
+        except ValueError:
+            continue
+    return out
+
+
+HIRES_HUBS = _parse_hubs()
+NOAA_ON = os.environ.get("TIO_NOAA", "on").lower() != "off"
+NOAA_MIN = int(os.environ.get("TIO_NOAA_MIN", "20"))
 
 
 def _parse_models() -> dict:
@@ -233,17 +291,19 @@ def _y2lat(y, z):
     return math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / (1 << z)))))
 
 
-def tile_grid(z: int):
-    """(x0, x1, y0, y1, bounds) for the domain at zoom z. bounds is
-    [w, s, e, n] of the whole tile block - the image corners."""
-    x0, x1 = _lon2x(W, z), _lon2x(E - 1e-9, z)
-    y0, y1 = _lat2y(N, z), _lat2y(S + 1e-9, z)
+def tile_grid(z: int, box=None):
+    """(x0, x1, y0, y1, bounds) for the domain (or `box` = w, s, e, n)
+    at zoom z. bounds is [w, s, e, n] of the whole tile block - the
+    image corners."""
+    w, s_, e, n = box or (W, S, E, N)
+    x0, x1 = _lon2x(w, z), _lon2x(e - 1e-9, z)
+    y0, y1 = _lat2y(n, z), _lat2y(s_ + 1e-9, z)
     bounds = [_x2lon(x0, z), _y2lat(y1 + 1, z), _x2lon(x1 + 1, z), _y2lat(y0, z)]
     return x0, x1, y0, y1, bounds
 
 
-def tile_count(z: int) -> int:
-    x0, x1, y0, y1, _ = tile_grid(z)
+def tile_count(z: int, box=None) -> int:
+    x0, x1, y0, y1, _ = tile_grid(z, box)
     return (x1 - x0 + 1) * (y1 - y0 + 1)
 
 
@@ -257,7 +317,11 @@ def daily_estimate() -> int:
         # station count without reading the file: 72 JBU + 7 alternates
         # in the box today; the log line has the real number
         pt = 79 * (1440 // max(1, PT_MIN))
-    return fc + nw + pt
+    hr = 0
+    if HIRES_ON:
+        hr = sum(tile_count(HIRES_ZOOM, b) for b in HIRES_HUBS.values()) \
+            * len(HIRES_FIELDS) * (1440 // max(1, HIRES_MIN))
+    return fc + nw + pt + hr
 
 
 def _fetch_tile(z, x, y, field, tstr, key, query=""):
@@ -347,9 +411,12 @@ def _save_manifest(outdir, man):
     os.replace(tmp, p)
 
 
-def build_frame(outdir, model: str, field: str, step: int, z: int) -> dict:
+def build_frame(outdir, model: str, field: str, step: int, z: int,
+                hub: str = None) -> dict:
     """Fetch and stitch one frame. step 0 = now; otherwise hours
-    ahead, on the hour. Returns the manifest entry."""
+    ahead, on the hour. `hub` = a HIRES_HUBS key: that box instead of
+    CONUS, filed under manifest[model]["hires:<hub>"][field]. Returns
+    the manifest entry."""
     from PIL import Image
 
     key = api_key()
@@ -357,7 +424,7 @@ def build_frame(outdir, model: str, field: str, step: int, z: int) -> dict:
         raise RuntimeError("no TOMORROWIO_API_KEY")
     outdir = Path(outdir)
     _label, query = MODELS[model]
-    x0, x1, y0, y1, bounds = tile_grid(z)
+    x0, x1, y0, y1, bounds = tile_grid(z, HIRES_HUBS[hub] if hub else None)
     now = datetime.now(timezone.utc)
     if step == 0:
         tstr, valid = "now", now
@@ -381,26 +448,30 @@ def build_frame(outdir, model: str, field: str, step: int, z: int) -> dict:
         img.paste(Image.open(io.BytesIO(b)).convert("RGBA"),
                   ((x - x0) * TILE, (y - y0) * TILE))
     stamp = now.strftime("%Y%m%d-%H%M")
-    name = f"tio_{model}_{field}_{step:02d}_{stamp}.webp"
+    tag = f"{model}_{field}" if not hub else f"{model}_h{hub}_{field}"
+    name = f"tio_{tag}_{step:02d}_{stamp}.webp"
     tmp = outdir / f".{name}.tmp"
     img.save(tmp, "WEBP", quality=88, method=4)
     os.replace(tmp, outdir / name)
     ent = {"name": name, "model": model, "field": field, "step": step,
-           "zoom": z,
+           "zoom": z, "hub": hub or "",
            "valid": valid.strftime("%Y-%m-%dT%H:%MZ"),
            "built": now.strftime("%Y-%m-%dT%H:%MZ"),
            "bounds": bounds, "px": [img.width, img.height]}
     man = manifest(outdir)
-    man.setdefault(model, {}).setdefault(field, {})[str(step)] = ent
+    if hub:
+        man.setdefault(model, {}).setdefault(f"hires:{hub}", {}).setdefault(field, {})[str(step)] = ent
+    else:
+        man.setdefault(model, {}).setdefault(field, {})[str(step)] = ent
     _save_manifest(outdir, man)
     # prune older frames of this model/field/step
-    olds = sorted(outdir.glob(f"tio_{model}_{field}_{step:02d}_*.webp"))
+    olds = sorted(outdir.glob(f"tio_{tag}_{step:02d}_*.webp"))
     for p in olds[:-KEEP_FRAMES]:
         try:
             p.unlink()
         except Exception:
             pass
-    _log(outdir, f"{model} {field} +{step:02d}h z{z} {n} tiles "
+    _log(outdir, f"{model} {(hub + ' ') if hub else ''}{field} +{step:02d}h z{z} {n} tiles "
                  f"{time.time() - t0:.1f}s -> {name} "
                  f"({(outdir / name).stat().st_size // 1024} KB), "
                  f"day {usage(outdir)['count']}/{DAILY_CAP}")
@@ -463,7 +534,7 @@ def build_points(outdir, model) -> int:
         raise RuntimeError("no TOMORROWIO_API_KEY")
     outdir = Path(outdir)
     _label, query = MODELS[model]
-    fields = sorted({POINT_FIELD.get(f, f) for f in FIELDS})
+    fields = point_fields()
     pts = _points(outdir)
     u = usage(outdir)
     if u["count"] + len(pts) > DAILY_CAP:
@@ -497,6 +568,107 @@ def build_points(outdir, model) -> int:
                  + (f", {len(bad)} failed ({bad[0]})" if bad else "")
                  + f", day {usage(outdir)['count']}/{DAILY_CAP}")
     return len(got)
+
+
+def _hires_pass(outdir, model):
+    for hub in HIRES_HUBS:
+        for field in HIRES_FIELDS:
+            try:
+                build_frame(outdir, model, field, 0, HIRES_ZOOM, hub=hub)
+            except Exception as exc:
+                STATUS["err"] = f"{type(exc).__name__}: {exc}"
+                _log(outdir, f"FAILED {model} hires {hub} {field}: {STATUS['err']}")
+                if "daily cap" in str(exc):
+                    return
+
+
+# ------------------------------------------------------------ NOAA points
+
+def _noaa_path(outdir):
+    return Path(outdir) / "tio_noaa.json"
+
+
+def noaa(outdir) -> dict:
+    try:
+        return json.loads(_noaa_path(outdir).read_text())
+    except Exception:
+        return {}
+
+
+def build_noaa(outdir) -> str:
+    """NBM (from the compare-warmer frames) and REFS probabilities
+    (core.refs_point) for the compare hubs, into tio_noaa.json. No
+    tomorrow.io spend. Returns a one-line summary."""
+    import math as _m
+
+    from core import compare_warm as CW
+    from core.hrrr_cam import latest_cycle
+    from core import refs_point as RP
+
+    cache_root = Path("/opt/render/project/src/cache")
+    if not cache_root.exists():
+        cache_root = Path("/tmp/wx_compare_cache")
+    cyc = CW.latest_cycle(cache_root)
+    doc = noaa(outdir)
+    out = {"nbm_cycle": cyc, "refs_cycle": doc.get("refs_cycle"),
+           "built": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
+           "stations": doc.get("stations", {})}
+    n_nbm = 0
+    if cyc and cyc != doc.get("nbm_cycle"):
+        for icao in CW.HUBS:
+            got = CW.read_frame(cache_root, icao, cyc)
+            if not got:
+                continue
+            df, _ = got
+            dm = df[(df["model"] == "NBM") & (df["station_id"] == icao)].sort_values("valid_time")
+            if not len(dm):
+                continue
+            sid = icao[1:] if icao[0] in "KCT" and len(icao) == 4 else icao
+
+            def col(name):
+                if name not in dm.columns:
+                    return [None] * len(dm)
+                return [None if (v is None or (isinstance(v, float) and _m.isnan(v))) else float(v)
+                        for v in dm[name].tolist()]
+            unl = [bool(u) for u in (dm["ceiling_unlimited"].tolist()
+                                     if "ceiling_unlimited" in dm.columns else [False] * len(dm))]
+            cig = [None if u else c for c, u in zip(col("ceiling_ft"), unl)]
+            out["stations"].setdefault(sid, {})["nbm"] = {
+                "t": [pd_ts.strftime("%Y-%m-%dT%H:%M:%SZ") for pd_ts in dm["valid_time"]],
+                "cloudCeiling_ft": cig, "visibility_sm": col("vsby_sm"),
+                "windSpeed_kt": col("wind_speed_kt"), "windGust_kt": col("wind_gust_kt"),
+                "windDirection": col("wind_dir_deg")}
+            n_nbm += 1
+        out["nbm_cycle"] = cyc
+    n_refs = 0
+    try:
+        rc = latest_cycle("refs_prob", 12)
+    except Exception:
+        rc = None
+    if rc and rc.isoformat() != doc.get("refs_cycle"):
+        hours = list(range(1, 37))
+        for icao, la, lo in _points(outdir):
+            full = ("K" + icao) if len(icao) == 3 else icao
+            if full not in CW.HUBS:
+                continue
+            try:
+                got = RP.sample(la, lo, rc, hours,
+                                products=["PROB_CIG1000", "PROB_VIS3"], max_workers=6)
+            except Exception:
+                continue
+            ts = [(rc + timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ") for h in hours]
+            out["stations"].setdefault(icao, {})["refs"] = {
+                "t": ts, "p_cig1000": [got["PROB_CIG1000"].get(h) for h in hours],
+                "p_vis3": [got["PROB_VIS3"].get(h) for h in hours]}
+            n_refs += 1
+        out["refs_cycle"] = rc.isoformat()
+    p = _noaa_path(outdir)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(out))
+    os.replace(tmp, p)
+    msg = f"noaa: nbm {n_nbm} stations ({cyc}), refs {n_refs} stations ({out['refs_cycle']})"
+    _log(outdir, msg)
+    return msg
 
 
 def _pass(outdir, model, steps):
@@ -537,7 +709,7 @@ def _loop(outdir):
                  f"(to +{FCST_HOURS[-1] if FCST_HOURS else 0}h) models={list(MODELS)} "
                  f"now z{NOW_ZOOM}/{NOW_MIN}min fcst z{FCST_ZOOM}/{FCST_MIN}min "
                  f"~{daily_estimate()}/day, cap {DAILY_CAP}/day")
-    next_now = next_fc = next_pt = 0.0
+    next_now = next_fc = next_pt = next_hr = next_noaa = 0.0
     last_model = None
 
     def _pts(model):
@@ -557,12 +729,21 @@ def _loop(outdir):
             # first pass, or the page switched model: full re-warm
             _log(outdir, f"model -> {model}: full pass")
             last_model = model
-            next_fc = next_pt = 0.0
+            next_fc = next_pt = next_hr = 0.0
         if t >= next_pt:
             # points first: 79 small calls, and the meteogram is
             # usable before the first forecast frames land
             _pts(model)
             next_pt = time.time() + PT_MIN * 60
+        if NOAA_ON and t >= next_noaa:
+            try:
+                build_noaa(outdir)
+            except Exception as exc:
+                _log(outdir, f"FAILED noaa: {type(exc).__name__}: {exc}")
+            next_noaa = time.time() + NOAA_MIN * 60
+        if HIRES_ON and t >= next_hr:
+            _hires_pass(outdir, model)
+            next_hr = time.time() + HIRES_MIN * 60
         if t >= next_fc:
             _pass(outdir, model, [0] + FCST_HOURS)
             next_now = time.time() + NOW_MIN * 60
@@ -615,7 +796,7 @@ def stations_geojson(static_dir) -> dict:
 
 
 def map_html(man: dict, base: str, stations: dict, height: int = 860,
-             model: str = None, pt_built: str = "") -> str:
+             model: str = None, pt_built: str = "", noaa_built: str = "") -> str:
     """MapLibre page: CARTO dark vector basemap, the active model's
     warmed frames as image sources (added lazily, first time a layer
     and hour are shown), layer toggles with their own opacity, an
@@ -631,18 +812,37 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
             if e:
                 frames.append({"url": f"{base}/app/static/{e['name']}?v={e['built']}",
                                "field": field, "step": step, "valid": e["valid"],
-                               "built": e["built"], "b": e["bounds"]})
+                               "built": e["built"], "b": e["bounds"], "hub": ""})
+    # High-resolution hub frames ("now" only): same field, drawn over
+    # the CONUS frame once the map is zoomed in.
+    for k, v in mman.items():
+        if not k.startswith("hires:"):
+            continue
+        for field, steps in v.items():
+            for step, e in steps.items():
+                frames.append({"url": f"{base}/app/static/{e['name']}?v={e['built']}",
+                               "field": field, "step": int(step), "valid": e["valid"],
+                               "built": e["built"], "b": e["bounds"], "hub": k[6:]})
     style = os.environ.get(
         "BLUEMET_MAP_STYLE",
         "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json")
     labels = {f: FIELD_LABEL.get(f, f) for f in FIELDS}
     pt_url = f"{base}/app/static/tio_pt_{model}.json?v={pt_built}" if pt_built else ""
-    # Layer rows: checkbox + opacity. Precipitation on by default.
+    noaa_url = f"{base}/app/static/tio_noaa.json?v={noaa_built}" if noaa_built else ""
+    # GENERAL WEATHER menu: one row per layer, checkbox + opacity.
+    # Precipitation reflectivity on by default.
     rows = "".join(
-        f'<span class="ly"><label><input type="checkbox" data-f="{f}"'
+        f'<div class="ly"><label><input type="checkbox" data-f="{f}"'
         f'{" checked" if i == 0 else ""}> {labels[f]}</label>'
-        f'<input type="range" data-f="{f}" min="10" max="100" value="{85 if i == 0 else 70}"></span>'
+        f'<input type="range" data-f="{f}" min="10" max="100" value="{85 if i == 0 else 70}"></div>'
         for i, f in enumerate(FIELDS))
+    # METEOGRAM menu: the point fields, up to four at once, none by
+    # default - the panel is empty until an element is picked.
+    pf = point_fields()
+    plabels = {f: FIELD_LABEL.get(f, f) for f in pf}
+    mrows = "".join(
+        f'<div class="ly"><label><input type="checkbox" class="mgf" data-f="{f}"> {plabels[f]}</label></div>'
+        for f in pf)
     steps_all = [0] + FCST_HOURS
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css">
@@ -663,9 +863,16 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
  .bar button{{font:bold 12px "DejaVu Sans Mono",monospace;background:#0A0A0A;color:#fff;border:1px solid #333;border-radius:6px;padding:5px 10px}}
  .bar button.on{{border-color:#00E5FF;background:#1C1C22}}
  .bar input[type=range]{{accent-color:#00E5FF}}
- .ly{{display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border:1px solid #333;border-radius:6px;background:#0A0A0A}}
- .ly input[type=range]{{width:56px}} .ly label{{color:#fff;cursor:pointer}}
+ .dd{{position:relative;display:inline-block}}
+ .dd > summary{{list-style:none;cursor:pointer;font:bold 12px "DejaVu Sans Mono",monospace;background:#0A0A0A;color:#fff;border:1px solid #333;border-radius:6px;padding:5px 10px}}
+ .dd > summary::-webkit-details-marker{{display:none}}
+ .dd[open] > summary{{border-color:#00E5FF}}
+ .dd .menu{{position:absolute;top:34px;left:0;z-index:20;background:#0A0A0A;border:1px solid #333;border-radius:8px;padding:6px;min-width:290px;display:flex;flex-direction:column;gap:4px;box-shadow:0 8px 24px rgba(0,0,0,.7)}}
+ .ly{{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:3px 8px;border:1px solid #222;border-radius:6px;background:#0A0A0A}}
+ .ly input[type=range]{{width:70px}} .ly label{{color:#fff;cursor:pointer}}
  .ly.off label{{color:#6E6E6E}} .ly.none label{{color:#FF00C8}}
+ #mgh .dd .menu{{min-width:240px}}
+ .nb{{color:#B388FF}} .rf{{color:#00E5FF}}
  #tm{{flex:1;min-width:160px}}
  #valid{{color:#FFD400;min-width:250px}} #built{{color:#B8B8B8}} #mdl{{color:#00E5FF}}
  label{{color:#B8B8B8}} .sp{{flex:1}}
@@ -673,7 +880,7 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
  .lg .d{{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;border:1px solid #000}}
 </style></head><body>
 <div class="bar">
-  <label>LAYERS</label>{rows}
+  <details class="dd" id="ddw"><summary id="ddws">General Weather &#9662;</summary><div class="menu">{rows}</div></details>
   <span class="sp"></span><span id="mdl">{model_label(model)}</span>
   <button id="bst" class="on">Stations</button><button id="balt" class="on">CA alternates</button>
   <button id="bfit">Fit</button><button id="b2" title="Map + meteogram of the layers that are on, for a station you click">2-panel</button>
@@ -694,6 +901,8 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
  <span style="color:#6E6E6E">tomorrow.io {model_label(model)} tiles · CONUS · hourly to +{int(os.environ.get("TIO_FCST_HOURLY_TO", "24"))} h, 3-hourly to +{FCST_HOURS[-1] if FCST_HOURS else 0} h</span></div></div>
 <div id="mg">
   <div id="mgh"><label>STATION</label><select id="mgsel"><option value="">click a dot…</option></select>
+    <details class="dd" id="ddm"><summary id="ddms">Elements &#9662;</summary><div class="menu">{mrows}
+      <div style="color:#6E6E6E;font-weight:normal;padding:2px 8px">up to four &middot; NBM (purple) and REFS (cyan) join for ceiling, visibility and wind at the compare hubs</div></div></details>
     <span id="mgt"></span><span class="sp"></span><span id="mgs"></span></div>
   <div id="mgc"></div><div id="mgn"></div>
 </div>
@@ -704,8 +913,11 @@ const ST = {json.dumps(stations)};
 const FIELDS = {json.dumps(FIELDS)};
 const STEPS = {json.dumps(steps_all)};
 const PT_URL = {json.dumps(pt_url)};
-const LABELS = {json.dumps(labels)};
+const NOAA_URL = {json.dumps(noaa_url)};
+const LABELS = {json.dumps({**labels, **plabels})};
 const PT_FIELD = {json.dumps({f: POINT_FIELD.get(f, f) for f in FIELDS})};
+const PFIELDS = {json.dumps(pf)};
+const HIRES_MINZOOM = 5.5;
 const BB = [[{W},{S}],[{E},{N}]];
 const map = new maplibregl.Map({{container:'m', style:{json.dumps(style)},
   bounds:BB, fitBoundsOptions:{{padding:8}}, minZoom:2.2, maxZoom:9,
@@ -716,8 +928,9 @@ let ready = false, ti = 0, timer = null;
 const on = {{}}, op = {{}};
 document.querySelectorAll('.ly input[type=checkbox]').forEach(c => {{ on[c.dataset.f] = c.checked; c.onchange = () => {{ on[c.dataset.f] = c.checked; draw(); }}; }});
 document.querySelectorAll('.ly input[type=range]').forEach(r => {{ op[r.dataset.f] = +r.value / 100; r.oninput = () => {{ op[r.dataset.f] = +r.value / 100; draw(); }}; }});
-function key(f) {{ return 'tio_' + f.field + '_' + f.step; }}
-function frame(field, step) {{ return F.find(f => f.field === field && f.step === step); }}
+function key(f) {{ return 'tio_' + (f.hub ? f.hub + '_' : '') + f.field + '_' + f.step; }}
+function frame(field, step) {{ return F.find(f => f.field === field && f.step === step && !f.hub); }}
+function hubFrames(field, step) {{ return F.filter(f => f.field === field && f.step === step && f.hub); }}
 // Frames become map sources the first time they are shown, not all
 // at page load: 5 fields x 57 steps is a lot of WebP to pull for a
 // viewer who only looks at the next six hours.
@@ -732,11 +945,12 @@ function ensure(f) {{
   // 'wx-top' is an empty anchor layer added at load: weather sits under
   // it, the airspace overlays and station dots above it
   const before = map.getLayer('wx-top') ? 'wx-top' : (map.getLayer('st-dot') ? 'st-dot' : undefined);
-  map.addLayer({{id:key(f), type:'raster', source:key(f),
+  map.addLayer({{id:key(f), type:'raster', source:key(f), minzoom: f.hub ? HIRES_MINZOOM : 0,
     paint:{{'raster-opacity':0, 'raster-fade-duration':0, 'raster-resampling':'linear'}}}}, before);
   // re-order: later fields in FIELDS go UNDER earlier ones
   const shown = [...added].filter(k => map.getLayer(k));
-  shown.sort((a, b) => FIELDS.indexOf(a.split('_')[1]) - FIELDS.indexOf(b.split('_')[1]));
+  const fi = k => {{ const p = k.split('_'); const hub = p.length > 3; const f = p[hub ? 2 : 1]; return FIELDS.indexOf(f) * 2 + (hub ? 0 : 1); }};
+  shown.sort((a, b) => fi(a) - fi(b));
   // moveLayer(id, beforeId): walk from the bottom-most field up
   for (let i = shown.length - 1; i >= 0; i--) map.moveLayer(shown[i], before);
 }}
@@ -750,10 +964,12 @@ function draw() {{
     box.classList.toggle('off', !on[field]);
     box.classList.toggle('none', on[field] && !f);
     if (!on[field] || !f) return;
-    if (ready) {{ ensure(f); visible.add(key(f)); }}
+    if (ready) {{ ensure(f); visible.add(key(f)); hubFrames(field, step).forEach(h => {{ ensure(h); visible.add(key(h)); }}); }}
     if (!valid) {{ valid = f.valid; built = f.built; }}
   }});
-  if (ready) added.forEach(k => {{ if (map.getLayer(k)) map.setPaintProperty(k, 'raster-opacity', visible.has(k) ? op[k.split('_')[1]] : 0); }});
+  if (ready) added.forEach(k => {{ if (map.getLayer(k)) {{ const p = k.split('_'); const fld = p[p.length > 3 ? 2 : 1]; map.setPaintProperty(k, 'raster-opacity', visible.has(k) ? op[fld] : 0); }} }});
+  const nOn = FIELDS.filter(f => on[f]).length;
+  $('ddws').innerHTML = 'General Weather' + (nOn ? ' <span style="color:#00E5FF">' + nOn + '</span>' : '') + ' &#9662;';
   $('valid').textContent = (step ? '+' + step + ' h' : 'now') + (valid ? '  valid ' + valid : '  (no frame yet)');
   $('built').textContent = built ? ' · built ' + built : '';
   if (two && PT && sel) drawMg();
@@ -763,7 +979,17 @@ function draw() {{
 // each, warmed server-side) drawn with plotly: one panel per layer
 // that is switched on, in the map's layer order, with the TIME
 // slider's hour as a cursor. Click a dot or pick from the list.
-let PT = null, two = false, sel = '';
+let PT = null, NOAA = null, two = false, sel = '';
+const mgOn = {{}};
+document.querySelectorAll('.mgf').forEach(c => c.onchange = () => {{
+  const n = PFIELDS.filter(f => mgOn[f]).length;
+  if (c.checked && n >= 4) {{ c.checked = false; return; }}
+  mgOn[c.dataset.f] = c.checked;
+  const m = PFIELDS.filter(f => mgOn[f]).length;
+  $('ddms').innerHTML = 'Elements' + (m ? ' <span style="color:#00E5FF">' + m + '</span>' : '') + ' &#9662;';
+  drawMg();
+}});
+const NOAA_FIELDS = new Set(['cloudCeiling', 'visibility', 'windSpeed', 'windDirection']);
 const KT = 1.943844, SM = 0.621371, FT = 3280.84;
 const CAT = {{VFR:'#00FF7F', MVFR:'#FFD400', IFR:'#FF8A00', LIFR:'#FF00C8'}};
 function cat(cig_ft, vis_sm) {{
@@ -775,20 +1001,47 @@ function cursorTime(st) {{
   const step = STEPS[ti]; const t = st.t;
   return t[Math.min(t.length - 1, step)] || t[0];
 }}
-// Panels for the layers that are on. Wind speed and gust share one.
+// Panels for the elements picked in the meteogram menu (its own set,
+// not the map's). Wind speed and gust share one. Where the station is
+// a compare hub, NBM (purple) rides along on ceiling / visibility /
+// wind, and REFS P(CIG<1000) / P(VIS<3) (cyan, right axis) on ceiling
+// and visibility. A trace is [name, y, colour, mode, x?, opts?].
 function panels(st) {{
+  const nb = (NOAA && NOAA.stations[sel] && NOAA.stations[sel].nbm) || null;
+  const rf = (NOAA && NOAA.stations[sel] && NOAA.stations[sel].refs) || null;
   const out = [], wind = [];
-  FIELDS.forEach(f => {{
-    if (!on[f]) return;
-    const pf = PT_FIELD[f], v = st[pf]; if (!v) return;
-    if (f === 'windSpeed' || f === 'windGust') {{ wind.push([f, v.map(x => x == null ? null : x * KT)]); return; }}
-    if (f === 'cloudCeiling') out.push({{title:'ceiling (ft)', log:true, traces:[[LABELS[f], v.map(x => x == null ? null : Math.min(25000, x * FT)), '#4FA8E8', 'lines+markers']]}});
-    else if (f === 'visibility') out.push({{title:'vis (sm)', range:[0, 10.5], traces:[[LABELS[f], v.map(x => x == null ? null : Math.min(10, x * SM)), '#B388FF', 'lines+markers']]}});
-    else out.push({{title: pf === 'precipitationIntensity' ? 'precip (mm/h)' : LABELS[f], bar:true, traces:[[LABELS[f], v, '#00E5FF', 'bar']]}});
+  PFIELDS.forEach(pf => {{
+    if (!mgOn[pf]) return;
+    const v = st[pf]; if (!v) return;
+    if (pf === 'windSpeed' || pf === 'windGust') {{
+      wind.push([pf, v.map(x => x == null ? null : x * KT)]);
+      if (nb && pf === 'windSpeed') wind.push(['NBM wind', nb.windSpeed_kt, '#B388FF', nb.t]);
+      if (nb && pf === 'windGust') wind.push(['NBM gust', nb.windGust_kt, '#B388FF', nb.t, 'dot']);
+      return;
+    }}
+    if (pf === 'cloudCeiling') {{
+      const tr = [[LABELS[pf], v.map(x => x == null ? null : Math.min(25000, x * FT)), '#4FA8E8', 'lines+markers']];
+      if (nb) tr.push(['NBM ceiling', nb.cloudCeiling_ft, '#B388FF', 'lines', nb.t]);
+      if (rf) tr.push(['REFS P(CIG<1000)', rf.p_cig1000, '#00E5FF', 'lines', rf.t, {{y2:true, dash:'dot'}}]);
+      out.push({{title:'ceiling (ft)', log:true, traces:tr, y2: rf ? 'P %' : null}});
+    }} else if (pf === 'visibility') {{
+      const tr = [[LABELS[pf], v.map(x => x == null ? null : Math.min(10, x * SM)), '#FFFFFF', 'lines+markers']];
+      if (nb) tr.push(['NBM vis', nb.visibility_sm, '#B388FF', 'lines', nb.t]);
+      if (rf) tr.push(['REFS P(VIS<3)', rf.p_vis3, '#00E5FF', 'lines', rf.t, {{y2:true, dash:'dot'}}]);
+      out.push({{title:'vis (sm)', range:[0, 10.5], traces:tr, y2: rf ? 'P %' : null}});
+    }} else if (pf === 'windDirection') {{
+      const tr = [[LABELS[pf], v, '#FFFFFF', 'markers']];
+      if (nb) tr.push(['NBM dir', nb.windDirection, '#B388FF', 'markers', nb.t]);
+      out.push({{title:'wind dir (\u00b0)', range:[0, 360], tick:90, traces:tr}});
+    }} else if (pf === 'thunderstormProbability') {{
+      out.push({{title:'tstorm (%)', range:[0, 100], traces:[[LABELS[pf], v, '#FFD400', 'lines+markers']]}});
+    }} else {{
+      out.push({{title: pf === 'precipitationIntensity' ? 'precip (mm/h)' : LABELS[pf], bar:true, traces:[[LABELS[pf], v, '#00E5FF', 'bar']]}});
+    }}
   }});
   if (wind.length) {{
     const cols = {{windSpeed:'#FFFFFF', windGust:'#FF8A00'}};
-    out.push({{title:'wind (kt)', rangemode:'tozero', traces: wind.map(([f, v]) => [LABELS[f], v, cols[f], 'lines+markers'])}});
+    out.push({{title:'wind (kt)', rangemode:'tozero', traces: wind.map(w => w.length > 2 ? [w[0], w[1], w[2], 'lines', w[3], w[4] ? {{dash:w[4]}} : null] : [LABELS[w[0]], w[1], cols[w[0]], 'lines+markers'])}});
   }}
   return out;
 }}
@@ -799,7 +1052,7 @@ function drawMg() {{
   const st = PT.stations[sel];
   if (!st) {{ note.textContent = 'click a station dot on the map'; box.innerHTML = ''; $('mgt').textContent = ''; return; }}
   const ps = panels(st);
-  if (!ps.length) {{ note.textContent = 'switch a layer on to see it here'; box.innerHTML = ''; return; }}
+  if (!ps.length) {{ note.textContent = 'pick up to four elements from the Elements menu'; box.innerHTML = ''; return; }}
   note.textContent = '';
   $('mgt').textContent = sel; $('mgs').textContent = PT.model + ' · built ' + PT.built + 'Z';
   const t = st.t.map(x => x.replace('Z', ''));
@@ -807,7 +1060,7 @@ function drawMg() {{
   const haveCat = cig && vis;
   const n = ps.length + (haveCat ? 1 : 0);
   const data = [], layout = {{paper_bgcolor:'#0A0A0A', plot_bgcolor:'#05070B', margin:{{l:52, r:14, t:8, b:34}},
-    font:{{color:'#B8B8B8', size:11, family:'DejaVu Sans Mono, monospace'}}, showlegend:false, hovermode:'x unified',
+    font:{{color:'#B8B8B8', size:11, family:'DejaVu Sans Mono, monospace'}}, showlegend:true, legend:{{orientation:'h', y:-0.06, font:{{size:9}}}}, hovermode:'x unified',
     shapes:[], annotations:[]}};
   let row = 1;
   const yax = (i) => 'y' + (i === 1 ? '' : i), xax = (i) => 'x' + (i === 1 ? '' : i);
@@ -821,14 +1074,18 @@ function drawMg() {{
   }}
   ps.forEach((p, k) => {{
     const i = row + k;
-    p.traces.forEach(([name, y, color, mode]) => data.push(mode === 'bar'
-      ? {{type:'bar', name, x:t, y, marker:{{color}}, xaxis:xax(i), yaxis:yax(i), width:3600e3}}
-      : {{type:'scatter', name, x:t, y, mode, line:{{color, width:2}}, marker:{{size:4}}, connectgaps:false, xaxis:xax(i), yaxis:yax(i)}}));
+    p.traces.forEach(([name, y, color, mode, xs, o]) => {{
+      const x = xs ? xs.map(v => v.replace('Z', '')) : t; o = o || {{}};
+      if (mode === 'bar') data.push({{type:'bar', name, x, y, marker:{{color}}, xaxis:xax(i), yaxis:yax(i), width:3600e3}});
+      else data.push({{type:'scatter', name, x, y, mode, line:{{color, width: name.startsWith('NBM') || name.startsWith('REFS') ? 1.5 : 2, dash:o.dash || 'solid'}},
+        marker:{{size: mode === 'markers' ? 5 : 4}}, connectgaps:false, xaxis:xax(i), yaxis: o.y2 ? 'y' + (i + 50) : yax(i)}});
+    }});
     const h = haveCat ? (1 - 0.07) / ps.length : 1 / ps.length;
     const top = (haveCat ? 1 - 0.07 : 1) - k * h;
     const ya = {{domain:[top - h + 0.035, top], anchor:xax(i), gridcolor:'#1A2233', zerolinecolor:'#1A2233', title:{{text:p.title, standoff:6}}}};
-    if (p.log) ya.type = 'log'; if (p.range) ya.range = p.range; if (p.rangemode) ya.rangemode = p.rangemode;
+    if (p.log) ya.type = 'log'; if (p.range) ya.range = p.range; if (p.rangemode) ya.rangemode = p.rangemode; if (p.tick) ya.dtick = p.tick;
     layout['yaxis' + (i === 1 ? '' : i)] = ya;
+    if (p.y2) layout['yaxis' + (i + 50)] = {{domain: ya.domain, anchor:xax(i), overlaying: yax(i), side:'right', range:[0, 100], showgrid:false, title:{{text:p.y2, standoff:4}}, tickfont:{{color:'#00E5FF'}}}};
     layout['xaxis' + (i === 1 ? '' : i)] = {{anchor:yax(i), gridcolor:'#1A2233', showticklabels: k === ps.length - 1, tickformat:'%HZ<br>%d', matches: k === ps.length - 1 ? undefined : xax(row + ps.length - 1)}};
     if (p.log) {{ [500, 1000, 3000].forEach(v => layout.shapes.push({{type:'line', xref:'paper', x0:0, x1:1, yref:yax(i), y0:v, y1:v, line:{{color:'#3A424C', width:1, dash:'dot'}}}})); }}
   }});
@@ -853,6 +1110,7 @@ $('b2').onclick = () => {{
   two = !two; $('b2').classList.toggle('on', two); document.body.classList.toggle('two', two);
   setTimeout(() => map.resize(), 30);
   if (two && !PT && PT_URL) fetch(PT_URL).then(r => r.json()).then(j => {{ PT = j; fillSel(); drawMg(); }}).catch(() => {{ $('mgn').textContent = 'station forecasts failed to load'; }});
+  if (two && !NOAA && NOAA_URL) fetch(NOAA_URL).then(r => r.json()).then(j => {{ NOAA = j; drawMg(); }}).catch(() => {{}});
   drawMg();
 }};
 // ---- airspace overlays -------------------------------------------------
@@ -945,5 +1203,6 @@ function applyFilter() {{
     map.setLayoutProperty(l, 'visibility', kinds.length ? 'visible' : 'none'); }});
 }}
 $('bfit').onclick = () => map.fitBounds(BB, {{padding:8}});
+document.addEventListener('click', e => {{ document.querySelectorAll('details.dd[open]').forEach(d => {{ if (!d.contains(e.target)) d.removeAttribute('open'); }}); }});
 draw();
 </script></body></html>"""

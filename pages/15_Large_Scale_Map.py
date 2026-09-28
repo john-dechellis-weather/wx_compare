@@ -129,9 +129,11 @@ def _body():
                    if TIO.STATUS.get("err") else ""))
     try:
         _pt = TIO.points(STATIC, _active)
+        _no = TIO.noaa(STATIC)
         html = TIO.map_html(man, base, TIO.stations_geojson(STATIC),
                             height=HEIGHT, model=_active,
-                            pt_built=_pt.get("built", ""))
+                            pt_built=_pt.get("built", ""),
+                            noaa_built=_no.get("built", ""))
         name = "tio_map.html"
         tmp = STATIC / f".{name}.tmp"
         tmp.write_text(html)
@@ -156,7 +158,9 @@ with st.expander("tomorrow.io warmer status", expanded=False):
                f"every {TIO.NOW_MIN} min  |  forecast {len(TIO.FCST_HOURS)} steps "
                f"to +{TIO.FCST_HOURS[-1] if TIO.FCST_HOURS else 0} h "
                f"z{TIO.FCST_ZOOM} ({TIO.tile_count(TIO.FCST_ZOOM)} tiles each) "
-               f"every {TIO.FCST_MIN} min  |  ~{TIO.daily_estimate():,}/day")
+               f"every {TIO.FCST_MIN} min  |  hi-res hubs "
+               f"{'on z' + str(TIO.HIRES_ZOOM) if TIO.HIRES_ON else 'off (TIO_HIRES=on)'}"
+               f"  |  ~{TIO.daily_estimate():,}/day")
     if TIO.STATUS.get("err"):
         st.error(TIO.STATUS["err"])
     lines = TIO.log_tail(STATIC, 15)
