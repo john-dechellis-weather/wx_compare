@@ -139,7 +139,10 @@ def _body():
     base = _origin()
     man = TIO.manifest(STATIC)
     n = sum(len(v) for v in (man.get(_active) or {}).values())
-    if not TIO.api_key():
+    if TIO.DEMO:
+        st.warning("TIO_DEMO=on: synthetic tiles and station series, no "
+                   "tomorrow.io calls. Remove the env var for live data.")
+    elif not TIO.api_key():
         st.error("TOMORROWIO_API_KEY is not set - the warmer cannot "
                  "fetch tiles.")
     elif n == 0:

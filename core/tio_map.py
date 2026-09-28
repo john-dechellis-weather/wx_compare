@@ -82,6 +82,10 @@ Env
     TIO_HIRES / TIO_SECTORS ("key:label:w,s,e,n|...") / TIO_HIRES_ZOOM /
     TIO_HIRES_FIELDS / TIO_HIRES_MIN
     TIO_NOAA=off         skip the NBM / REFS point series
+    TIO_DEMO=on          synthetic tiles and station series, no tomorrow.io
+                         calls, nothing charged - to exercise the page while
+                         the plan is exhausted or without a key. Frames are
+                         watermarked DEMO.
     TIO_DAILY_CAP
 """
 
@@ -244,6 +248,87 @@ _backoff = {"until": 0.0, "n": 0}
 
 class RateLimited(RuntimeError):
     pass
+
+
+DEMO = os.environ.get("TIO_DEMO", "off").lower() == "on"
+
+
+def _demo_tile(z, x, y, field, tstr) -> bytes:
+    """A 256 px PNG that looks like a weather tile: a few soft blobs
+    of the field's colour drifting east with the forecast hour, on a
+    transparent background. Deterministic per tile and hour."""
+    import hashlib
+    import io as _io
+
+    from PIL import Image, ImageDraw, ImageFilter
+
+    try:
+        hh = 0 if tstr == "now" else int(tstr[11:13]) + 24 * int(tstr[8:10])
+    except ValueError:
+        hh = 0
+    col = {"precipitationReflectivity": (40, 220, 60), "precipitationIntensity": (30, 140, 255),
+           "thunderstormProbability": (255, 200, 40), "cloudCeiling": (255, 80, 200),
+           "visibility": (255, 140, 0), "windSpeed": (120, 200, 255),
+           "windGust": (255, 60, 60)}.get(field, (200, 200, 200))
+    im = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    # world-pixel origin of this tile, so blobs continue across tiles
+    ox, oy = x * 256, y * 256
+    rng = int(hashlib.md5(f"{field}{z}".encode()).hexdigest()[:8], 16)
+    n_blobs = 14 * (4 ** max(0, z - 4))          # denser at higher zoom
+    for i in range(n_blobs):
+        rng = (rng * 1103515245 + 12345) & 0x7FFFFFFF
+        bx = (rng % (256 * (2 ** z)))
+        rng = (rng * 1103515245 + 12345) & 0x7FFFFFFF
+        by = (rng % (256 * (2 ** z)))
+        rng = (rng * 1103515245 + 12345) & 0x7FFFFFFF
+        r = 18 + rng % 60
+        bx = (bx + hh * 6) % (256 * (2 ** z))    # drift east
+        px, py = bx - ox, by - oy
+        if -r <= px <= 256 + r and -r <= py <= 256 + r:
+            a = 90 + (i * 37) % 120
+            d.ellipse([px - r, py - r, px + r, py + r], fill=col + (a,))
+    im = im.filter(ImageFilter.GaussianBlur(radius=6))
+    d = ImageDraw.Draw(im)
+    d.text((6, 240), f"DEMO {field[:6]} {tstr[:13]}", fill=(255, 255, 255, 140))
+    buf = _io.BytesIO()
+    im.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _demo_point(icao, lat, lon, fields) -> dict:
+    """Plausible hourly series for the meteogram, deterministic per
+    station, with a dip in ceiling and visibility mid-period."""
+    import hashlib
+    import math as _m
+
+    seed = int(hashlib.md5(icao.encode()).hexdigest()[:6], 16)
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    n = PT_MAX_H + 1
+    t = [(now + timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ") for h in range(n)]
+    out = {"t": t}
+    dip = 8 + seed % 20
+    for f in fields:
+        vals = []
+        for h in range(n):
+            w = _m.exp(-((h - dip) / 5.0) ** 2)
+            if f == "cloudCeiling":
+                v = max(0.1, 3.0 - 2.85 * w); v = None if v > 2.9 else v
+            elif f == "visibility":
+                v = max(0.4, 16.0 - 15.0 * w)
+            elif f == "windSpeed":
+                v = 4 + 8 * w + 2 * _m.sin(h / 3.0)
+            elif f == "windGust":
+                v = 6 + 12 * w + 3 * _m.sin(h / 3.0)
+            elif f == "windDirection":
+                v = (40 + h * 5 + seed % 90) % 360
+            elif f == "thunderstormProbability":
+                v = max(0.0, 70 * w - 10)
+            else:
+                v = 4.0 * w if w > 0.15 else 0.0
+            vals.append(None if v is None else round(v, 2))
+        out[f] = vals
+    return out
 
 
 def _persist(path) -> None:
@@ -427,6 +512,8 @@ def sector_estimate(key: str) -> int:
 
 
 def _fetch_tile(z, x, y, field, tstr, key, query=""):
+    if DEMO:
+        return _demo_tile(z, x, y, field, tstr)
     import requests
 
     url = (f"https://api.tomorrow.io/v4/map/tile/{z}/{x}/{y}/{field}/"
@@ -527,7 +614,7 @@ def build_frame(outdir, model: str, field: str, step: int, z: int,
     the manifest entry."""
     from PIL import Image
 
-    key = api_key()
+    key = api_key() or ("demo" if DEMO else "")
     if not key:
         raise RuntimeError("no TOMORROWIO_API_KEY")
     outdir = Path(outdir)
@@ -542,9 +629,10 @@ def build_frame(outdir, model: str, field: str, step: int, z: int,
         tstr = valid.strftime("%Y-%m-%dT%H:%M:%SZ")
     n = (x1 - x0 + 1) * (y1 - y0 + 1)
     u = usage(outdir)
-    if u["count"] + n > DAILY_CAP:
-        raise RuntimeError(f"daily cap: {u['count']}+{n} > {DAILY_CAP}")
-    _add_usage(outdir, n)          # charged up front; a failed tile still counts
+    if not DEMO:
+        if u["count"] + n > DAILY_CAP:
+            raise RuntimeError(f"daily cap: {u['count']}+{n} > {DAILY_CAP}")
+        _add_usage(outdir, n)      # charged up front; a failed tile still counts
     jobs = [(x, y) for y in range(y0, y1 + 1) for x in range(x0, x1 + 1)]
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=8) as ex:
@@ -621,6 +709,8 @@ def points(outdir, model) -> dict:
 def _fetch_point(icao, lat, lon, fields, key, query):
     """One /v4/timelines call: hourly, now to +PT_MAX_H h, metric.
     Returns {"t": [iso...], field: [values...]}."""
+    if DEMO:
+        return _demo_point(icao, lat, lon, fields)
     import requests
 
     url = f"https://api.tomorrow.io/v4/timelines?apikey={key}"
@@ -649,7 +739,7 @@ def _fetch_point(icao, lat, lon, fields, key, query):
 def build_points(outdir, model) -> int:
     """All stations' point forecasts for `model` into one JSON.
     Charged one request per station, up front, like the tiles."""
-    key = api_key()
+    key = api_key() or ("demo" if DEMO else "")
     if not key:
         raise RuntimeError("no TOMORROWIO_API_KEY")
     outdir = Path(outdir)
@@ -657,9 +747,10 @@ def build_points(outdir, model) -> int:
     fields = point_fields()
     pts = _points(outdir)
     u = usage(outdir)
-    if u["count"] + len(pts) > DAILY_CAP:
-        raise RuntimeError(f"daily cap: {u['count']}+{len(pts)} > {DAILY_CAP}")
-    _add_usage(outdir, len(pts))
+    if not DEMO:
+        if u["count"] + len(pts) > DAILY_CAP:
+            raise RuntimeError(f"daily cap: {u['count']}+{len(pts)} > {DAILY_CAP}")
+        _add_usage(outdir, len(pts))
     t0 = time.time()
     got, bad = {}, []
 
@@ -1065,7 +1156,7 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
 </style></head><body>
 <div class="bar">
   <details class="dd" id="ddw"><summary id="ddws">General Weather &#9662;</summary><div class="menu">{rows}</div></details>
-  <span class="sp"></span><span id="mdl">{model_label(model)}</span>
+  <span class="sp"></span><span id="mdl">{model_label(model)}{" &middot; DEMO DATA" if DEMO else ""}</span>
   <button id="bst" class="on">Stations</button><button id="balt" class="on">CA alternates</button>
   <button id="bfit">Fit</button><button id="b2" title="Map + meteogram of the layers that are on, for a station you click">2-panel</button>
   <span style="color:#333">|</span>
