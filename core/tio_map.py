@@ -677,6 +677,11 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
   <span class="sp"></span><span id="mdl">{model_label(model)}</span>
   <button id="bst" class="on">Stations</button><button id="balt" class="on">CA alternates</button>
   <button id="bfit">Fit</button><button id="b2" title="Map + meteogram of the layers that are on, for a station you click">2-panel</button>
+  <span style="color:#333">|</span>
+  <button class="ov" data-o="routes" title="FAA ATS routes (J and Q) around ZNY / ZBW / ZOB / ZDC">Jet routes</button>
+  <button class="ov" data-o="n90" title="N90 TRACON lateral boundary (FAA 2012 map; the Newark area went to PHL in 2024)">N90</button>
+  <button class="ov" data-o="stars" title="JFK arrivals: CAMRN, LENDY/IGN, PARCH/ROBER, PWL, coloured by gate">JFK STARs</button>
+  <button class="ov" data-o="fixes" title="N90 arrival / departure gates and coordination fixes">Fixes</button>
 </div>
 <div class="bar">
   <label>TIME</label><button id="bprev">&#9664;</button><button id="bplay">Play</button><button id="bnext">&#9654;</button>
@@ -724,7 +729,9 @@ function ensure(f) {{
     coordinates:[[f.b[0], f.b[3]], [f.b[2], f.b[3]], [f.b[2], f.b[1]], [f.b[0], f.b[1]]]}});
   // insert under the station layers so dots stay on top, and in field
   // order so precipitation (FIELDS[0]) ends up above the fills
-  const before = map.getLayer('st-dot') ? 'st-dot' : undefined;
+  // 'wx-top' is an empty anchor layer added at load: weather sits under
+  // it, the airspace overlays and station dots above it
+  const before = map.getLayer('wx-top') ? 'wx-top' : (map.getLayer('st-dot') ? 'st-dot' : undefined);
   map.addLayer({{id:key(f), type:'raster', source:key(f),
     paint:{{'raster-opacity':0, 'raster-fade-duration':0, 'raster-resampling':'linear'}}}}, before);
   // re-order: later fields in FIELDS go UNDER earlier ones
@@ -848,7 +855,62 @@ $('b2').onclick = () => {{
   if (two && !PT && PT_URL) fetch(PT_URL).then(r => r.json()).then(j => {{ PT = j; fillSel(); drawMg(); }}).catch(() => {{ $('mgn').textContent = 'station forecasts failed to load'; }});
   drawMg();
 }};
+// ---- airspace overlays -------------------------------------------------
+// Static JSON under /app/static (jet routes, N90 boundary, JFK STARs,
+// N90 fixes), fetched the first time a button is pressed and kept.
+// Drawn under the station dots, above the weather.
+const OV_BASE = {json.dumps(base + "/app/static/")};
+const ovOn = {{}}, ovLoaded = {{}};
+function lineFC(items) {{ return {{type:'FeatureCollection', features: items.map(([coords, props]) => ({{type:'Feature', properties:props, geometry:{{type:'LineString', coordinates:coords}}}}))}}; }}
+function ptFC(items) {{ return {{type:'FeatureCollection', features: items.map(([lon, lat, props]) => ({{type:'Feature', properties:props, geometry:{{type:'Point', coordinates:[lon, lat]}}}}))}}; }}
+const OV = {{
+  routes: {{ file:'n90_routes.json', build: j => {{
+      map.addSource('ov-routes', {{type:'geojson', data: lineFC(j.routes.map(r => [r.path, {{ident:r.ident, rnav:r.type === 'RNAV'}}]))}});
+      map.addLayer({{id:'ov-routes', type:'line', source:'ov-routes', paint:{{'line-color':['case', ['get','rnav'], '#22D3EE', '#9AA0A6'], 'line-width':1.1, 'line-opacity':0.85}}}}, 'st-dot');
+      map.addLayer({{id:'ov-routes-lab', type:'symbol', source:'ov-routes', layout:{{'symbol-placement':'line', 'text-field':['get','ident'], 'text-size':10, 'text-font':['Open Sans Bold'], 'symbol-spacing':320}},
+        paint:{{'text-color':['case', ['get','rnav'], '#22D3EE', '#C8CCD2'], 'text-halo-color':'#000', 'text-halo-width':1.2}}}}, 'st-dot');
+      return ['ov-routes', 'ov-routes-lab']; }} }},
+  n90: {{ file:'n90_boundary.json', build: j => {{
+      const ring = j.polygon.concat([j.polygon[0]]);
+      map.addSource('ov-n90', {{type:'geojson', data: lineFC([[ring, {{name:'N90'}}]])}});
+      map.addLayer({{id:'ov-n90', type:'line', source:'ov-n90', paint:{{'line-color':'#FF2A2A', 'line-width':2, 'line-dasharray':[3, 2]}}}}, 'st-dot');
+      return ['ov-n90']; }} }},
+  stars: {{ file:'jfk_stars.json', build: j => {{
+      const legs = [];
+      j.stars.forEach(s => s.legs.forEach(l => legs.push([l.path, {{star:s.star, col:'rgb(' + s.col.join(',') + ')', dashed:!!l.dashed}}])));
+      map.addSource('ov-stars', {{type:'geojson', data: lineFC(legs)}});
+      map.addLayer({{id:'ov-stars', type:'line', source:'ov-stars', filter:['!', ['get','dashed']], paint:{{'line-color':['get','col'], 'line-width':2}}}}, 'st-dot');
+      map.addLayer({{id:'ov-stars-d', type:'line', source:'ov-stars', filter:['get','dashed'], paint:{{'line-color':['get','col'], 'line-width':1.5, 'line-dasharray':[2, 2]}}}}, 'st-dot');
+      map.addLayer({{id:'ov-stars-lab', type:'symbol', source:'ov-stars', layout:{{'symbol-placement':'line', 'text-field':['get','star'], 'text-size':10, 'text-font':['Open Sans Bold'], 'symbol-spacing':260}},
+        paint:{{'text-color':['get','col'], 'text-halo-color':'#000', 'text-halo-width':1.2}}}}, 'st-dot');
+      const fx = Object.entries(j.fixes || {{}}).map(([n, p]) => [p.lon, p.lat, {{name:n}}]);
+      map.addSource('ov-stars-fx', {{type:'geojson', data: ptFC(fx)}});
+      map.addLayer({{id:'ov-stars-fx', type:'symbol', source:'ov-stars-fx', minzoom:6, layout:{{'text-field':['get','name'], 'text-size':9, 'text-font':['Open Sans Bold'], 'text-offset':[0, -0.9]}},
+        paint:{{'text-color':'#E8E8E8', 'text-halo-color':'#000', 'text-halo-width':1}}}}, 'st-dot');
+      return ['ov-stars', 'ov-stars-d', 'ov-stars-lab', 'ov-stars-fx']; }} }},
+  fixes: {{ file:'n90_fixes.json', build: j => {{
+      const pts = j.fixes.map(f => [f.lon, f.lat, {{name:f.name, role:f.role}}]);
+      map.addSource('ov-fixes', {{type:'geojson', data: ptFC(pts)}});
+      map.addLayer({{id:'ov-fixes', type:'circle', source:'ov-fixes', paint:{{'circle-radius':3,
+        'circle-color':['match', ['get','role'], 'dep', '#3DDC84', 'both', '#FFD400', '#9AA0A6'], 'circle-stroke-color':'#000', 'circle-stroke-width':1}}}}, 'st-dot');
+      map.addLayer({{id:'ov-fixes-lab', type:'symbol', source:'ov-fixes', minzoom:5.5, layout:{{'text-field':['get','name'], 'text-size':9, 'text-font':['Open Sans Bold'], 'text-offset':[0.6, -0.5], 'text-anchor':'bottom-left'}},
+        paint:{{'text-color':['match', ['get','role'], 'dep', '#3DDC84', 'both', '#FFD400', '#B8B8B8'], 'text-halo-color':'#000', 'text-halo-width':1}}}}, 'st-dot');
+      return ['ov-fixes', 'ov-fixes-lab']; }} }},
+}};
+function ovSet(k, show) {{
+  (ovLoaded[k] || []).forEach(id => map.getLayer(id) && map.setLayoutProperty(id, 'visibility', show ? 'visible' : 'none'));
+}}
+document.querySelectorAll('.ov').forEach(b => b.onclick = () => {{
+  const k = b.dataset.o; ovOn[k] = !ovOn[k]; b.classList.toggle('on', ovOn[k]);
+  if (!ready) return;
+  if (ovLoaded[k]) {{ ovSet(k, ovOn[k]); return; }}
+  if (!ovOn[k]) return;
+  fetch(OV_BASE + OV[k].file).then(r => r.json()).then(j => {{ ovLoaded[k] = OV[k].build(j); ovSet(k, ovOn[k]); }})
+    .catch(() => {{ b.classList.remove('on'); ovOn[k] = false; }});
+}});
 map.on('load', () => {{
+  map.addSource('wx-top', {{type:'geojson', data:{{type:'FeatureCollection', features:[]}}}});
+  map.addLayer({{id:'wx-top', type:'line', source:'wx-top'}});
   map.addSource('st', {{type:'geojson', data:ST}});
   map.addLayer({{id:'st-dot', type:'circle', source:'st',
     paint:{{'circle-radius':['case', ['==', ['get','kind'], 'jbu'], 4, 3.5],

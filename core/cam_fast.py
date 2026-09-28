@@ -112,7 +112,7 @@ for _pk in ("PROB_CIG1000", "PROB_CIG500", "PROB_VIS1", "PROB_VIS3",
 # below this, so isolated cells fade at their own size instead of
 # being inflated to full-strength discs.
 # Bump whenever the basemap's content changes.
-BASEMAP_STYLE = 7   # v7: N90 outline red, half width (values are drawn per frame, not in the basemap)
+BASEMAP_STYLE = 8   # v8: N90 outline from the gate-lobe hull (static/n90_fixes.json, 28 Sep)
 # The ground every frame is composited on. Dark grey, almost black,
 # so the fields read the way radar does on the other maps.
 GROUND = (11, 12, 14, 255)
