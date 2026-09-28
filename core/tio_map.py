@@ -220,8 +220,74 @@ def set_sector(outdir, key: str) -> None:
     tmp = p.with_suffix(".tmp")
     tmp.write_text(key or "")
     os.replace(tmp, p)
+    _persist(p)
 NOAA_ON = os.environ.get("TIO_NOAA", "on").lower() != "off"
 NOAA_MIN = int(os.environ.get("TIO_NOAA_MIN", "20"))
+
+# PERSISTENCE (28 Sep, after a 429). static/ is inside the repo
+# checkout, which Render replaces on every deploy - so every deploy
+# restarted the warmer from nothing, re-fetched a full pass and reset
+# the usage counter that was supposed to stop exactly that. Ten
+# deploys in a day spent the plan. Everything the warmer writes is
+# now mirrored under the persistent disk and restored into static/
+# at start; the counter lives there too, so the cap holds across
+# deploys and a restart continues from what it has.
+_PERSIST_PARENT = Path(os.environ.get("TIO_PERSIST_PARENT",
+                                      "/opt/render/project/src/cache"))
+PERSIST = (_PERSIST_PARENT / "tio") if _PERSIST_PARENT.exists() else None
+# After a 429 (rate limit or plan exhausted) every pass waits this
+# long before trying tomorrow.io again, doubling on each repeat up
+# to an hour. Nothing fetched during the wait is charged.
+BACKOFF_S = int(os.environ.get("TIO_BACKOFF_S", "600"))
+_backoff = {"until": 0.0, "n": 0}
+
+
+class RateLimited(RuntimeError):
+    pass
+
+
+def _persist(path) -> None:
+    """Mirror one file from static/ to the persistent disk."""
+    if PERSIST is None:
+        return
+    try:
+        import shutil
+        PERSIST.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, PERSIST / Path(path).name)
+    except Exception:
+        pass
+
+
+def _restore(outdir) -> int:
+    """Copy anything on the persistent disk that static/ lacks (or
+    has older) back into static/. Returns the count."""
+    if PERSIST is None or not PERSIST.exists():
+        return 0
+    import shutil
+    n = 0
+    for p in PERSIST.glob("tio_*"):
+        q = Path(outdir) / p.name
+        try:
+            if not q.exists() or q.stat().st_mtime < p.stat().st_mtime - 1:
+                shutil.copy2(p, q)
+                n += 1
+        except Exception:
+            pass
+    return n
+
+
+def _rate_limited(outdir, where: str) -> None:
+    _backoff["n"] += 1
+    wait = min(3600, BACKOFF_S * (2 ** (_backoff["n"] - 1)))
+    _backoff["until"] = time.time() + wait
+    STATUS["err"] = f"429 from tomorrow.io ({where}); waiting {wait // 60} min"
+    _log(outdir, f"RATE LIMITED at {where}: backing off {wait // 60} min "
+                 f"(day {usage(outdir)['count']}/{DAILY_CAP})")
+
+
+def in_backoff() -> float:
+    """Seconds left in the 429 back-off, 0 when clear."""
+    return max(0.0, _backoff["until"] - time.time())
 
 
 def _parse_models() -> dict:
@@ -295,6 +361,7 @@ def set_model(outdir, key: str) -> None:
     tmp = p.with_suffix(".tmp")
     tmp.write_text(key)
     os.replace(tmp, p)
+    _persist(p)
 
 
 def model_label(key: str) -> str:
@@ -371,8 +438,12 @@ def _fetch_tile(z, x, y, field, tstr, key, query=""):
             if r.status_code == 200:
                 return r.content
             last = f"HTTP {r.status_code}"
+            if r.status_code == 429:
+                raise RateLimited(f"tile {z}/{x}/{y}: 429 {r.text[:80]}")
             if r.status_code in (400, 401, 403):
                 break
+        except RateLimited:
+            raise
         except Exception as exc:
             last = f"{type(exc).__name__}"
         time.sleep(0.5)
@@ -402,6 +473,7 @@ def _add_usage(outdir, n):
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(u))
     os.replace(tmp, p)
+    _persist(p)
     return u["count"]
 
 
@@ -444,6 +516,7 @@ def _save_manifest(outdir, man):
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(man))
     os.replace(tmp, p)
+    _persist(p)
 
 
 def build_frame(outdir, model: str, field: str, step: int, z: int,
@@ -495,6 +568,7 @@ def build_frame(outdir, model: str, field: str, step: int, z: int,
     tmp = outdir / f".{name}.tmp"
     img.save(tmp, "WEBP", quality=88, method=4)
     os.replace(tmp, outdir / name)
+    _persist(outdir / name)
     ent = {"name": name, "model": model, "field": field, "step": step,
            "zoom": z, "hub": hub or "",
            "valid": valid.strftime("%Y-%m-%dT%H:%MZ"),
@@ -511,6 +585,8 @@ def build_frame(outdir, model: str, field: str, step: int, z: int,
     for p in olds[:-KEEP_FRAMES]:
         try:
             p.unlink()
+            if PERSIST is not None:
+                (PERSIST / p.name).unlink(missing_ok=True)
         except Exception:
             pass
     _log(outdir, f"{model} {(hub + ' ') if hub else ''}{field} +{step:02d}h z{z} {n} tiles "
@@ -559,6 +635,8 @@ def _fetch_point(icao, lat, lon, fields, key, query):
                 k, v = kv.split("=", 1)
                 body[k] = [v] if k == "includedLayers" else v
     r = requests.post(url, json=body, timeout=25)
+    if r.status_code == 429:
+        raise RateLimited(f"{icao}: 429 {r.text[:100]}")
     if r.status_code != 200:
         raise RuntimeError(f"{icao}: HTTP {r.status_code} {r.text[:120]}")
     iv = r.json()["data"]["timelines"][0]["intervals"]
@@ -585,13 +663,24 @@ def build_points(outdir, model) -> int:
     t0 = time.time()
     got, bad = {}, []
 
+    limited = []
+
     def one(p):
+        if limited:
+            return
         try:
             got[p[0]] = _fetch_point(p[0], p[1], p[2], fields, key, query)
+        except RateLimited as exc:
+            limited.append(str(exc))
         except Exception as exc:
             bad.append(f"{type(exc).__name__}: {exc}"[:100])
-    with ThreadPoolExecutor(max_workers=4) as ex:
+        time.sleep(0.25)          # timelines is the stricter endpoint
+    with ThreadPoolExecutor(max_workers=2) as ex:
         list(ex.map(one, pts))
+    if limited:
+        _rate_limited(outdir, "points")
+        if not got:
+            raise RateLimited(limited[0])
     if not got:
         raise RuntimeError("points: every station failed - "
                            + (bad[0] if bad else "?"))
@@ -605,6 +694,7 @@ def build_points(outdir, model) -> int:
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(doc))
     os.replace(tmp, p)
+    _persist(p)
     _log(outdir, f"{model} points {len(got)}/{len(pts)} stations "
                  f"{time.time() - t0:.1f}s"
                  + (f", {len(bad)} failed ({bad[0]})" if bad else "")
@@ -620,6 +710,9 @@ def _hires_pass(outdir, model):
         for field in HIRES_FIELDS:
             try:
                 build_frame(outdir, model, field, 0, HIRES_ZOOM, hub=hub)
+            except RateLimited:
+                _rate_limited(outdir, f"hires {hub} {field}")
+                return
             except Exception as exc:
                 STATUS["err"] = f"{type(exc).__name__}: {exc}"
                 _log(outdir, f"FAILED {model} hires {hub} {field}: {STATUS['err']}")
@@ -711,6 +804,7 @@ def build_noaa(outdir) -> str:
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(out))
     os.replace(tmp, p)
+    _persist(p)
     msg = f"noaa: nbm {n_nbm} stations ({cyc}), refs {n_refs} stations ({out['refs_cycle']})"
     _log(outdir, msg)
     return msg
@@ -727,6 +821,10 @@ def _pass(outdir, model, steps):
                             NOW_ZOOM if step == 0 else FCST_ZOOM)
                 STATUS["last"] = time.time()
                 STATUS["err"] = None
+                _backoff["n"] = 0
+            except RateLimited:
+                _rate_limited(outdir, f"{field} +{step:02d}h")
+                return
             except Exception as exc:
                 STATUS["err"] = f"{type(exc).__name__}: {exc}"
                 _log(outdir, f"FAILED {model} {field} +{step:02d}h: {STATUS['err']}")
@@ -750,13 +848,44 @@ def _loop(outdir):
     outdir.mkdir(parents=True, exist_ok=True)
     time.sleep(8)          # let the page-3 warmers get in first
     _prune_v1(outdir)
+    restored = _restore(outdir)
     _log(outdir, f"warmer start: fields={FIELDS} steps={len(FCST_HOURS)} "
                  f"(to +{FCST_HOURS[-1] if FCST_HOURS else 0}h) models={list(MODELS)} "
                  f"now z{NOW_ZOOM}/{NOW_MIN}min fcst z{FCST_ZOOM}/{FCST_MIN}min "
-                 f"~{daily_estimate()}/day, cap {DAILY_CAP}/day")
+                 f"~{daily_estimate()}/day, cap {DAILY_CAP}/day, "
+                 f"{restored} files restored from {PERSIST or 'no persistent disk'}, "
+                 f"day so far {usage(outdir)['count']}")
     next_now = next_fc = next_pt = next_hr = next_noaa = 0.0
-    last_model = None
+    last_model = active_model(outdir)
     last_sector = None
+
+    def _age_min(built: str) -> float:
+        try:
+            return (datetime.now(timezone.utc)
+                    - datetime.strptime(built, "%Y-%m-%dT%H:%MZ").replace(
+                        tzinfo=timezone.utc)).total_seconds() / 60.0
+        except Exception:
+            return 1e9
+
+    # Resume: if the restored frames are younger than their cadence,
+    # schedule the next pass from their age instead of refetching.
+    man = manifest(outdir).get(last_model) or {}
+    fc_ages = [_age_min(e["built"]) for f in FIELDS
+               for st_, e in (man.get(f) or {}).items() if st_ != "0"]
+    if fc_ages and len(fc_ages) >= len(FIELDS) * len(FCST_HOURS) * 0.9:
+        next_fc = time.time() + max(0.0, FCST_MIN - max(fc_ages)) * 60
+    now_ages = [_age_min(((man.get(f) or {}).get("0") or {}).get("built", ""))
+                for f in FIELDS]
+    if now_ages and max(now_ages) < NOW_MIN:
+        next_now = time.time() + (NOW_MIN - max(now_ages)) * 60
+    pt_age = _age_min(points(outdir, last_model).get("built", ""))
+    if pt_age < PT_MIN:
+        next_pt = time.time() + (PT_MIN - pt_age) * 60
+    if next_fc or next_now or next_pt:
+        _log(outdir, "resuming: next forecast pass in "
+                     f"{max(0, next_fc - time.time()) / 60:.0f} min, now-frames in "
+                     f"{max(0, next_now - time.time()) / 60:.0f}, points in "
+                     f"{max(0, next_pt - time.time()) / 60:.0f}")
 
     def _pts(model):
         if not POINTS_ON:
@@ -769,6 +898,9 @@ def _loop(outdir):
 
     while True:
         t = time.time()
+        if in_backoff():
+            time.sleep(20)
+            continue
         model = active_model(outdir)
         STATUS["model"] = model
         if model != last_model:
@@ -797,7 +929,8 @@ def _loop(outdir):
         if t >= next_fc:
             _pass(outdir, model, [0] + FCST_HOURS)
             next_now = time.time() + NOW_MIN * 60
-            next_fc = time.time() + FCST_MIN * 60
+            # a 429 mid-pass: come back after the back-off, not in 8 h
+            next_fc = time.time() + (FCST_MIN * 60 if not in_backoff() else 0)
         elif t >= next_now:
             _pass(outdir, model, [0])
             next_now = time.time() + NOW_MIN * 60
