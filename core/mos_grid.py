@@ -155,6 +155,23 @@ def wind_text_row(times, dirs, spds, gusts, label: str = "WIND (avg)",
     return grid(times, [(label, cells)], font_px=font_px)
 
 
+def wind_rows(times, dirs, spds, gusts, font_px: int = 12) -> str:
+    """Three-row grid of the consensus wind: DIR (degrees, to the
+    nearest 5), SPD (kt), GST (kt, blank where no model reports one).
+    Speed and gust cells take wind_tier_fill(); no compass letters.
+    Replaces the one-line 'ddd-sskt-C Gnn' cell (28 Sep)."""
+    dr, sr, gr = [], [], []
+    for d, s, g in zip(dirs, spds, gusts):
+        dn, sn, gn = _num(d), _num(s), _num(g)
+        dr.append(("" if dn is None else f"{int(round(dn / 5.0) * 5) % 360:03d}\u00b0", None))
+        sr.append(("" if sn is None else f"{int(round(sn))}", wind_tier_fill(sn)))
+        gr.append(("" if gn is None else f"{int(round(gn))}", wind_tier_fill(gn)))
+    rows = [("DIR (avg)", dr), ("SPD kt", sr)]
+    if any(t for t, _f in gr):
+        rows.append(("GST kt", gr))
+    return grid(times, rows, font_px=font_px)
+
+
 def consensus_category_row(times, cig, vis, label: str = "CATEGORY (avg)",
                             font_px: int = 12) -> str:
     """One-row grid: flight category from the AVERAGED ceiling/vis

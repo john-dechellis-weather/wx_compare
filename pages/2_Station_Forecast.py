@@ -110,10 +110,35 @@ def _category_strip(d, models, times, obs=(), font_px=12) -> str:
         last_day = t.day
         hdr.append(f'<th style="{head}">{day}{t:%H}</th>')
 
-    def _cat_cell(cat):
+    def _cat_cell(cat, sub=""):
         col = CAT.get(cat, "#8A93A6")
+        small = (f'<div style="font-size:{max(7, hf - 5)}px;font-weight:700;'
+                 f'line-height:1.1">{sub}</div>' if sub else "")
         return (f'<td style="{cell};background:{col};color:#000000;'
-                f'-webkit-text-fill-color:#000000">{cat}</td>')
+                f'-webkit-text-fill-color:#000000">{cat}{small}</td>')
+
+    def _cv_text(cig, unl, vis):
+        """'300ft 1/2sm' under the category - the numbers behind it."""
+        c = None if (unl or cig is None or (isinstance(cig, float) and math.isnan(cig))) else float(cig)
+        v = None if (vis is None or (isinstance(vis, float) and math.isnan(vis))) else float(vis)
+        if c is None:
+            ct = "UNL"
+        elif c >= 10000:
+            ct = "10k+"
+        else:
+            ct = f"{int(round(c / 100.0) * 100)}ft"
+        if v is None:
+            vt = ""
+        elif v >= 10:
+            vt = "10sm"
+        elif v < 1:
+            q = max(1, int(round(v * 4)))
+            vt = {1: "1/4", 2: "1/2", 3: "3/4", 4: "1"}[q] + "sm"
+        elif v < 3:
+            vt = f"{round(v * 2) / 2:g}sm"
+        else:
+            vt = f"{int(round(v))}sm"
+        return f"{ct} {vt}".strip()
 
     beyond = (f'<td style="{cell};background:#101418;color:{MUTED};'
               f'-webkit-text-fill-color:{MUTED};font-size:{max(7, hf - 4)}px">'
@@ -141,10 +166,10 @@ def _category_strip(d, models, times, obs=(), font_px=12) -> str:
             if r is None:
                 cells.append(beyond)
                 continue
-            cat = _flight_cat(r.get("ceiling_ft"),
-                              bool(r.get("ceiling_unlimited", False)),
-                              r.get("vsby_sm"))
-            cells.append(_cat_cell(cat))
+            _u = bool(r.get("ceiling_unlimited", False))
+            cat = _flight_cat(r.get("ceiling_ft"), _u, r.get("vsby_sm"))
+            cells.append(_cat_cell(cat, _cv_text(r.get("ceiling_ft"), _u,
+                                                 r.get("vsby_sm"))))
         rows.append(f'<tr><td style="{rowlab}">{m.replace("_", " ")}</td>'
                     + "".join(cells) + "</tr>")
     if obs:
@@ -164,7 +189,8 @@ def _category_strip(d, models, times, obs=(), font_px=12) -> str:
                 cells.append(beyond)
                 continue
             o = cand[-1]
-            cells.append(_cat_cell(_flight_cat(o[1], o[2], o[3])))
+            cells.append(_cat_cell(_flight_cat(o[1], o[2], o[3]),
+                                   _cv_text(o[1], o[2], o[3])))
         rows.append(f'<tr><td style="{rowlab}">OBS</td>'
                     + "".join(cells) + "</tr>")
     return (f'<div style="overflow-x:auto"><table style="border-collapse:'
@@ -444,7 +470,11 @@ def _board_table(rows, kind: str, inbound=None) -> str:
 # -------------------------------------------------------------- header
 h1, h2 = st.columns([3, 2])
 with h1:
-    st.title("Station Forecast")
+    st.markdown(
+        f'<div style="font-size:3.2rem;font-weight:700;line-height:1.1;'
+        f'color:{INK};-webkit-text-fill-color:{INK};margin:0">'
+        f'Station Forecast: {icao[1:] if icao[0] == "K" and len(icao) == 4 else icao}'
+        '</div>', unsafe_allow_html=True)
     st.caption("Multi-model guidance, observations and radar for one airport")
 with h2:
     chips = "".join(
@@ -504,7 +534,9 @@ with c_obs:
         if ok and len(df) and {"ceiling_ft", "vsby_sm"} <= set(df.columns):
             d = df[(df["station_id"] == icao)
                    & (df["valid_time"] <= cycle + pd.Timedelta(hours=horizon))]
-            models = [m for m in MODELS if m in set(d["model"])]
+            # GFS MOS is 3-hourly and coarse; it stays in the consensus
+            # but not in this table (28 Sep).
+            models = [m for m in MODELS if m in set(d["model"]) and m != "GFS_MOS"]
             times = [cycle + pd.Timedelta(hours=h) for h in range(0, horizon + 1)]
             obs_rows = []
             try:
@@ -520,11 +552,133 @@ with c_obs:
         else:
             st.caption("No ceiling/visibility guidance for this station and cycle.")
 
-    # Ceiling & visibility used to be its own pod here; it now lives
-    # inside the Wind & Flight Conditions meteogram below (c_wind),
-    # stacked under the wind plot so the consensus line that drives
-    # the category bar sits right above ceiling and vis instead of
-    # in a separate pod the dispatcher has to cross-reference.
+
+    with st.container(border=True):
+        pod_title("Consensus \u00b7 all models",
+                  f"wind and flight category, averaged \u00b7 {cyc_txt}")
+        have_wind = ok and len(df) and {"wind_speed_kt", "wind_dir_deg"} <= set(df.columns)
+        have_cv = ok and len(df) and {"ceiling_ft", "vsby_sm"} <= set(df.columns)
+        if not (have_wind or have_cv):
+            st.caption("No model data for this station and cycle.")
+        else:
+            import plotly.graph_objects as go
+
+            d = df[(df["station_id"] == icao)
+                   & (df["valid_time"] <= cycle + pd.Timedelta(hours=horizon))].copy()
+            d["valid_time"] = pd.to_datetime(d["valid_time"])
+            d["hour"] = d["valid_time"].dt.floor("h")
+            models = [m for m in MODELS if m in set(d["model"])]
+            times = [cycle + pd.Timedelta(hours=h) for h in range(0, horizon + 1)]
+            cols = [pd.Timestamp(t).floor("h") for t in times]
+
+            try:
+                from core.metar import filter_since, metars_to_df
+                mdf = metars_to_df(filter_since(
+                    {icao: cached_metars(icao, 48)}, cycle - pd.Timedelta(hours=6)))
+            except Exception:
+                mdf = None
+
+            def _series(colname, agg="mean"):
+                if colname not in d.columns:
+                    return pd.Series(dtype=float)
+                if agg == "circular":
+                    return d.groupby("hour")[colname].apply(
+                        lambda s: G.circular_mean_deg(s.tolist()))
+                return d.groupby("hour")[colname].mean()
+
+            def _aligned(s):
+                return [None if pd.isna(v) else float(v) for v in s.reindex(cols)]
+
+            # ---- consensus (average-across-models) series - this is
+            # the SAME averaging that feeds the direction/speed/gust
+            # row above and the category bar below, so the bold line
+            # in every plot on this pod is one consistent trend.
+            cons_dir = _aligned(_series("wind_dir_deg", "circular")) if have_wind else [None] * len(cols)
+            cons_spd = _aligned(_series("wind_speed_kt")) if have_wind else [None] * len(cols)
+            cons_gst = _aligned(_series("wind_gust_kt")) if have_wind else [None] * len(cols)
+
+            if have_cv:
+                unl = (d["ceiling_unlimited"].astype(bool) if "ceiling_unlimited" in d
+                       else pd.Series(False, index=d.index))
+                d["_cig_eff"] = d["ceiling_ft"].where(~unl, 12000)
+                cons_cig = _aligned(_series("_cig_eff"))
+                cons_vis = _aligned(_series("vsby_sm"))
+            else:
+                cons_cig = cons_vis = [None] * len(cols)
+
+            # ------------------------------------ 1. wind, three rows
+            if have_wind:
+                st.markdown(G.wind_rows(cols, cons_dir, cons_spd, cons_gst,
+                                        font_px=SF_TEXT_PX - 3),
+                            unsafe_allow_html=True)
+
+            # -------------------------------------- 3. category bar
+            if have_cv:
+                st.markdown(G.consensus_category_row(cols, cons_cig, cons_vis,
+                                                     font_px=SF_TEXT_PX - 3),
+                            unsafe_allow_html=True)
+            st.caption("Averaged across "
+                       f"{', '.join(m.replace('_', ' ') for m in models)}: "
+                       "direction to the nearest 5\u00b0; speed and gust "
+                       "highlighted yellow \u226525 kt, orange \u226530, red "
+                       "\u226535; the category comes from the averaged "
+                       "ceiling and visibility, not any single model.")
+
+            # ------------------------------------------ 2. speed & gust
+            if have_wind:
+                fig_w = go.Figure()
+                for lo, hi, c in ((25, 30, "#FFD400"), (30, 35, "#FF8A00"),
+                                  (35, 200, "#FF3B30")):
+                    fig_w.add_hrect(y0=lo, y1=hi, fillcolor=c, opacity=0.06,
+                                    line_width=0)
+                for m in models:
+                    dm = d[d["model"] == m].sort_values("valid_time")
+                    fig_w.add_trace(go.Scatter(
+                        x=dm["valid_time"], y=dm["wind_speed_kt"], mode="lines",
+                        line=dict(color=MODELS[m], width=1, dash="solid"),
+                        opacity=0.45, name=f"{m.replace('_', ' ')} sustained",
+                        showlegend=True))
+                    if "wind_gust_kt" in dm.columns and dm["wind_gust_kt"].notna().any():
+                        fig_w.add_trace(go.Scatter(
+                            x=dm["valid_time"], y=dm["wind_gust_kt"], mode="lines",
+                            line=dict(color=MODELS[m], width=1, dash="dot"),
+                            opacity=0.35, showlegend=False))
+                fig_w.add_trace(go.Scatter(
+                    x=cols, y=cons_spd, mode="lines",
+                    line=dict(color=INK, width=3),
+                    name="Consensus sustained (avg of all models)"))
+                if any(v is not None for v in cons_gst):
+                    fig_w.add_trace(go.Scatter(
+                        x=cols, y=cons_gst, mode="lines",
+                        line=dict(color="#FF8A00", width=2.5, dash="dash"),
+                        name="Consensus gust (avg of models w/ gust)"))
+                if mdf is not None and len(mdf) and "wind_speed_kt" in mdf.columns:
+                    fig_w.add_trace(go.Scatter(
+                        x=mdf["obs_time"], y=mdf["wind_speed_kt"], mode="markers",
+                        marker=dict(color=INK, size=6, symbol="circle"),
+                        name="Observed"))
+                    if "wind_gust_kt" in mdf.columns:
+                        fig_w.add_trace(go.Scatter(
+                            x=mdf["obs_time"], y=mdf["wind_gust_kt"], mode="markers",
+                            marker=dict(color="#FF8A00", size=6, symbol="triangle-up"),
+                            showlegend=False))
+                fig_w.add_vline(x=cycle, line=dict(color="#00E5FF", width=1))
+                fig_w.update_layout(
+                    height=WIND_H, autosize=True, paper_bgcolor=PANEL,
+                    plot_bgcolor="#05070B",
+                    font=dict(color=INK2, size=11, family="Roboto, Arial"),
+                    margin=dict(l=40, r=16, t=10, b=10),
+                    legend=dict(orientation="h", y=-0.22, bgcolor="rgba(0,0,0,0)",
+                                font=dict(size=9)))
+                fig_w.update_xaxes(gridcolor="#1A2233", zerolinecolor="#1A2233",
+                                   tickformat="%HZ", dtick=3 * 3600e3)
+                fig_w.update_yaxes(gridcolor="#1A2233", zerolinecolor="#1A2233",
+                                   title="kt", range=[0, speed_max])
+                st.plotly_chart(fig_w, use_container_width=True)
+
+    # The ceiling & visibility plots came out on 28 Sep: the category
+    # row and the numbers under each cell in Flight conditions carry
+    # what they showed, in less height.
 
 
 def _search_fleet(q: str) -> list:
@@ -552,13 +706,23 @@ def _search_fleet(q: str) -> list:
 # is on this run, not the next one.
 _ac_hits = _search_fleet(st.session_state.get("sf_ac_query", ""))
 
-with c_rad:
+def _scope_pod():
+    """The airport scope pod. A function so it can run as a fragment:
+    with the radar loop on it re-runs every 2 s to advance the frame
+    (and only this pod re-runs, not the page)."""
     with st.container(border=True):
         # The airport scope, exactly as Station Quick View draws it -
         # same runway table, same finals, same ATIS colouring - with
         # MRMS reflectivity underneath and no traffic, at 20 nm.
         stamp_txt, cfg, l3_txt, l3_frames, base = "", {}, "", [], ""
         _radar_diag = []
+        _ph = None
+        if coords and not st.session_state.get(f"sf_scope_drawn_{icao}"):
+            _ph = st.empty()
+            _ph.markdown(
+                f'<div style="font-size:2.4rem;font-weight:700;color:{INK2};'
+                f'-webkit-text-fill-color:{INK2};padding:60px 0;text-align:center">'
+                'Rendering Airport Scope\u2026</div>', unsafe_allow_html=True)
         if coords:
             from core import airport_scope as AS
             base = _origin()
@@ -664,9 +828,15 @@ with c_rad:
                     # 0 = oldest ... n-1 = latest. Latest by default and
                     # whenever the airport changes.
                     _n = len(l3_frames)
-                    _pick = st.session_state.get(f"sf_l3_slider_{icao}")
-                    if _pick is None or _pick >= _n:
-                        _pick = _n - 1
+                    if st.session_state.get("sf_l3_loop", True) and _n:
+                        # looping: the frame advances with the clock,
+                        # oldest to newest, one step per fragment run
+                        import time as _tm
+                        _pick = int(_tm.time() // 2) % _n
+                    else:
+                        _pick = st.session_state.get(f"sf_l3_slider_{icao}")
+                        if _pick is None or _pick >= _n:
+                            _pick = _n - 1
                     _man = l3_frames[_pick] if _n else None
                     _l3s = _man["stamp"] if _man else None
                     if _man and L3.age_s(_l3s) < 4800:
@@ -695,7 +865,7 @@ with c_rad:
                       if _want_mrms else l3_txt if _want_l3 else " · radar off")
                      if coords else "")
                   + (f" · {len(ac)} aircraft" if coords and ac else ""))
-        if coords and len(l3_frames) > 1:
+        if coords and len(l3_frames) > 1 and not st.session_state.get("sf_l3_loop", True):
             # Last hour of the airport's radar: drag to step back
             # through the frames. Labels are the scan times.
             _lab = [f"{f['stamp'][9:11]}:{f['stamp'][11:13]}Z"
@@ -708,9 +878,18 @@ with c_rad:
                 format_func=lambda k: _lab[k], key=_k,
                 help="Level III frames from the last hour, oldest to "
                      "newest. MRMS underneath stays current.")
-        _rc1, _rc2 = st.columns([2, 1])
+        _rc1, _rc0, _rc2 = st.columns([1.7, 0.6, 1])
+        with _rc0:
+            st.checkbox("Loop", key="sf_l3_loop", value=True,
+                        help="Animate the last hour of NEXRAD frames, 2 s a "
+                             "step. Off: pick a frame with the slider and "
+                             "the map keeps your pan and zoom.")
+            # The loop decides whether this pod IS a fragment (see the
+            # call site), so a change needs the page, not just the pod.
+            if bool(st.session_state.get("sf_l3_loop", True)) != _loop_on:
+                st.rerun(scope="app")
         with _rc1:
-            radar_mode = st.radio(
+            st.radio(
                 "Radar", ["NEXRAD Radar", "MRMS Precipitation", "Off"],
                 horizontal=True, key="sf_radar_mode",
                 label_visibility="collapsed",
@@ -853,6 +1032,12 @@ with c_rad:
             _vs.min_zoom = round(_mz.log2(
                 156543.03 * _mz.cos(_mz.radians(coords[0])) * 780
                 / (600 * 1609.34)), 2)
+            # Opens fully zoomed out (28 Sep): the ~600-mile view, the
+            # network and the whole radar picture; wheel in for the field.
+            _vs.zoom = _vs.min_zoom
+            if _ph is not None:
+                _ph.empty()
+                st.session_state[f"sf_scope_drawn_{icao}"] = True
             try:
               st.pydeck_chart(pdk.Deck(
                 layers=layers,
@@ -889,6 +1074,18 @@ with c_rad:
             f"{_d['kept']} with callsign \u00b7 "
             f"{sum(1 for a in ac if a.get('jbu'))} JetBlue"
             + (f" \u00b7 {_d['error']}" if _d.get("error") else ""))
+
+
+# Radar loop on by default (28 Sep): the pod is a 2-second fragment
+# that steps through the last hour's Level III frames. Off, it draws
+# once and the time slider picks the frame - and pan/zoom stick.
+_loop_on = bool(st.session_state.get("sf_l3_loop", True))
+from core import airport_scope as AS   # row 2 uses AS.distance_nm too
+with c_rad:
+    if _loop_on and coords:
+        st.fragment(run_every="2s")(_scope_pod)()
+    else:
+        _scope_pod()
 
 # ============================================================ row 2
 
@@ -944,199 +1141,11 @@ with c_rad:
                         + (f'<br>{_where}{_on}' if _where else "")
                         + "</div>", unsafe_allow_html=True)
 
-c_wind, c_mos = st.columns(2, gap="small")
-
-with c_wind:
-    with st.container(border=True):
-        pod_title("Wind & Flight Conditions",
-                  f"consensus meteogram · {cyc_txt}")
-        have_wind = ok and len(df) and {"wind_speed_kt", "wind_dir_deg"} <= set(df.columns)
-        have_cv = ok and len(df) and {"ceiling_ft", "vsby_sm"} <= set(df.columns)
-        if not (have_wind or have_cv):
-            st.caption("No model data for this station and cycle.")
-        else:
-            import plotly.graph_objects as go
-            from plotly.subplots import make_subplots
-
-            d = df[(df["station_id"] == icao)
-                   & (df["valid_time"] <= cycle + pd.Timedelta(hours=horizon))].copy()
-            d["valid_time"] = pd.to_datetime(d["valid_time"])
-            d["hour"] = d["valid_time"].dt.floor("h")
-            models = [m for m in MODELS if m in set(d["model"])]
-            times = [cycle + pd.Timedelta(hours=h) for h in range(0, horizon + 1)]
-            cols = [pd.Timestamp(t).floor("h") for t in times]
-
-            try:
-                from core.metar import filter_since, metars_to_df
-                mdf = metars_to_df(filter_since(
-                    {icao: cached_metars(icao, 48)}, cycle - pd.Timedelta(hours=6)))
-            except Exception:
-                mdf = None
-
-            def _series(colname, agg="mean"):
-                if colname not in d.columns:
-                    return pd.Series(dtype=float)
-                if agg == "circular":
-                    return d.groupby("hour")[colname].apply(
-                        lambda s: G.circular_mean_deg(s.tolist()))
-                return d.groupby("hour")[colname].mean()
-
-            def _aligned(s):
-                return [None if pd.isna(v) else float(v) for v in s.reindex(cols)]
-
-            # ---- consensus (average-across-models) series - this is
-            # the SAME averaging that feeds the direction/speed/gust
-            # row above and the category bar below, so the bold line
-            # in every plot on this pod is one consistent trend.
-            cons_dir = _aligned(_series("wind_dir_deg", "circular")) if have_wind else [None] * len(cols)
-            cons_spd = _aligned(_series("wind_speed_kt")) if have_wind else [None] * len(cols)
-            cons_gst = _aligned(_series("wind_gust_kt")) if have_wind else [None] * len(cols)
-
-            if have_cv:
-                unl = (d["ceiling_unlimited"].astype(bool) if "ceiling_unlimited" in d
-                       else pd.Series(False, index=d.index))
-                d["_cig_eff"] = d["ceiling_ft"].where(~unl, 12000)
-                cons_cig = _aligned(_series("_cig_eff"))
-                cons_vis = _aligned(_series("vsby_sm"))
-            else:
-                cons_cig = cons_vis = [None] * len(cols)
-
-            # ---------------------------------------------- 1. wind row
-            if have_wind:
-                st.markdown(G.wind_text_row(cols, cons_dir, cons_spd, cons_gst),
-                            unsafe_allow_html=True)
-                st.caption("Direction-speed-gust, averaged across "
-                           f"{', '.join(m.replace('_', ' ') for m in models)} · "
-                           "highlighted yellow ≥25kt, orange ≥30kt, red ≥35kt")
-
-            # ------------------------------------------ 2. speed & gust
-            if have_wind:
-                fig_w = go.Figure()
-                for lo, hi, c in ((25, 30, "#FFD400"), (30, 35, "#FF8A00"),
-                                  (35, 200, "#FF3B30")):
-                    fig_w.add_hrect(y0=lo, y1=hi, fillcolor=c, opacity=0.06,
-                                    line_width=0)
-                for m in models:
-                    dm = d[d["model"] == m].sort_values("valid_time")
-                    fig_w.add_trace(go.Scatter(
-                        x=dm["valid_time"], y=dm["wind_speed_kt"], mode="lines",
-                        line=dict(color=MODELS[m], width=1, dash="solid"),
-                        opacity=0.45, name=f"{m.replace('_', ' ')} sustained",
-                        showlegend=True))
-                    if "wind_gust_kt" in dm.columns and dm["wind_gust_kt"].notna().any():
-                        fig_w.add_trace(go.Scatter(
-                            x=dm["valid_time"], y=dm["wind_gust_kt"], mode="lines",
-                            line=dict(color=MODELS[m], width=1, dash="dot"),
-                            opacity=0.35, showlegend=False))
-                fig_w.add_trace(go.Scatter(
-                    x=cols, y=cons_spd, mode="lines",
-                    line=dict(color=INK, width=3),
-                    name="Consensus sustained (avg of all models)"))
-                if any(v is not None for v in cons_gst):
-                    fig_w.add_trace(go.Scatter(
-                        x=cols, y=cons_gst, mode="lines",
-                        line=dict(color="#FF8A00", width=2.5, dash="dash"),
-                        name="Consensus gust (avg of models w/ gust)"))
-                if mdf is not None and len(mdf) and "wind_speed_kt" in mdf.columns:
-                    fig_w.add_trace(go.Scatter(
-                        x=mdf["obs_time"], y=mdf["wind_speed_kt"], mode="markers",
-                        marker=dict(color=INK, size=6, symbol="circle"),
-                        name="Observed"))
-                    if "wind_gust_kt" in mdf.columns:
-                        fig_w.add_trace(go.Scatter(
-                            x=mdf["obs_time"], y=mdf["wind_gust_kt"], mode="markers",
-                            marker=dict(color="#FF8A00", size=6, symbol="triangle-up"),
-                            showlegend=False))
-                fig_w.add_vline(x=cycle, line=dict(color="#00E5FF", width=1))
-                fig_w.update_layout(
-                    height=WIND_H, autosize=True, paper_bgcolor=PANEL,
-                    plot_bgcolor="#05070B",
-                    font=dict(color=INK2, size=11, family="Roboto, Arial"),
-                    margin=dict(l=40, r=16, t=10, b=10),
-                    legend=dict(orientation="h", y=-0.22, bgcolor="rgba(0,0,0,0)",
-                                font=dict(size=9)))
-                fig_w.update_xaxes(gridcolor="#1A2233", zerolinecolor="#1A2233",
-                                   tickformat="%HZ", dtick=3 * 3600e3)
-                fig_w.update_yaxes(gridcolor="#1A2233", zerolinecolor="#1A2233",
-                                   title="kt", range=[0, speed_max])
-                st.plotly_chart(fig_w, use_container_width=True)
-
-            # -------------------------------------- 3. category bar
-            if have_cv:
-                st.markdown(G.consensus_category_row(cols, cons_cig, cons_vis),
-                            unsafe_allow_html=True)
-                st.caption("Category above comes from the averaged "
-                           "(consensus) ceiling & visibility trend below — "
-                           "the same bold line in each plot, not any single "
-                           "model.")
-
-            # -------------------------------------- 4. ceiling & vis
-            if have_cv:
-                fig_cv = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                                       row_heights=[0.5, 0.5], vertical_spacing=0.06)
-                for lo, hi, c in ((150, 500, CAT["LIFR"]), (500, 1000, CAT["IFR"]),
-                                  (1000, 3000, CAT["MVFR"]), (3000, 12000, CAT["VFR"])):
-                    fig_cv.add_hrect(y0=lo, y1=hi, fillcolor=c, opacity=0.07,
-                                     line_width=0, row=1, col=1)
-                for lo, hi, c in ((0, 1, CAT["LIFR"]), (1, 3, CAT["IFR"]),
-                                  (3, 5, CAT["MVFR"]), (5, 10, CAT["VFR"])):
-                    fig_cv.add_hrect(y0=lo, y1=hi, fillcolor=c, opacity=0.07,
-                                     line_width=0, row=2, col=1)
-                for m in models:
-                    dm = d[d["model"] == m].sort_values("valid_time")
-                    fig_cv.add_trace(go.Scatter(
-                        x=dm["valid_time"], y=dm["_cig_eff"], mode="lines",
-                        line=dict(color=MODELS[m], width=1), opacity=0.45,
-                        name=m.replace("_", " ")), row=1, col=1)
-                    fig_cv.add_trace(go.Scatter(
-                        x=dm["valid_time"], y=dm["vsby_sm"].clip(upper=10),
-                        mode="lines", line=dict(color=MODELS[m], width=1),
-                        opacity=0.45, showlegend=False), row=2, col=1)
-                fig_cv.add_trace(go.Scatter(
-                    x=cols, y=cons_cig, mode="lines",
-                    line=dict(color=INK, width=3),
-                    name="Consensus (avg) — feeds the category bar above"),
-                    row=1, col=1)
-                fig_cv.add_trace(go.Scatter(
-                    x=cols, y=[None if v is None else min(v, 10) for v in cons_vis],
-                    mode="lines", line=dict(color=INK, width=3),
-                    showlegend=False), row=2, col=1)
-                if mdf is not None and len(mdf) and "ceiling_ft" in mdf.columns:
-                    fig_cv.add_trace(go.Scatter(
-                        x=mdf["obs_time"], y=mdf["ceiling_ft"], mode="markers",
-                        marker=dict(color=INK, size=5, symbol="circle-open"),
-                        name="Observed"), row=1, col=1)
-                    if "vsby_sm" in mdf.columns:
-                        fig_cv.add_trace(go.Scatter(
-                            x=mdf["obs_time"], y=mdf["vsby_sm"], mode="markers",
-                            marker=dict(color=INK, size=5, symbol="circle-open"),
-                            showlegend=False), row=2, col=1)
-                fig_cv.add_vline(x=cycle, line=dict(color="#00E5FF", width=1))
-                fig_cv.update_yaxes(type="log", range=[2.2, 4.08], title="ceiling ft",
-                                    tickvals=[200, 500, 1000, 3000, 10000],
-                                    row=1, col=1)
-                fig_cv.update_yaxes(range=[0, 10], title="vis SM",
-                                    tickvals=[0, 1, 3, 5, 10], row=2, col=1)
-                for y, lab, c in ((260, "LIFR", CAT["LIFR"]), (700, "IFR", CAT["IFR"]),
-                                  (1700, "MVFR", CAT["MVFR"]), (6000, "VFR", CAT["VFR"])):
-                    fig_cv.add_annotation(x=1, xref="paper", y=__import__("math").log10(y),
-                                          text=lab, showarrow=False, xanchor="right",
-                                          font=dict(color=c, size=10), row=1, col=1)
-                fig_cv.update_layout(
-                    height=CIGVIS_H * 2, autosize=True, paper_bgcolor=PANEL,
-                    plot_bgcolor="#05070B",
-                    font=dict(color=INK2, size=11, family="Roboto, Arial"),
-                    margin=dict(l=40, r=16, t=10, b=30),
-                    legend=dict(orientation="h", y=-0.10, bgcolor="rgba(0,0,0,0)",
-                                font=dict(size=9)))
-                fig_cv.update_xaxes(gridcolor="#1A2233", tickformat="%HZ",
-                                    dtick=3 * 3600e3)
-                fig_cv.update_yaxes(gridcolor="#1A2233")
-                st.plotly_chart(fig_cv, use_container_width=True)
-
-with c_mos:
-    for model, label, rows_fn in (("NBM", "NBM hourly", G.nbm_rows),
-                                  ("GFS_LAMP", "GFS LAMP", G.lamp_rows)):
+_g1, _g2 = st.columns(2, gap="small")
+for _col, (model, label, rows_fn) in zip(
+        (_g1, _g2), (("NBM", "NBM hourly", G.nbm_rows),
+                     ("GFS_LAMP", "GFS LAMP", G.lamp_rows))):
+    with _col:
         with st.container(border=True):
             pod_title(label, f"{cyc_txt} · next 24 h")
             if ok and len(df):
@@ -1150,28 +1159,5 @@ with c_mos:
                     st.caption(f"No {label} rows for this cycle.")
             else:
                 st.caption("No model data.")
+with _g2:
     st.markdown(G.legend(), unsafe_allow_html=True)
-
-# ============================================================ row 4
-# JetBlue board: the last 3 h from BlueMet's own movement sampler,
-# the next 3 h from what is actually inbound right now.
-with st.container(border=True):
-    pod_title("JetBlue arrivals & departures",
-              "past 3 h derived \u00b7 inbound now from live ADS-B")
-    _movements, _since = cached_movements(icao, 3, now.strftime("%Y%m%d%H%M")[:11])
-    _arr = [m for m in _movements if m["kind"] == "ARR"]
-    _dep = [m for m in _movements if m["kind"] == "DEP"]
-    _inbound = _inbound_now(icao, coords, now) if coords else []
-    if not _SAMPLER_OK:
-        st.caption(f"Movement sampler unavailable ({_SAMPLER_ERR})")
-    elif not is_sampled(icao):
-        st.caption(f"{icao} is not a JetBlue destination; the sampler "
-                   "does not cover it.")
-    ca, cd = st.columns(2)
-    with ca:
-        st.markdown(_board_table(_arr, "Arrived", inbound=_inbound),
-                    unsafe_allow_html=True)
-    with cd:
-        st.markdown(_board_table(_dep, "Departed"), unsafe_allow_html=True)
-
-
