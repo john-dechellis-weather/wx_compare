@@ -76,6 +76,15 @@ class TomorrowIO(ModelSource):
         if not key:
             print(f"[{self.name}] Set environment variable {ENV_KEY} to enable this source.")
             return None
+        # TIO_PAUSE_UNTIL (see core/tio_map.py): no tomorrow.io request
+        # of any kind before that UTC time - this source drops out of
+        # the comparison until then, the NOAA models carry on.
+        try:
+            from core.tio_map import pause_left_s
+            if pause_left_s() > 0:
+                return None
+        except Exception:
+            pass
         return key
 
     # --- ModelSource interface ---------------------------------------------

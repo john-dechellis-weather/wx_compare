@@ -21,5 +21,6 @@ static/l3lut_*
 # tomorrow.io tile warmer output (core/tio_map.py): frames, manifest,
 # usage counter, model choice, log
 static/tio_*
+!static/tio_bridge/
 # echo-top tag cache (core/etop_tags.py)
 static/etop_tags.json

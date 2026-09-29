@@ -32,6 +32,12 @@ check_password()
 from core import tio_map as TIO
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
+
+# The bridge: a hidden Streamlit component (static/tio_bridge) that
+# relays the viewer iframe's "what am I looking at" messages to the
+# server as its value -> TIO.set_demand. Same origin as the map
+# iframe, so the two frames can talk.
+_bridge = components.declare_component("tio_bridge", path=str(STATIC / "tio_bridge"))
 HEIGHT = int(os.environ.get("TIO_PAGE_HEIGHT", "860"))
 
 # The warmer normally starts on Homepage; this is the belt to that
@@ -137,6 +143,10 @@ def _origin() -> str:
 @st.fragment(run_every=60)
 def _body():
     base = _origin()
+    TIO.note_view(STATIC)        # viewer heartbeat: keeps the warmer awake
+    _dm = _bridge(key="tio_bridge", default=None)
+    if _dm:
+        TIO.set_demand(STATIC, _dm)
     man = TIO.manifest(STATIC)
     # man[_active] holds one {step: entry} dict per field, PLUS a
     # "hires:<hub>" key nested one level deeper ({field: {step: entry}})
@@ -153,9 +163,9 @@ def _body():
                  "fetch tiles.")
     elif n == 0:
         st.info(f"No {TIO.model_label(_active)} frames yet - the warmer "
-                "builds the current hour for every layer first, then walks "
-                "out through the forecast (about a minute per hour of "
-                "forecast at zoom 3). Refresh in a minute."
+                "fetches the current frame for the layers that are on, then "
+                "each hour as the slider asks for it (about a second per "
+                "frame)."
                 + (f"  Last error: {TIO.STATUS['err']}"
                    if TIO.STATUS.get("err") else "")
                 + ((f"  tomorrow.io rate limit: the warmer resumes in "
@@ -171,13 +181,17 @@ def _body():
                             noaa_built=_no.get("built", ""),
                             sector=_sector)
         name = "tio_map.html"
-        tmp = STATIC / f".{name}.tmp"
-        tmp.write_text(html)
-        os.replace(tmp, STATIC / name)
-        newest = max([e["built"] for v in _fc.values()
-                      for e in v.values()] + [_pt.get("built", "")],
-                     default="none")
-        components.iframe(f"{base}/app/static/{name}?v={newest}",
+        # Rewritten only when the page itself changes (model, sector);
+        # new frames reach the open viewer through its own manifest
+        # poll, so the iframe is never reloaded under the user.
+        import hashlib
+        v = hashlib.md5(html.encode()).hexdigest()[:10]
+        if (not (STATIC / name).exists()
+                or (STATIC / name).read_text() != html):
+            tmp = STATIC / f".{name}.tmp"
+            tmp.write_text(html)
+            os.replace(tmp, STATIC / name)
+        components.iframe(f"{base}/app/static/{name}?v={v}",
                           height=HEIGHT)
     except Exception as exc:
         st.error(f"Map failed to render: {type(exc).__name__}: {exc}")
@@ -196,7 +210,15 @@ with st.expander("tomorrow.io warmer status", expanded=False):
                f"z{TIO.FCST_ZOOM} ({TIO.tile_count(TIO.FCST_ZOOM)} tiles each) "
                f"every {TIO.FCST_MIN} min  |  hi-res sector "
                f"{TIO.SECTORS[_sector][0] if _sector in TIO.SECTORS else 'none'}"
-               f"  |  ~{TIO.daily_estimate() + TIO.sector_estimate(_sector):,}/day")
+               f"  |  on demand: ~{TIO.daily_estimate():,}/day with two layers in "
+               "use all day and 40 scrubbed frames")
+    _b = TIO.budget(STATIC)
+    st.caption(f"Budget: {_b['left']:,} left today, of which {_b['mandatory_left']:,} "
+               f"is owed to the hourly now-frames and {_b['reserve']:,} is the reserve "
+               f"→ {_b['free']:,} free for forecast / points / hi-res  |  this hour "
+               f"{_b['hour_used']:,} / {_b['hour_cap']:,}  |  "
+               + ("nobody viewing for %.0f min (paused)" % _b["idle_min"]
+                  if _b["idle_min"] > TIO.IDLE_MIN else "viewer present"))
     if TIO.STATUS.get("err"):
         st.error(TIO.STATUS["err"])
     lines = TIO.log_tail(STATIC, 15)

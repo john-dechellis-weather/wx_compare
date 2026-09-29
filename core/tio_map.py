@@ -18,17 +18,26 @@ those. The key never leaves the server and the spend is predictable.
 
 28 SEP: seven fields, an hourly timeline to +24 h then 3-hourly to
 +72 h (40 forecast steps), layers that stack, and ONE model - NextGen
-(see MODELS). Budget against the 9,000/day cap, CONUS at zoom 4 (8
-tiles):
+(see MODELS). Budget against the 9,000/day cap, CONUS at zoom 4 (8 tiles). DEMAND
+MODE (28 Sep): the warmer no longer walks the whole forecast for
+every layer. It keeps the layers people have switched on warm (the
+first field's now-frame every TIO_NOW_FAST_MIN, other active layers
+every TIO_NOW_SLOW_MIN, the next TIO_PREFETCH_H hours every
+TIO_FCST_MIN) and fetches any other (layer, hour) the moment the
+slider asks for it - 8 tiles, about a second, then cached. Station
+meteograms are fetched for the clicked station only; the hi-res
+sector only while the map is zoomed into it. A heavy day with two
+layers in use and forty frames scrubbed to is ~1,700 requests; a
+quiet one a few hundred.
 
-    forecast pass   8 tiles x 40 steps x 7 fields = 2,240,
-                    every TIO_FCST_MIN (480) min             -> 6,720/day
-    "now" frame     8 tiles x 7 fields,
-                    every TIO_NOW_MIN (60) min               -> 1,344/day
-    station points  one /v4/timelines call per station (~79),
-                    every TIO_PT_MIN (180) min               ->   632/day
-                                                                ---------
-                                                                 8,696/day
+BUDGET RULES: nothing runs while nobody has the page open
+(TIO_IDLE_MIN; the first field's now-frame drops to every
+TIO_NOW_IDLE_MIN); every non-now request must leave TIO_RESERVE plus
+the rest of the day's now-frames untouched; no clock hour may spend
+more than TIO_HOURLY_CAP on non-now work; frames and the counter
+persist outside the checkout so a restart resumes rather than
+refetches. ONE running instance may hold the API key - two (Render
+and the Mac) double every number above.
 
 HIGH-RESOLUTION SECTOR: one sector at a time (a page control, like
 the model), "now" frames at zoom TIO_HIRES_ZOOM (6 - a tile pixel is
@@ -137,24 +146,109 @@ def _steps() -> list:
     if raw:
         return sorted({int(h) for h in raw.split(",") if h.strip()})
     hourly_to = int(os.environ.get("TIO_FCST_HOURLY_TO", "24"))
-    step = max(1, int(os.environ.get("TIO_FCST_STEP", "3")))
+    three_to = int(os.environ.get("TIO_FCST_3H_TO", "36"))
+    step = max(1, int(os.environ.get("TIO_FCST_STEP", "6")))
     mx = int(os.environ.get("TIO_FCST_MAX", "72"))
     out = list(range(1, min(hourly_to, mx) + 1))
-    h = hourly_to + step
+    h = hourly_to + 3
+    while h <= min(three_to, mx):
+        out.append(h)
+        h += 3
+    h = (out[-1] if out else 0) + step
     while h <= mx:
         out.append(h)
         h += step
     return out
 
 
+# Fields whose forecast is worth fewer steps (BUDGET, 28 Sep): these
+# get 3-hourly to +24 and 6-hourly beyond, the rest the full list.
+# Now-frames are unaffected - every field is current every hour.
+FCST_LIGHT = set(f.strip() for f in os.environ.get(
+    "TIO_FCST_LIGHT", "thunderstormProbability,windSpeed").split(",") if f.strip())
+
+
+def steps_for(field: str) -> list:
+    """Forecast steps for one field (see FCST_LIGHT)."""
+    if field not in FCST_LIGHT:
+        return FCST_HOURS
+    return [h for h in FCST_HOURS if (h <= 24 and h % 3 == 0) or h % 6 == 0]
+
+
 FCST_HOURS = _steps()
 NOW_MIN = int(os.environ.get("TIO_NOW_MIN", "60"))
-FCST_MIN = int(os.environ.get("TIO_FCST_MIN", "480"))
+FCST_MIN = int(os.environ.get("TIO_FCST_MIN", "360"))
 NOW_ZOOM = int(os.environ.get("TIO_NOW_ZOOM", "4"))
 FCST_ZOOM = int(os.environ.get("TIO_FCST_ZOOM", "4"))
 DAILY_CAP = int(os.environ.get("TIO_DAILY_CAP", "9000"))
+
+# BUDGET (28 Sep, after the plan was spent by noon). Three rules on
+# top of the daily cap, all in _charge():
+#   RESERVE       requests kept back for the rest of the day for
+#                 anything that is not a now-frame: a restart, a model
+#                 switch, a sector someone opens at 11 pm. A pass that
+#                 would eat into it is deferred, not run.
+#   mandatory     the hourly now-frames for every remaining hour of
+#                 the UTC day are reserved too, so a burst early in
+#                 the day cannot leave the evening with a stale map.
+#   HOURLY_CAP    smoothing: no more than this in any one clock hour
+#                 for non-mandatory work. A restart or model switch
+#                 spreads over hours instead of landing at once.
+# Priority 0 = now-frames (only the hard cap applies), 1 = points and
+# forecast to +24 h, 2 = forecast beyond +24 h and hi-res sectors.
+RESERVE = int(os.environ.get("TIO_RESERVE", "1000"))
+# tomorrow.io's daily bucket resets at midnight US Eastern; the usage
+# day here starts at that hour UTC (04Z in EDT, 05Z in EST) so the
+# counter and the plan reset together. TIO_DAY_RESET_UTC_HOUR moves it.
+DAY_RESET_UTC_HOUR = int(os.environ.get("TIO_DAY_RESET_UTC_HOUR", "4"))
+# TIO_PAUSE_UNTIL="2026-09-29T04:00Z": no tomorrow.io request of any
+# kind before then - the warmer idles and the page says so. Lets a
+# spent plan sit untouched until it resets, whatever restarts happen.
+PAUSE_UNTIL = os.environ.get("TIO_PAUSE_UNTIL", "").strip()
+
+
+def pause_left_s() -> float:
+    """Seconds until TIO_PAUSE_UNTIL, 0 when unset or past."""
+    if not PAUSE_UNTIL:
+        return 0.0
+    try:
+        t = datetime.strptime(PAUSE_UNTIL.replace("Z", ""), "%Y-%m-%dT%H:%M").replace(tzinfo=timezone.utc)
+    except ValueError:
+        try:
+            t = datetime.strptime(PAUSE_UNTIL.replace("Z", ""), "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return 0.0
+    return max(0.0, (t - datetime.now(timezone.utc)).total_seconds())
+HOURLY_CAP = int(os.environ.get("TIO_HOURLY_CAP", "1500"))
+# VIEWER GATING: the page writes a heartbeat while it is open
+# (note_view). With nobody looking for IDLE_MIN, forecast passes,
+# points and the hi-res sector stop, and now-frames slow to
+# NOW_IDLE_MIN so the map still opens on something recent. The first
+# view after an idle spell runs whatever is overdue at once.
+# Forecast frames beyond +24 h are refreshed only when older than
+# FAR_MIN; a forecast pass every FCST_MIN otherwise stops at +24 h.
+FAR_MIN = int(os.environ.get("TIO_FAR_MIN", "720"))
+# DEMAND MODE (28 Sep): the viewer reports which layers are on, the
+# slider's step, the map zoom and the station picked (via the bridge
+# component on the page -> set_demand). The warmer keeps only the
+# ACTIVE layers warm (any layer someone switched on in the last
+# ACTIVE_MIN; the first field when nobody has), fetches any other
+# (layer, step) the moment it is asked for, and prefetches the next
+# PREFETCH_H hours of the active layers. Now-frames: the first field
+# every NOW_FAST_MIN, other active fields every NOW_SLOW_MIN.
+ACTIVE_MIN = int(os.environ.get("TIO_ACTIVE_MIN", "120"))
+PREFETCH_H = int(os.environ.get("TIO_PREFETCH_H", "6"))
+NOW_FAST_MIN = int(os.environ.get("TIO_NOW_FAST_MIN", "30"))
+NOW_SLOW_MIN = int(os.environ.get("TIO_NOW_SLOW_MIN", "180"))
+PT_STALE_MIN = int(os.environ.get("TIO_PT_STALE_MIN", "60"))
+# Points: "demand" = the clicked station only; "all" = every station
+# every PT_MIN (the old way); "off".
+POINTS_MODE = os.environ.get("TIO_POINTS", "demand").lower()
+HIRES_ZOOM_GATE = float(os.environ.get("TIO_HIRES_ZOOM_GATE", "5.5"))
+IDLE_MIN = int(os.environ.get("TIO_IDLE_MIN", "120"))
+NOW_IDLE_MIN = int(os.environ.get("TIO_NOW_IDLE_MIN", "180"))
 KEEP_FRAMES = 2          # per model/field/step, newest kept
-PT_MIN = int(os.environ.get("TIO_PT_MIN", "180"))
+PT_MIN = int(os.environ.get("TIO_PT_MIN", "360"))
 POINTS_ON = os.environ.get("TIO_POINTS", "on").lower() != "off"
 # Tile layer -> timelines field. The reflectivity tile has no point
 # equivalent, so the meteogram shows precipitation intensity for it.
@@ -175,7 +269,7 @@ def point_fields() -> list:
 # High-resolution sector "now" frames. "key:label:w,s,e,n|...".
 HIRES_ON = os.environ.get("TIO_HIRES", "on").lower() != "off"
 HIRES_ZOOM = int(os.environ.get("TIO_HIRES_ZOOM", "6"))
-HIRES_MIN = int(os.environ.get("TIO_HIRES_MIN", "15"))
+HIRES_MIN = int(os.environ.get("TIO_HIRES_MIN", "30"))
 HIRES_FIELDS = [f.strip() for f in os.environ.get(
     "TIO_HIRES_FIELDS", "precipitationReflectivity").split(",") if f.strip()]
 
@@ -238,6 +332,14 @@ NOAA_MIN = int(os.environ.get("TIO_NOAA_MIN", "20"))
 # deploys and a restart continues from what it has.
 _PERSIST_PARENT = Path(os.environ.get("TIO_PERSIST_PARENT",
                                       "/opt/render/project/src/cache"))
+if not _PERSIST_PARENT.exists():
+    # Not on Render: keep the mirror outside the git checkout so a
+    # checkout, pull or reclone never resets the counter or the frames.
+    _PERSIST_PARENT = Path.home() / ".bluemet_cache"
+    try:
+        _PERSIST_PARENT.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
 PERSIST = (_PERSIST_PARENT / "tio") if _PERSIST_PARENT.exists() else None
 # After a 429 (rate limit or plan exhausted) every pass waits this
 # long before trying tomorrow.io again, doubling on each repeat up
@@ -511,10 +613,23 @@ def tile_count(z: int, box=None) -> int:
     return (x1 - x0 + 1) * (y1 - y0 + 1)
 
 
-def daily_estimate() -> int:
-    """Requests/day the current settings spend for one model."""
+def daily_estimate(n_active: int = 2, demanded_steps: int = 40) -> int:
+    """Requests/day for one model with `n_active` layers in use all
+    day and `demanded_steps` (layer, step) frames scrubbed to."""
+    t = tile_count(NOW_ZOOM)
+    now = t * ((1440 // NOW_FAST_MIN) + (n_active - 1) * (1440 // NOW_SLOW_MIN))
+    pre = t * n_active * PREFETCH_H * (1440 // FCST_MIN)
+    dem = t * demanded_steps
+    pts = 40 if POINTS_MODE == "demand" else (79 * (1440 // PT_MIN) if POINTS_MODE == "all" else 0)
+    return now + pre + dem + pts
+
+
+def _daily_estimate_old() -> int:
     nf = len(FIELDS)
-    fc = tile_count(FCST_ZOOM) * len(FCST_HOURS) * nf * (1440 // max(1, FCST_MIN))
+    near = sum(len([h for h in steps_for(f) if h <= 24]) for f in FIELDS)
+    far = sum(len([h for h in steps_for(f) if h > 24]) for f in FIELDS)
+    fc = tile_count(FCST_ZOOM) * (near * (1440 // max(1, FCST_MIN))
+                                  + far * (1440 // max(1, FAR_MIN)))
     nw = tile_count(NOW_ZOOM) * nf * (1440 // max(1, NOW_MIN))
     pt = 0
     if POINTS_ON:
@@ -535,6 +650,8 @@ def sector_estimate(key: str) -> int:
 def _fetch_tile(z, x, y, field, tstr, key, query=""):
     if DEMO:
         return _demo_tile(z, x, y, field, tstr)
+    if pause_left_s() > 0:
+        raise Deferred(f"paused until {PAUSE_UNTIL}")
     import requests
 
     url = (f"https://api.tomorrow.io/v4/map/tile/{z}/{x}/{y}/{field}/"
@@ -565,24 +682,168 @@ def _usage_path(outdir):
 
 
 def usage(outdir) -> dict:
+    """{"day", "count", "hour", "hcount"}: the UTC day's spend and the
+    current clock hour's."""
     try:
         d = json.loads(_usage_path(outdir).read_text())
     except Exception:
         d = {}
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    return {"day": today, "count": int(d.get("count", 0))
-            if d.get("day") == today else 0}
+    now = datetime.now(timezone.utc)
+    today = (now - timedelta(hours=DAY_RESET_UTC_HOUR)).strftime("%Y-%m-%d")
+    hour = now.strftime("%Y-%m-%dT%H")
+    return {"day": today,
+            "count": int(d.get("count", 0)) if d.get("day") == today else 0,
+            "hour": hour,
+            "hcount": int(d.get("hcount", 0)) if d.get("hour") == hour else 0}
 
 
 def _add_usage(outdir, n):
     u = usage(outdir)
     u["count"] += n
+    u["hcount"] += n
     p = _usage_path(outdir)
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(u))
     os.replace(tmp, p)
     _persist(p)
     return u["count"]
+
+
+class Deferred(RuntimeError):
+    """The budget said not now (not a failure: the pass retries on
+    its next tick)."""
+
+
+def mandatory_left() -> int:
+    """Now-frame requests still owed for the rest of the UTC day."""
+    now = datetime.now(timezone.utc) - timedelta(hours=DAY_RESET_UTC_HOUR)
+    hours_left = 24 - now.hour
+    return tile_count(NOW_ZOOM) * len(FIELDS) * max(1, hours_left * 60 // max(1, NOW_MIN))
+
+
+def budget(outdir) -> dict:
+    """What is left today, for the page and the log."""
+    u = usage(outdir)
+    left = DAILY_CAP - u["count"]
+    return {"used": u["count"], "cap": DAILY_CAP, "left": left,
+            "mandatory_left": mandatory_left(), "reserve": RESERVE,
+            "free": max(0, left - mandatory_left() - RESERVE),
+            "hour_used": u["hcount"], "hour_cap": HOURLY_CAP,
+            "idle_min": idle_min(outdir)}
+
+
+def _charge(outdir, n: int, prio: int, what: str = "") -> int:
+    """Check the budget and charge `n` requests, or raise. Priority 0
+    only respects the hard cap; 1 and 2 also keep the reserve, the
+    mandatory now-frames and the hourly cap."""
+    if DEMO:
+        return 0
+    if pause_left_s() > 0:
+        raise Deferred(f"paused until {PAUSE_UNTIL} (TIO_PAUSE_UNTIL)")
+    u = usage(outdir)
+    if u["count"] + n > DAILY_CAP:
+        raise RuntimeError(f"daily cap: {u['count']}+{n} > {DAILY_CAP}")
+    if prio >= 1:
+        keep = mandatory_left() + RESERVE
+        if u["count"] + n > DAILY_CAP - keep:
+            raise Deferred(f"{what}: {n} would cut into the reserve "
+                           f"({u['count']}+{n} > {DAILY_CAP}-{keep})")
+        if u["hcount"] + n > HOURLY_CAP:
+            raise Deferred(f"{what}: hourly cap ({u['hcount']}+{n} > {HOURLY_CAP})")
+    return _add_usage(outdir, n)
+
+
+def _view_path(outdir):
+    return Path(outdir) / "tio_last_view.txt"
+
+
+_last_note = {"t": 0.0}
+
+
+def note_view(outdir) -> None:
+    """Called by the page on every render (its fragment reruns every
+    60 s while open): the warmer's proof that someone is looking."""
+    t = time.time()
+    if t - _last_note["t"] < 30:
+        return
+    _last_note["t"] = t
+    try:
+        _view_path(outdir).write_text(str(int(t)))
+    except Exception:
+        pass
+
+
+def idle_min(outdir) -> float:
+    """Minutes since the page was last open; large when never."""
+    try:
+        return (time.time() - float(_view_path(outdir).read_text().strip())) / 60.0
+    except Exception:
+        return 1e6
+
+
+def is_idle(outdir) -> bool:
+    return idle_min(outdir) > IDLE_MIN
+
+
+def _demand_path(outdir):
+    return Path(outdir) / "tio_demand.json"
+
+
+def _active_path(outdir):
+    return Path(outdir) / "tio_active.json"
+
+
+def set_demand(outdir, d: dict) -> None:
+    """From the page: what the viewer is looking at right now."""
+    if not isinstance(d, dict):
+        return
+    now = time.time()
+    fields = [f for f in (d.get("fields") or []) if f in FIELDS]
+    doc = {"fields": fields, "step": int(d.get("step") or 0),
+           "zoom": float(d.get("zoom") or 0), "station": str(d.get("station") or ""),
+           "playing": bool(d.get("playing")), "t": now}
+    try:
+        p = _demand_path(outdir)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(doc))
+        os.replace(tmp, p)
+        # remember every layer anyone switched on, with when
+        try:
+            act = json.loads(_active_path(outdir).read_text())
+        except Exception:
+            act = {}
+        for f in fields:
+            act[f] = now
+        act = {k: v for k, v in act.items() if now - v < 86400}
+        tmp = _active_path(outdir).with_suffix(".tmp")
+        tmp.write_text(json.dumps(act))
+        os.replace(tmp, _active_path(outdir))
+    except Exception:
+        pass
+    note_view(outdir)
+
+
+def demand(outdir, max_age_s: int = 900) -> dict:
+    """The latest demand, or {} when it is older than max_age_s."""
+    try:
+        d = json.loads(_demand_path(outdir).read_text())
+        if time.time() - float(d.get("t", 0)) > max_age_s:
+            return {}
+        return d
+    except Exception:
+        return {}
+
+
+def active_fields(outdir) -> list:
+    """Layers switched on by anyone in the last ACTIVE_MIN, in FIELDS
+    order; the first field when nobody has asked for anything."""
+    try:
+        act = json.loads(_active_path(outdir).read_text())
+    except Exception:
+        act = {}
+    now = time.time()
+    out = [f for f in FIELDS if now - float(act.get(f, 0)) < ACTIVE_MIN * 60]
+    return out or FIELDS[:1]
 
 
 # ---------------------------------------------------------------- build
@@ -649,11 +910,9 @@ def build_frame(outdir, model: str, field: str, step: int, z: int,
                  + timedelta(hours=step))
         tstr = valid.strftime("%Y-%m-%dT%H:%M:%SZ")
     n = (x1 - x0 + 1) * (y1 - y0 + 1)
-    u = usage(outdir)
-    if not DEMO:
-        if u["count"] + n > DAILY_CAP:
-            raise RuntimeError(f"daily cap: {u['count']}+{n} > {DAILY_CAP}")
-        _add_usage(outdir, n)      # charged up front; a failed tile still counts
+    prio = 2 if (hub or step > 24) else (1 if step else 0)
+    # charged up front; a failed tile still counts
+    _charge(outdir, n, prio, f"{field} +{step:02d}h" + (f" {hub}" if hub else ""))
     jobs = [(x, y) for y in range(y0, y1 + 1) for x in range(x0, x1 + 1)]
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=8) as ex:
@@ -732,6 +991,8 @@ def _fetch_point(icao, lat, lon, fields, key, query):
     Returns {"t": [iso...], field: [values...]}."""
     if DEMO:
         return _demo_point(icao, lat, lon, fields)
+    if pause_left_s() > 0:
+        raise Deferred(f"paused until {PAUSE_UNTIL}")
     import requests
 
     url = f"https://api.tomorrow.io/v4/timelines?apikey={key}"
@@ -767,11 +1028,7 @@ def build_points(outdir, model) -> int:
     _label, query = MODELS[model]
     fields = point_fields()
     pts = _points(outdir)
-    u = usage(outdir)
-    if not DEMO:
-        if u["count"] + len(pts) > DAILY_CAP:
-            raise RuntimeError(f"daily cap: {u['count']}+{len(pts)} > {DAILY_CAP}")
-        _add_usage(outdir, len(pts))
+    _charge(outdir, len(pts), 1, "points")
     t0 = time.time()
     got, bad = {}, []
 
@@ -814,16 +1071,73 @@ def build_points(outdir, model) -> int:
     return len(got)
 
 
+def build_point_one(outdir, model, icao: str) -> bool:
+    """One station's timeline, merged into the points file with its
+    own built time. Charged one request."""
+    key = api_key() or ("demo" if DEMO else "")
+    if not key:
+        raise RuntimeError("no TOMORROWIO_API_KEY")
+    pts = {p[0]: p for p in _points(outdir)}
+    if icao not in pts:
+        return False
+    _label, query = MODELS[model]
+    fields = point_fields()
+    _charge(outdir, 1, 1, f"point {icao}")
+    _ic, lat, lon = pts[icao]
+    got = _fetch_point(icao, lat, lon, fields, key, query)
+    doc = points(outdir, model) or {}
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+    doc.update({"model": model, "fields": fields,
+                "units": {"windSpeed": "m/s", "windGust": "m/s", "visibility": "km",
+                          "cloudCeiling": "km", "precipitationIntensity": "mm/h"}})
+    doc.setdefault("stations", {})[icao] = got
+    doc.setdefault("built_by", {})[icao] = now
+    doc["built"] = now
+    p = _pt_path(outdir, model)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(doc))
+    os.replace(tmp, p)
+    _persist(p)
+    _log(outdir, f"{model} point {icao} on demand, day {usage(outdir)['count']}/{DAILY_CAP}")
+    return True
+
+
+def _point_age_min(outdir, model, icao) -> float:
+    try:
+        b = points(outdir, model)["built_by"][icao]
+        return (datetime.now(timezone.utc)
+                - datetime.strptime(b, "%Y-%m-%dT%H:%MZ").replace(
+                    tzinfo=timezone.utc)).total_seconds() / 60.0
+    except Exception:
+        return 1e9
+
+
+def _hires_age_min(outdir, model, hub, field) -> float:
+    try:
+        e = manifest(outdir)[model][f"hires:{hub}"][field]["0"]
+        return (datetime.now(timezone.utc)
+                - datetime.strptime(e["built"], "%Y-%m-%dT%H:%MZ").replace(
+                    tzinfo=timezone.utc)).total_seconds() / 60.0
+    except Exception:
+        return 1e9
+
+
 def _hires_pass(outdir, model):
     sec = active_sector(outdir)
     if not sec:
         return
+    act = set(active_fields(outdir))
     for hub in [sec]:
-        for field in HIRES_FIELDS:
+        for field in [f for f in HIRES_FIELDS if f in act] or HIRES_FIELDS[:1]:
+            if _hires_age_min(outdir, model, hub, field) < HIRES_MIN:
+                continue
             try:
                 build_frame(outdir, model, field, 0, HIRES_ZOOM, hub=hub)
             except RateLimited as rl:
                 _rate_limited(outdir, f"hires {hub} {field}", rl.retry_after)
+                return
+            except Deferred as d:
+                _log(outdir, f"DEFERRED hires {hub}: {d}")
                 return
             except Exception as exc:
                 STATUS["err"] = f"{type(exc).__name__}: {exc}"
@@ -926,8 +1240,13 @@ def _pass(outdir, model, steps):
     """Steps in TIME order across fields, so when the cap stops a
     pass mid-way the near hours exist for every layer rather than
     the whole run for one."""
+    deferred = 0
     for step in steps:
         for field in FIELDS:
+            if step and step not in steps_for(field):
+                continue
+            if step > 24 and _frame_age_min(outdir, model, field, step) < FAR_MIN:
+                continue
             try:
                 build_frame(outdir, model, field, step,
                             NOW_ZOOM if step == 0 else FCST_ZOOM)
@@ -937,11 +1256,31 @@ def _pass(outdir, model, steps):
             except RateLimited as rl:
                 _rate_limited(outdir, f"{field} +{step:02d}h", rl.retry_after)
                 return
+            except Deferred as d:
+                # budget says wait: the near hours already landed, the
+                # rest comes on a later tick; log once per pass
+                if not deferred:
+                    _log(outdir, f"DEFERRED {model}: {d}")
+                deferred += 1
+                STATUS["err"] = None
+                return False
             except Exception as exc:
                 STATUS["err"] = f"{type(exc).__name__}: {exc}"
                 _log(outdir, f"FAILED {model} {field} +{step:02d}h: {STATUS['err']}")
                 if "daily cap" in str(exc) or "no TOMORROWIO" in str(exc):
-                    return
+                    return False
+    return True
+
+
+def _frame_age_min(outdir, model, field, step) -> float:
+    """Minutes since this frame was built; huge when it does not exist."""
+    try:
+        e = manifest(outdir)[model][field][str(step)]
+        return (datetime.now(timezone.utc)
+                - datetime.strptime(e["built"], "%Y-%m-%dT%H:%MZ").replace(
+                    tzinfo=timezone.utc)).total_seconds() / 60.0
+    except Exception:
+        return 1e9
 
 
 def _prune_v1(outdir):
@@ -1001,52 +1340,147 @@ def _loop(outdir):
 
     def _pts(model):
         if not POINTS_ON:
-            return
+            return True
         try:
             build_points(outdir, model)
+        except Deferred as d:
+            _log(outdir, f"DEFERRED {model} points: {d}")
+            return False
         except Exception as exc:
             STATUS["err"] = f"{type(exc).__name__}: {exc}"
             _log(outdir, f"FAILED {model} points: {STATUS['err']}")
+        return True
 
+    _defer_log = {"t": 0.0}
+
+    def _try(fn, what, *a) -> bool:
+        """Run one build; True when it ran. Deferred/failed are logged
+        (deferrals at most once per 10 min) and never raise."""
+        try:
+            fn(*a)
+            STATUS["last"] = time.time()
+            STATUS["err"] = None
+            _backoff["n"] = 0
+            return True
+        except RateLimited as rl:
+            _rate_limited(outdir, what, rl.retry_after)
+        except Deferred as d:
+            if time.time() - _defer_log["t"] > 600:
+                _log(outdir, f"DEFERRED {what}: {d}")
+                _defer_log["t"] = time.time()
+        except Exception as exc:
+            STATUS["err"] = f"{type(exc).__name__}: {exc}"
+            _log(outdir, f"FAILED {what}: {STATUS['err']}")
+        return False
+
+    def _stale(model, field, step) -> bool:
+        age = _frame_age_min(outdir, model, field, step)
+        if step == 0:
+            return age >= (NOW_FAST_MIN if field == FIELDS[0] else NOW_SLOW_MIN)
+        return age >= (FCST_MIN if step <= 24 else FAR_MIN)
+
+    def _frame(model, field, step) -> bool:
+        return _try(build_frame, f"{model} {field} +{step:02d}h", outdir, model, field, step,
+                    NOW_ZOOM if step == 0 else FCST_ZOOM)
+
+    _noaa_next = 0.0
     while True:
         t = time.time()
         if in_backoff():
-            time.sleep(20)
+            time.sleep(10)
             continue
+        if pause_left_s() > 0:
+            if STATUS.get("paused") != PAUSE_UNTIL:
+                STATUS["paused"] = PAUSE_UNTIL
+                STATUS["err"] = f"tomorrow.io paused until {PAUSE_UNTIL} (TIO_PAUSE_UNTIL)"
+                _log(outdir, f"PAUSED: no tomorrow.io requests until {PAUSE_UNTIL} "
+                             f"({pause_left_s() / 3600:.1f} h)")
+            time.sleep(30)
+            continue
+        if STATUS.get("paused"):
+            STATUS["paused"] = None
+            STATUS["err"] = None
+            _log(outdir, "pause over: resuming")
         model = active_model(outdir)
         STATUS["model"] = model
         if model != last_model:
-            # first pass, or the page switched model: full re-warm
-            _log(outdir, f"model -> {model}: full pass")
+            _log(outdir, f"model -> {model}: warming on demand")
             last_model = model
-            next_fc = next_pt = next_hr = 0.0
-        if t >= next_pt:
-            # points first: 79 small calls, and the meteogram is
-            # usable before the first forecast frames land
-            _pts(model)
-            next_pt = time.time() + PT_MIN * 60
-        if NOAA_ON and t >= next_noaa:
+        idle = is_idle(outdir)
+        if idle != STATUS.get("idle"):
+            STATUS["idle"] = idle
+            _log(outdir, "nobody viewing for %d min: on-demand and prefetch paused, "
+                         "%s now-frame every %d min" % (IDLE_MIN, FIELDS[0], NOW_IDLE_MIN)
+                 if idle else "viewer back: resuming")
+        if NOAA_ON and t >= _noaa_next:
             try:
                 build_noaa(outdir)
             except Exception as exc:
                 _log(outdir, f"FAILED noaa: {type(exc).__name__}: {exc}")
-            next_noaa = time.time() + NOAA_MIN * 60
+            _noaa_next = time.time() + NOAA_MIN * 60
+        built = 0
+        if idle:
+            # keep the map openable: the first field's now-frame, slowly
+            if _frame_age_min(outdir, model, FIELDS[0], 0) >= NOW_IDLE_MIN:
+                _frame(model, FIELDS[0], 0)
+            time.sleep(15)
+            continue
+
+        dm = demand(outdir)
+        act = active_fields(outdir)
+        # 1. what the viewer is looking at RIGHT NOW: the slider's step
+        #    for every layer that is on, then the neighbouring steps
+        #    (scrubbing), unless Play is running through the loop
+        if dm and not dm.get("playing"):
+            step = dm.get("step", 0)
+            want = [step] + [h for h in FCST_HOURS if 0 < h - step <= 3] + \
+                   [h for h in [0] + FCST_HOURS if 0 < step - h <= 1]
+            for st_ in want:
+                for f in dm.get("fields") or []:
+                    if st_ and st_ not in steps_for(f):
+                        continue
+                    if _stale(model, f, st_):
+                        built += _frame(model, f, st_)
+                        if built >= 4:
+                            break
+                if built >= 4:
+                    break
+        # 2. the station someone clicked
+        if dm.get("station") and POINTS_MODE == "demand" and built < 4:
+            ic = dm["station"]
+            if _point_age_min(outdir, model, ic) >= PT_STALE_MIN:
+                built += _try(build_point_one, f"{model} point {ic}", outdir, model, ic)
+        # 3. hi-res sector, only while the map is zoomed into it
         sec = active_sector(outdir)
-        if sec != last_sector:
-            last_sector = sec
-            next_hr = 0.0
-        if HIRES_ON and sec and t >= next_hr:
+        if (HIRES_ON and sec and dm and dm.get("zoom", 0) >= HIRES_ZOOM_GATE
+                and built < 4):
             _hires_pass(outdir, model)
-            next_hr = time.time() + HIRES_MIN * 60
-        if t >= next_fc:
-            _pass(outdir, model, [0] + FCST_HOURS)
-            next_now = time.time() + NOW_MIN * 60
-            # a 429 mid-pass: come back after the back-off, not in 8 h
-            next_fc = time.time() + (FCST_MIN * 60 if not in_backoff() else 0)
-        elif t >= next_now:
-            _pass(outdir, model, [0])
-            next_now = time.time() + NOW_MIN * 60
-        time.sleep(20)
+        # 4. keep-warm for the active layers: now-frames on their
+        #    cadence, then the next PREFETCH_H hours
+        if built < 4:
+            for f in act:
+                if _stale(model, f, 0):
+                    built += _frame(model, f, 0)
+                    if built >= 4:
+                        break
+        if built < 4:
+            for h in [h for h in FCST_HOURS if h <= PREFETCH_H]:
+                for f in act:
+                    if h in steps_for(f) and _stale(model, f, h):
+                        built += _frame(model, f, h)
+                        if built >= 4:
+                            break
+                if built >= 4:
+                    break
+        # 5. the old warm-everything points pass, if asked for
+        if POINTS_MODE == "all" and built < 4:
+            if _point_age_min(outdir, model, "__all__") >= PT_MIN:
+                if _try(build_points, f"{model} points", outdir, model):
+                    doc = points(outdir, model)
+                    doc.setdefault("built_by", {})["__all__"] = doc.get("built", "")
+                    p = _pt_path(outdir, model)
+                    p.write_text(json.dumps(doc))
+        time.sleep(2 if built else 5)
 
 
 def ensure_tio_warmer(outdir) -> bool:
@@ -1123,7 +1557,7 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
         "BLUEMET_MAP_STYLE",
         "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json")
     labels = {f: FIELD_LABEL.get(f, f) for f in FIELDS}
-    pt_url = f"{base}/app/static/tio_pt_{model}.json?v={pt_built}" if pt_built else ""
+    pt_url = f"{base}/app/static/tio_pt_{model}.json"
     noaa_url = f"{base}/app/static/tio_noaa.json?v={noaa_built}" if noaa_built else ""
     # GENERAL WEATHER menu: one row per layer, checkbox + opacity.
     # Precipitation reflectivity on by default.
@@ -1209,6 +1643,10 @@ const ST = {json.dumps(stations)};
 const FIELDS = {json.dumps(FIELDS)};
 const STEPS = {json.dumps(steps_all)};
 const PT_URL = {json.dumps(pt_url)};
+const MAN_URL = {json.dumps(base + "/app/static/tio_manifest.json")};
+const IMG_BASE = {json.dumps(base + "/app/static/")};
+const MODEL = {json.dumps(model)}, SECTOR = {json.dumps(sector)};
+const FCST_STEPS = {json.dumps(FCST_HOURS)};
 const NOAA_URL = {json.dumps(noaa_url)};
 const LABELS = {json.dumps({**labels, **plabels})};
 const PT_FIELD = {json.dumps({f: POINT_FIELD.get(f, f) for f in FIELDS})};
@@ -1250,6 +1688,50 @@ function ensure(f) {{
   // moveLayer(id, beforeId): walk from the bottom-most field up
   for (let i = shown.length - 1; i >= 0; i--) map.moveLayer(shown[i], before);
 }}
+// ---- demand: tell the warmer what is being looked at ------------------
+// Posted to the page's bridge component (a sibling iframe, same
+// origin), which hands it to Streamlit -> core.tio_map.set_demand.
+let demandTimer = null, lastDemand = '';
+function sendDemand(now) {{
+  clearTimeout(demandTimer);
+  demandTimer = setTimeout(() => {{
+    const v = {{fields: FIELDS.filter(f => on[f]), step: STEPS[ti], zoom: +map.getZoom().toFixed(2),
+               station: sel || '', playing: !!timer}};
+    const js = JSON.stringify(v);
+    if (js === lastDemand && !now) return;
+    lastDemand = js;
+    try {{ const P = window.parent; for (let i = 0; i < P.frames.length; i++) {{ try {{ P.frames[i].postMessage({{tio:'demand', value:v}}, '*'); }} catch (e) {{}} }} }} catch (e) {{}}
+  }}, now ? 0 : 600);
+}}
+setInterval(() => sendDemand(true), 45000);          // heartbeat while open
+// ---- frames: (re)built from the manifest, polled while the page is open
+function entriesFrom(man) {{
+  const mm = (man && man[MODEL]) || {{}}, out = [];
+  FIELDS.forEach(field => {{ const d = mm[field] || {{}}; Object.keys(d).forEach(st => {{ const e = d[st];
+    out.push({{url: IMG_BASE + e.name + '?v=' + e.built, field: field, step: +st, valid: e.valid, built: e.built, b: e.bounds, hub: ''}}); }}); }});
+  const hr = SECTOR ? (mm['hires:' + SECTOR] || {{}}) : {{}};
+  Object.keys(hr).forEach(field => {{ Object.keys(hr[field]).forEach(st => {{ const e = hr[field][st];
+    out.push({{url: IMG_BASE + e.name + '?v=' + e.built, field: field, step: +st, valid: e.valid, built: e.built, b: e.bounds, hub: SECTOR}}); }}); }});
+  return out;
+}}
+function mergeFrames(list) {{
+  let changed = false;
+  list.forEach(n => {{
+    const i = F.findIndex(f => f.field === n.field && f.step === n.step && f.hub === n.hub);
+    if (i < 0) {{ F.push(n); changed = true; return; }}
+    if (F[i].url !== n.url) {{
+      F[i] = n; changed = true;
+      const src = ready && map.getSource(key(n));
+      if (src && src.updateImage) src.updateImage({{url: n.url, coordinates: [[n.b[0], n.b[3]], [n.b[2], n.b[3]], [n.b[2], n.b[1]], [n.b[0], n.b[1]]]}});
+    }}
+  }});
+  if (changed) draw();
+}}
+function pollManifest() {{
+  fetch(MAN_URL + '?_=' + Date.now(), {{cache:'no-store'}}).then(r => r.json()).then(j => mergeFrames(entriesFrom(j))).catch(() => {{}});
+}}
+setInterval(pollManifest, 8000);
+function hasFrame(i) {{ return FIELDS.some(f => on[f] && frame(f, STEPS[i])); }}
 function draw() {{
   const step = STEPS[ti];
   let valid = '', built = '';
@@ -1266,7 +1748,8 @@ function draw() {{
   if (ready) added.forEach(k => {{ if (map.getLayer(k)) {{ const p = k.split('_'); const fld = p[p.length > 3 ? 2 : 1]; map.setPaintProperty(k, 'raster-opacity', visible.has(k) ? op[fld] : 0); }} }});
   const nOn = FIELDS.filter(f => on[f]).length;
   $('ddws').innerHTML = 'General Weather' + (nOn ? ' <span style="color:#00E5FF">' + nOn + '</span>' : '') + ' &#9662;';
-  $('valid').textContent = (step ? '+' + step + ' h' : 'now') + (valid ? '  valid ' + valid : '  (no frame yet)');
+  $('valid').textContent = (step ? '+' + step + ' h' : 'now') + (valid ? '  valid ' + valid : (nOn ? '  fetching…' : '  (no layer on)'));
+  sendDemand(false);
   $('built').textContent = built ? ' · built ' + built : '';
   if (two && PT && sel) drawMg();
 }}
@@ -1344,13 +1827,13 @@ function panels(st) {{
 function drawMg() {{
   if (!two) return;
   const box = $('mgc'), note = $('mgn');
-  if (!PT) {{ note.textContent = PT_URL ? 'loading station forecasts…' : 'no station forecasts yet - the warmer builds them on its first pass'; box.innerHTML = ''; return; }}
+  if (!PT) {{ note.textContent = 'loading station forecasts…'; box.innerHTML = ''; return; }}
   const st = PT.stations[sel];
-  if (!st) {{ note.textContent = 'click a station dot on the map'; box.innerHTML = ''; $('mgt').textContent = ''; return; }}
+  if (!st) {{ note.textContent = sel ? 'fetching ' + sel + ' from tomorrow.io…' : 'click a station dot on the map'; box.innerHTML = ''; $('mgt').textContent = sel || ''; return; }}
   const ps = panels(st);
   if (!ps.length) {{ note.textContent = 'pick up to four elements from the Elements menu'; box.innerHTML = ''; return; }}
   note.textContent = '';
-  $('mgt').textContent = sel; $('mgs').textContent = PT.model + ' · built ' + PT.built + 'Z';
+  $('mgt').textContent = sel; $('mgs').textContent = PT.model + ' · built ' + ((PT.built_by && PT.built_by[sel]) || PT.built) + 'Z';
   const t = st.t.map(x => x.replace('Z', ''));
   const cig = st.cloudCeiling, vis = st.visibility;
   const haveCat = cig && vis;
@@ -1395,9 +1878,21 @@ function drawMg() {{
     ti = best; $('tm').value = ti; draw();
   }});
 }}
-function pick(icao) {{ sel = icao; $('mgsel').value = icao; drawMg(); }}
+let ptPoll = null;
+function pick(icao) {{
+  sel = icao; $('mgsel').value = icao; sendDemand(true); drawMg();
+  clearInterval(ptPoll);
+  if (icao && !(PT && PT.stations && PT.stations[icao])) {{
+    let tries = 0;
+    ptPoll = setInterval(() => {{
+      tries++;
+      fetch(PT_URL + '?_=' + Date.now(), {{cache:'no-store'}}).then(r => r.json()).then(j => {{ PT = j; fillSel(); if (PT.stations && PT.stations[sel]) {{ clearInterval(ptPoll); }} drawMg(); }}).catch(() => {{}});
+      if (tries > 20) clearInterval(ptPoll);
+    }}, 4000);
+  }}
+}}
 function fillSel() {{
-  const ids = PT ? Object.keys(PT.stations).sort() : [];
+  const ids = ST.features.map(f => f.properties.id).sort();
   $('mgsel').innerHTML = '<option value="">station…</option>' + ids.map(i => `<option value="${{i}}">${{i}}</option>`).join('');
   if (sel) $('mgsel').value = sel;
 }}
@@ -1405,7 +1900,7 @@ $('mgsel').onchange = e => pick(e.target.value);
 $('b2').onclick = () => {{
   two = !two; $('b2').classList.toggle('on', two); document.body.classList.toggle('two', two);
   setTimeout(() => map.resize(), 30);
-  if (two && !PT && PT_URL) fetch(PT_URL).then(r => r.json()).then(j => {{ PT = j; fillSel(); drawMg(); }}).catch(() => {{ $('mgn').textContent = 'station forecasts failed to load'; }});
+  if (two && !PT && PT_URL) fetch(PT_URL + '?_=' + Date.now(), {{cache:'no-store'}}).then(r => r.ok ? r.json() : {{stations:{{}}}}).then(j => {{ PT = j; fillSel(); drawMg(); }}).catch(() => {{ PT = {{stations:{{}}}}; fillSel(); drawMg(); }});
   if (two && !NOAA && NOAA_URL) fetch(NOAA_URL).then(r => r.json()).then(j => {{ NOAA = j; drawMg(); }}).catch(() => {{}});
   drawMg();
 }};
@@ -1479,6 +1974,7 @@ map.on('load', () => {{
   map.on('click', 'st-dot', e => {{ const id = e.features[0].properties.id; if (!two) $('b2').onclick(); pick(id); }});
   map.on('mouseenter', 'st-dot', () => map.getCanvas().style.cursor = 'pointer');
   map.on('mouseleave', 'st-dot', () => map.getCanvas().style.cursor = '');
+  map.on('zoomend', () => sendDemand(false));
   ready = true; draw();
 }});
 $('tm').oninput = e => {{ ti = +e.target.value; draw(); }};
@@ -1488,7 +1984,11 @@ $('bnext').onclick = () => stepBy(1);
 $('bplay').onclick = () => {{
   if (timer) {{ clearInterval(timer); timer = null; $('bplay').textContent = 'Play'; $('bplay').classList.remove('on'); return; }}
   $('bplay').textContent = 'Pause'; $('bplay').classList.add('on');
-  timer = setInterval(() => {{ if (ti >= STEPS.length - 1) ti = -1; stepBy(1); }}, 700);
+  timer = setInterval(() => {{
+    let n = ti, guard = 0;
+    do {{ n = n >= STEPS.length - 1 ? 0 : n + 1; guard++; }} while (!hasFrame(n) && guard < STEPS.length);
+    ti = n; $('tm').value = ti; draw();
+  }}, 700);
 }};
 document.addEventListener('keydown', e => {{ if (e.key === 'ArrowLeft') stepBy(-1); if (e.key === 'ArrowRight') stepBy(1); }});
 $('bst').onclick = () => {{ $('bst').classList.toggle('on'); applyFilter(); }};
