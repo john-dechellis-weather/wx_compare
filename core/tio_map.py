@@ -197,10 +197,11 @@ DAILY_CAP = int(os.environ.get("TIO_DAILY_CAP", "9000"))
 # Priority 0 = now-frames (only the hard cap applies), 1 = points and
 # forecast to +24 h, 2 = forecast beyond +24 h and hi-res sectors.
 RESERVE = int(os.environ.get("TIO_RESERVE", "1000"))
-# tomorrow.io's daily bucket resets at midnight US Eastern; the usage
-# day here starts at that hour UTC (04Z in EDT, 05Z in EST) so the
-# counter and the plan reset together. TIO_DAY_RESET_UTC_HOUR moves it.
-DAY_RESET_UTC_HOUR = int(os.environ.get("TIO_DAY_RESET_UTC_HOUR", "4"))
+# tomorrow.io's daily bucket resets at 00Z (a 429 at 06:58Z came back
+# with Retry-After 1022 min = 00:00Z). The usage day here starts at the
+# same hour so the counter and the plan reset together;
+# TIO_DAY_RESET_UTC_HOUR moves it if the plan ever changes.
+DAY_RESET_UTC_HOUR = int(os.environ.get("TIO_DAY_RESET_UTC_HOUR", "0"))
 # TIO_PAUSE_UNTIL="2026-09-29T04:00Z": no tomorrow.io request of any
 # kind before then - the warmer idles and the page says so. Lets a
 # spent plan sit untouched until it resets, whatever restarts happen.
