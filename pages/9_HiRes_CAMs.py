@@ -166,7 +166,7 @@ with _h2:
     # Map size in pixels: each pod is exactly its map. Three per row
     # is fixed, so pick a size that fits the window (the map can be
     # no wider than its column; below that the pod just gets shorter).
-    pod_px = st.slider("Map size (px)", 220, 640, 340, 10, key="cam_pod_px")
+    pod_px = st.slider("Map size (px)", 220, 800, 500, 10, key="cam_pod_px")
 
 
 @st.cache_data(ttl=600, show_spinner=False, max_entries=48)

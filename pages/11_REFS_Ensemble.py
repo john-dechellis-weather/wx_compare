@@ -101,13 +101,76 @@ PRODUCTS = {
 }
 # Defaults: PMMN composite on the left, echo tops on the right, both
 # rows (Northeast on top, Florida below).
-_POD_DEFAULTS = ["PMMN composite reflectivity", "Probability REFC \u2265 40 dBZ", "Probability echo tops > FL350", "PMMN composite reflectivity", "Probability REFC \u2265 40 dBZ", "Probability echo tops > FL350"]
+_POD_DEFAULTS = ["PMMN composite reflectivity", "Probability REFC \u2265 40 dBZ", "Probability echo tops > FL350"]
+_REGION_LABEL = {"NE": "Northeast / Mid-Atlantic", "FL": "Florida"}
 
 # Run choice -> the forecast hour a run must have reached to count.
 # REFS runs 00Z and 12Z to f60, 06Z and 18Z to f48.
 _RUNS = {"Latest run": 1,
          "Latest 60-hr run (00Z/12Z)": 60,
          "Latest 48-hr run": 48}
+
+
+# ------------------------------------------------------------ setup dialog
+# 1 Oct: the page opens with a pop-up - region, three products, run -
+# and shows ONE row of three maps for that choice (same as Hi-Res CAMs).
+st.markdown(
+    "<style>"
+    "[data-testid='stDialog'] [data-testid='stButton'] button[kind='primary']{"
+    "background:#00C853 !important;color:#000 !important;"
+    "-webkit-text-fill-color:#000 !important;border:none !important;"
+    "font-weight:700 !important;font-size:15px !important;width:100%;padding:10px 0}"
+    "[data-testid='stDialog'] [data-testid='stButton'] button[kind='primary']:disabled{"
+    "background:#2A2A2A !important;color:#6E6E6E !important;"
+    "-webkit-text-fill-color:#6E6E6E !important}"
+    "[data-testid='stDialog'] [data-testid='stCheckbox'] label span{font-size:13px !important}"
+    "</style>", unsafe_allow_html=True)
+
+
+@st.dialog("REFS Ensemble - choose what to show", width="large")
+def _setup():
+    st.markdown("**1. Region** - one row of three maps")
+    region = st.radio("Region", list(_REGION_LABEL), index=list(_REGION_LABEL).index(
+        st.session_state.get("refs_region", "NE")),
+        format_func=lambda k: _REGION_LABEL[k], horizontal=True,
+        key="refs_dlg_region", label_visibility="collapsed")
+    st.markdown("**2. Products** - select exactly three, in the order you "
+                "want them left to right")
+    prev = st.session_state.get("refs_products", _POD_DEFAULTS)
+    c_a, c_b = st.columns(2)
+    picked = []
+    _labels = list(PRODUCTS)
+    for col, chunk in ((c_a, _labels[:4]), (c_b, _labels[4:])):
+        with col:
+            for label in chunk:
+                if st.checkbox(label, value=label in prev, key=f"refs_dlg_{label}"):
+                    picked.append(label)
+    picked = [x for x in prev if x in picked] + [x for x in picked if x not in prev]
+    st.markdown("**3. Run**")
+    run = st.radio("Run", list(_RUNS), index=list(_RUNS).index(
+        st.session_state.get("refs_run_choice", "Latest run")),
+        horizontal=True, key="refs_dlg_run", label_visibility="collapsed")
+    n = len(picked)
+    if n == 3:
+        st.markdown('<div style="color:#00C853;font-weight:700">3 of 3 selected</div>',
+                    unsafe_allow_html=True)
+    else:
+        st.markdown(f'<div style="color:#FFD400;font-weight:700">{n} of 3 selected'
+                    + (" - untick one" if n > 3 else "") + '</div>', unsafe_allow_html=True)
+    if st.button("Click to view", type="primary", disabled=(n != 3), key="refs_dlg_go"):
+        st.session_state["refs_region"] = region
+        st.session_state["refs_products"] = picked[:3]
+        st.session_state["refs_run_choice"] = run
+        for i, lab in enumerate(picked[:3]):
+            st.session_state[f"refs_pod{i}"] = lab
+        st.session_state["refs_setup_done"] = True
+        st.rerun()
+
+
+if not st.session_state.get("refs_setup_done"):
+    _setup()
+    st.info("Choose a region, three products and a run in the pop-up to open the maps.")
+    st.stop()
 
 _PANEL, _EDGE, _INK, _INK2 = "#0A0A0A", "#333333", "#FFFFFF", "#B8B8B8"
 st.markdown(
@@ -118,25 +181,31 @@ st.markdown(
     "div[data-testid='stImage'] img{border-radius:8px}"
     "</style>", unsafe_allow_html=True)
 
-# Top two pods are the Northeast, bottom two Florida (22 Sep): both
-# regions on one page instead of a region switch.
-_POD_REGION = ["NE", "NE", "NE", "FL", "FL", "FL"]
+_region = st.session_state.get("refs_region", "NE")
+_POD_REGION = [_region, _region, _region]
 from core.cam_warm import hub_geom as _hub_geom
 now = datetime.now(timezone.utc)
 bucket10 = now.strftime("%Y%m%d%H") + str(now.minute // 10)
 
 # ---- run toggle + shared hour -------------------------------------------
-_h1, _h2 = st.columns([2.6, 1.4])
+_h0, _h1, _h2 = st.columns([1.2, 2.2, 1.4])
+with _h0:
+    if st.button("Change selection", key="refs_change"):
+        st.session_state["refs_setup_done"] = False
+        st.rerun()
 with _h1:
     run_choice = st.radio("Run", list(_RUNS), horizontal=True,
+                          index=list(_RUNS).index(
+                              st.session_state.get("refs_run_choice", "Latest run")),
                           key="refs_run", label_visibility="collapsed")
+    st.session_state["refs_run_choice"] = run_choice
 with _h2:
     # Pod size: the maps' display width as a share of the page. The
     # rows stay two across; the pair shrinks toward the centre.
     # Map size in pixels: each pod is exactly its map. Three per row
     # is fixed, so pick a size that fits the window (the map can be
     # no wider than its column; below that the pod just gets shorter).
-    pod_px = st.slider("Map size (px)", 220, 640, 340, 10, key="refs_pod_px")
+    pod_px = st.slider("Map size (px)", 220, 800, 500, 10, key="refs_pod_px")
 need_fhr = _RUNS[run_choice]
 
 
@@ -284,13 +353,7 @@ _BANNER = ('<div style="font:700 15px DejaVu Sans Mono,monospace;color:#FFFFFF;'
 # THREE PODS PER ROW, always: st.columns keeps three columns at any
 # window width, so the maps shrink rather than wrap. Each pod is the
 # size of its map (the viewer fills the column and stays square).
-st.markdown(_BANNER.format("NORTHEAST / MID-ATLANTIC"), unsafe_allow_html=True)
-_r1 = st.columns(3, gap="small")
-for _i in range(3):
-    with _r1[_i]:
-        _pod(_i)
-
-# THE HOUR, between the rows: one slider for all six pods.
+# THE HOUR, above the row: one slider for all three pods.
 _sa, _sb = st.columns([5, 1.2])
 with _sa:
     st.slider("Forecast hour", 1, max_fhr, min(fhr, max_fhr),
@@ -301,14 +364,13 @@ with _sb:
         f'color:{_INK2};margin-top:10px">f{fhr:02d}</div>',
         unsafe_allow_html=True)
 
-st.markdown(_BANNER.format("FLORIDA"), unsafe_allow_html=True)
-_r2 = st.columns(3, gap="small")
+st.markdown(_BANNER.format(_REGION_LABEL[_region].upper()), unsafe_allow_html=True)
+_r1 = st.columns(3, gap="small")
 for _i in range(3):
-    with _r2[_i]:
-        _pod(_i + 3)
+    with _r1[_i]:
+        _pod(_i)
 
 st.caption(
-    "Top row Northeast, bottom row Florida. One run and one valid hour "
-    "for all four pods. Warmed hours open "
+    "One run and one valid hour for all three pods. Warmed hours open "
     "instantly; others render on demand and are kept for three hours. "
     "The yellow outline is the N90 extent.")
