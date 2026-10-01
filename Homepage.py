@@ -323,6 +323,9 @@ PAGES = {
                 title="Station Forecast", default=True),
         st.Page("pages/4_MOS_Tables.py",
                 title="MOS Tables"),
+        # 1 Oct: tomorrow.io's convective fields for one station, 48 h
+        st.Page("pages/16_Convection_Parameters.py",
+                title="Convection Parameters"),
     ],
     "Situational Awareness": [
         st.Page("pages/3_JBU_Weather_Map.py",
