@@ -1602,10 +1602,10 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
                 f'<input type="range" data-f="{k}" min="10" max="100" value="80"></div>'
                 for k in ks)
             for m, ks in _by_model.items())
-        mcbs = "".join(_MT.colorbar_html(k) for k in mkeys)
+        mpal = _MT.palette_json()
         mlabels = {k: _MT.field_label(k) for k in mkeys}
     except Exception:
-        mkeys, nrows, mcbs, mlabels = [], "", "", {}
+        mkeys, nrows, mpal, mlabels = [], "", {}, {}
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
@@ -1640,6 +1640,16 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
  label{{color:#B8B8B8}} .sp{{flex:1}}
  .lg{{position:absolute;left:10px;bottom:24px;background:rgba(0,0,0,.85);border:1px solid #333;border-radius:6px;padding:8px 10px;font-size:11px;z-index:5}}
  .lg .d{{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;border:1px solid #000}}
+ .mcb{{margin:0 0 6px 0;min-width:300px}} .mcb .t{{font-size:10px;color:#fff}}
+ .mcb .cells{{display:flex;gap:1px;margin-top:2px}} .mcb .cells div{{flex:1;height:9px}}
+ .mcb .labs{{display:flex;gap:1px}} .mcb .labs div{{flex:1;font-size:9px;color:#B8B8B8}}
+ .mcb .ctl{{display:flex;align-items:center;gap:6px;margin-top:3px;font-size:10px;color:#B8B8B8}}
+ .mcb .ctl button{{font:bold 10px "DejaVu Sans Mono",monospace;background:#0A0A0A;color:#fff;border:1px solid #333;border-radius:4px;padding:1px 6px;cursor:pointer}}
+ .mcb .ctl select{{font:bold 10px "DejaVu Sans Mono",monospace;background:#0A0A0A;color:#fff;border:1px solid #333;border-radius:4px;padding:1px 4px}}
+ .maplibregl-popup-content{{background:#0A0A0A !important;color:#fff;border:1px solid #333;border-radius:6px;font:12px "DejaVu Sans Mono",monospace;padding:8px 10px;max-width:360px}}
+ .maplibregl-popup-close-button{{color:#fff;font-size:16px}} .maplibregl-popup-tip{{border-top-color:#333 !important}}
+ .rd table{{border-collapse:collapse}} .rd td{{padding:1px 8px 1px 0;white-space:nowrap}} .rd td.v{{color:#FFD400;text-align:right}}
+ .rd .h{{color:#00E5FF;font-weight:700;margin:4px 0 2px}} .rd .s{{color:#6E6E6E;font-size:10px}}
 </style></head><body>
 <div class="bar">
   <details class="dd" id="ddw"><summary id="ddws">General Weather &#9662;</summary><div class="menu">{rows}</div></details>
@@ -1659,7 +1669,7 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
   <span id="valid"></span><span id="built"></span>
 </div>
 <div id="wrap">
-<div id="m"><div class="lg" id="lg">{mcbs}<span class="d" style="background:#4DA3FF"></span>JBU station &nbsp;
+<div id="m"><div class="lg" id="lg"><div id="mlg"></div><span class="d" style="background:#4DA3FF"></span>JBU station &nbsp;
  <span class="d" style="background:#9AA0A6"></span>Canadian alternate<br>
  <span style="color:#6E6E6E">tomorrow.io {model_label(model)} tiles · CONUS{(" · " + SECTORS[sector][0] + " hi-res past zoom 5.5") if sector in SECTORS else ""} · hourly to +{int(os.environ.get("TIO_FCST_HOURLY_TO", "24"))} h, 3-hourly to +{FCST_HOURS[-1] if FCST_HOURS else 0} h</span></div></div>
 <div id="mg">
@@ -1677,6 +1687,7 @@ const TFIELDS = {json.dumps(FIELDS)};
 const MFIELDS = {json.dumps(mkeys)};
 const FIELDS = TFIELDS.concat(MFIELDS);
 const MDL_URL = {json.dumps(base + "/app/static/mdl_manifest.json")};
+const PAL = {json.dumps(mpal)};
 const STEPS = {json.dumps(steps_all)};
 const PT_URL = {json.dumps(pt_url)};
 const MAN_URL = {json.dumps(base + "/app/static/tio_manifest.json")};
@@ -1705,11 +1716,67 @@ function hubFrames(field, step) {{ return F.filter(f => f.field === field && f.s
 // at page load: 5 fields x 57 steps is a lot of WebP to pull for a
 // viewer who only looks at the next six hours.
 const added = new Set();
+// ---- band-index frames (NOAA model layers) --------------------------
+// The file holds a palette band per pixel; the colours come from PAL
+// and the per-layer legend settings (floor and shift), applied here on
+// a canvas, so moving the legend never touches the server.
+const IDX = {{}};            // frame key -> {{w, h, bands:Uint8Array, url(blob)}}
+const LG = {{}};             // field -> {{min:0, shift:0}}
+MFIELDS.forEach(f => LG[f] = {{min: 0, shift: 0}});
+function colorOf(field, band) {{
+  // band 1..n (0 = none). Shift moves the colours: band b takes the
+  // colour of band b - shift; below the floor or below 1 -> nothing.
+  const p = PAL[field], g = LG[field];
+  if (!p || !band || band <= g.min) return null;
+  const c = band - g.shift;
+  if (c < 1) return null;
+  return p.colors[Math.min(c, p.colors.length) - 1];
+}}
+function hex2rgb(h) {{ return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]; }}
+function paint(fk, field) {{
+  const d = IDX[fk]; if (!d) return null;
+  const cv = document.createElement('canvas'); cv.width = d.w; cv.height = d.h;
+  const cx = cv.getContext('2d'); const im = cx.createImageData(d.w, d.h); const px = im.data;
+  const n = PAL[field] ? PAL[field].colors.length : 0; const lut = new Array(n + 2).fill(null);
+  for (let b = 1; b <= n + 1; b++) {{ const c = colorOf(field, b); lut[b] = c ? hex2rgb(c) : null; }}
+  for (let i = 0, j = 0; i < d.bands.length; i++, j += 4) {{
+    const c = lut[d.bands[i]]; if (c) {{ px[j] = c[0]; px[j + 1] = c[1]; px[j + 2] = c[2]; px[j + 3] = 255; }}
+  }}
+  cx.putImageData(im, 0, 0);
+  return cv.toDataURL('image/png');
+}}
+function decodeIdx(f, done) {{
+  const im = new Image(); im.crossOrigin = 'anonymous';
+  im.onload = () => {{
+    const cv = document.createElement('canvas'); cv.width = im.width; cv.height = im.height;
+    const cx = cv.getContext('2d'); cx.drawImage(im, 0, 0);
+    const px = cx.getImageData(0, 0, im.width, im.height).data; const bands = new Uint8Array(im.width * im.height);
+    for (let i = 0, j = 0; i < bands.length; i++, j += 4) bands[i] = px[j];
+    IDX[key(f)] = {{w: im.width, h: im.height, bands: bands, src: f.url}};
+    done();
+  }};
+  im.onerror = () => {{}};
+  im.src = f.url;
+}}
+function recolorField(field) {{
+  F.filter(f => f.field === field && IDX[key(f)]).forEach(f => {{
+    const src = map.getSource(key(f)); const url = paint(key(f), field);
+    if (src && url) src.updateImage({{url: url, coordinates: [[f.b[0], f.b[3]], [f.b[2], f.b[3]], [f.b[2], f.b[1]], [f.b[0], f.b[1]]]}});
+  }});
+  renderLegends();
+}}
 function ensure(f) {{
   if (added.has(key(f))) return;
+  if (f.idx) {{
+    if (!IDX[key(f)]) {{ if (!f._loading) {{ f._loading = true; decodeIdx(f, () => {{ f._loading = false; draw(); }}); }} return; }}
+    added.add(key(f));
+    map.addSource(key(f), {{type:'image', url: paint(key(f), f.field),
+      coordinates:[[f.b[0], f.b[3]], [f.b[2], f.b[3]], [f.b[2], f.b[1]], [f.b[0], f.b[1]]]}});
+  }} else {{
   added.add(key(f));
   map.addSource(key(f), {{type:'image', url:f.url,
     coordinates:[[f.b[0], f.b[3]], [f.b[2], f.b[3]], [f.b[2], f.b[1]], [f.b[0], f.b[1]]]}});
+  }}
   // insert under the station layers so dots stay on top, and in field
   // order so precipitation (FIELDS[0]) ends up above the fills
   // 'wx-top' is an empty anchor layer added at load: weather sits under
@@ -1757,11 +1824,58 @@ function mergeFrames(list) {{
     if (i < 0) {{ F.push(n); changed = true; return; }}
     if (F[i].url !== n.url) {{
       F[i] = n; changed = true;
+      if (n.idx) {{ delete IDX[key(n)]; decodeIdx(n, () => {{ const s = map.getSource(key(n)); const u = paint(key(n), n.field); if (s && u) s.updateImage({{url: u, coordinates: [[n.b[0], n.b[3]], [n.b[2], n.b[3]], [n.b[2], n.b[1]], [n.b[0], n.b[1]]]}}); }}); return; }}
       const src = ready && map.getSource(key(n));
       if (src && src.updateImage) src.updateImage({{url: n.url, coordinates: [[n.b[0], n.b[3]], [n.b[2], n.b[3]], [n.b[2], n.b[1]], [n.b[0], n.b[1]]]}});
     }}
   }});
   if (changed) draw();
+}}
+// ---- adjustable legends ---------------------------------------------
+function renderLegends() {{
+  const box = $('mlg'); if (!box) return;
+  const onF = MFIELDS.filter(f => on[f] && PAL[f]);
+  box.innerHTML = onF.map(f => {{
+    const p = PAL[f], g = LG[f];
+    const cells = p.bounds.map((b, i) => {{ const c = colorOf(f, i + 1); return '<div style="background:' + (c || 'transparent') + ';' + (c ? '' : 'border:1px dashed #333;') + '"></div>'; }}).join('');
+    const labs = p.bounds.map((b, i) => '<div style="color:' + (colorOf(f, i + 1) ? '#B8B8B8' : '#444') + '">' + b + '</div>').join('');
+    const opts = ['<option value="0"' + (g.min === 0 ? ' selected' : '') + '>all</option>'].concat(
+      p.bounds.map((b, i) => '<option value="' + (i + 1) + '"' + (g.min === i + 1 ? ' selected' : '') + '>&ge; ' + (p.bounds[i + 1] != null ? p.bounds[i + 1] : b) + '</option>')).join('');
+    return '<div class="mcb" data-f="' + f + '"><div class="t">' + p.label + (p.unit ? ' (' + p.unit + ')' : '') + '</div>' +
+      '<div class="cells">' + cells + '</div><div class="labs">' + labs + '</div>' +
+      '<div class="ctl">show <select class="lgmin" data-f="' + f + '">' + opts + '</select>' +
+      ' &nbsp;shift <button class="lgsh" data-f="' + f + '" data-d="-1">&#9664;</button><span>' + (g.shift > 0 ? '+' : '') + g.shift + '</span><button class="lgsh" data-f="' + f + '" data-d="1">&#9654;</button>' +
+      ' <button class="lgrs" data-f="' + f + '">reset</button></div></div>';
+  }}).join('');
+  box.querySelectorAll('.lgmin').forEach(el => el.onchange = e => {{ LG[el.dataset.f].min = +e.target.value; recolorField(el.dataset.f); }});
+  box.querySelectorAll('.lgsh').forEach(el => el.onclick = () => {{ const g = LG[el.dataset.f]; g.shift = Math.max(-(PAL[el.dataset.f].colors.length - 1), Math.min(PAL[el.dataset.f].colors.length - 1, g.shift + (+el.dataset.d))); recolorField(el.dataset.f); }});
+  box.querySelectorAll('.lgrs').forEach(el => el.onclick = () => {{ LG[el.dataset.f] = {{min: 0, shift: 0}}; recolorField(el.dataset.f); }});
+}}
+// ---- click readout --------------------------------------------------
+// A click anywhere asks the server for EVERY layer of the models that
+// have a layer switched on (or the first model), at the slider's hour,
+// nearest grid cell. Answer arrives as a small JSON the page polls for.
+let rdPopup = null, rdPoll = null;
+function readout(lngLat) {{
+  const models = [...new Set(MFIELDS.filter(f => on[f]).map(f => f.split(':')[0]))];
+  if (!MFIELDS.length) return;
+  const id = Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36);
+  const req = {{kind: 'point', id: id, lat: +lngLat.lat.toFixed(4), lon: +lngLat.lng.toFixed(4), step: STEPS[ti], models: models}};
+  try {{ const P = window.parent; for (let i = 0; i < P.frames.length; i++) {{ try {{ P.frames[i].postMessage({{tio:'demand', value:req}}, '*'); }} catch (e) {{}} }} }} catch (e) {{}}
+  if (rdPopup) rdPopup.remove();
+  rdPopup = new maplibregl.Popup({{closeOnClick: false, maxWidth: '380px'}}).setLngLat(lngLat)
+    .setHTML('<div class="rd"><div class="h">' + req.lat + ', ' + req.lon + ' &middot; +' + req.step + ' h</div><div class="s">reading ' + (models.length ? models.join(', ').toUpperCase() : 'model') + '&hellip;</div></div>').addTo(map);
+  clearInterval(rdPoll); let tries = 0;
+  rdPoll = setInterval(() => {{
+    tries++;
+    fetch(IMG_BASE + 'mdl_point_' + id + '.json?_=' + Date.now(), {{cache:'no-store'}}).then(r => r.ok ? r.json() : null).then(j => {{
+      if (!j) {{ if (tries > 45) {{ clearInterval(rdPoll); if (rdPopup) rdPopup.setHTML('<div class="rd"><div class="s">no answer - is the model warmer running?</div></div>'); }} return; }}
+      clearInterval(rdPoll);
+      const html = '<div class="rd"><div class="h">' + j.lat + ', ' + j.lon + ' &middot; valid ' + j.valid + '</div>' +
+        j.models.map(m => '<div class="h">' + m.label + '</div><table>' + m.rows.map(r => '<tr><td>' + r.layer.replace(m.label.split(' ')[0] + ' ', '') + '</td><td class="v">' + r.value + '</td><td class="s">' + (r.cycle ? r.cycle.slice(8, 10) + '/' + r.cycle.slice(11, 13) + 'Z f' + String(r.fhr).padStart(2, '0') : '') + '</td></tr>').join('') + '</table>').join('') + '</div>';
+      if (rdPopup) rdPopup.setHTML(html);
+    }}).catch(() => {{}});
+  }}, 1000);
 }}
 function stepOfValid(v) {{
   const nowH = Math.floor(Date.now() / 3600000) * 3600000;
@@ -1774,7 +1888,7 @@ function modelEntries(man) {{
     const d = (man[m] || {{}})[c] || {{}};
     Object.keys(d).forEach(v => {{ const e = d[v]; const st = stepOfValid(v);
       if (STEPS.indexOf(st) < 0) return;
-      out.push({{url: IMG_BASE + e.name + '?v=' + e.built, field: key, step: st, valid: e.valid + ' (' + m.toUpperCase() + ' ' + e.cycle.slice(8, 10) + '/' + e.cycle.slice(11, 13) + 'Z f' + String(e.fhr).padStart(2, '0') + ')', built: e.built, b: e.bounds, hub: ''}}); }});
+      out.push({{url: IMG_BASE + e.name + '?v=' + e.built, field: key, step: st, valid: e.valid + ' (' + m.toUpperCase() + ' ' + e.cycle.slice(8, 10) + '/' + e.cycle.slice(11, 13) + 'Z f' + String(e.fhr).padStart(2, '0') + ')', built: e.built, b: e.bounds, hub: '', idx: !!e.idx}}); }});
   }});
   return out;
 }}
@@ -1806,7 +1920,7 @@ function draw() {{
   const nT = TFIELDS.filter(f => on[f]).length, nM = MFIELDS.filter(f => on[f]).length;
   $('ddws').innerHTML = 'General Weather' + (nT ? ' <span style="color:#00E5FF">' + nT + '</span>' : '') + ' &#9662;';
   if ($('ddns')) $('ddns').innerHTML = 'NOAA Models' + (nM ? ' <span style="color:#00E5FF">' + nM + '</span>' : '') + ' &#9662;';
-  document.querySelectorAll('.mcb').forEach(el => el.style.display = on[el.dataset.f] ? 'block' : 'none');
+  renderLegends();
   $('valid').textContent = (step ? '+' + step + ' h' : 'now') + (valid ? '  valid ' + valid : (nOn ? '  fetching…' : '  (no layer on)'));
   sendDemand(false);
   $('built').textContent = built ? ' · built ' + built : '';
@@ -2031,6 +2145,7 @@ map.on('load', () => {{
     paint:{{'text-color':['case', ['==', ['get','kind'], 'jbu'], '#FFFFFF', '#B8B8B8'],
             'text-halo-color':'#000', 'text-halo-width':1.4}}}});
   map.on('click', 'st-dot', e => {{ const id = e.features[0].properties.id; if (!two) $('b2').onclick(); pick(id); }});
+  map.on('click', e => {{ if (map.queryRenderedFeatures(e.point, {{layers: ['st-dot']}}).length) return; readout(e.lngLat); }});
   map.on('mouseenter', 'st-dot', () => map.getCanvas().style.cursor = 'pointer');
   map.on('mouseleave', 'st-dot', () => map.getCanvas().style.cursor = '');
   map.on('zoomend', () => sendDemand(false));

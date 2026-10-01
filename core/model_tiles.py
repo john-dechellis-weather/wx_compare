@@ -216,9 +216,12 @@ _INDEX: dict = {}
 
 def render_mercator(product: str, vals, lats, lons, bounds, width: int,
                     grid_key: str, smooth: float = 1.2) -> bytes:
-    """vals/lats/lons (model grid, cropped) -> transparent WebP in Web
-    Mercator over `bounds` (w, s, e, n), `width` px wide. Palette, unit
-    scaling, masks and the coverage-aware blur follow core.cam_fast."""
+    """vals/lats/lons (model grid, cropped) -> BAND-INDEX PNG (8-bit
+    grey, 0 = nothing, k = k-th palette band) in Web Mercator over
+    `bounds` (w, s, e, n), `width` px wide. The browser colours it
+    (core.tio_map viewer), which is what makes the legend adjustable
+    without re-rendering. Unit scaling, masks and the coverage-aware
+    blur follow core.cam_fast."""
     import numpy as np
     from PIL import Image
     from scipy import ndimage as ndi
@@ -279,10 +282,151 @@ def render_mercator(product: str, vals, lats, lons, bounds, width: int,
         blank = ~np.isfinite(g) | (den <= COVERAGE_MIN)
     band = np.digitize(np.nan_to_num(g, nan=-1e9), spec["bounds"]).astype("uint8")
     band[blank] = 0
-    im = Image.fromarray(lut[band], mode="RGBA")
+    im = Image.fromarray(band, mode="L")
     buf = io.BytesIO()
-    im.save(buf, "WEBP", quality=86, method=4)
+    im.save(buf, "PNG", optimize=True)
     return buf.getvalue()
+
+
+# Decoded fields, kept for the point readout: (src, prod, cycleYYYYMMDDHH,
+# fhr) -> (vals, lats, lons) at the decimated CONUS resolution (~2 MB
+# each). LRU; MDL_FIELD_CACHE entries.
+_FIELDS: dict = {}
+FIELD_CACHE = int(os.environ.get("MDL_FIELD_CACHE", "24"))
+_fields_lock = threading.Lock()
+
+
+def _field(src: str, prod: str, cyc: datetime, fhr: int):
+    import numpy as np
+    from core.cam_warm import CONUS_CENTER, CONUS_ZOOM
+    from core.hrrr_cam import fetch_and_decode
+
+    k = (src, prod, cyc.strftime("%Y%m%d%H"), fhr)
+    with _fields_lock:
+        hit = _FIELDS.pop(k, None)
+        if hit is not None:
+            _FIELDS[k] = hit
+            return hit
+    la, lo = CONUS_CENTER
+    vals, lats, lons = fetch_and_decode(src, prod, cyc, fhr, la, lo, float(CONUS_ZOOM))
+    lons = np.where(lons > 180, lons - 360, lons).astype("float32")
+    hit = (np.asarray(vals, dtype="float32"), np.asarray(lats, dtype="float32"), lons)
+    with _fields_lock:
+        _FIELDS[k] = hit
+        while len(_FIELDS) > FIELD_CACHE:
+            _FIELDS.pop(next(iter(_FIELDS)))
+    return hit
+
+
+# Display units for the readout, per cam_fast product (values are in
+# the palette's display units after `scale`).
+_FMT = {"REFC": ("{:.0f} dBZ", 1.0), "REFD": ("{:.0f} dBZ", 1.0),
+        "RETOP": ("FL{:03.0f}", 10.0), "VIS": ("{:.1f} sm", 1.0),
+        "CEIL": ("{:.0f}00 ft", 1.0), "GUST": ("{:.0f} kt", 1.0),
+        "LTNG": ("{:.1f}", 1.0)}
+
+
+def _fmt(prod: str, v) -> str:
+    import math as _m
+    if v is None or not _m.isfinite(v):
+        return "—"
+    if prod.startswith("PROB"):
+        return f"{v:.0f} %"
+    f, mult = _FMT.get(prod, ("{:.2f}", 1.0))
+    return f.format(v * mult)
+
+
+def point_values(model: str, lat: float, lon: float, valid: datetime) -> dict:
+    """Every layer of `model` at (lat, lon) for `valid`: the newest run
+    with that hour, nearest grid cell. {"rows": [{layer, value, raw,
+    cycle, fhr}], "model": ...}. Slow the first time a layer's field is
+    not cached (one GRIB fetch each)."""
+    import numpy as np
+    from core.cam_fast import PALETTES
+
+    rows = []
+    for code, src, prod, label in LAYERS[model]:
+        cf = cycle_for_valid(src, valid)
+        if not cf:
+            rows.append({"layer": label, "code": code, "value": "no run", "raw": None})
+            continue
+        cyc, fhr = cf
+        try:
+            vals, lats, lons = _field(src, prod, cyc, fhr)
+            d2 = (lats - lat) ** 2 + ((lons - lon) * math.cos(math.radians(lat))) ** 2
+            i = int(np.nanargmin(d2))
+            raw = float(vals.ravel()[i])
+            spec = PALETTES.get(prod, {})
+            v = raw * float(spec.get("scale", 1.0))
+            if not math.isfinite(raw):
+                v = None
+            rows.append({"layer": label, "code": code, "value": _fmt(prod, v),
+                         "raw": None if v is None else round(v, 3),
+                         "cycle": _iso(cyc), "fhr": fhr})
+        except Exception as exc:
+            rows.append({"layer": label, "code": code,
+                         "value": f"error: {type(exc).__name__}", "raw": None})
+    return {"model": model, "label": MODEL_LABEL.get(model, model), "rows": rows,
+            "lat": round(lat, 3), "lon": round(lon, 3), "valid": _iso(valid)}
+
+
+def _req_path(outdir):
+    return Path(outdir) / "mdl_point_req.json"
+
+
+def point_request(outdir, req: dict) -> None:
+    """From the page: a click. The warmer answers into
+    static/mdl_point_<id>.json (the viewer polls for it)."""
+    try:
+        p = _req_path(outdir)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps({**req, "t": time.time()}))
+        os.replace(tmp, p)
+    except Exception:
+        pass
+
+
+def _answer_point(outdir) -> bool:
+    """Serve a pending click, if any. Returns True when one was."""
+    outdir = Path(outdir)
+    p = _req_path(outdir)
+    if not p.exists():
+        return False
+    try:
+        req = json.loads(p.read_text())
+    except Exception:
+        return False
+    try:
+        p.unlink()
+    except Exception:
+        pass
+    if time.time() - float(req.get("t", 0)) > 120:
+        return False
+    rid = str(req.get("id", ""))[:40]
+    if not rid:
+        return False
+    now_h = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    valid = now_h + timedelta(hours=int(req.get("step") or 0))
+    models = [m for m in (req.get("models") or []) if m in MODELS_ON] or MODELS_ON[:1]
+    STATUS["busy"] = f"point readout {rid}"
+    t0 = time.time()
+    out = {"id": rid, "valid": _iso(valid), "lat": req.get("lat"), "lon": req.get("lon"),
+           "models": [point_values(m, float(req["lat"]), float(req["lon"]), valid) for m in models]}
+    q = outdir / f"mdl_point_{rid}.json"
+    tmp = q.with_suffix(".tmp")
+    tmp.write_text(json.dumps(out))
+    os.replace(tmp, q)
+    STATUS["busy"] = ""
+    _log(outdir, f"point {rid} {req.get('lat')},{req.get('lon')} +{req.get('step')}h "
+                 f"{', '.join(models)} {time.time() - t0:.1f}s")
+    # old answers
+    for old in outdir.glob("mdl_point_*.json"):
+        try:
+            if time.time() - old.stat().st_mtime > 600:
+                old.unlink()
+        except Exception:
+            pass
+    return True
 
 
 def build_frame(outdir, key: str, valid: datetime) -> dict | None:
@@ -300,7 +444,7 @@ def build_frame(outdir, key: str, valid: datetime) -> dict | None:
     outdir = Path(outdir)
     model, code = key.split(":", 1)
     stamp = cyc.strftime("%Y%m%d%H")
-    name = f"mdl_{model}_{code}_{stamp}_f{fhr:02d}.webp"
+    name = f"mdl_{model}_{code}_{stamp}_f{fhr:02d}.png"
     man = manifest(outdir)
     ent = (man.get(model) or {}).get(code, {}).get(_iso(valid))
     if ent and ent.get("name") == name and (outdir / name).exists():
@@ -308,8 +452,7 @@ def build_frame(outdir, key: str, valid: datetime) -> dict | None:
     t0 = time.time()
     STATUS["busy"] = f"{key} {_iso(valid)} ({cyc:%d/%H}Z f{fhr:02d})"
     la, lo = CONUS_CENTER
-    vals, lats, lons = fetch_and_decode(src, prod, cyc, fhr, la, lo, float(CONUS_ZOOM))
-    lons = np.where(lons > 180, lons - 360, lons)
+    vals, lats, lons = _field(src, prod, cyc, fhr)
     box = (float(np.nanmin(lons)), float(np.nanmin(lats)),
            float(np.nanmax(lons)), float(np.nanmax(lats)))
     # Clip to the map's working area (CONUS plus a margin); the frame
@@ -317,13 +460,12 @@ def build_frame(outdir, key: str, valid: datetime) -> dict | None:
     bounds = (max(box[0], -126.0), max(box[1], 20.0), min(box[2], -62.0), min(box[3], 54.0))
     webp = render_mercator(prod, vals, lats, lons, bounds, WIDTH_PX,
                            grid_key=f"{src}|{vals.shape}")
-    del vals, lats, lons
     tmp = outdir / f".{name}.tmp"
     tmp.write_bytes(webp)
     os.replace(tmp, outdir / name)
     ent = {"name": name, "model": model, "code": code, "valid": _iso(valid),
            "cycle": _iso(cyc), "fhr": fhr, "built": _iso(datetime.now(timezone.utc)),
-           "bounds": list(bounds)}
+           "bounds": list(bounds), "idx": True, "product": prod}
     man = manifest(outdir)
     man.setdefault(model, {}).setdefault(code, {})[_iso(valid)] = ent
     _save_manifest(outdir, man)
@@ -355,7 +497,7 @@ def prune(outdir):
                     keep.add(e["name"])
     if changed:
         _save_manifest(outdir, man)
-    for p in outdir.glob("mdl_*_f[0-9][0-9].webp"):
+    for p in list(outdir.glob("mdl_*_f[0-9][0-9].webp")) + list(outdir.glob("mdl_*_f[0-9][0-9].png")):
         if p.name not in keep:
             try:
                 p.unlink()
@@ -421,6 +563,8 @@ def _loop(outdir):
             if T.is_idle(outdir):
                 time.sleep(15)
                 continue
+            if _answer_point(outdir):
+                continue
             built = 0
             for key, valid in _wanted(outdir):
                 if built >= MAX_PER_TICK:
@@ -440,7 +584,7 @@ def _loop(outdir):
                     STATUS["err"] = f"{key}: {type(exc).__name__}: {exc}"
                     STATUS["busy"] = ""
                     _log(outdir, f"FAILED {key} {_iso(valid)}: {STATUS['err'][:160]}")
-            time.sleep(2 if built else 5)
+            time.sleep(1 if built else 2)
         except Exception as exc:
             _log(outdir, f"loop error: {type(exc).__name__}: {exc}")
             time.sleep(10)
@@ -462,20 +606,20 @@ def ensure_model_warmer(outdir) -> bool:
 
 # ---------------------------------------------------------------- legend
 
-def colorbar_html(key: str) -> str:
-    """A compact colour bar with labels for a layer, for the map legend."""
+def palette_json() -> dict:
+    """{layer key: {"bounds": [...], "colors": ["#RRGGBB", ...], "unit"}}
+    for the viewer, which colours the band-index frames itself."""
     from core.cam_fast import PALETTES, _lut_for
-    _src, prod = _spec(key)
-    spec = PALETTES[prod]
-    lut = _lut_for(prod)
-    bounds = spec["bounds"]
-    cells = "".join(
-        f'<div style="flex:1;height:9px;background:rgb({lut[i + 1][0]},{lut[i + 1][1]},{lut[i + 1][2]})"></div>'
-        for i in range(len(bounds)))
-    labs = "".join(
-        f'<div style="flex:1;font-size:9px;color:#B8B8B8;text-align:left">{b:g}</div>'
-        for b in bounds)
-    return (f'<div class="mcb" data-f="{key}" style="display:none;margin-top:4px">'
-            f'<div style="font-size:10px;color:#FFFFFF">{field_label(key)}</div>'
-            f'<div style="display:flex;gap:1px">{cells}</div>'
-            f'<div style="display:flex;gap:1px">{labs}</div></div>')
+    out = {}
+    for key in field_keys():
+        _src, prod = _spec(key)
+        spec = PALETTES[prod]
+        lut = _lut_for(prod)
+        unit = ("%" if prod.startswith("PROB") else
+                {"REFC": "dBZ", "REFD": "dBZ", "RETOP": "kft", "VIS": "sm",
+                 "CEIL": "x100 ft", "GUST": "kt", "LTNG": "fl/km\u00b2"}.get(prod, ""))
+        out[key] = {"bounds": [float(b) for b in spec["bounds"]],
+                    "colors": ["#%02X%02X%02X" % tuple(int(c) for c in lut[i + 1][:3])
+                               for i in range(len(spec["bounds"]))],
+                    "unit": unit, "label": field_label(key)}
+    return out

@@ -151,7 +151,10 @@ def _body():
     TIO.note_view(STATIC)        # viewer heartbeat: keeps the warmer awake
     _dm = _bridge(key="tio_bridge", default=None)
     if _dm:
-        TIO.set_demand(STATIC, _dm)
+        if _dm.get("kind") == "point" and MT is not None:
+            MT.point_request(STATIC, _dm)      # a map click: readout
+        else:
+            TIO.set_demand(STATIC, _dm)
     man = TIO.manifest(STATIC)
     # man[_active] holds one {step: entry} dict per field, PLUS a
     # "hires:<hub>" key nested one level deeper ({field: {step: entry}})
