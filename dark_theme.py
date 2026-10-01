@@ -292,6 +292,59 @@ html, body, .stApp,
 }}
 .stApp input::placeholder {{ color: var(--bm-muted) !important; }}
 
+/* 1 Oct: ANYTHING that renders outside .stApp - st.popover bodies,
+   select menus, date pickers, tooltips, dialogs - comes up in
+   Streamlit's light theme: a white box with white or near-black text.
+   Pin every portal to the panel colours and white text, and pin the
+   select / input widgets wherever they sit, not only under .stApp. */
+[data-testid="stPopoverBody"],
+[data-testid="stPopover"] [data-baseweb="popover"] > div,
+[data-baseweb="popover"] > div,
+[data-baseweb="popover"] [data-testid="stVerticalBlock"],
+[data-testid="stDialog"] > div,
+[data-baseweb="modal"] [role="dialog"],
+[data-testid="stTooltipContent"],
+[data-baseweb="tooltip"] {{
+  background: var(--bm-panel) !important;
+  border: 1px solid var(--bm-border) !important;
+  color: var(--bm-text) !important;
+}}
+[data-testid="stPopoverBody"] *,
+[data-baseweb="popover"] *,
+[data-testid="stDialog"] *,
+[data-baseweb="modal"] *,
+[data-testid="stTooltipContent"] *,
+[data-baseweb="tooltip"] * {{
+  color: var(--bm-text) !important;
+  -webkit-text-fill-color: var(--bm-text) !important;
+}}
+[data-baseweb="select"] > div,
+[data-baseweb="select"] > div > div,
+[data-baseweb="select"] input,
+[data-baseweb="base-input"],
+[data-baseweb="input"] > div,
+[data-baseweb="input"] input,
+[data-baseweb="textarea"] textarea,
+[data-testid="stPopoverBody"] [data-baseweb="select"] > div,
+[data-testid="stPopoverBody"] input {{
+  background: var(--bm-panel) !important;
+  background-color: var(--bm-panel) !important;
+  border-color: var(--bm-border) !important;
+  color: var(--bm-text) !important;
+  -webkit-text-fill-color: var(--bm-text) !important;
+  font-family: var(--bm-mono) !important;
+}}
+[data-baseweb="select"] svg,
+[data-testid="stPopoverBody"] svg {{ fill: var(--bm-text) !important; }}
+[data-baseweb="select"] [aria-selected="true"],
+[data-baseweb="menu"] [aria-selected="true"] {{ background: #1C1C22 !important; }}
+/* slider labels and values inside a popover */
+[data-testid="stPopoverBody"] [data-testid="stSlider"] div,
+[data-testid="stPopoverBody"] [data-testid="stWidgetLabel"] * {{
+  color: var(--bm-text) !important;
+  -webkit-text-fill-color: var(--bm-text) !important;
+}}
+
 /* Dropdown panels render in a portal outside .stApp. */
 [data-baseweb="popover"] [role="listbox"],
 [data-baseweb="menu"] {{
