@@ -69,7 +69,9 @@ LAYERS = {
 }
 MODEL_LABEL = {"refs": "REFS ensemble", "rrfs": "RRFS", "hrrr": "HRRR",
                "nam_nest": "NAM nest", "gfs": "GFS"}
-MODELS_ON = [m.strip() for m in os.environ.get("MDL_MODELS", "refs").split(",")
+# REFS proved on 1 Oct (first real frames + readout); RRFS and HRRR
+# verified the same day, so all three are on by default.
+MODELS_ON = [m.strip() for m in os.environ.get("MDL_MODELS", "refs,rrfs,hrrr").split(",")
              if m.strip() and m.strip() in LAYERS]
 
 PREFETCH_H = int(os.environ.get("MDL_PREFETCH_H", "6"))

@@ -113,8 +113,10 @@ PROB_DEFS = {
     "PROB_CIG500": ("HGT", "cloud ceiling", "<", 152.4, 3.0),
     "PROB_CIG1000": ("HGT", "cloud ceiling", "<", 304.8, 3.0),
     "PROB_CIG2000": ("HGT", "cloud ceiling", "<", 609.6, 3.0),
+    # REFS (1 Oct 2026 idx) rounds the metres: <400 <800 <1600 <3200
+    # <4829; the tolerance must reach 1600 from 1609.3 and 800 from 804.7.
     "PROB_VIS05": ("VIS", "surface", "<", 804.7, 5.0),
-    "PROB_VIS1": ("VIS", "surface", "<", 1609.3, 8.0),
+    "PROB_VIS1": ("VIS", "surface", "<", 1609.3, 12.0),
     "PROB_VIS3": ("VIS", "surface", "<", 4828.0, 15.0),
     # Echo tops (meters): 30 kft = 9144, 35 kft = 10668
     "PROB_RETOP30": ("RETOP", "", ">", 9144.0, 30.0),
