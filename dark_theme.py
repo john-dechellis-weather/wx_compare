@@ -574,7 +574,7 @@ PANEL_CLOSE = "</div>"
 # --------------------------------------------------------------- clock
 
 def clock_html(now=None, fixed: bool = True) -> str:
-    """Zulu and Eastern time, white 14 pt bold. fixed=True pins it to
+    """Zulu and Eastern time, white 17 pt bold. fixed=True pins it to
     the top right of the window (every page); fixed=False returns the
     same text right-aligned in the flow (the login header)."""
     from datetime import datetime, timezone
@@ -592,7 +592,7 @@ def clock_html(now=None, fixed: bool = True) -> str:
     pos = ("position:fixed;top:52px;right:22px;z-index:999998;"
            if fixed else "text-align:right;")
     return (f'<div style="{pos}color:{TEXT};-webkit-text-fill-color:{TEXT};'
-            f'font-family:var(--bm-mono);font-size:14pt;font-weight:700;'
+            f'font-family:var(--bm-mono);font-size:17pt;font-weight:700;'
             f'white-space:nowrap">{txt}</div>')
 
 

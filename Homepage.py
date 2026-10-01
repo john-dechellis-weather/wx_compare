@@ -423,7 +423,12 @@ def _top_nav(current) -> None:
         'div.st-key-topnav div.bm-grp{font-family:Barlow,"DejaVu Sans",sans-serif !important;'
         'font-size:10px !important;font-weight:700 !important;color:#6E6E6E !important;'
         '-webkit-text-fill-color:#6E6E6E !important;letter-spacing:1px;'
-        'text-transform:uppercase;padding:16px 2px 0 10px;white-space:nowrap}',
+        'text-transform:uppercase;padding:6px 2px 0 9px;white-space:nowrap}',
+        # a group column: label above, its tabs in a row, a thin rule
+        # between groups
+        '.st-key-topnav [class*="st-key-grp_"]{margin:0 6px 0 0 !important;'
+        'padding:0 6px 0 0 !important;border-right:1px solid #222}',
+        '.st-key-topnav [class*="st-key-grp_"] > div{gap:0 !important}',
         'div.st-key-topnav div.bm-brand{font-family:Barlow,"DejaVu Sans",sans-serif !important;'
         'font-size:22px !important;font-weight:700 !important;color:#FFFFFF !important;'
         '-webkit-text-fill-color:#FFFFFF !important;letter-spacing:1px;'
@@ -443,12 +448,19 @@ def _top_nav(current) -> None:
                           vertical_alignment="bottom"):
             st.markdown('<div class="bm-brand">BLUE<span>MET</span></div>',
                         unsafe_allow_html=True)
+            # 1 Oct: one column per group - the label on top, its
+            # pages in a row beneath it - instead of labels and tabs
+            # strung along one line.
             for group, pages in PAGES.items():
-                st.markdown(f'<div class="bm-grp">{group}</div>',
-                            unsafe_allow_html=True)
-                for pg in pages:
-                    with st.container(key=f"nav_{_slug(pg.title)}"):
-                        st.page_link(pg, label=pg.title)
+                with st.container(key=f"grp_{_slug(group)}"):
+                    st.markdown(f'<div class="bm-grp">{group}</div>',
+                                unsafe_allow_html=True)
+                    with st.container(horizontal=True,
+                                      horizontal_alignment="left",
+                                      vertical_alignment="bottom"):
+                        for pg in pages:
+                            with st.container(key=f"nav_{_slug(pg.title)}"):
+                                st.page_link(pg, label=pg.title)
             # warmer status, at the end of the bar
             with st.container(key="nav_warmers"):
                 _warmer_status()
