@@ -48,7 +48,7 @@ ensure_warmer_started(CACHE_ROOT)
 
 st.title("Hi-Res CAMs")
 st.caption("HRRR (hourly, 18 h; 48 h at 00/06/12/18Z) and RRFS (3-hourly, "
-           "84 h). Top row Northeast, bottom row Florida.")
+           "84 h). One region, three products, one run.")
 
 # ---------------------------------------------------------------- choices
 _MODEL_LABEL = {"hrrr": "HRRR", "rrfs": "RRFS"}
@@ -61,13 +61,84 @@ for _m in ("hrrr", "rrfs"):
     for _p in ("REFD", "REFC", "RETOP", "VIS", "CEIL", "GUST"):
         if _p in MODELS[_m]["products"]:
             PRODUCTS[f"{_MODEL_LABEL[_m]} \u00b7 {_PRODUCT_LABEL[_p]}"] = (_m, _p)
-_POD_DEFAULTS = ["HRRR \u00b7 1 km reflectivity", "RRFS \u00b7 Composite reflectivity", "HRRR \u00b7 Echo tops", "HRRR \u00b7 1 km reflectivity", "RRFS \u00b7 Composite reflectivity", "HRRR \u00b7 Echo tops"]
-_POD_REGION = ["NE", "NE", "NE", "FL", "FL", "FL"]
+_POD_DEFAULTS = ["HRRR \u00b7 1 km reflectivity", "RRFS \u00b7 Composite reflectivity", "HRRR \u00b7 Echo tops"]
+_REGION_LABEL = {"NE": "Northeast / Mid-Atlantic", "FL": "Florida"}
 
 # Run choice -> the forecast hour a run must have reached. HRRR runs
 # to 18 every hour and to 48 at 00/06/12/18Z; RRFS to 84 every run.
 _RUNS = {"Latest run": {"hrrr": 1, "rrfs": 1},
          "Latest long run (HRRR 48 h / RRFS 84 h)": {"hrrr": 48, "rrfs": 84}}
+
+
+# ------------------------------------------------------------ setup dialog
+# 1 Oct: the page opens with a pop-up - region, three products, run -
+# and shows ONE row of three maps for that choice. "Change selection"
+# brings the pop-up back. The choice lives in session state for the
+# tab's lifetime.
+st.markdown(
+    "<style>"
+    "[data-testid='stDialog'] [data-testid='stButton'] button[kind='primary']{"
+    "background:#00C853 !important;color:#000 !important;"
+    "-webkit-text-fill-color:#000 !important;border:none !important;"
+    "font-weight:700 !important;font-size:15px !important;width:100%;padding:10px 0}"
+    "[data-testid='stDialog'] [data-testid='stButton'] button[kind='primary']:disabled{"
+    "background:#2A2A2A !important;color:#6E6E6E !important;"
+    "-webkit-text-fill-color:#6E6E6E !important}"
+    "[data-testid='stDialog'] [data-testid='stCheckbox'] label span{font-size:13px !important}"
+    "</style>", unsafe_allow_html=True)
+
+
+@st.dialog("Hi-Res CAMs - choose what to show", width="large")
+def _setup():
+    st.markdown("**1. Region** - one row of three maps")
+    region = st.radio("Region", list(_REGION_LABEL), index=list(_REGION_LABEL).index(
+        st.session_state.get("cam_region", "NE")),
+        format_func=lambda k: _REGION_LABEL[k], horizontal=True,
+        key="cam_dlg_region", label_visibility="collapsed")
+    st.markdown("**2. Products** - select exactly three, in the order you "
+                "want them left to right")
+    prev = st.session_state.get("cam_products", _POD_DEFAULTS)
+    c_h, c_r = st.columns(2)
+    picked = []
+    for col, m in ((c_h, "hrrr"), (c_r, "rrfs")):
+        with col:
+            st.markdown(f"**{_MODEL_LABEL[m]}**")
+            for label, (mm, _f) in PRODUCTS.items():
+                if mm != m:
+                    continue
+                if st.checkbox(label.split(" \u00b7 ", 1)[1], value=label in prev,
+                               key=f"cam_dlg_{label}"):
+                    picked.append(label)
+    # keep the order they were ticked in: previously chosen first
+    picked = [x for x in prev if x in picked] + [x for x in picked if x not in prev]
+    st.markdown("**3. Run**")
+    run = st.radio("Run", list(_RUNS), index=list(_RUNS).index(
+        st.session_state.get("cam_run_choice", "Latest run")),
+        horizontal=True, key="cam_dlg_run", label_visibility="collapsed")
+    n = len(picked)
+    if n == 3:
+        st.markdown('<div style="color:#00C853;font-weight:700">3 of 3 selected</div>',
+                    unsafe_allow_html=True)
+    else:
+        st.markdown(f'<div style="color:#FFD400;font-weight:700">{n} of 3 selected'
+                    + (" - untick one" if n > 3 else "") + '</div>', unsafe_allow_html=True)
+    if st.button("Click to view", type="primary", disabled=(n != 3), key="cam_dlg_go"):
+        st.session_state["cam_region"] = region
+        st.session_state["cam_products"] = picked[:3]
+        st.session_state["cam_run_choice"] = run
+        for i, lab in enumerate(picked[:3]):
+            st.session_state[f"cam_pod{i}"] = lab
+        st.session_state["cam_setup_done"] = True
+        st.rerun()
+
+
+if not st.session_state.get("cam_setup_done"):
+    _setup()
+    st.info("Choose a region, three products and a run in the pop-up to open the maps.")
+    st.stop()
+
+_region = st.session_state.get("cam_region", "NE")
+_POD_REGION = [_region, _region, _region]
 
 _PANEL, _EDGE, _INK, _INK2 = "#0A0A0A", "#333333", "#FFFFFF", "#B8B8B8"
 st.markdown(
@@ -80,10 +151,17 @@ st.markdown(
 now = datetime.now(timezone.utc)
 bucket10 = now.strftime("%Y%m%d%H") + str(now.minute // 10)
 
-_h1, _h2 = st.columns([2.6, 1.4])
+_h0, _h1, _h2 = st.columns([1.2, 2.2, 1.4])
+with _h0:
+    if st.button("Change selection", key="cam_change"):
+        st.session_state["cam_setup_done"] = False
+        st.rerun()
 with _h1:
     run_choice = st.radio("Run", list(_RUNS), horizontal=True, key="cam_run",
+                          index=list(_RUNS).index(
+                              st.session_state.get("cam_run_choice", "Latest run")),
                           label_visibility="collapsed")
+    st.session_state["cam_run_choice"] = run_choice
 with _h2:
     # Map size in pixels: each pod is exactly its map. Three per row
     # is fixed, so pick a size that fits the window (the map can be
@@ -275,20 +353,14 @@ with _sb:
         f'color:{_INK2};margin-top:10px">f{fhr:02d}</div>',
         unsafe_allow_html=True)
 
-st.markdown(_BANNER.format("NORTHEAST / MID-ATLANTIC"), unsafe_allow_html=True)
+st.markdown(_BANNER.format(_REGION_LABEL[_region].upper()), unsafe_allow_html=True)
 _r1 = st.columns(3, gap="small")
 for _i in range(3):
     with _r1[_i]:
         _pod(_i)
 
-st.markdown(_BANNER.format("FLORIDA"), unsafe_allow_html=True)
-_r2 = st.columns(3, gap="small")
-for _i in range(3):
-    with _r2[_i]:
-        _pod(_i + 3)
-
 st.caption(
-    "One run and one forecast hour for all four pods; RRFS pods snap to "
+    "One run and one forecast hour for all three pods; RRFS pods snap to "
     "the nearest 3-hourly frame. Warmed hours open instantly; others "
     "render on demand and are kept for three hours. The red outline is "
     "the N90 extent.")
