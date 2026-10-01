@@ -799,7 +799,8 @@ def set_demand(outdir, d: dict) -> None:
     if not isinstance(d, dict):
         return
     now = time.time()
-    fields = [f for f in (d.get("fields") or []) if f in FIELDS]
+    fields = [f for f in (d.get("fields") or [])
+              if f in FIELDS or (":" in f and len(f) < 40)]   # "refs:PMMN" etc. (core.model_tiles)
     doc = {"fields": fields, "step": int(d.get("step") or 0),
            "zoom": float(d.get("zoom") or 0), "station": str(d.get("station") or ""),
            "playing": bool(d.get("playing")), "t": now}
@@ -833,6 +834,17 @@ def demand(outdir, max_age_s: int = 900) -> dict:
         return d
     except Exception:
         return {}
+
+
+def active_fields_all(outdir) -> list:
+    """Every layer key (tomorrow.io and model) anyone switched on in
+    the last ACTIVE_MIN, in the order first seen."""
+    try:
+        act = json.loads(_active_path(outdir).read_text())
+    except Exception:
+        act = {}
+    now = time.time()
+    return [f for f, t in act.items() if now - float(t) < ACTIVE_MIN * 60]
 
 
 def active_fields(outdir) -> list:
@@ -1575,6 +1587,25 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
         f'<div class="ly"><label><input type="checkbox" class="mgf" data-f="{f}"> {plabels[f]}</label></div>'
         for f in pf)
     steps_all = [0] + FCST_HOURS
+    # NOAA MODEL layers (core/model_tiles): one checkbox + opacity per
+    # layer, grouped by model, drawn under the tomorrow.io layers.
+    try:
+        from core import model_tiles as _MT
+        mkeys = _MT.field_keys()
+        _by_model = {}
+        for k in mkeys:
+            _by_model.setdefault(k.split(":")[0], []).append(k)
+        nrows = "".join(
+            f'<div style="color:#6E6E6E;font-size:10px;padding:4px 8px 0;letter-spacing:1px">{_MT.MODEL_LABEL.get(m, m).upper()}</div>'
+            + "".join(
+                f'<div class="ly"><label><input type="checkbox" data-f="{k}"> {_MT.field_label(k).split(" ", 1)[1]}</label>'
+                f'<input type="range" data-f="{k}" min="10" max="100" value="80"></div>'
+                for k in ks)
+            for m, ks in _by_model.items())
+        mcbs = "".join(_MT.colorbar_html(k) for k in mkeys)
+        mlabels = {k: _MT.field_label(k) for k in mkeys}
+    except Exception:
+        mkeys, nrows, mcbs, mlabels = [], "", "", {}
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
@@ -1612,6 +1643,7 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
 </style></head><body>
 <div class="bar">
   <details class="dd" id="ddw"><summary id="ddws">General Weather &#9662;</summary><div class="menu">{rows}</div></details>
+  <details class="dd" id="ddn"><summary id="ddns">NOAA Models &#9662;</summary><div class="menu">{nrows or '<div style="color:#6E6E6E;padding:6px 8px">no model layers enabled (MDL_MODELS)</div>'}</div></details>
   <span class="sp"></span><span id="mdl">{model_label(model)}{" &middot; DEMO DATA" if DEMO else ""}</span>
   <button id="bst" class="on">Stations</button><button id="balt" class="on">CA alternates</button>
   <button id="bfit">Fit</button><button id="b2" title="Map + meteogram of the layers that are on, for a station you click">2-panel</button>
@@ -1627,7 +1659,7 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
   <span id="valid"></span><span id="built"></span>
 </div>
 <div id="wrap">
-<div id="m"><div class="lg" id="lg"><span class="d" style="background:#4DA3FF"></span>JBU station &nbsp;
+<div id="m"><div class="lg" id="lg">{mcbs}<span class="d" style="background:#4DA3FF"></span>JBU station &nbsp;
  <span class="d" style="background:#9AA0A6"></span>Canadian alternate<br>
  <span style="color:#6E6E6E">tomorrow.io {model_label(model)} tiles · CONUS{(" · " + SECTORS[sector][0] + " hi-res past zoom 5.5") if sector in SECTORS else ""} · hourly to +{int(os.environ.get("TIO_FCST_HOURLY_TO", "24"))} h, 3-hourly to +{FCST_HOURS[-1] if FCST_HOURS else 0} h</span></div></div>
 <div id="mg">
@@ -1641,7 +1673,10 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
 <script>
 const F = {json.dumps(frames)};
 const ST = {json.dumps(stations)};
-const FIELDS = {json.dumps(FIELDS)};
+const TFIELDS = {json.dumps(FIELDS)};
+const MFIELDS = {json.dumps(mkeys)};
+const FIELDS = TFIELDS.concat(MFIELDS);
+const MDL_URL = {json.dumps(base + "/app/static/mdl_manifest.json")};
 const STEPS = {json.dumps(steps_all)};
 const PT_URL = {json.dumps(pt_url)};
 const MAN_URL = {json.dumps(base + "/app/static/tio_manifest.json")};
@@ -1649,7 +1684,7 @@ const IMG_BASE = {json.dumps(base + "/app/static/")};
 const MODEL = {json.dumps(model)}, SECTOR = {json.dumps(sector)};
 const FCST_STEPS = {json.dumps(FCST_HOURS)};
 const NOAA_URL = {json.dumps(noaa_url)};
-const LABELS = {json.dumps({**labels, **plabels})};
+const LABELS = {json.dumps({**labels, **plabels, **mlabels})};
 const PT_FIELD = {json.dumps({f: POINT_FIELD.get(f, f) for f in FIELDS})};
 const PFIELDS = {json.dumps(pf)};
 const HIRES_MINZOOM = 5.5;
@@ -1728,6 +1763,26 @@ function mergeFrames(list) {{
   }});
   if (changed) draw();
 }}
+function stepOfValid(v) {{
+  const nowH = Math.floor(Date.now() / 3600000) * 3600000;
+  return Math.round((Date.parse(v.replace('Z', ':00Z')) - nowH) / 3600000);
+}}
+function modelEntries(man) {{
+  const out = [];
+  MFIELDS.forEach(key => {{
+    const [m, c] = key.split(':');
+    const d = (man[m] || {{}})[c] || {{}};
+    Object.keys(d).forEach(v => {{ const e = d[v]; const st = stepOfValid(v);
+      if (STEPS.indexOf(st) < 0) return;
+      out.push({{url: IMG_BASE + e.name + '?v=' + e.built, field: key, step: st, valid: e.valid + ' (' + m.toUpperCase() + ' ' + e.cycle.slice(8, 10) + '/' + e.cycle.slice(11, 13) + 'Z f' + String(e.fhr).padStart(2, '0') + ')', built: e.built, b: e.bounds, hub: ''}}); }});
+  }});
+  return out;
+}}
+function pollModels() {{
+  if (!MFIELDS.length) return;
+  fetch(MDL_URL + '?_=' + Date.now(), {{cache:'no-store'}}).then(r => r.ok ? r.json() : {{}}).then(j => mergeFrames(modelEntries(j))).catch(() => {{}});
+}}
+setInterval(pollModels, 8000); pollModels();
 function pollManifest() {{
   fetch(MAN_URL + '?_=' + Date.now(), {{cache:'no-store'}}).then(r => r.json()).then(j => mergeFrames(entriesFrom(j))).catch(() => {{}});
 }}
@@ -1748,7 +1803,10 @@ function draw() {{
   }});
   if (ready) added.forEach(k => {{ if (map.getLayer(k)) {{ const p = k.split('_'); const fld = p[p.length > 3 ? 2 : 1]; map.setPaintProperty(k, 'raster-opacity', visible.has(k) ? op[fld] : 0); }} }});
   const nOn = FIELDS.filter(f => on[f]).length;
-  $('ddws').innerHTML = 'General Weather' + (nOn ? ' <span style="color:#00E5FF">' + nOn + '</span>' : '') + ' &#9662;';
+  const nT = TFIELDS.filter(f => on[f]).length, nM = MFIELDS.filter(f => on[f]).length;
+  $('ddws').innerHTML = 'General Weather' + (nT ? ' <span style="color:#00E5FF">' + nT + '</span>' : '') + ' &#9662;';
+  if ($('ddns')) $('ddns').innerHTML = 'NOAA Models' + (nM ? ' <span style="color:#00E5FF">' + nM + '</span>' : '') + ' &#9662;';
+  document.querySelectorAll('.mcb').forEach(el => el.style.display = on[el.dataset.f] ? 'block' : 'none');
   $('valid').textContent = (step ? '+' + step + ' h' : 'now') + (valid ? '  valid ' + valid : (nOn ? '  fetching…' : '  (no layer on)'));
   sendDemand(false);
   $('built').textContent = built ? ' · built ' + built : '';

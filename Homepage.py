@@ -215,6 +215,21 @@ except Exception as _exc:
     _warm_notes.append(f"tomorrow.io warmer FAILED: "
                        f"{type(_exc).__name__}: {_exc}")
 
+# NOAA model layers for the Weather Mapping page (core/model_tiles.py):
+# REFS first, then RRFS / HRRR as MDL_MODELS enables them. Demand-
+# driven like the tomorrow.io layers; GRIB fetch + render per frame.
+# MDL_WARMER=off stops it.
+try:
+    from core.model_tiles import ensure_model_warmer
+
+    if ensure_model_warmer(_static_mrms):
+        _warm_notes.append("Model-layer warmer started (Weather Mapping)")
+    else:
+        _warm_notes.append("Model-layer warmer off (MDL_WARMER=off / no MDL_MODELS)")
+except Exception as _exc:
+    _warm_notes.append(f"Model-layer warmer FAILED: "
+                       f"{type(_exc).__name__}: {_exc}")
+
 # The CAM-overlay and radar warmers were started here for the N90
 # Airspace page, which is no longer in the navigation. Both imports
 # are gone rather than merely disabled: an import of core.radar_l2
@@ -313,7 +328,7 @@ PAGES = {
         st.Page("pages/3_JBU_Weather_Map.py",
                 title="JBU Weather Map CONUS"),
         st.Page("pages/15_Large_Scale_Map.py",
-                title="Custom Tomorrow.io Map"),
+                title="Weather Mapping"),
         # Station Quick View removed from navigation 21 Sep; the file
         # stays in pages/ unlisted. Its airport scope lives on in
         # Station Forecast, so the surface warmer above still runs.

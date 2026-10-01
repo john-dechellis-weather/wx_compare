@@ -15,7 +15,7 @@ from pathlib import Path
 import streamlit as st
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Custom Tomorrow.io Map", layout="wide")
+st.set_page_config(page_title="Weather Mapping", layout="wide")
 
 from retro_theme import apply_retro_theme
 
@@ -43,6 +43,11 @@ HEIGHT = int(os.environ.get("TIO_PAGE_HEIGHT", "860"))
 # The warmer normally starts on Homepage; this is the belt to that
 # brace for a direct deep link after a restart.
 TIO.ensure_tio_warmer(STATIC)
+try:
+    from core import model_tiles as MT
+    MT.ensure_model_warmer(STATIC)
+except Exception:
+    MT = None
 
 # Two views behind one switch (28 Sep). TOMORROW.IO (default): the
 # warmed tile map - five layers that stack, an hourly TIME slider to
@@ -57,12 +62,12 @@ _h1, _h2 = st.columns([2, 1.6])
 with _h1:
     st.markdown(
         '<div style="font-size:16px;font-weight:700;color:#FFFFFF;'
-        'margin:0 0 2px 0">CUSTOM TOMORROW.IO MAP</div>'
+        'margin:0 0 2px 0">WEATHER MAPPING</div>'
         '<div style="font-size:11px;font-weight:700;color:#B8B8B8;'
-        'margin:0 0 8px 0">tomorrow.io: reflectivity &middot; ceiling '
-        '&middot; visibility &middot; wind speed &middot; wind gust, hourly '
-        'to +24 h, 3-hourly to +72 h &nbsp;|&nbsp; NOAA models: RRFS '
-        '&middot; HRRR &middot; NAM nest incl. lightning</div>',
+        'margin:0 0 8px 0">tomorrow.io layers &middot; NOAA model layers '
+        '(REFS ensemble first; RRFS, HRRR, GFS to follow) &middot; hourly '
+        'to +24 h, 3-hourly to +72 h &nbsp;|&nbsp; NOAA MODELS view: a CONUS '
+        'frame of RRFS &middot; HRRR &middot; NAM nest incl. lightning</div>',
         unsafe_allow_html=True)
 with _h2:
     view = st.radio("View", ["tomorrow.io", "NOAA models"],
@@ -223,3 +228,12 @@ with st.expander("tomorrow.io warmer status", expanded=False):
         st.error(TIO.STATUS["err"])
     lines = TIO.log_tail(STATIC, 15)
     st.code("\n".join(lines) or "(no log yet)")
+    try:
+        from core import model_tiles as _MT
+        st.caption(f"Model layers: {', '.join(_MT.MODELS_ON) or 'none'} "
+                   f"({len(_MT.field_keys())} layers) | "
+                   + (f"building {_MT.STATUS['busy']}" if _MT.STATUS.get("busy") else "idle")
+                   + (f" | last error: {_MT.STATUS['err']}" if _MT.STATUS.get("err") else ""))
+        st.code("\n".join(_MT.log_tail(STATIC, 10)) or "(no model log yet)")
+    except Exception as _me:
+        st.caption(f"model layers unavailable: {_me}")
