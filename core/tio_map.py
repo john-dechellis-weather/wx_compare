@@ -1414,6 +1414,16 @@ def _loop(outdir):
             STATUS["paused"] = None
             STATUS["err"] = None
             _log(outdir, "pause over: resuming")
+        if not api_key():
+            # No key on this instance (the Mac deliberately leaves it to
+            # Render): say so once, then check again every minute instead
+            # of logging a failure per tick.
+            if STATUS.get("err") != "no TOMORROWIO_API_KEY":
+                STATUS["err"] = "no TOMORROWIO_API_KEY"
+                _log(outdir, "no TOMORROWIO_API_KEY on this instance: tomorrow.io "
+                             "layers idle (model layers unaffected)")
+            time.sleep(60)
+            continue
         model = active_model(outdir)
         STATUS["model"] = model
         if model != last_model:

@@ -37,7 +37,7 @@ STATIC = Path(__file__).resolve().parent.parent / "static"
 # relays the viewer iframe's "what am I looking at" messages to the
 # server as its value -> TIO.set_demand. Same origin as the map
 # iframe, so the two frames can talk.
-_bridge = components.declare_component("tio_bridge", path=str(STATIC / "tio_bridge"))
+from core.tio_bridge import tio_bridge as _bridge   # a real module: see core/tio_bridge.py
 HEIGHT = int(os.environ.get("TIO_PAGE_HEIGHT", "860"))
 
 # The warmer normally starts on Homepage; this is the belt to that
