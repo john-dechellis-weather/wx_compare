@@ -733,6 +733,153 @@ def make_th(text, is_row_label=False):
     )
 
 
+# ---------------------------------------------------------------------------
+# Model spread (1 Oct): one box plot per forecast hour at the top of
+# the page. NBM, GFS LAMP, RRFS and HRRR point values for ceiling,
+# visibility and wind; each cell is a tiny vertical box plot the width
+# of a MOS cell, filled with the colour of the worst non-VFR tier any
+# model reaches at the fraction of models in it (2 of 4 IFR -> red at
+# 50 %). The NBM and REFS probabilities for the matching tier ride
+# inside the cell as "N47 R30".
+# ---------------------------------------------------------------------------
+SPREAD_ROWS = [
+    # label, value key, axis max, tier function, NBM prob col, REFS prob
+    ("CIG hft", "cig", 50.0, "cig", "NBM_p_cig_ifr", "PROB_CIG1000"),
+    ("VIS sm", "vis", 10.0, "vis", "NBM_p_vis_ifr", "PROB_VIS3"),
+    ("WIND kt", "wind", 50.0, "wind", None, None),
+]
+SPREAD_TIER_RANK = {"#FF80FF": 4, "#FF4040": 3, "#FF9900": 2, "#FFFF00": 1}
+
+
+def _spread_values(row, det_rrfs, det_hrrr, fhr):
+    """{key: [(model, value)]} for one hour. Ceiling in hundreds of
+    feet (unlimited -> 300), visibility sm, wind = max(speed, gust)."""
+    out = {"cig": [], "vis": [], "wind": []}
+
+    def _num(v):
+        return None if v is None or pd.isna(v) else float(v)
+
+    def _add(model, cig, unl, vis, spd, gst):
+        c = _num(cig)
+        if unl is True or (c is not None and c > 300):
+            c = 300.0
+        if c is not None:
+            out["cig"].append((model, c))
+        v = _num(vis)
+        if v is not None:
+            out["vis"].append((model, min(10.0, v)))
+        w = [x for x in (_num(spd), _num(gst)) if x is not None]
+        if w:
+            out["wind"].append((model, max(w)))
+
+    _add("NBM", (row["NBM_cig_ft"] / 100.0 if _num(row["NBM_cig_ft"]) is not None else None),
+         row["NBM_cig_unl"], row["NBM_vis_sm"], row["NBM_wind_spd"], row["NBM_wind_gst"])
+    _add("LAMP", (row["LAMP_cig_ft"] / 100.0 if _num(row["LAMP_cig_ft"]) is not None else None),
+         row["LAMP_cig_unl"], row["LAMP_vis_sm"], row["LAMP_wind_spd"], row["LAMP_wind_gst"])
+    for name, det in (("RRFS", det_rrfs), ("HRRR", det_hrrr)):
+        r = (det or {}).get(fhr)
+        if r:
+            _add(name, r.get("cig_hft"), r.get("cig_hft") is None and bool(r),
+                 r.get("vis_sm"), r.get("wsp_kt"), r.get("gst_kt"))
+    return out
+
+
+def _spread_tier(kind, v):
+    if kind == "cig":
+        return cig_bg(v * 100.0, False)
+    if kind == "vis":
+        return vis_bg(v)
+    return wind_bg(v, None)
+
+
+def _spread_cell(kind, vmax, vals, n_txt, r_txt) -> str:
+    """One <td> holding an SVG box plot of vals (list of floats)."""
+    import numpy as np
+
+    W, H, T, B = 38, 58, 4, 54
+    if not vals:
+        return (f'<td style="background:#0A0A0A;border:1px solid #333333;'
+                f'padding:0;min-width:{W}px;height:{H}px;text-align:center;'
+                f'color:#6E6E6E;-webkit-text-fill-color:#6E6E6E;font-family:'
+                f'Courier New,monospace;font-size:11px">-</td>')
+    a = np.array(vals, dtype=float)
+    q0, q1, q2, q3, q4 = (float(x) for x in np.percentile(a, [0, 25, 50, 75, 100]))
+
+    def y(v):
+        v = max(0.0, min(vmax, v))
+        return B - (B - T) * v / vmax
+
+    # fill: worst tier reached by any model, at its share of the models
+    tiers = [_spread_tier(kind, v) for v in vals]
+    worst, worst_n = None, 0
+    for t in tiers:
+        if t and (worst is None or SPREAD_TIER_RANK[t[0]] > SPREAD_TIER_RANK[worst]):
+            worst = t[0]
+    if worst:
+        worst_n = sum(1 for t in tiers if t and t[0] == worst)
+    fill = ""
+    if worst:
+        r, g, b = (int(worst[i:i + 2], 16) for i in (1, 3, 5))
+        fill = (f'<rect x="0" y="0" width="{W}" height="{H}" '
+                f'fill="rgba({r},{g},{b},{worst_n / len(vals):.2f})"/>')
+    cx = W / 2
+    bw = 14
+    box = (f'<line x1="{cx}" y1="{y(q0):.1f}" x2="{cx}" y2="{y(q4):.1f}" stroke="#FFFFFF" stroke-width="1"/>'
+           f'<line x1="{cx - 4}" y1="{y(q0):.1f}" x2="{cx + 4}" y2="{y(q0):.1f}" stroke="#FFFFFF" stroke-width="1"/>'
+           f'<line x1="{cx - 4}" y1="{y(q4):.1f}" x2="{cx + 4}" y2="{y(q4):.1f}" stroke="#FFFFFF" stroke-width="1"/>'
+           f'<rect x="{cx - bw / 2}" y="{y(q3):.1f}" width="{bw}" height="{max(1.0, y(q1) - y(q3)):.1f}" '
+           f'fill="rgba(0,229,255,0.35)" stroke="#00E5FF" stroke-width="1"/>'
+           f'<line x1="{cx - bw / 2}" y1="{y(q2):.1f}" x2="{cx + bw / 2}" y2="{y(q2):.1f}" stroke="#FFFFFF" stroke-width="2"/>')
+    txt = ""
+    if n_txt is not None:
+        txt += (f'<text x="2" y="10" font-family="Courier New,monospace" font-size="8" '
+                f'font-weight="bold" fill="#FFFFFF">N{n_txt}</text>')
+    if r_txt is not None:
+        txt += (f'<text x="{W - 2}" y="10" text-anchor="end" font-family="Courier New,monospace" '
+                f'font-size="8" font-weight="bold" fill="#FFFFFF">R{r_txt}</text>')
+    title = f"{kind}: " + ", ".join(f"{v:g}" for v in vals) + f" | median {q2:g}"
+    svg = (f'<svg width="100%" height="{H}" viewBox="0 0 {W} {H}" preserveAspectRatio="none" '
+           f'style="display:block"><title>{escape(title)}</title>{fill}{box}{txt}</svg>')
+    return (f'<td style="background:#0A0A0A;border:1px solid #333333;padding:0;'
+            f'min-width:{W}px;height:{H}px">{svg}</td>')
+
+
+def build_spread_table(df_m, cycle: datetime, det_rrfs: dict, det_hrrr: dict,
+                       refs_probs: dict) -> str:
+    header = [make_th("SPREAD", is_row_label=True)]
+    for t in df_m["valid_time"]:
+        header.append(make_th(f"{pd.to_datetime(t):%H}Z"))
+    out = ["<tr>" + "".join(header) + "</tr>"]
+    per_hour = [_spread_values(row, det_rrfs, det_hrrr, int(row["fhr"]))
+                for _, row in df_m.iterrows()]
+    n_models = max((len(v["cig"]) for v in per_hour), default=0)
+    for label, key, vmax, kind, ncol, rprod in SPREAD_ROWS:
+        cells = [make_th(label, is_row_label=True)]
+        for (_, row), vals in zip(df_m.iterrows(), per_hour):
+            n_txt = r_txt = None
+            if ncol and ncol in row and row[ncol] is not None and not pd.isna(row[ncol]):
+                n_txt = int(round(row[ncol]))
+            if rprod and refs_probs:
+                rv = (refs_probs.get(rprod) or {}).get(int(row["fhr"]))
+                if rv is not None:
+                    r_txt = int(rv)
+            cells.append(_spread_cell(kind, vmax, [v for _, v in vals[key]], n_txt, r_txt))
+        out.append("<tr>" + "".join(cells) + "</tr>")
+    return (
+        '<div style="overflow-x:auto;background:#000000;padding:4px;'
+        'border:1px solid #333333;margin-top:4px;">'
+        '<div style="font-family:Courier New,monospace;font-size:13px;'
+        'font-weight:bold;color:#FFFFFF;-webkit-text-fill-color:#FFFFFF;'
+        'padding:1px 2px;">'
+        f'Model spread \u2014 NBM, GFS LAMP, RRFS, HRRR ({n_models} models) '
+        f'\u00b7 box = middle half, bar = median, whiskers = range \u00b7 '
+        'fill = worst tier any model reaches, opacity = share of models in it '
+        '\u00b7 N = NBM %, R = REFS % (CIG &lt; 1000 ft, VIS &lt; 3 sm)</div>'
+        '<table style="border-collapse:collapse;width:100%;background:#0A0A0A;'
+        'table-layout:auto;">' + "".join(out) + '</table></div>')
+
+
+
 st.title("MOS Tables")
 st.caption("Side-by-side hourly NBM + GFS LAMP for one airport.")
 
@@ -783,6 +930,28 @@ if run_button:
     if len(df_c) == 0:
         st.warning("No data in overlap window.")
         st.stop()
+
+    # ---- 0. Model spread box plots (1 Oct) ----
+    _sp = st.empty()
+    _sp.markdown(
+        "<p style='text-align:center;font-size:18px;font-weight:700;"
+        "margin:8px 0'>Loading model spread (RRFS, HRRR, REFS)\u2026</p>",
+        unsafe_allow_html=True)
+    _now = datetime.now(timezone.utc)
+    _bucket = _now.strftime("%Y%m%d%H") + str(_now.minute // 10)
+    _hours24 = tuple(range(1, 25))
+    _det = {}
+    for _m in ("rrfs", "hrrr"):
+        _c = cached_det_cycle(_m, 24, _bucket)
+        _det[_m] = cached_det_point(_m, icao_input, _c, _hours24)[0] if _c else {}
+    _rc0 = cached_refs_cycle(_bucket)
+    _probs0 = cached_refs_probs(icao_input, _rc0, _hours24)[0] if _rc0 else {}
+    _sp.empty()
+    try:
+        st.markdown(build_spread_table(df_c, cycle, _det["rrfs"], _det["hrrr"], _probs0),
+                    unsafe_allow_html=True)
+    except Exception as _se:
+        st.caption(f"Model spread unavailable \u2014 {type(_se).__name__}: {_se}")
 
     # ---- 1. Hourly deterministic MOS ----
     section("Hourly NBM and GFS LAMP MOS")
