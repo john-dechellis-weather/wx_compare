@@ -180,7 +180,13 @@ NOW_MIN = int(os.environ.get("TIO_NOW_MIN", "60"))
 FCST_MIN = int(os.environ.get("TIO_FCST_MIN", "360"))
 NOW_ZOOM = int(os.environ.get("TIO_NOW_ZOOM", "4"))
 FCST_ZOOM = int(os.environ.get("TIO_FCST_ZOOM", "4"))
-DAILY_CAP = int(os.environ.get("TIO_DAILY_CAP", "9000"))
+# The plan: 10,000 requests/day, 9,999/hour, 50/s. This app's own
+# ceiling is TIO_CAP_PCT of the daily plan (85 % by 1 Oct request) so
+# anything else on the same key - other scripts, notebooks, the
+# dashboard's own test calls - has the rest. TIO_DAILY_CAP overrides.
+PLAN_DAY = int(os.environ.get("TIO_PLAN_DAY", "10000"))
+CAP_PCT = float(os.environ.get("TIO_CAP_PCT", "85"))
+DAILY_CAP = int(os.environ.get("TIO_DAILY_CAP", str(int(PLAN_DAY * CAP_PCT / 100))))
 
 # BUDGET (28 Sep, after the plan was spent by noon). Three rules on
 # top of the daily cap, all in _charge():
@@ -692,16 +698,33 @@ def usage(outdir) -> dict:
     now = datetime.now(timezone.utc)
     today = (now - timedelta(hours=DAY_RESET_UTC_HOUR)).strftime("%Y-%m-%d")
     hour = now.strftime("%Y-%m-%dT%H")
+    same_day = d.get("day") == today
     return {"day": today,
-            "count": int(d.get("count", 0)) if d.get("day") == today else 0,
+            "count": int(d.get("count", 0)) if same_day else 0,
             "hour": hour,
-            "hcount": int(d.get("hcount", 0)) if d.get("hour") == hour else 0}
+            "hcount": int(d.get("hcount", 0)) if d.get("hour") == hour else 0,
+            # who spent it: {"now": n, "forecast": n, "hires": n,
+            # "points": n, "noaa": n} for the day (1 Oct)
+            "by": dict(d.get("by") or {}) if same_day else {}}
 
 
-def _add_usage(outdir, n):
+def _category(what: str) -> str:
+    w = (what or "").lower()
+    if w.startswith("point"):
+        return "points"
+    if w.startswith("noaa"):
+        return "noaa"
+    if "+00h" in w:
+        return "hires" if len(w.split()) > 2 else "now"
+    return "hires" if len(w.split()) > 2 else "forecast"
+
+
+def _add_usage(outdir, n, what: str = ""):
     u = usage(outdir)
     u["count"] += n
     u["hcount"] += n
+    c = _category(what)
+    u["by"][c] = int(u["by"].get(c, 0)) + n
     p = _usage_path(outdir)
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(u))
@@ -726,7 +749,7 @@ def budget(outdir) -> dict:
     """What is left today, for the page and the log."""
     u = usage(outdir)
     left = DAILY_CAP - u["count"]
-    return {"used": u["count"], "cap": DAILY_CAP, "left": left,
+    return {"used": u["count"], "cap": DAILY_CAP, "left": left, "by": u["by"],
             "mandatory_left": mandatory_left(), "reserve": RESERVE,
             "free": max(0, left - mandatory_left() - RESERVE),
             "hour_used": u["hcount"], "hour_cap": HOURLY_CAP,
@@ -751,7 +774,7 @@ def _charge(outdir, n: int, prio: int, what: str = "") -> int:
                            f"({u['count']}+{n} > {DAILY_CAP}-{keep})")
         if u["hcount"] + n > HOURLY_CAP:
             raise Deferred(f"{what}: hourly cap ({u['hcount']}+{n} > {HOURLY_CAP})")
-    return _add_usage(outdir, n)
+    return _add_usage(outdir, n, what)
 
 
 def _view_path(outdir):

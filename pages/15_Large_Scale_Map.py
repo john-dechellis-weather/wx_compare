@@ -221,6 +221,10 @@ with st.expander("tomorrow.io warmer status", expanded=False):
                f"  |  on demand: ~{TIO.daily_estimate():,}/day with two layers in "
                "use all day and 40 scrubbed frames")
     _b = TIO.budget(STATIC)
+    if _b.get("by"):
+        st.caption("Spent on: " + "  |  ".join(
+            f"{k} {v:,}" for k, v in sorted(_b["by"].items(), key=lambda kv: -kv[1]))
+            + f"  (cap {TIO.CAP_PCT:.0f}% of the {TIO.PLAN_DAY:,}/day plan)")
     st.caption(f"Budget: {_b['left']:,} left today, of which {_b['mandatory_left']:,} "
                f"is owed to the hourly now-frames and {_b['reserve']:,} is the reserve "
                f"→ {_b['free']:,} free for forecast / points / hi-res  |  this hour "
