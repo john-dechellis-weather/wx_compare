@@ -27,6 +27,7 @@ from pathlib import Path
 import pandas as pd
 import pydeck as pdk
 import streamlit as st
+import streamlit.components.v1 as components
 
 st.set_page_config(page_title="BlueMet \u2014 Station Forecast", layout="wide")
 
@@ -360,18 +361,24 @@ def _origin() -> str:
     return (os.environ.get("RENDER_EXTERNAL_URL") or "").rstrip("/")
 
 
-# ------------------------------------------------------------- sidebar
-with st.sidebar:
-    st.header("Station")
-    hub = st.selectbox("Hub", HUBS, index=0)
-    typed = st.text_input("or any ICAO", value="", max_chars=4,
-                          placeholder="e.g. KSYR").strip().upper()
-    icao = typed if len(typed) == 4 else hub
-    n_metars = st.selectbox("METARs to show", [1, 2, 3, 4, 5, 6], index=2)
-    st.divider()
-    st.subheader("Plots")
-    horizon = st.slider("Forecast horizon (h)", 12, 72, 36, 6)
-    speed_max = st.slider("Wind y-axis max (kt)", 20, 80, 40, 5)
+# ------------------------------------------------------ station picker
+# On the page, not the sidebar (1 Oct): the top navigation bar hides
+# the sidebar, so the ICAO box had become unreachable. ENTER ICAO wins
+# over the hub list when it holds four letters.
+_pc1, _pc2, _pc3, _pc4 = st.columns([1.1, 1.1, 0.9, 3.9])
+with _pc1:
+    typed = st.text_input("ENTER ICAO", value="", max_chars=4,
+                          placeholder="e.g. KSYR", key="sf_icao_typed",
+                          help="Any ICAO; overrides the hub list").strip().upper()
+with _pc2:
+    hub = st.selectbox("Hub", HUBS, index=0, key="sf_hub")
+icao = typed if len(typed) == 4 else hub
+with _pc3:
+    with st.popover("Settings"):
+        n_metars = st.selectbox("METARs to show", [1, 2, 3, 4, 5, 6], index=2,
+                                key="sf_n_metars")
+        horizon = st.slider("Forecast horizon (h)", 12, 72, 36, 6, key="sf_horizon")
+        speed_max = st.slider("Wind y-axis max (kt)", 20, 80, 40, 5, key="sf_speed_max")
 
 now = datetime.now(timezone.utc)
 
@@ -848,29 +855,16 @@ def _scope_pod():
                     # slider's value is read here so this run draws it;
                     # 0 = oldest ... n-1 = latest. Latest by default and
                     # whenever the airport changes.
-                    _n = len(l3_frames)
-                    if st.session_state.get("sf_l3_loop", True) and _n:
-                        # looping: the frame advances with the clock,
-                        # oldest to newest, one step per fragment run
-                        import time as _tm
-                        _pick = int(_tm.time() // 2) % _n
-                    else:
-                        _pick = st.session_state.get(f"sf_l3_slider_{icao}")
-                        if _pick is None or _pick >= _n:
-                            _pick = _n - 1
-                    _man = l3_frames[_pick] if _n else None
+                    # Every frame of the last hour goes to the browser
+                    # (core/scope_html): the loop and the slider run
+                    # there, no reruns. Stale sets (> 80 min) are dropped.
+                    l3_frames = [f for f in l3_frames if L3.age_s(f["stamp"]) < 4800]
+                    _man = l3_frames[-1] if l3_frames else None
                     _l3s = _man["stamp"] if _man else None
-                    if _man and L3.age_s(_l3s) < 4800:
-                        _l3 = pdk.Layer(
-                            "BitmapLayer", data=None,
-                            image=f"{base}/app/static/{_man['name']}",
-                            bounds=_man["bounds"], opacity=1.0)
-                        _after = max([i for i, l in enumerate(layers)
-                                      if getattr(l, "type", "") == "BitmapLayer"]
-                                     + [-1]) + 1
-                        layers.insert(_after, _l3)
+                    if _man:
                         l3_txt = (f" · NEXRAD {_man['site']} "
-                                  f"{_l3s[9:11]}:{_l3s[11:13]}Z")
+                                  f"{_l3s[9:11]}:{_l3s[11:13]}Z"
+                                  f" · {len(l3_frames)} frames")
                     elif icao.upper() in L3.STATION_RADAR:
                         # Distinguish "the warmer has built nothing for
                         # this station" from "it looked and found no
@@ -899,29 +893,7 @@ def _scope_pod():
                      if coords else "")
                   + (f" · {len(ac)} aircraft" if coords and ac else "")
                   + _rate_txt)
-        if coords and len(l3_frames) > 1 and not st.session_state.get("sf_l3_loop", True):
-            # Last hour of the airport's radar: drag to step back
-            # through the frames. Labels are the scan times.
-            _lab = [f"{f['stamp'][9:11]}:{f['stamp'][11:13]}Z"
-                    for f in l3_frames]
-            _k = f"sf_l3_slider_{icao}"
-            if st.session_state.get(_k, len(_lab)) >= len(_lab):
-                st.session_state[_k] = len(_lab) - 1
-            st.select_slider(
-                "Radar time (last hour)", options=list(range(len(_lab))),
-                format_func=lambda k: _lab[k], key=_k,
-                help="Level III frames from the last hour, oldest to "
-                     "newest. MRMS underneath stays current.")
-        _rc1, _rc0, _rc2 = st.columns([1.7, 0.6, 1])
-        with _rc0:
-            st.checkbox("Loop", key="sf_l3_loop", value=True,
-                        help="Animate the last hour of NEXRAD frames, 2 s a "
-                             "step. Off: pick a frame with the slider and "
-                             "the map keeps your pan and zoom.")
-            # The loop decides whether this pod IS a fragment (see the
-            # call site), so a change needs the page, not just the pod.
-            if bool(st.session_state.get("sf_l3_loop", True)) != _loop_on:
-                st.rerun(scope="app")
+        _rc1, _rc2 = st.columns([2.3, 1])
         with _rc1:
             st.radio(
                 "Radar", ["NEXRAD Radar", "MRMS Precipitation", "Off"],
@@ -1108,34 +1080,43 @@ def _scope_pod():
                 _ph.empty()
                 st.session_state[f"sf_scope_drawn_{icao}"] = True
             try:
-              st.pydeck_chart(pdk.Deck(
-                layers=layers,
-                initial_view_state=_vs,
-                # Interactive: drag to pan, wheel to zoom. The view
-                # state only sets where it opens.
-                views=[pdk.View(type="MapView",
-                                controller={"scrollZoom": True, "dragPan": True,
-                                            "dragRotate": False,
-                                            "doubleClickZoom": True,
-                                            "inertia": True})],
-                map_style=style, map_provider=("carto" if style else None),
-                tooltip={"html": "<b>{callsign}</b> {type}<br/>{alt} ft "
-                                 "&middot; {gs} kt",
-                         "style": {"backgroundColor": "#0A0A0A",
-                                   "color": "#FFFFFF",
-                                   "border": f"1px solid {EDGE}",
-                                   "fontSize": "12px"}},
-                parameters={"clearColor": [0, 0, 0, 1]},
-              # A fixed key (28 Sep): without one, Streamlit hashes the
-              # chart's own args to build the frontend component's key,
-              # and a new radar frame every 2 s changes that hash. A
-              # changed key tears the component down and remounts it -
-              # a fresh WebGL context and a reloaded basemap, which is
-              # the grey flash the loop caused. A stable key keeps the
-              # same component instance across fragment reruns, so
-              # only the changed layers update.
-              ), use_container_width=True, height=SCOPE_H,
-                key=f"scope_pydeck_{icao}")
+                import json as _json
+                import hashlib as _hl
+                from core.scope_html import scope_html as _scope_html
+                _tip = {"html": "<b>{callsign}</b> {type}<br/>{alt} ft "
+                                "&middot; {gs} kt",
+                        "style": {"backgroundColor": "#0A0A0A",
+                                  "color": "#FFFFFF",
+                                  "border": f"1px solid {EDGE}",
+                                  "fontSize": "12px"}}
+                _deck = pdk.Deck(
+                    layers=layers, initial_view_state=_vs,
+                    views=[pdk.View(type="MapView",
+                                    controller={"scrollZoom": True, "dragPan": True,
+                                                "dragRotate": False,
+                                                "doubleClickZoom": True,
+                                                "inertia": True})],
+                    map_style=None, map_provider=None,
+                    parameters={"clearColor": [0, 0, 0, 1]})
+                _frames = [{"url": f"{base}/app/static/{f['name']}",
+                            "bounds": f["bounds"],
+                            "label": f"{f['stamp'][9:11]}:{f['stamp'][11:13]}Z"}
+                           for f in l3_frames] if _want_l3 else []
+                # The deck as JSON (what st.pydeck_chart sends to its
+                # component), drawn by deck.gl in an iframe we control:
+                # all radar frames preloaded, play/slider in the browser.
+                _html = _scope_html(_json.loads(_deck.to_json()), _frames,
+                                    style or "", icao, height=SCOPE_H,
+                                    tooltip=_tip)
+                _name = f"scope_{icao}.html"
+                _v = _hl.md5(_html.encode()).hexdigest()[:10]
+                _p = STATIC_MRMS / _name
+                if not _p.exists() or _p.read_text() != _html:
+                    _tmp = STATIC_MRMS / f".{_name}.tmp"
+                    _tmp.write_text(_html)
+                    os.replace(_tmp, _p)
+                components.iframe(f"{base}/app/static/{_name}?v={_v}",
+                                  height=SCOPE_H)
             except Exception as _de:
                 st.error(f"Scope did not draw: {type(_de).__name__}: "
                          f"{str(_de)[:200]}")
@@ -1164,11 +1145,14 @@ def _scope_pod():
 # METAR/TAF fetch, every model comparison - just to swap one frame.
 # Wrapped in a fragment with no run_every, that widget change reruns
 # only the pod. run_every="2s" is added on top of that when looping.
-_loop_on = bool(st.session_state.get("sf_l3_loop", True))
+# 1 Oct: the radar loop moved into the browser (core/scope_html), so
+# the pod no longer needs a 2-second rerun. It refreshes every 2 min
+# for traffic and newly landed frames; the iframe only reloads when
+# its content changed, and it restores the viewer's pan and zoom.
 from core import airport_scope as AS   # row 2 uses AS.distance_nm too
 with c_rad:
     if coords:
-        st.fragment(run_every="2s" if _loop_on else None)(_scope_pod)()
+        st.fragment(run_every="120s")(_scope_pod)()
     else:
         _scope_pod()
 

@@ -1,0 +1,150 @@
+"""Airport scope as a self-contained deck.gl page with a client-side
+radar loop.
+
+Target path: core/scope_html.py
+
+The Station Forecast scope used to be an st.pydeck_chart re-run every
+2 s by a fragment to advance the radar frame. Every re-run put
+Streamlit's status widget up (the "Loading ..." banner), cost a server
+round trip, and still only managed a 2-second step. This renders the
+SAME deck (pydeck's JSON, converted in the browser by deck.gl's own
+JSONConverter - what the Streamlit component does internally) inside
+an iframe we control, with every Level III frame preloaded as a
+BitmapLayer and a play/pause/slider that just flips which one is
+visible. Smooth, no reruns, pan and zoom survive (the view is kept in
+sessionStorage per station).
+
+Served from /app/static and embedded by URL (see radar_l3.loop_html
+for why not srcdoc).
+"""
+
+from __future__ import annotations
+
+import json
+import re
+
+DECK_JS = "https://cdn.jsdelivr.net/npm/deck.gl@8.9.36/dist.min.js"
+DECK_JSON_JS = "https://cdn.jsdelivr.net/npm/@deck.gl/json@8.9.36/dist.min.js"
+MAPLIBRE_JS = "https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"
+MAPLIBRE_CSS = "https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css"
+
+# pydeck writes any bare-word string prop as an "@@=" expression; these
+# props are plain enums, not accessors, so the marker comes off.
+_ENUM_PROPS = {"sizeUnits", "widthUnits", "radiusUnits", "lineWidthUnits",
+               "fontFamily", "fontWeight", "wordBreak", "textAnchor",
+               "alignmentBaseline", "coordinateSystem", "billboard",
+               "sizeScale", "iconAtlas"}
+
+
+def _clean(obj):
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if k in _ENUM_PROPS and isinstance(v, str) and v.startswith("@@="):
+                v = v[3:]
+            out[k] = _clean(v)
+        return out
+    if isinstance(obj, list):
+        return [_clean(x) for x in obj]
+    return obj
+
+
+def scope_html(deck_json: dict, frames: list, style_url: str, icao: str,
+               height: int = 560, tooltip: dict | None = None,
+               radar_index: int | None = None, loop_ms: int = 500) -> str:
+    """deck_json: json.loads(pdk.Deck(...).to_json()) WITHOUT the radar
+    layer. frames: [{"url", "bounds":[w,s,e,n], "label"}] oldest first;
+    they are inserted at layer index `radar_index` (default: after the
+    leading BitmapLayers, i.e. above MRMS, under the vector overlays).
+    style_url: the MapLibre style (scope_style.json) or "" for black."""
+    dj = _clean(deck_json)
+    layers = dj.get("layers", [])
+    if radar_index is None:
+        radar_index = 0
+        while radar_index < len(layers) and layers[radar_index].get("@@type") == "BitmapLayer":
+            radar_index += 1
+    vs = dj.get("initialViewState", {})
+    views = dj.get("views", [{"@@type": "MapView", "controller": True}])
+    ctrl = views[0].get("controller", True) if views else True
+    tip = tooltip or {}
+    labels = [f.get("label", "") for f in frames]
+    return f"""<!doctype html><html><head><meta charset="utf-8">
+<link rel="stylesheet" href="{MAPLIBRE_CSS}">
+<script src="{MAPLIBRE_JS}"></script>
+<script src="{DECK_JS}"></script>
+<script src="{DECK_JSON_JS}"></script>
+<style>
+ html,body{{margin:0;background:#000;height:100%;overflow:hidden;font:bold 12px "DejaVu Sans Mono","Courier New",monospace;color:#fff}}
+ #m{{position:absolute;top:0;left:0;right:0;bottom:36px;background:#000}}
+ .bar{{position:absolute;left:0;right:0;bottom:0;height:36px;display:flex;align-items:center;gap:8px;padding:0 8px;background:#0A0A0A;border-top:1px solid #333}}
+ .bar button{{font:bold 12px "DejaVu Sans Mono",monospace;background:#0A0A0A;color:#fff;border:1px solid #333;border-radius:6px;padding:3px 9px;cursor:pointer}}
+ .bar button.on{{border-color:#00E5FF;background:#1C1C22}}
+ .bar input[type=range]{{flex:1;accent-color:#00E5FF}}
+ #t{{color:#FFD400;min-width:60px}} #n{{color:#B8B8B8;min-width:120px}}
+ .tip{{position:absolute;pointer-events:none;background:#0A0A0A;color:#fff;border:1px solid #333;font-size:12px;padding:5px 8px;border-radius:4px;z-index:9;display:none;white-space:nowrap}}
+</style></head><body>
+<div id="m"></div><div class="tip" id="tip"></div>
+<div class="bar">
+  <button id="pp">Pause</button><button id="pv">&#9664;</button><button id="nx">&#9654;</button>
+  <input id="sl" type="range" min="0" max="{max(len(frames) - 1, 0)}" value="{max(len(frames) - 1, 0)}">
+  <span id="t"></span><span id="n"></span>
+  <button id="sp" title="loop speed">{loop_ms} ms</button>
+  <button id="rv" title="back to the opening view">Reset view</button>
+</div>
+<script>
+const DJ = {json.dumps(dj)};
+const FRAMES = {json.dumps(frames)};
+const LABELS = {json.dumps(labels)};
+const STYLE = {json.dumps(style_url)};
+const TIP = {json.dumps(tip)};
+const RADAR_AT = {radar_index};
+const KEY = 'bm_scope_view_' + {json.dumps(icao)};
+const SPEEDS = [250, 500, 900];
+let ms = {loop_ms}, i = FRAMES.length - 1, playing = FRAMES.length > 1, tick = null;
+const $ = id => document.getElementById(id);
+
+// pydeck's JSON -> deck.gl layers, exactly as the Streamlit component does it
+const converter = new deck.JSONConverter({{configuration: new deck.JSONConfiguration({{classes: Object.assign({{}}, deck)}})}});
+function baseLayers() {{ return converter.convert({{layers: DJ.layers}}).layers; }}
+function radarLayers() {{
+  return FRAMES.map((f, k) => new deck.BitmapLayer({{id: 'l3_' + k, image: f.url, bounds: f.bounds,
+    opacity: k === i ? 1 : 0, visible: true, parameters: {{depthTest: false}}}}));
+}}
+function allLayers() {{
+  const b = baseLayers();
+  return b.slice(0, RADAR_AT).concat(radarLayers(), b.slice(RADAR_AT));
+}}
+let saved = null;
+try {{ saved = JSON.parse(sessionStorage.getItem(KEY) || 'null'); }} catch (e) {{}}
+const vs0 = Object.assign({{}}, DJ.initialViewState);
+const vs = saved && saved.zoom ? Object.assign({{}}, vs0, saved) : vs0;
+function fill(tpl, o) {{ return tpl.replace(/\\{{(\\w+)\\}}/g, (m, k) => (o && o[k] != null) ? o[k] : ''); }}
+const dk = new deck.DeckGL({{
+  container: 'm', map: STYLE ? maplibregl : null, mapStyle: STYLE || undefined,
+  initialViewState: vs, controller: {json.dumps(ctrl)},
+  parameters: DJ.parameters || {{}},
+  layers: allLayers(),
+  onViewStateChange: ({{viewState}}) => {{
+    try {{ sessionStorage.setItem(KEY, JSON.stringify({{longitude: viewState.longitude, latitude: viewState.latitude, zoom: viewState.zoom}})); }} catch (e) {{}}
+  }},
+  getTooltip: ({{object}}) => object && TIP.html ? {{html: fill(TIP.html, object), style: TIP.style || {{}}}} : null
+}});
+function show(k) {{
+  i = Math.max(0, Math.min(FRAMES.length - 1, k)); $('sl').value = i;
+  $('t').textContent = FRAMES.length ? LABELS[i] : 'no radar';
+  $('n').textContent = FRAMES.length ? 'frame ' + (i + 1) + '/' + FRAMES.length + (i === FRAMES.length - 1 ? ' (latest)' : '') : '';
+  dk.setProps({{layers: allLayers()}});
+}}
+function step() {{ show((i + 1) % FRAMES.length); tick = setTimeout(step, i === FRAMES.length - 1 ? ms * 3 : ms); }}
+function play(on) {{ playing = on; $('pp').textContent = on ? 'Pause' : 'Play'; $('pp').classList.toggle('on', on); clearTimeout(tick); if (on && FRAMES.length > 1) tick = setTimeout(step, ms); }}
+$('pp').onclick = () => play(!playing);
+$('pv').onclick = () => {{ play(false); show(i - 1); }};
+$('nx').onclick = () => {{ play(false); show(i + 1); }};
+$('sl').oninput = e => {{ play(false); show(+e.target.value); }};
+$('sp').onclick = () => {{ ms = SPEEDS[(SPEEDS.indexOf(ms) + 1) % SPEEDS.length]; $('sp').textContent = ms + ' ms'; if (playing) play(true); }};
+$('rv').onclick = () => {{ try {{ sessionStorage.removeItem(KEY); }} catch (e) {{}} dk.setProps({{initialViewState: Object.assign({{}}, vs0, {{transitionDuration: 300}})}}); }};
+document.addEventListener('keydown', e => {{ if (e.key === 'ArrowLeft') $('pv').onclick(); if (e.key === 'ArrowRight') $('nx').onclick(); if (e.key === ' ') {{ e.preventDefault(); play(!playing); }} }});
+// Preload every frame so the first loop is already smooth.
+FRAMES.forEach(f => {{ const im = new Image(); im.src = f.url; }});
+show(i); play(playing);
+</script></body></html>"""

@@ -426,6 +426,13 @@ html, body, .stApp,
    has to call. */
 .stApp:has([data-testid="stStatusWidget"])::before {{
   content: "Loading ... refresh the page after 1 min if it does not render";
+  /* 1 Oct: only for a run that lasts. Every fragment rerun (a radar
+     mode change, the 2-minute scope refresh) shows the status widget
+     for a fraction of a second, and the banner was flashing with it.
+     Invisible for the first 2.5 s of a run, so short reruns never
+     show it and a page that is really stuck still does. */
+  opacity: 0;
+  animation: bm-loading-show 0s linear 2.5s forwards;
   position: fixed;
   top: 0; left: 0; right: 0;
   z-index: 999999;
@@ -469,6 +476,8 @@ span[data-testid="stIconMaterial"],
   color: var(--bm-text) !important;
   -webkit-text-fill-color: var(--bm-text) !important;
 }}
+
+@keyframes bm-loading-show {{ to {{ opacity: 1; }} }}
 
 /* ------------------------------------------------------------- deck */
 
