@@ -138,9 +138,37 @@ IDX_MATCHERS = {
     # atmosphere:2-3 hour max fcst". The step text differs but the
     # matcher only reads VAR and LEVEL, so one entry covers both.
     "LTNG": [("LTNG", "entire atmosphere")],
+    # GFS (1 Oct): surface-based CAPE/CIN, J/kg
+    "CAPE": [("CAPE", "surface")],
+    "CIN": [("CIN", "surface")],
 }
 
 MODELS = {
+    # GFS 0.25 deg global (1 Oct): the medium-range source for Weather
+    # Mapping now that NAM is being retired. Hourly to f120, then
+    # 3-hourly to f384 (cycle_for_valid only asks for hours that
+    # exist). Regular lat/lon grid - decode_field meshes the 1-D axes.
+    "gfs": {
+        "label": "GFS",
+        "mechanism": "idx",
+        "file": "gfs.t{cc:02d}z.pgrb2.0p25.f{ff:03d}",
+        "dir": "/gfs.{ymd}/{cc:02d}/atmos",
+        "idx": (f"{NOMADS}/pub/data/nccf/com/gfs/prod/"
+                "gfs.{ymd}/{cc:02d}/atmos/gfs.t{cc:02d}z.pgrb2.0p25.f{ff:03d}.idx"),
+        "idx_candidates": [
+            (f"{NOMADS}/pub/data/nccf/com/gfs/prod/"
+             "gfs.{ymd}/{cc:02d}/atmos/gfs.t{cc:02d}z.pgrb2.0p25.f{ff:03d}.idx"),
+            ("https://noaa-gfs-bdp-pds.s3.amazonaws.com/"
+             "gfs.{ymd}/{cc:02d}/atmos/gfs.t{cc:02d}z.pgrb2.0p25.f{ff:03d}.idx"),
+        ],
+        "cycles": [0, 6, 12, 18],
+        "probe_back": 31,
+        "max_fhr": 384,
+        "hourly_to": 120,
+        "min_fhr": 0,
+        "products": {"REFC", "VIS", "CEIL", "GUST", "CAPE", "CIN"},
+        "note": "0.25 deg global; hourly to +120 h, 3-hourly to +384 h",
+    },
     "hrrr": {
         "label": "HRRR",
         "filter": f"{NOMADS}/cgi-bin/filter_hrrr_2d.pl",
@@ -634,6 +662,10 @@ def decode_field(raw: bytes):
     vals = np.asarray(ds[var].values, dtype=float)
     lats = np.asarray(ds["latitude"].values, dtype=float)
     lons = np.asarray(ds["longitude"].values, dtype=float)
+    if lats.ndim == 1 and lons.ndim == 1:
+        # regular lat/lon grid (GFS): mesh so every consumer sees
+        # 2-D coordinates like the Lambert grids
+        lats, lons = np.meshgrid(lats, lons, indexing="ij")
     lons = np.where(lons > 180, lons - 360, lons)
     ds.close()
     return vals, lats, lons

@@ -59,6 +59,14 @@ LAYERS = {
         ("GUST", "rrfs", "GUST", "RRFS 10 m gust"),
         ("LTNG", "rrfs", "LTNG", "RRFS lightning threat"),
     ],
+    "gfs": [
+        ("REFC", "gfs", "REFC", "GFS composite reflectivity"),
+        ("CEIL", "gfs", "CEIL", "GFS ceiling"),
+        ("VIS", "gfs", "VIS", "GFS visibility"),
+        ("GUST", "gfs", "GUST", "GFS 10 m gust"),
+        ("CAPE", "gfs", "CAPE", "GFS surface CAPE"),
+        ("CIN", "gfs", "CIN", "GFS surface CIN"),
+    ],
     "hrrr": [
         ("REFC", "hrrr", "REFC", "HRRR composite reflectivity"),
         ("CEIL", "hrrr", "CEIL", "HRRR ceiling"),
@@ -71,7 +79,7 @@ MODEL_LABEL = {"refs": "REFS ensemble", "rrfs": "RRFS", "hrrr": "HRRR",
                "nam_nest": "NAM nest", "gfs": "GFS"}
 # REFS proved on 1 Oct (first real frames + readout); RRFS and HRRR
 # verified the same day, so all three are on by default.
-MODELS_ON = [m.strip() for m in os.environ.get("MDL_MODELS", "refs,rrfs,hrrr").split(",")
+MODELS_ON = [m.strip() for m in os.environ.get("MDL_MODELS", "refs,rrfs,hrrr,gfs").split(",")
              if m.strip() and m.strip() in LAYERS]
 
 PREFETCH_H = int(os.environ.get("MDL_PREFETCH_H", "6"))
@@ -198,6 +206,9 @@ def cycle_for_valid(src: str, valid: datetime):
         fhr = int(round((valid - cyc).total_seconds() / 3600))
         if fhr < min_fhr or fhr > max_fhr:
             continue
+        # GFS: hourly files to +120 h, 3-hourly after
+        if fhr > int(cfg.get("hourly_to", 10 ** 6)) and fhr % 3:
+            continue
         if _idx_exists(src, cyc, fhr):
             return cyc, fhr
     return None
@@ -310,7 +321,10 @@ def _field(src: str, prod: str, cyc: datetime, fhr: int):
             _FIELDS[k] = hit
             return hit
     la, lo = CONUS_CENTER
-    vals, lats, lons = fetch_and_decode(src, prod, cyc, fhr, la, lo, float(CONUS_ZOOM))
+    # The Lambert grids end where they end; the global GFS is cropped
+    # to the pad, so widen it to reach Maine and the Maritimes.
+    zoom = float(CONUS_ZOOM) + (6.0 if src == "gfs" else 0.0)
+    vals, lats, lons = fetch_and_decode(src, prod, cyc, fhr, la, lo, zoom)
     lons = np.where(lons > 180, lons - 360, lons).astype("float32")
     hit = (np.asarray(vals, dtype="float32"), np.asarray(lats, dtype="float32"), lons)
     with _fields_lock:
@@ -325,7 +339,8 @@ def _field(src: str, prod: str, cyc: datetime, fhr: int):
 _FMT = {"REFC": ("{:.0f} dBZ", 1.0), "REFD": ("{:.0f} dBZ", 1.0),
         "RETOP": ("FL{:03.0f}", 10.0), "VIS": ("{:.1f} sm", 1.0),
         "CEIL": ("{:.0f}00 ft", 1.0), "GUST": ("{:.0f} kt", 1.0),
-        "LTNG": ("{:.1f}", 1.0)}
+        "LTNG": ("{:.1f}", 1.0), "CAPE": ("{:.0f} J/kg", 1.0),
+        "CIN": ("{:.0f} J/kg", 1.0)}
 
 
 def _fmt(prod: str, v) -> str:
@@ -619,7 +634,8 @@ def palette_json() -> dict:
         lut = _lut_for(prod)
         unit = ("%" if prod.startswith("PROB") else
                 {"REFC": "dBZ", "REFD": "dBZ", "RETOP": "kft", "VIS": "sm",
-                 "CEIL": "x100 ft", "GUST": "kt", "LTNG": "fl/km\u00b2"}.get(prod, ""))
+                 "CEIL": "x100 ft", "GUST": "kt", "LTNG": "fl/km\u00b2",
+                 "CAPE": "J/kg", "CIN": "J/kg"}.get(prod, ""))
         out[key] = {"bounds": [float(b) for b in spec["bounds"]],
                     "colors": ["#%02X%02X%02X" % tuple(int(c) for c in lut[i + 1][:3])
                                for i in range(len(spec["bounds"]))],

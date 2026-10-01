@@ -96,6 +96,17 @@ PALETTES = {
                         "#FFFFFF"],
              "below": 0.1},
 }
+# Surface-based CAPE / CIN (GFS), J/kg. CIN is negative: the bands run
+# from weakly capped (yellow) to strongly capped (purple); above -25
+# (uncapped) draws nothing.
+PALETTES["CAPE"] = {"bounds": [100, 250, 500, 1000, 1500, 2000, 2500, 3000, 4000, 5000],
+                    "colors": ["#2E6FDB", "#4FA8E8", "#22B14C", "#7CD934", "#FFF200",
+                               "#FFC90E", "#FF7F27", "#ED1C24", "#A349A4"],
+                    "below": 100.0}
+PALETTES["CIN"] = {"bounds": [-400, -300, -200, -150, -100, -75, -50, -25],
+                   "colors": ["#6F2DA8", "#A349A4", "#ED1C24", "#FF7F27", "#FFC90E",
+                              "#FFF200", "#B0E000"],
+                   "above": -25.0}
 # REFS probability fields share one ramp.
 for _pk in ("PROB_CIG1000", "PROB_CIG500", "PROB_VIS1", "PROB_VIS3",
             "PROB_REFC40", "PROB_REFC50", "PROB_RETOP35", "PROB"):
