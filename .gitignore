@@ -24,3 +24,6 @@ static/tio_*
 !static/tio_bridge/
 # echo-top tag cache (core/etop_tags.py)
 static/etop_tags.json
+
+# Mac hosting secrets
+mac/.env

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>            <string>org.bluemet.autopull</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>/Users/YOURNAME/bluemet/wx_compare/mac/autopull.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>BLUEMET_USER</key> <string>YOURNAME</string>
+    <key>PATH</key> <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StartInterval</key>    <integer>180</integer>
+  <key>RunAtLoad</key>        <true/>
+  <key>StandardOutPath</key>  <string>/Users/YOURNAME/bluemet/autopull.log</string>
+  <key>StandardErrorPath</key><string>/Users/YOURNAME/bluemet/autopull.log</string>
+</dict>
+</plist>
