@@ -831,10 +831,15 @@ def _scope_pod():
             try:
                 from core import radar_l3 as L3
                 _dom = L3.station_domain(icao)
-                _all = sorted(STATIC_MRMS.glob(f"l3_{_dom}_*.json"))
+                # Named _l3_man, not _all (29 Sep bug): _all is this
+                # pod's 150 nm aircraft list, read again below for the
+                # arrivals-ETA banner - reusing the name here clobbered
+                # it with a list of PosixPath manifests, so inbound_eta
+                # saw paths instead of aircraft and raised AttributeError.
+                _l3_man = sorted(STATIC_MRMS.glob(f"l3_{_dom}_*.json"))
                 _radar_diag.append(
-                    f"Level III domain {_dom}: {len(_all)} manifests on disk"
-                    + (f", newest {_all[-1].name}" if _all else ""))
+                    f"Level III domain {_dom}: {len(_l3_man)} manifests on disk"
+                    + (f", newest {_l3_man[-1].name}" if _l3_man else ""))
                 _st = L3.STATUS.get(_dom)
                 if _st:
                     _radar_diag.append(f"last build: {_st.get('note')}")

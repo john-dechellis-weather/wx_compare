@@ -1,37 +1,121 @@
 {
  "version": 8,
- "name": "BlueMet scope - water only",
+ "name": "BlueMet scope",
  "sources": {
   "carto": {
    "type": "vector",
    "url": "https://tiles.basemaps.cartocdn.com/vector/carto.streets/v1/tiles.json"
   }
  },
+ "glyphs": "https://tiles.basemaps.cartocdn.com/fonts/{fontstack}/{range}.pbf",
  "layers": [
   {
    "id": "background",
    "type": "background",
-   "paint": {
-    "background-color": "#000000"
-   }
+   "paint": { "background-color": "#000000" }
+  },
+  {
+   "id": "landcover",
+   "type": "fill",
+   "source": "carto",
+   "source-layer": "landcover",
+   "paint": { "fill-color": "#0D1118", "fill-opacity": 0.6 }
   },
   {
    "id": "water",
    "type": "fill",
    "source": "carto",
    "source-layer": "water",
-   "paint": {
-    "fill-color": "#0A121C"
-   }
+   "paint": { "fill-color": "#0A121C" }
   },
   {
    "id": "shoreline",
    "type": "line",
    "source": "carto",
    "source-layer": "water",
+   "paint": { "line-color": "#3B4A63", "line-width": 0.9 }
+  },
+  {
+   "id": "boundary-country",
+   "type": "line",
+   "source": "carto",
+   "source-layer": "boundary",
+   "filter": ["==", ["get", "admin_level"], 2],
+   "paint": { "line-color": "#5C6B85", "line-width": 1.1 }
+  },
+  {
+   "id": "boundary-state",
+   "type": "line",
+   "source": "carto",
+   "source-layer": "boundary",
+   "filter": ["==", ["get", "admin_level"], 4],
    "paint": {
-    "line-color": "#3B4A63",
-    "line-width": 0.9
+    "line-color": "#454F63",
+    "line-width": 0.8,
+    "line-dasharray": [3, 2]
+   }
+  },
+  {
+   "id": "place-city",
+   "type": "symbol",
+   "source": "carto",
+   "source-layer": "place",
+   "minzoom": 4,
+   "filter": ["in", ["get", "class"], ["literal", ["city", "town"]]],
+   "layout": {
+    "text-field": ["get", "name"],
+    "text-font": ["Noto Sans Regular"],
+    "text-size": ["interpolate", ["linear"], ["zoom"], 4, 9, 9, 13],
+    "text-letter-spacing": 0.02
+   },
+   "paint": {
+    "text-color": "#8A94A6",
+    "text-halo-color": "#000000",
+    "text-halo-width": 1.2
+   }
+  },
+  {
+   "id": "place-city-dot",
+   "type": "circle",
+   "source": "carto",
+   "source-layer": "place",
+   "minzoom": 4,
+   "filter": ["in", ["get", "class"], ["literal", ["city", "town"]]],
+   "paint": {
+    "circle-radius": 1.6,
+    "circle-color": "#8A94A6"
+   }
+  },
+  {
+   "id": "aerodrome-dot",
+   "type": "circle",
+   "source": "carto",
+   "source-layer": "aerodrome_label",
+   "minzoom": 5,
+   "paint": {
+    "circle-radius": 2.2,
+    "circle-color": "#6B7A99",
+    "circle-stroke-color": "#000000",
+    "circle-stroke-width": 0.6
+   }
+  },
+  {
+   "id": "aerodrome-label",
+   "type": "symbol",
+   "source": "carto",
+   "source-layer": "aerodrome_label",
+   "minzoom": 6,
+   "layout": {
+    "text-field": ["coalesce", ["get", "iata"], ["get", "icao"], ["get", "name"]],
+    "text-font": ["Noto Sans Regular"],
+    "text-size": 10,
+    "text-offset": [0, 0.9],
+    "text-anchor": "top"
+   },
+   "paint": {
+    "text-color": "#6B7A99",
+    "text-halo-color": "#000000",
+    "text-halo-width": 1
    }
   }
  ]
