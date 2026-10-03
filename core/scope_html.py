@@ -82,8 +82,19 @@ def scope_html(deck_json: dict, frames: list, style_url: str, icao: str,
  .bar input[type=range]{{flex:1;accent-color:#00E5FF}}
  #t{{color:#FFD400;min-width:60px}} #n{{color:#B8B8B8;min-width:120px}}
  .tip{{position:absolute;pointer-events:none;background:#0A0A0A;color:#fff;border:1px solid #333;font-size:12px;padding:5px 8px;border-radius:4px;z-index:9;display:none;white-space:nowrap}}
+ /* aircraft panel (3 Oct): top right, like the tomorrow.io flight card */
+ #ac{{position:absolute;top:10px;right:10px;width:300px;background:#0F1115;border:1px solid #2D3957;border-radius:6px;z-index:8;display:none;font:12px Roboto,Arial,sans-serif;color:#E8E8E8;box-shadow:0 4px 18px rgba(0,0,0,.6)}}
+ #ac .hd{{padding:10px 12px 8px;border-bottom:1px solid #22283A;display:flex;align-items:center;gap:8px}}
+ #ac .hd b{{font-size:16px;color:#fff;letter-spacing:.3px}} #ac .hd span{{color:#9AA0A6;font-size:11px}}
+ #ac .x{{margin-left:auto;cursor:pointer;color:#9AA0A6;font-size:16px;line-height:1;padding:0 2px}} #ac .x:hover{{color:#fff}}
+ #ac .row{{display:flex;justify-content:space-between;padding:6px 12px;border-bottom:1px solid #1A1F2B}} #ac .row .k{{color:#9AA0A6}} #ac .row .v{{color:#fff;font-weight:600}}
+ #ac .leg{{margin:10px 10px;background:#161A22;border-radius:5px;padding:8px 10px;border-left:3px solid #4DA3FF}}
+ #ac .leg .ap{{font-weight:700;color:#fff;font-size:13px}} #ac .leg .nm{{color:#9AA0A6;font-size:11px;margin-bottom:4px}}
+ #ac .leg.dest{{border-left-color:#00E5FF}}
+ #ac .ft{{padding:6px 12px 8px;color:#6E6E6E;font-size:10px}}
 </style></head><body>
 <div id="m"></div><div class="tip" id="tip"></div>
+<div id="ac"></div>
 <div class="bar">
   <button id="pp">Pause</button><button id="pv">&#9664;</button><button id="nx">&#9654;</button>
   <input id="sl" type="range" min="0" max="{max(len(frames) - 1, 0)}" value="{max(len(frames) - 1, 0)}">
@@ -110,9 +121,61 @@ function radarLayers() {{
   return FRAMES.map((f, k) => new deck.BitmapLayer({{id: 'l3_' + k, image: f.url, bounds: f.bounds,
     opacity: k === i ? 1 : 0, visible: true, parameters: {{depthTest: false}}}}));
 }}
+// ---- selected aircraft: panel + dotted track (3 Oct) ----
+let sel = null;
+function gc(a, b, n) {{   // great-circle points [lon,lat] from a to b, n steps
+  const r = Math.PI / 180, la1 = a[1] * r, lo1 = a[0] * r, la2 = b[1] * r, lo2 = b[0] * r;
+  const d = 2 * Math.asin(Math.sqrt(Math.sin((la2 - la1) / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin((lo2 - lo1) / 2) ** 2));
+  const out = [];
+  if (d < 1e-9) return [a, b];
+  for (let i = 0; i <= n; i++) {{
+    const f = i / n, A = Math.sin((1 - f) * d) / Math.sin(d), B = Math.sin(f * d) / Math.sin(d);
+    const x = A * Math.cos(la1) * Math.cos(lo1) + B * Math.cos(la2) * Math.cos(lo2);
+    const y = A * Math.cos(la1) * Math.sin(lo1) + B * Math.cos(la2) * Math.sin(lo2);
+    const z = A * Math.sin(la1) + B * Math.sin(la2);
+    out.push([Math.atan2(y, x) / r, Math.atan2(z, Math.sqrt(x * x + y * y)) / r]);
+  }}
+  return out;
+}}
+function routeLayers() {{
+  if (!sel) return [];
+  const pos = sel.position, dots = [], segs = [];
+  const o = sel.oll ? [sel.oll[1], sel.oll[0]] : null, d = sel.dll ? [sel.dll[1], sel.dll[0]] : null;
+  // one dot about every 3 km, so the track reads as dotted at any zoom
+  const km = (a, b) => 6371 * 2 * Math.asin(Math.sqrt(Math.sin((b[1] - a[1]) * Math.PI / 360) ** 2 + Math.cos(a[1] * Math.PI / 180) * Math.cos(b[1] * Math.PI / 180) * Math.sin((b[0] - a[0]) * Math.PI / 360) ** 2));
+  const nseg = (a, b) => Math.max(40, Math.min(1500, Math.round(km(a, b) / 3)));
+  if (o) {{ const p = gc(o, pos, nseg(o, pos)); segs.push({{path: p}}); p.forEach(q => dots.push({{position: q, flown: true}})); }}
+  if (d) {{ const p = gc(pos, d, nseg(pos, d)); segs.push({{path: p}}); p.forEach(q => dots.push({{position: q, flown: false}})); }}
+  if (!segs.length) return [];
+  return [
+    new deck.PathLayer({{id: 'sel_route', data: segs, getPath: x => x.path, getColor: [20, 30, 60, 220],
+      widthMinPixels: 4, widthMaxPixels: 4, parameters: {{depthTest: false}}}}),
+    new deck.ScatterplotLayer({{id: 'sel_dots', data: dots, getPosition: x => x.position,
+      getFillColor: x => x.flown ? [120, 170, 255, 255] : [77, 163, 255, 255],
+      radiusMinPixels: 2.2, radiusMaxPixels: 2.2, parameters: {{depthTest: false}}}}),
+    new deck.ScatterplotLayer({{id: 'sel_ends', data: [o, d].filter(Boolean).map(p => ({{position: p}})),
+      getPosition: x => x.position, getFillColor: [77, 163, 255, 255], getLineColor: [255, 255, 255, 255],
+      stroked: true, lineWidthMinPixels: 1.5, radiusMinPixels: 5, radiusMaxPixels: 5, parameters: {{depthTest: false}}}})
+  ];
+}}
+function fmtAlt(a) {{ if (a == null || a === '') return 'n/a'; a = +a; return a >= 18000 ? 'FL' + String(Math.round(a / 100)).padStart(3, '0') : Math.round(a).toLocaleString() + ' ft'; }}
+function airline(cs) {{ const m = {{JBU: 'JetBlue Airways', DAL: 'Delta Air Lines', UAL: 'United Airlines', AAL: 'American Airlines', SWA: 'Southwest Airlines', NKS: 'Spirit Airlines', FFT: 'Frontier Airlines', ASA: 'Alaska Airlines', RPA: 'Republic Airways', EDV: 'Endeavor Air', SKW: 'SkyWest', ENY: 'Envoy Air', JIA: 'PSA Airlines', PDT: 'Piedmont', FDX: 'FedEx', UPS: 'UPS', ACA: 'Air Canada', BAW: 'British Airways', VIR: 'Virgin Atlantic', AFR: 'Air France', DLH: 'Lufthansa', AVA: 'Avianca', CMP: 'Copa Airlines', AMX: 'Aeromexico', WJA: 'WestJet'}}; return m[(cs || '').slice(0, 3)] || ''; }}
+function showPanel(a) {{
+  const el = $('ac');
+  if (!a) {{ el.style.display = 'none'; return; }}
+  const cs = a.callsign || '', iata = cs.startsWith('JBU') ? 'B6' + cs.slice(3) : '';
+  const leg = (lab, ap, nm, cls) => ap ? `<div class="leg ${{cls}}"><div class="nm">${{lab}}</div><div class="ap">${{ap}}</div><div class="nm">${{nm || ''}}</div></div>` : '';
+  el.innerHTML = `<div class="hd"><b>${{cs}}</b>${{iata ? '<span>/ ' + iata + '</span>' : ''}}<span>${{airline(cs)}}</span><span class="x" onclick="select(null)">&times;</span></div>
+    <div class="row"><span class="k">Aircraft</span><span class="v">${{a.type || 'n/a'}}</span></div>
+    <div class="row"><span class="k">Altitude / speed</span><span class="v">${{fmtAlt(a.alt)}} &middot; ${{a.gs != null && a.gs !== '' ? Math.round(+a.gs) + ' kt' : 'n/a'}}</span></div>
+    ${{leg('ORIGIN', a.origin, a.origin_name, 'orig')}}${{leg('DESTINATION', a.dest, a.dest_name, 'dest')}}
+    ${{!a.origin && !a.dest ? '<div class="ft">Route not resolved yet - it appears on the next refresh once adsbdb answers.</div>' : '<div class="ft">Dotted track: great circle origin → aircraft → destination (adsbdb route)</div>'}}`;
+  el.style.display = 'block';
+}}
+function select(a) {{ sel = a; showPanel(a); dk.setProps({{layers: allLayers()}}); }}
 function allLayers() {{
   const b = baseLayers();
-  return b.slice(0, RADAR_AT).concat(radarLayers(), b.slice(RADAR_AT));
+  return b.slice(0, RADAR_AT).concat(radarLayers(), routeLayers(), b.slice(RADAR_AT));
 }}
 let saved = null;
 try {{ saved = JSON.parse(sessionStorage.getItem(KEY) || 'null'); }} catch (e) {{}}
@@ -127,7 +190,8 @@ const dk = new deck.DeckGL({{
   onViewStateChange: ({{viewState}}) => {{
     try {{ sessionStorage.setItem(KEY, JSON.stringify({{longitude: viewState.longitude, latitude: viewState.latitude, zoom: viewState.zoom}})); }} catch (e) {{}}
   }},
-  getTooltip: ({{object}}) => object && TIP.html ? {{html: fill(TIP.html, object), style: TIP.style || {{}}}} : null
+  getTooltip: ({{object}}) => object && TIP.html ? {{html: fill(TIP.html, object), style: TIP.style || {{}}}} : null,
+  onClick: info => {{ select(info && info.object && info.object.callsign ? info.object : null); }}
 }});
 function show(k) {{
   i = Math.max(0, Math.min(FRAMES.length - 1, k)); $('sl').value = i;

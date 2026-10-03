@@ -349,6 +349,22 @@ def traffic(lat: float, lon: float, radius_nm: float = 30.0) -> list:
     diag["kept"] = len(out)
     LAST_TRAFFIC.update(diag)
     _remember(out)
+    # Origin / destination for the click panel (3 Oct): whatever the
+    # fleet's adsbdb route cache already holds; airline callsigns
+    # not yet known are queued for the background resolver.
+    try:
+        from core import fleet as _F
+        for a in out:
+            r = _F.route_for(a["callsign"])
+            a["origin"] = r.get("o") or ""
+            a["dest"] = r.get("d") or ""
+            a["origin_name"] = r.get("on") or ""
+            a["dest_name"] = r.get("dn") or ""
+            a["oll"] = r.get("oll")        # [lat, lon] or None
+            a["dll"] = r.get("dll")
+        _F.request_routes([a["callsign"] for a in out if a.get("airline")])
+    except Exception:
+        pass
     return out
 
 
@@ -533,7 +549,12 @@ def aircraft_layers(ac: list, cards_on: bool = True) -> list:
                        # clockwise from north
                        "angle": (360.0 - float(a.get("hdg") or 0)) % 360.0,
                        "callsign": cs, "alt": a.get("alt"),
-                       "gs": a.get("gs"), "type": a.get("type")})
+                       "gs": a.get("gs"), "type": a.get("type"),
+                       "origin": a.get("origin", ""), "dest": a.get("dest", ""),
+                       "origin_name": a.get("origin_name", ""),
+                       "dest_name": a.get("dest_name", ""),
+                       "oll": a.get("oll"), "dll": a.get("dll"),
+                       "jbu": bool(a.get("jbu")), "colour": col})
         if cards_on:
             icon = _C.card(a)
             h = icon.pop("px_h")

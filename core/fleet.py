@@ -189,6 +189,23 @@ _route_lock = threading.Lock()
 _route_busy = {"on": False}
 
 
+def route_for(callsign: str) -> dict:
+    """{"o", "d", "on", "dn", "oll", "dll"} from the route cache, or {}.
+    Does not trigger a lookup; pair with request_routes()."""
+    return dict(_route_cache.get(callsign) or {})
+
+
+def request_routes(callsigns) -> None:
+    """Queue adsbdb lookups (background) for callsigns not cached."""
+    import time as _t
+    now = _t.time()
+    todo = [cs for cs in callsigns
+            if cs and (cs not in _route_cache
+                       or _route_cache[cs].get("exp", 0) < now)]
+    if todo:
+        _resolve_routes_bg(todo)
+
+
 def _resolve_routes_bg(callsigns):
     """Fetch missing routes in the background. Never blocks a
     render; never raises into one."""
@@ -205,7 +222,7 @@ def _resolve_routes_bg(callsigns):
                            headers=HDRS, timeout=5)
             except Exception:
                 return cs, None
-            d_icao = ""
+            d_icao = o_icao = d_name = o_name = ""
             oll = dll = None
             if r.status_code == 200:
                 try:
@@ -214,16 +231,21 @@ def _resolve_routes_bg(callsigns):
                         fr = fr.get("flightroute") or {}
                         de = fr.get("destination") or {}
                         d_icao = (de.get("icao_code") or "").upper()
+                        d_name = de.get("name") or ""
                         if de.get("latitude") is not None:
                             dll = [float(de["latitude"]),
                                    float(de["longitude"])]
                         og = fr.get("origin") or {}
+                        o_icao = (og.get("icao_code") or "").upper()
+                        o_name = og.get("name") or ""
                         if og.get("latitude") is not None:
                             oll = [float(og["latitude"]),
                                    float(og["longitude"])]
                 except Exception:
                     pass
-            return cs, {"d": d_icao, "oll": oll, "dll": dll,
+            # "o"/"on"/"dn" added 3 Oct for the scope's aircraft panel
+            return cs, {"d": d_icao, "o": o_icao, "dn": d_name, "on": o_name,
+                        "oll": oll, "dll": dll,
                         "exp": now_ts + (6 * 3600 if d_icao else 3600)}
         try:
             # 8 workers: adsbdb is a lookup API, not the rate-limited

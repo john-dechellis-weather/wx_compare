@@ -970,12 +970,22 @@ def _scope_pod():
                     get_pixel_offset=[0, -22],
                     get_text_anchor='"middle"',
                     get_alignment_baseline='"center"', pickable=False))
+            # Basemap (3 Oct): CARTO Dark Matter by default - dark grey
+            # land, roads and place names, the look of the tomorrow.io
+            # flight map. BLUEMET_SCOPE_STYLE=water restores the black
+            # water-only style; "off" draws the coastline layer only.
             style = None
+            _sty = os.environ.get("BLUEMET_SCOPE_STYLE",
+                                  os.environ.get("BLUEMET_SCOPE_COAST", "carto"))
             try:
                 host = st.context.headers.get("Host", "")
-                if host and os.environ.get("BLUEMET_SCOPE_COAST", "carto") == "carto":
+                if _sty == "water" and host:
                     proto = st.context.headers.get("X-Forwarded-Proto", "https")
                     style = f"{proto}://{host}/app/static/scope_style.json"
+                elif _sty.startswith("http"):
+                    style = _sty
+                elif _sty != "off":
+                    style = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
             except Exception:
                 style = None
             if style is None:
