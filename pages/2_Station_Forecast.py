@@ -734,6 +734,12 @@ def _search_fleet(q: str) -> list:
 # is on this run, not the next one.
 _ac_hits = _search_fleet(st.session_state.get("sf_ac_query", ""))
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_goes_frames(bucket: str) -> list:
+    from core import goes_tiles as _GT
+    return _GT.frames("geocolor", n=6)
+
+
 def _scope_pod():
     """The airport scope pod. A function so it can run as a fragment:
     with the radar loop on it re-runs every 2 s to advance the frame
@@ -776,6 +782,7 @@ def _scope_pod():
             # mosaic only. Each is one thing.
             _want_mrms = _mode == "MRMS Precipitation"
             _want_l3 = _mode == "NEXRAD Radar"
+            _want_sat = _mode == "Visible Satellite"
             layers, cfg = AS.mini_layers(
                 icao, surface, coords[0], coords[1],
                 mrms_chunks=(chunks if _want_mrms else None),
@@ -894,19 +901,23 @@ def _scope_pod():
         pod_title("Airport scope",
                   "20 nm"
                   + ((f" · MRMS {stamp_txt or 'no current scan'}"
-                      if _want_mrms else l3_txt if _want_l3 else " · radar off")
+                      if _want_mrms else l3_txt if _want_l3
+                      else (" · GOES-East GeoColor (NASA GIBS, ~1 h behind)"
+                            if _want_sat else " · radar off"))
                      if coords else "")
                   + (f" · {len(ac)} aircraft" if coords and ac else "")
                   + _rate_txt)
         _rc1, _rc2 = st.columns([2.3, 1])
         with _rc1:
             st.radio(
-                "Radar", ["NEXRAD Radar", "MRMS Precipitation", "Off"],
+                "Radar", ["NEXRAD Radar", "MRMS Precipitation", "Visible Satellite", "Off"],
                 horizontal=True, key="sf_radar_mode",
                 label_visibility="collapsed",
                 help="NEXRAD Radar: the airport's nearest radar (TDWR or "
                      "NEXRAD) at 250 m. MRMS Precipitation: the 1 km "
-                     "mosaic. Off: field and traffic on black.")
+                     "mosaic. Visible Satellite: GOES-East GeoColor from "
+                     "NASA GIBS, six 10-minute frames, about an hour "
+                     "behind real time. Off: field and traffic only.")
         with _rc2:
             with st.expander("Radar status", expanded=False):
                 st.caption("\n".join(_radar_diag))
@@ -1117,6 +1128,15 @@ def _scope_pod():
                             "bounds": f["bounds"],
                             "label": f"{f['stamp'][9:11]}:{f['stamp'][11:13]}Z"}
                            for f in l3_frames] if _want_l3 else []
+                if _want_sat:
+                    # GOES visible (5 Oct): tile frames the browser pulls
+                    # from NASA GIBS; same loop and slider as radar.
+                    try:
+                        from core import goes_tiles as _GT
+                        _frames = _cached_goes_frames(
+                            datetime.now(timezone.utc).strftime("%Y%m%d%H%M")[:-1])
+                    except Exception:
+                        _frames = []
                 # The deck as JSON (what st.pydeck_chart sends to its
                 # component), drawn by deck.gl in an iframe we control:
                 # all radar frames preloaded, play/slider in the browser.

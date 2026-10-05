@@ -118,8 +118,21 @@ const $ = id => document.getElementById(id);
 const converter = new deck.JSONConverter({{configuration: new deck.JSONConfiguration({{classes: Object.assign({{}}, deck)}})}});
 function baseLayers() {{ return converter.convert({{layers: DJ.layers}}).layers; }}
 function radarLayers() {{
-  return FRAMES.map((f, k) => new deck.BitmapLayer({{id: 'l3_' + k, image: f.url, bounds: f.bounds,
-    opacity: k === i ? 1 : 0, visible: true, parameters: {{depthTest: false}}}}));
+  // A frame is either one image ({{url, bounds}}: Level III) or a tile
+  // template ({{tiles, maxZoom}}: GOES visible from NASA GIBS, 5 Oct).
+  // Every frame stays mounted at opacity 0/1 so each has its tiles
+  // before the loop reaches it.
+  return FRAMES.map((f, k) => f.tiles
+    ? new deck.TileLayer({{id: 'sat_' + k, data: f.tiles, minZoom: 0, maxZoom: f.maxZoom || 7,
+        tileSize: 256, opacity: k === i ? (f.opacity != null ? f.opacity : 1) : 0, visible: true,
+        maxRequests: 12, refinementStrategy: 'no-overlap',
+        renderSubLayers: props => {{
+          const {{west, south, east, north}} = props.tile.bbox;
+          return new deck.BitmapLayer(props, {{data: null, image: props.data,
+            bounds: [west, south, east, north], parameters: {{depthTest: false}}}});
+        }}}})
+    : new deck.BitmapLayer({{id: 'l3_' + k, image: f.url, bounds: f.bounds,
+        opacity: k === i ? 1 : 0, visible: true, parameters: {{depthTest: false}}}}));
 }}
 // ---- selected aircraft: panel + dotted track (3 Oct) ----
 let sel = null;
@@ -231,7 +244,7 @@ function retone() {{
 setTimeout(retone, 300); setTimeout(retone, 2500);
 function show(k) {{
   i = Math.max(0, Math.min(FRAMES.length - 1, k)); $('sl').value = i;
-  $('t').textContent = FRAMES.length ? LABELS[i] : 'no radar';
+  $('t').textContent = FRAMES.length ? LABELS[i] : (DJ.noFramesText || 'no radar');
   $('n').textContent = FRAMES.length ? 'frame ' + (i + 1) + '/' + FRAMES.length + (i === FRAMES.length - 1 ? ' (latest)' : '') : '';
   dk.setProps({{layers: allLayers()}});
 }}
@@ -245,6 +258,6 @@ $('sp').onclick = () => {{ ms = SPEEDS[(SPEEDS.indexOf(ms) + 1) % SPEEDS.length]
 $('rv').onclick = () => {{ try {{ sessionStorage.removeItem(KEY); }} catch (e) {{}} dk.setProps({{initialViewState: Object.assign({{}}, vs0, {{transitionDuration: 300}})}}); }};
 document.addEventListener('keydown', e => {{ if (e.key === 'ArrowLeft') $('pv').onclick(); if (e.key === 'ArrowRight') $('nx').onclick(); if (e.key === ' ') {{ e.preventDefault(); play(!playing); }} }});
 // Preload every frame so the first loop is already smooth.
-FRAMES.forEach(f => {{ const im = new Image(); im.src = f.url; }});
+FRAMES.forEach(f => {{ if (f.url) {{ const im = new Image(); im.src = f.url; }} }});
 show(i); play(playing);
 </script></body></html>"""
