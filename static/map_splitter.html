@@ -1,0 +1,280 @@
+<!doctype html><html><head><meta charset="utf-8"><title>BlueMet Map Splitter</title>
+<style>
+ :root{--bg:#000;--panel:#0A0A0A;--edge:#2D3957;--line:#333;--ink:#fff;--ink2:#B8B8B8;--mute:#6E6E6E;--cyan:#00E5FF;--blue:#4DA3FF;--yel:#FFD400}
+ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:bold 12px "DejaVu Sans Mono","Courier New",monospace;overflow:hidden}
+ #bar{height:38px;display:flex;align-items:center;gap:6px;padding:0 10px;background:var(--panel);border-bottom:1px solid var(--line)}
+ #bar .ttl{color:#fff;font-size:13px;letter-spacing:1px;margin-right:8px}
+ #bar .sep{width:1px;height:22px;background:var(--line);margin:0 4px}
+ button{font:bold 12px "DejaVu Sans Mono",monospace;background:var(--panel);color:#fff;border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer}
+ button:hover{border-color:var(--cyan)} button.on{border-color:var(--cyan);background:#1C1C22;color:var(--cyan)}
+ button.warn{color:#FF8A00} select{font:bold 12px "DejaVu Sans Mono",monospace;background:var(--panel);color:#fff;border:1px solid var(--line);border-radius:6px;padding:4px 6px}
+ #hint{color:var(--ink2);font-weight:400;margin-left:auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ #root{position:absolute;top:38px;left:0;right:0;bottom:0;background:#000}
+ .node{position:absolute;overflow:hidden}
+ .leaf{position:absolute;overflow:hidden;background:var(--panel);border:1px solid var(--line);box-sizing:border-box}
+ .edit .leaf{border:1px dashed #3B4A63;cursor:crosshair}
+ .edit .leaf.remove{cursor:not-allowed}
+ .leaf .empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--mute)}
+ .leaf .empty .plus{width:84px;height:84px;border:2px dashed #3B4A63;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:56px;color:var(--blue);cursor:pointer;line-height:1}
+ .leaf .empty .plus:hover{border-color:var(--cyan);color:var(--cyan)}
+ .leaf .empty .lbl{font-size:14px;letter-spacing:1px;color:var(--ink2)}
+ .leaf .empty .lbl2{font-weight:400;font-size:11px}
+ .leaf .hd{position:absolute;top:0;left:0;right:0;height:24px;display:flex;align-items:center;gap:4px;padding:0 6px;background:#0A0A0A;border-bottom:1px solid var(--line);z-index:2}
+ .leaf .hd .nm{color:var(--yel);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
+ .leaf .hd button{padding:1px 6px;font-size:11px;border-radius:4px}
+ .leaf iframe{position:absolute;top:24px;left:0;width:100%;height:calc(100% - 24px);border:0;background:#000}
+ .leaf.full{position:fixed !important;inset:38px 0 0 0 !important;width:auto !important;height:auto !important;z-index:50}
+ .edit .leaf .hd,.edit .leaf iframe,.edit .leaf .empty{pointer-events:none}
+ .edit .leaf::after{content:attr(data-n);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:40px;color:rgba(0,229,255,.25);pointer-events:none}
+ .div{position:absolute;background:#1A2233;z-index:3}
+ .div:hover,.div.drag{background:var(--cyan)}
+ .div.v{width:6px;cursor:col-resize;margin-left:-3px} .div.h{height:6px;cursor:row-resize;margin-top:-3px}
+ .guide{position:absolute;background:var(--cyan);pointer-events:none;z-index:4;display:none;opacity:.8}
+ /* modals */
+ .modal{position:fixed;inset:0;background:rgba(0,0,0,.75);display:none;align-items:center;justify-content:center;z-index:100}
+ .modal.show{display:flex}
+ .box{background:#0A0A0A;border:1px solid var(--edge);border-radius:8px;padding:16px 18px;max-width:900px;width:92vw;max-height:88vh;overflow:auto;box-shadow:0 8px 40px rgba(0,0,0,.8)}
+ .box h2{margin:0 0 4px;font-size:15px;letter-spacing:1px;color:#fff} .box p{margin:0 0 12px;color:var(--ink2);font-weight:400}
+ .tpls{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+ .tpl{border:1px solid var(--line);border-radius:6px;padding:8px;cursor:pointer;text-align:center;color:var(--ink2)}
+ .tpl:hover{border-color:var(--cyan);color:#fff} .tpl svg{display:block;margin:0 auto 6px}
+ .tpl svg rect{fill:#111;stroke:#4DA3FF;stroke-width:2}
+ .grp{margin:10px 0 4px;color:var(--mute);letter-spacing:1px;font-size:11px}
+ .items{display:flex;flex-wrap:wrap;gap:8px}
+ .item{border:1px solid var(--line);border-radius:6px;padding:8px 12px;cursor:pointer;min-width:160px}
+ .item:hover{border-color:var(--cyan)} .item .d{color:var(--mute);font-weight:400;font-size:11px;margin-top:2px}
+ .row{display:flex;gap:8px;align-items:center;margin:10px 0}
+ input[type=text]{font:bold 12px "DejaVu Sans Mono",monospace;background:#000;color:#fff;border:1px solid var(--line);border-radius:6px;padding:5px 8px}
+ .foot{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
+</style></head><body>
+<div id="bar">
+  <span class="ttl">MAP SPLITTER</span>
+  <button id="bLayout" title="start again from a template or a blank screen">Layout</button>
+  <button id="bEdit" title="draw splits: pick a tool, then click inside a panel">Edit layout</button>
+  <span id="tools" style="display:none">
+    <span class="sep"></span>
+    <button id="tV" class="tool" data-t="v" title="click in a panel: split it left / right at that point">Split &#8596;</button>
+    <button id="tH" class="tool" data-t="h" title="click in a panel: split it top / bottom at that point">Split &#8597;</button>
+    <button id="tX" class="tool warn" data-t="x" title="click a panel to remove it">Remove</button>
+    <button id="tEq" title="make every split 50 / 50">Equalise</button>
+    <button id="bDone" class="on">Done</button>
+  </span>
+  <span class="sep"></span>
+  <button id="bSave" title="keep this layout and its panels in this browser">Save</button>
+  <select id="saved" title="saved layouts"><option value="">saved layouts</option></select>
+  <button id="bClear" class="warn" title="empty every panel">Clear panels</button>
+  <span id="hint"></span>
+</div>
+<div id="root"></div>
+<div class="guide" id="guide"></div>
+
+<div class="modal" id="mLayout"><div class="box">
+  <h2>CHOOSE A LAYOUT</h2><p>Pick a template, or draw your own: Edit layout &rarr; Split &#8596; / Split &#8597; &rarr; click where you want the line. Dividers drag.</p>
+  <div class="tpls" id="tpls"></div>
+  <div class="foot"><button onclick="closeModal('mLayout')">Keep current</button></div>
+</div></div>
+
+<div class="modal" id="mData"><div class="box">
+  <h2>ADD DATA</h2><p>Anything the site shows can go in this panel. Pages open with their own controls; stations are picked inside the panel.</p>
+  <div id="catalog"></div>
+  <div class="row"><span style="color:var(--ink2)">Any web page:</span><input type="text" id="urlIn" placeholder="https://..." style="flex:1"><button id="urlGo">Open</button></div>
+  <div class="foot"><button onclick="closeModal('mData')">Cancel</button></div>
+</div></div>
+
+<script>
+const Q = new URLSearchParams(location.search);
+const TOK = Q.get('k') || '';
+const BASE = (Q.get('base') || location.origin).replace(/\/$/, '');
+const $ = id => document.getElementById(id);
+
+// ---------------------------------------------------------------- catalog
+// url: a Streamlit page (embedded with ?embed=true and the login
+// token) or a static viewer under /app/static.
+const CATALOG = [
+  {g: 'Forecast Tools', items: [
+    {n: 'Station Forecast', p: '/', d: 'scope, radar / satellite, winds, flight conditions'},
+    {n: 'Hi-Res CAMs', p: '/HiRes_CAMs', d: 'HRRR / RRFS products, three maps'},
+    {n: 'REFS Ensemble', p: '/REFS_Ensemble', d: 'ensemble probabilities, three maps'},
+    {n: 'MOS Tables', p: '/MOS_Tables', d: 'NBM, LAMP, REFS, RRFS, HRRR for one station'},
+    {n: 'Convection Parameters', p: '/Convection_Parameters', d: 'tomorrow.io 48 h convective fields'},
+  ]},
+  {g: 'Situational Awareness', items: [
+    {n: 'JBU Weather Map CONUS', p: '/JBU_Weather_Map', d: 'network map, routes, fleet, SIGMETs'},
+    {n: 'Weather Mapping', p: '/Large_Scale_Map', d: 'tomorrow.io tiles + REFS / RRFS / HRRR / GFS layers'},
+    {n: 'Airport Scope only', p: 'scope', d: 'just the 20 nm scope map for a station', icao: true},
+  ]},
+  {g: 'Radar', items: [
+    {n: 'L2 Radar Lab', p: '/L2_Radar_Lab', d: 'Level II single-site'},
+    {n: 'Level III Radar', p: '/L3_Radar_N90', d: 'N90 Level III'},
+  ]},
+  {g: 'Archive', items: [
+    {n: 'Archive Satellite', p: '/Archive_Satellite_Position', d: 'GOES by time and position'},
+    {n: 'Archive Radar', p: '/Archive_Radar_Position', d: 'radar by time and position'},
+  ]},
+];
+function urlFor(it, icao) {
+  if (it.p === 'scope') return `${BASE}/app/static/scope_${(icao || 'KJFK').toUpperCase()}.html`;
+  if (it.p.startsWith('http')) return it.p;
+  // Streamlit page paths come from the file names (the default page is '/')
+  return `${BASE}${it.p === '/' ? '/' : it.p}?embed=true${TOK ? '&k=' + encodeURIComponent(TOK) : ''}`;
+}
+
+// ---------------------------------------------------------------- layout tree
+// leaf: {id, content:{n,url}|null}; split: {dir:'v'|'h', r:0..1, a, b}
+let tree = null, mode = null, editing = false, nextId = 1;
+const leaf = () => ({id: nextId++, content: null});
+const TEMPLATES = [
+  {n: 'Single', t: () => leaf()},
+  {n: '2 side by side', t: () => ({dir: 'v', r: .5, a: leaf(), b: leaf()})},
+  {n: '2 stacked', t: () => ({dir: 'h', r: .5, a: leaf(), b: leaf()})},
+  {n: 'Big left + 2', t: () => ({dir: 'v', r: .62, a: leaf(), b: {dir: 'h', r: .5, a: leaf(), b: leaf()}})},
+  {n: 'Big top + 2', t: () => ({dir: 'h', r: .6, a: leaf(), b: {dir: 'v', r: .5, a: leaf(), b: leaf()}})},
+  {n: '3 columns', t: () => ({dir: 'v', r: 1 / 3, a: leaf(), b: {dir: 'v', r: .5, a: leaf(), b: leaf()}})},
+  {n: '4 grid', t: () => ({dir: 'h', r: .5, a: {dir: 'v', r: .5, a: leaf(), b: leaf()}, b: {dir: 'v', r: .5, a: leaf(), b: leaf()}})},
+  {n: '6 grid', t: () => ({dir: 'h', r: .5, a: {dir: 'v', r: 1 / 3, a: leaf(), b: {dir: 'v', r: .5, a: leaf(), b: leaf()}}, b: {dir: 'v', r: 1 / 3, a: leaf(), b: {dir: 'v', r: .5, a: leaf(), b: leaf()}}})},
+  {n: '1 + 3 below', t: () => ({dir: 'h', r: .55, a: leaf(), b: {dir: 'v', r: 1 / 3, a: leaf(), b: {dir: 'v', r: .5, a: leaf(), b: leaf()}}})},
+  {n: 'Draw my own', t: () => leaf(), draw: true},
+];
+function tplSvg(node, x, y, w, h, out) {
+  if (!node.dir) { out.push(`<rect x="${x + 1}" y="${y + 1}" width="${Math.max(2, w - 2)}" height="${Math.max(2, h - 2)}"/>`); return; }
+  if (node.dir === 'v') { tplSvg(node.a, x, y, w * node.r, h, out); tplSvg(node.b, x + w * node.r, y, w * (1 - node.r), h, out); }
+  else { tplSvg(node.a, x, y, w, h * node.r, out); tplSvg(node.b, x, y + h * node.r, w, h * (1 - node.r), out); }
+}
+function renderTemplates() {
+  $('tpls').innerHTML = TEMPLATES.map((t, i) => {
+    const out = []; tplSvg(t.t(), 0, 0, 120, 72, out);
+    return `<div class="tpl" onclick="useTemplate(${i})"><svg width="120" height="72">${out.join('')}</svg>${t.n}</div>`;
+  }).join('');
+}
+function useTemplate(i) {
+  const t = TEMPLATES[i]; nextId = 1; tree = t.t(); closeModal('mLayout');
+  setEdit(!!t.draw); if (t.draw) setTool('v');
+  render(); persist();
+  if (t.draw) hint('Draw: click inside the panel where the split should go. Split ↔ for a vertical line, Split ↕ for horizontal. Done when finished.');
+}
+
+// ---------------------------------------------------------------- render
+function leaves(n, out = []) { if (!n) return out; if (n.dir) { leaves(n.a, out); leaves(n.b, out); } else out.push(n); return out; }
+function render() {
+  const root = $('root'); root.innerHTML = ''; root.className = editing ? 'edit' : '';
+  if (!tree) return;
+  const R = root.getBoundingClientRect();
+  let k = 0;
+  const place = (node, x, y, w, h, parent) => {
+    if (!node.dir) {
+      k += 1;
+      const el = document.createElement('div'); el.className = 'leaf'; el.dataset.n = k; el.dataset.id = node.id;
+      Object.assign(el.style, {left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px'});
+      el.innerHTML = node.content ? leafContent(node) : emptyContent(node);
+      el.addEventListener('click', ev => onLeafClick(ev, node, el));
+      root.appendChild(el); return;
+    }
+    const gap = 6;
+    if (node.dir === 'v') {
+      const wa = Math.round(w * node.r);
+      place(node.a, x, y, wa - gap / 2, h); place(node.b, x + wa + gap / 2, y, w - wa - gap / 2, h);
+      const d = document.createElement('div'); d.className = 'div v'; Object.assign(d.style, {left: (x + wa) + 'px', top: y + 'px', height: h + 'px'});
+      d.addEventListener('mousedown', ev => dragDiv(ev, node, x, w, 'v')); root.appendChild(d);
+    } else {
+      const ha = Math.round(h * node.r);
+      place(node.a, x, y, w, ha - gap / 2); place(node.b, x, y + ha + gap / 2, w, h - ha - gap / 2);
+      const d = document.createElement('div'); d.className = 'div h'; Object.assign(d.style, {left: x + 'px', top: (y + ha) + 'px', width: w + 'px'});
+      d.addEventListener('mousedown', ev => dragDiv(ev, node, y, h, 'h')); root.appendChild(d);
+    }
+  };
+  place(tree, 0, 0, R.width, R.height);
+}
+function emptyContent(node) {
+  return `<div class="empty"><div class="plus" title="Add data">+</div><div class="lbl">ADD DATA</div><div class="lbl2">any map, plot, radar or satellite the site has</div></div>`;
+}
+function leafContent(node) {
+  const c = node.content;
+  return `<div class="hd"><span class="nm" title="${c.url}">${c.n}</span>
+    <button data-a="reload" title="reload">&#8635;</button><button data-a="full" title="full screen (Esc to leave)">&#10530;</button>
+    <button data-a="change" title="change data">&#9998;</button><button data-a="clear" title="empty the panel">&times;</button></div>
+    <iframe src="${c.url}" allow="fullscreen" loading="lazy"></iframe>`;
+}
+function onLeafClick(ev, node, el) {
+  if (editing) {
+    if (!mode) return;
+    const r = el.getBoundingClientRect();
+    if (mode === 'x') { removeLeaf(node); render(); persist(); return; }
+    const f = mode === 'v' ? (ev.clientX - r.left) / r.width : (ev.clientY - r.top) / r.height;
+    splitLeaf(node, mode, Math.min(.9, Math.max(.1, f))); render(); persist(); return;
+  }
+  const b = ev.target.closest('button'); const a = b && b.dataset.a;
+  if (ev.target.closest('.plus') || ev.target.closest('.lbl') || a === 'change') { openData(node); return; }
+  if (a === 'clear') { node.content = null; render(); persist(); return; }
+  if (a === 'reload') { const f = el.querySelector('iframe'); if (f) f.src = f.src; return; }
+  if (a === 'full') { el.classList.toggle('full'); return; }
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { document.querySelectorAll('.leaf.full').forEach(x => x.classList.remove('full')); closeModal('mData'); } });
+function splitLeaf(node, dir, f) { const a = {id: node.id, content: node.content}; const b = leaf(); node.dir = dir; node.r = f; node.a = a; node.b = b; delete node.id; delete node.content; }
+function removeLeaf(node) {
+  const find = (n, p) => { if (n === node) return p; if (!n.dir) return null; return find(n.a, n) || find(n.b, n); };
+  const p = find(tree, null);
+  if (!p) { tree = leaf(); return; }
+  const keep = p.a === node ? p.b : p.a;
+  Object.keys(p).forEach(k => delete p[k]); Object.assign(p, keep);
+}
+function dragDiv(ev, node, start, size, dir) {
+  ev.preventDefault(); const d = ev.target; d.classList.add('drag');
+  const move = e => { const v = dir === 'v' ? e.clientX : e.clientY - 38; node.r = Math.min(.92, Math.max(.08, (v - start) / size)); render(); };
+  const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); render(); persist(); };
+  document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
+}
+function equalise(n) { if (!n || !n.dir) return; n.r = .5; equalise(n.a); equalise(n.b); }
+
+// ---------------------------------------------------------------- data picker
+let target = null;
+function openData(node) {
+  target = node;
+  $('catalog').innerHTML = CATALOG.map(g => `<div class="grp">${g.g.toUpperCase()}</div><div class="items">` +
+    g.items.map((it, j) => `<div class="item" data-g="${g.g}" data-j="${j}"><div>${it.n}</div><div class="d">${it.d}</div>${it.icao ? '<div class="row" style="margin:6px 0 0"><input type="text" maxlength="4" placeholder="ICAO" value="KJFK" style="width:70px" onclick="event.stopPropagation()"></div>' : ''}</div>`).join('') + '</div>').join('');
+  $('catalog').querySelectorAll('.item').forEach(el => el.addEventListener('click', () => {
+    const g = CATALOG.find(x => x.g === el.dataset.g), it = g.items[+el.dataset.j];
+    const inp = el.querySelector('input'); const icao = inp ? inp.value.trim().toUpperCase() : '';
+    setContent({n: it.n + (icao ? ' ' + icao : ''), url: urlFor(it, icao)});
+  }));
+  $('mData').classList.add('show');
+}
+function setContent(c) { if (!target) return; target.content = c; closeModal('mData'); render(); persist(); }
+$('urlGo').onclick = () => { const u = $('urlIn').value.trim(); if (u) setContent({n: u.replace(/^https?:\/\//, '').slice(0, 40), url: u}); };
+function closeModal(id) { $(id).classList.remove('show'); }
+
+// ---------------------------------------------------------------- toolbar
+function hint(t) { $('hint').textContent = t || ''; }
+function setEdit(on) {
+  editing = on; $('tools').style.display = on ? 'contents' : 'none'; $('bEdit').classList.toggle('on', on);
+  if (!on) { mode = null; document.querySelectorAll('.tool').forEach(b => b.classList.remove('on')); hint(''); }
+  else hint('Pick Split ↔, Split ↕ or Remove, then click inside a panel. Drag the lines between panels to resize.');
+  render();
+}
+function setTool(t) { mode = t; document.querySelectorAll('.tool').forEach(b => b.classList.toggle('on', b.dataset.t === t)); }
+$('bEdit').onclick = () => setEdit(!editing);
+$('bDone').onclick = () => setEdit(false);
+document.querySelectorAll('.tool').forEach(b => b.onclick = () => setTool(b.dataset.t));
+$('tEq').onclick = () => { equalise(tree); render(); persist(); };
+$('bLayout').onclick = () => { renderTemplates(); $('mLayout').classList.add('show'); };
+$('bClear').onclick = () => { leaves(tree).forEach(l => l.content = null); render(); persist(); };
+
+// ---------------------------------------------------------------- persistence (this browser)
+const KEY = 'bm_splitter_current', KEYS = 'bm_splitter_saved';
+function persist() { try { localStorage.setItem(KEY, JSON.stringify({tree, nextId})); } catch (e) {} }
+function restore() { try { const d = JSON.parse(localStorage.getItem(KEY) || 'null'); if (d && d.tree) { tree = d.tree; nextId = d.nextId || 99; return true; } } catch (e) {} return false; }
+function savedList() { try { return JSON.parse(localStorage.getItem(KEYS) || '{}'); } catch (e) { return {}; } }
+function fillSaved() { const s = savedList(); $('saved').innerHTML = '<option value="">saved layouts</option>' + Object.keys(s).sort().map(k => `<option>${k}</option>`).join('') + (Object.keys(s).length ? '<option value="__del">delete one...</option>' : ''); }
+$('bSave').onclick = () => { const nm = prompt('Name this layout'); if (!nm) return; const s = savedList(); s[nm] = {tree, nextId}; localStorage.setItem(KEYS, JSON.stringify(s)); fillSaved(); hint('Saved "' + nm + '" in this browser.'); };
+$('saved').onchange = e => {
+  const v = e.target.value; if (!v) return;
+  const s = savedList();
+  if (v === '__del') { const nm = prompt('Delete which layout?\n' + Object.keys(s).join(', ')); if (nm && s[nm]) { delete s[nm]; localStorage.setItem(KEYS, JSON.stringify(s)); } fillSaved(); e.target.value = ''; return; }
+  if (s[v]) { tree = s[v].tree; nextId = s[v].nextId || 99; setEdit(false); render(); persist(); }
+  e.target.value = '';
+};
+window.addEventListener('resize', render);
+
+// ---------------------------------------------------------------- start
+fillSaved();
+if (restore()) { render(); } else { tree = leaf(); render(); renderTemplates(); $('mLayout').classList.add('show'); }
+</script></body></html>

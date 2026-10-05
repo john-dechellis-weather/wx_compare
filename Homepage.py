@@ -332,6 +332,9 @@ PAGES = {
                 title="JBU Weather Map CONUS"),
         st.Page("pages/15_Large_Scale_Map.py",
                 title="Weather Mapping"),
+        # 5 Oct: split the screen into panels, each showing any page
+        st.Page("pages/17_Map_Splitter.py",
+                title="Map Splitter"),
         # Station Quick View removed from navigation 21 Sep; the file
         # stays in pages/ unlisted. Its airport scope lives on in
         # Station Forecast, so the surface warmer above still runs.
@@ -484,6 +487,12 @@ def _top_nav(current) -> None:
                 _warmer_status()
 
 
-_top_nav(nav)
+# Map Splitter panels (5 Oct) embed pages with ?embed=true: no top bar
+# there, the panel's title bar is the navigation.
+if st.query_params.get("embed") != "true":
+    _top_nav(nav)
+else:
+    st.markdown("<style>.stApp .block-container{padding-top:0.6rem !important}"
+                ".bm-clock{display:none !important}</style>", unsafe_allow_html=True)
 
 nav.run()

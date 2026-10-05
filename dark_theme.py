@@ -591,7 +591,7 @@ def clock_html(now=None, fixed: bool = True) -> str:
     # Below Streamlit's own header bar (the Deploy menu), top right.
     pos = ("position:fixed;top:52px;right:22px;z-index:999998;"
            if fixed else "text-align:right;")
-    return (f'<div style="{pos}color:{TEXT};-webkit-text-fill-color:{TEXT};'
+    return (f'<div class="bm-clock" style="{pos}color:{TEXT};-webkit-text-fill-color:{TEXT};'
             f'font-family:var(--bm-mono);font-size:17pt;font-weight:700;'
             f'white-space:nowrap">{txt}</div>')
 
