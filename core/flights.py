@@ -23,6 +23,8 @@ class AircraftPos:
     alt_ft: Optional[float]      # barometric, feet (None on ground/unknown)
     heading_deg: Optional[float]
     hex: Optional[str] = None    # ICAO24 transponder hex (for track lookups)
+    gs_kt: Optional[float] = None   # ground speed (adsb.lol "gs"; OpenSky velocity m/s)
+    ac_type: str = ""               # ICAO type code (adsb.lol "t"), "" when unknown
 
 
 def fetch_positions_near(
@@ -70,6 +72,8 @@ def _try_adsb_lol(lat, lon, radius_nm, prefix) -> Optional[list[AircraftPos]]:
                 alt_ft=alt_ft,
                 heading_deg=float(trk) if trk is not None else None,
                 hex=(p.get("hex") or "").strip().lower() or None,
+                gs_kt=float(p["gs"]) if isinstance(p.get("gs"), (int, float)) else None,
+                ac_type=(p.get("t") or "").strip().upper(),
             ))
         return out
     except Exception:
@@ -110,6 +114,7 @@ def _try_opensky(lat, lon, radius_deg, prefix) -> Optional[list[AircraftPos]]:
                 lon=float(plon),
                 alt_ft=float(alt_m) * 3.28084 if alt_m is not None else None,
                 heading_deg=float(s[10]) if s[10] is not None else None,
+                gs_kt=float(s[9]) * 1.943844 if s[9] is not None else None,
             ))
         return out
     except Exception:
@@ -232,6 +237,7 @@ def fetch_positions_at(
                 lon=float(plon),
                 alt_ft=float(alt_m) * 3.28084 if alt_m is not None else None,
                 heading_deg=float(s[10]) if s[10] is not None else None,
+                gs_kt=float(s[9]) * 1.943844 if s[9] is not None else None,
             ))
         return out
     except Exception as e:

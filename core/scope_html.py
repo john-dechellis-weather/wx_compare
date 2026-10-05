@@ -185,7 +185,10 @@ function fill(tpl, o) {{ return tpl.replace(/\\{{(\\w+)\\}}/g, (m, k) => (o && o
 const dk = new deck.DeckGL({{
   container: 'm', map: STYLE ? maplibregl : null, mapStyle: STYLE || undefined,
   initialViewState: vs, controller: {json.dumps(ctrl)},
-  parameters: DJ.parameters || {{}},
+  // pydeck's clearColor [0,0,0,1] paints deck's canvas opaque black ON
+  // TOP of the MapLibre canvas - the basemap was there all along, just
+  // hidden (found 5 Oct). Transparent clear lets the map show through.
+  parameters: Object.assign({{}}, DJ.parameters || {{}}, {{clearColor: [0, 0, 0, 0]}}),
   layers: allLayers(),
   onViewStateChange: ({{viewState}}) => {{
     try {{ sessionStorage.setItem(KEY, JSON.stringify({{longitude: viewState.longitude, latitude: viewState.latitude, zoom: viewState.zoom}})); }} catch (e) {{}}
@@ -193,6 +196,39 @@ const dk = new deck.DeckGL({{
   getTooltip: ({{object}}) => object && TIP.html ? {{html: fill(TIP.html, object), style: TIP.style || {{}}}} : null,
   onClick: info => {{ select(info && info.object && info.object.callsign ? info.object : null); }}
 }});
+// Basemap tone (5 Oct): CARTO Dark Matter is near-black (#0e0e0e land);
+// the tomorrow.io flight map is a lighter charcoal with grey roads and
+// readable place names. Re-tone the loaded style the same way.
+function retone() {{
+  let m = null;
+  try {{ m = dk.getMapboxMap && dk.getMapboxMap(); }} catch (e) {{}}
+  if (!m || !m.getStyle) return;
+  const apply = () => {{
+    const st = m.getStyle(); if (!st || !st.layers) return;
+    for (const l of st.layers) {{
+      try {{
+        if (l.type === 'background') m.setPaintProperty(l.id, 'background-color', '#2A2C30');
+        else if (l.type === 'fill' && /water/.test(l.id)) m.setPaintProperty(l.id, 'fill-color', '#15181D');
+        else if (l.type === 'fill' && /land|park|wood|green|grass|cemetery|pitch|stadium/.test(l.id)) m.setPaintProperty(l.id, 'fill-color', '#2E3035');
+        else if (l.type === 'fill' && /building/.test(l.id)) m.setPaintProperty(l.id, 'fill-color', '#34363B');
+        else if (l.type === 'fill') m.setPaintProperty(l.id, 'fill-color', '#2C2E33');
+        else if (l.type === 'line' && /road|street|highway|motorway|trunk|primary|secondary|tertiary|minor|path|rail/.test(l.id)) {{
+          m.setPaintProperty(l.id, 'line-color', /motorway|trunk|highway/.test(l.id) ? '#6E7178' : '#4A4D53');
+        }}
+        else if (l.type === 'line' && /boundary|admin/.test(l.id)) m.setPaintProperty(l.id, 'line-color', '#7A7D85');
+        else if (l.type === 'line' && /water|river/.test(l.id)) m.setPaintProperty(l.id, 'line-color', '#1E232B');
+        else if (l.type === 'symbol') {{
+          m.setPaintProperty(l.id, 'text-color', '#D8DADF');
+          m.setPaintProperty(l.id, 'text-halo-color', '#1A1C20');
+          m.setPaintProperty(l.id, 'text-halo-width', 1.2);
+        }}
+      }} catch (e) {{}}
+    }}
+  }};
+  if (m.isStyleLoaded && m.isStyleLoaded()) apply(); else m.once('style.load', apply);
+  m.once('load', apply);
+}}
+setTimeout(retone, 300); setTimeout(retone, 2500);
 function show(k) {{
   i = Math.max(0, Math.min(FRAMES.length - 1, k)); $('sl').value = i;
   $('t').textContent = FRAMES.length ? LABELS[i] : 'no radar';
