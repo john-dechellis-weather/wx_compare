@@ -165,3 +165,23 @@ By hand:
   unplugs the Mac. A UPS covers the first for short outages.
 - Bandwidth: the site pushes PNG/WebP maps; a home upload of 20 Mbps
   or better is comfortable for a handful of desks.
+
+
+## 10. Going Mac-only (5 Oct 2026)
+
+Render is not part of deploying: pushing to `main` is the deploy (step
+9). Render only answered bluemet.org. To retire it:
+
+1. `mac/.env`: uncomment `TOMORROWIO_API_KEY=` (done 5 Oct). The next
+   auto-pull restart picks it up; `grep tomorrow static/tio_warmer.log`
+   should stop saying "no TOMORROWIO_API_KEY".
+2. Cloudflare Zero Trust -> Tunnels -> the BlueMet tunnel -> Public
+   Hostnames -> add `bluemet.org` and `www.bluemet.org`, service
+   `http://127.0.0.1:8501` (same as mac.bluemet.org). Let Cloudflare
+   replace the DNS records that pointed at Render.
+3. Test https://bluemet.org (login, Weather Mapping tiles, Convection
+   Parameters), then delete the Render service. The `/opt/render`
+   paths in the code are unused fallbacks on the Mac.
+
+The Mac is then the only instance and the only holder of the
+tomorrow.io key. Energy Saver: never sleep, start after power failure.
