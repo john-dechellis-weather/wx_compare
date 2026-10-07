@@ -52,7 +52,14 @@ st.markdown(
 
 _base = _origin()
 _tok = st.query_params.get("k", "")
-_src = f"{_base}/app/static/map_splitter.html?base={_base}" + (f"&k={_tok}" if _tok else "")
+# Cache-buster: the iframe URL carries a hash of the file, so a new
+# version is always fetched (6 Oct: a stale copy kept the old catalogue).
+import hashlib
+from pathlib import Path
+_v = hashlib.md5((Path(__file__).resolve().parent.parent / "static" / "map_splitter.html")
+                 .read_bytes()).hexdigest()[:10]
+_src = (f"{_base}/app/static/map_splitter.html?v={_v}&base={_base}"
+        + (f"&k={_tok}" if _tok else ""))
 with st.container(key="bm-splitter"):
     components.iframe(_src, height=HEIGHT)
 st.caption("Layouts and panels are kept in this browser (Save keeps named ones). "
