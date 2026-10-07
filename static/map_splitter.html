@@ -75,9 +75,9 @@
 </div></div>
 
 <div class="modal" id="mData"><div class="box">
-  <h2>ADD DATA</h2><p>Anything the site shows can go in this panel. Pages open with their own controls; stations are picked inside the panel.</p>
+  <h2>ADD DATA</h2><p>The list of data that can go in a panel is being defined.</p>
   <div id="catalog"></div>
-  <div class="row"><span style="color:var(--ink2)">Any web page:</span><input type="text" id="urlIn" placeholder="https://..." style="flex:1"><button id="urlGo">Open</button></div>
+  <div class="row" style="display:none"><span style="color:var(--ink2)">Any web page:</span><input type="text" id="urlIn" placeholder="https://..." style="flex:1"><button id="urlGo">Open</button></div>
   <div class="foot"><button onclick="closeModal('mData')">Cancel</button></div>
 </div></div>
 
@@ -90,28 +90,9 @@ const $ = id => document.getElementById(id);
 // ---------------------------------------------------------------- catalog
 // url: a Streamlit page (embedded with ?embed=true and the login
 // token) or a static viewer under /app/static.
-const CATALOG = [
-  {g: 'Forecast Tools', items: [
-    {n: 'Station Forecast', p: '/', d: 'scope, radar / satellite, winds, flight conditions'},
-    {n: 'Hi-Res CAMs', p: '/HiRes_CAMs', d: 'HRRR / RRFS products, three maps'},
-    {n: 'REFS Ensemble', p: '/REFS_Ensemble', d: 'ensemble probabilities, three maps'},
-    {n: 'MOS Tables', p: '/MOS_Tables', d: 'NBM, LAMP, REFS, RRFS, HRRR for one station'},
-    {n: 'Convection Parameters', p: '/Convection_Parameters', d: 'tomorrow.io 48 h convective fields'},
-  ]},
-  {g: 'Situational Awareness', items: [
-    {n: 'JBU Weather Map CONUS', p: '/JBU_Weather_Map', d: 'network map, routes, fleet, SIGMETs'},
-    {n: 'Weather Mapping', p: '/Large_Scale_Map', d: 'tomorrow.io tiles + REFS / RRFS / HRRR / GFS layers'},
-    {n: 'Airport Scope only', p: 'scope', d: 'just the 20 nm scope map for a station', icao: true},
-  ]},
-  {g: 'Radar', items: [
-    {n: 'L2 Radar Lab', p: '/L2_Radar_Lab', d: 'Level II single-site'},
-    {n: 'Level III Radar', p: '/L3_Radar_N90', d: 'N90 Level III'},
-  ]},
-  {g: 'Archive', items: [
-    {n: 'Archive Satellite', p: '/Archive_Satellite_Position', d: 'GOES by time and position'},
-    {n: 'Archive Radar', p: '/Archive_Radar_Position', d: 'radar by time and position'},
-  ]},
-];
+// Catalogue (6 Oct): emptied on purpose - the owner will specify what
+// can be chosen, and how. Add entries as {g: 'Group', items: [{n, p, d}]}.
+const CATALOG = [];
 function urlFor(it, icao) {
   if (it.p === 'scope') return `${BASE}/app/static/scope_${(icao || 'KJFK').toUpperCase()}.html`;
   if (it.p.startsWith('http')) return it.p;
@@ -236,6 +217,7 @@ function openData(node) {
     const inp = el.querySelector('input'); const icao = inp ? inp.value.trim().toUpperCase() : '';
     setContent({n: it.n + (icao ? ' ' + icao : ''), url: urlFor(it, icao)});
   }));
+  if (!CATALOG.length) $('catalog').innerHTML = '<div style="color:var(--mute);padding:18px 4px;font-weight:400">Nothing to choose from yet - the data catalogue is being defined.</div>';
   $('mData').classList.add('show');
 }
 function setContent(c) { if (!target) return; target.content = c; closeModal('mData'); render(); persist(); }
@@ -259,7 +241,7 @@ $('bLayout').onclick = () => { renderTemplates(); $('mLayout').classList.add('sh
 $('bClear').onclick = () => { leaves(tree).forEach(l => l.content = null); render(); persist(); };
 
 // ---------------------------------------------------------------- persistence (this browser)
-const KEY = 'bm_splitter_current', KEYS = 'bm_splitter_saved';
+const KEY = 'bm_splitter_current_v2', KEYS = 'bm_splitter_saved_v2';   // v2 (6 Oct): old saved panels dropped
 function persist() { try { localStorage.setItem(KEY, JSON.stringify({tree, nextId})); } catch (e) {} }
 function restore() { try { const d = JSON.parse(localStorage.getItem(KEY) || 'null'); if (d && d.tree) { tree = d.tree; nextId = d.nextId || 99; return true; } } catch (e) {} return false; }
 function savedList() { try { return JSON.parse(localStorage.getItem(KEYS) || '{}'); } catch (e) { return {}; } }
