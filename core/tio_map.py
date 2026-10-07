@@ -1612,12 +1612,15 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
         f'{" checked" if i == 0 else ""}> {labels[f]}</label>'
         f'<input type="range" data-f="{f}" min="10" max="100" value="{85 if i == 0 else 70}"></div>'
         for i, f in enumerate(FIELDS))
-    # METEOGRAM menu: the point fields, up to four at once, none by
-    # default - the panel is empty until an element is picked.
+    # METEOGRAM menu: the point fields, up to four at once. Ceiling,
+    # visibility and wind speed / gust start ticked (7 Oct: an empty
+    # panel read as "no data"); untick to swap in others.
     pf = point_fields()
     plabels = {f: FIELD_LABEL.get(f, f) for f in pf}
+    mg_default = [f for f in ("cloudCeiling", "visibility", "windSpeed", "windGust") if f in pf][:4]
     mrows = "".join(
-        f'<div class="ly"><label><input type="checkbox" class="mgf" data-f="{f}"> {plabels[f]}</label></div>'
+        f'<div class="ly"><label><input type="checkbox" class="mgf" data-f="{f}"'
+        f'{" checked" if f in mg_default else ""}> {plabels[f]}</label></div>'
         for f in pf)
     steps_all = [0] + FCST_HOURS
     # NOAA MODEL layers (core/model_tiles): one checkbox + opacity per
@@ -1966,6 +1969,10 @@ function draw() {{
 // slider's hour as a cursor. Click a dot or pick from the list.
 let PT = null, NOAA = null, two = false, sel = '';
 const mgOn = {{}};
+// Elements ticked in the HTML start on (7 Oct).
+document.querySelectorAll('.mgf').forEach(c => {{ if (c.checked) mgOn[c.dataset.f] = true; }});
+{{ const m0 = PFIELDS.filter(f => mgOn[f]).length;
+  if (m0) $('ddms').innerHTML = 'Elements <span style="color:#00E5FF">' + m0 + '</span> &#9662;'; }}
 document.querySelectorAll('.mgf').forEach(c => c.onchange = () => {{
   const n = PFIELDS.filter(f => mgOn[f]).length;
   if (c.checked && n >= 4) {{ c.checked = false; return; }}
