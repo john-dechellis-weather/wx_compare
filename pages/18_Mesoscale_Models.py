@@ -91,17 +91,18 @@ st.markdown(
     # Every layer of the BaseWeb select gets the blue field, and every
     # piece of text in it white (the inner value div was painting white
     # on white, 7 Oct).
-    "[data-testid='stDialog'] [data-baseweb='select'],"
-    "[data-testid='stDialog'] [data-baseweb='select'] > div,"
-    "[data-testid='stDialog'] [data-baseweb='select'] > div > div,"
-    "[data-testid='stDialog'] [data-baseweb='select'] div[value],"
-    "[data-testid='stDialog'] [data-baseweb='select'] input{"
+    # 7 Oct: the dialog-scoped selector never matched the control (only
+    # the portaled popover took the blue), so the rule is page-wide:
+    # every box inside a selectbox is blue with white text.
+    "[data-testid='stSelectbox'] [data-baseweb='select'],"
+    "[data-testid='stSelectbox'] [data-baseweb='select'] div,"
+    "[data-testid='stSelectbox'] [data-baseweb='select'] input,"
+    "[data-baseweb='select'], [data-baseweb='select'] div, [data-baseweb='select'] input{"
     "background:#1B2A4A !important;background-color:#1B2A4A !important;"
     "color:#FFFFFF !important;-webkit-text-fill-color:#FFFFFF !important;"
     "border-color:#2D3957 !important}"
-    "[data-testid='stDialog'] [data-baseweb='select'] *{"
-    "color:#FFFFFF !important;-webkit-text-fill-color:#FFFFFF !important}"
-    "[data-testid='stDialog'] [data-baseweb='select'] svg{fill:#FFFFFF !important;color:#FFFFFF !important}"
+    "[data-baseweb='select'] *{color:#FFFFFF !important;-webkit-text-fill-color:#FFFFFF !important}"
+    "[data-baseweb='select'] svg{fill:#FFFFFF !important;color:#FFFFFF !important}"
     "div[data-baseweb='popover'] ul, div[data-baseweb='popover'] li{"
     "background:#1B2A4A !important;color:#FFFFFF !important}"
     "div[data-baseweb='popover'] li:hover, div[data-baseweb='popover'] li[aria-selected='true']{"
