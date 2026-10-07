@@ -58,10 +58,31 @@ HUB_LABELS = {
 }
 WARM_ZOOM = 2.5
 
+# SECTORS (6 Oct): nine views that tile CONUS for the Mesoscale
+# Models page, (lat, lon, half_width_deg). Only HUBS above are warmed;
+# the others render on demand and are kept for three hours.
+SECTORS = {
+    "NE": (40.60, -74.00, 6.5),     # Northeast / Mid-Atlantic (warmed)
+    "SE": (30.50, -83.50, 6.5),     # Southeast incl. Florida
+    "SP": (31.50, -98.00, 6.5),     # Southern Plains
+    "MW": (39.50, -95.00, 6.5),     # Midwest / Central Plains
+    "GL": (43.00, -85.00, 6.5),     # Great Lakes
+    "NP": (45.50, -100.00, 6.5),    # Northern Plains
+    "NW": (45.50, -119.50, 6.5),    # Northwest
+    "GB": (40.00, -113.00, 6.5),    # Great Basin
+    "SW": (34.50, -112.50, 6.5),    # Southwest
+}
+SECTOR_LABELS = {
+    "NE": "Northeast / Mid-Atlantic", "SE": "Southeast",
+    "SP": "Southern Plains", "MW": "Midwest / Central Plains",
+    "GL": "Great Lakes", "NP": "Northern Plains", "NW": "Northwest",
+    "GB": "Great Basin", "SW": "Southwest",
+}
+
 
 def hub_geom(icao: str):
-    """(lat, lon, half_width_deg) for a region."""
-    v = HUBS[icao]
+    """(lat, lon, half_width_deg) for a warmed region or a sector."""
+    v = HUBS.get(icao) or SECTORS[icao]
     return (v[0], v[1], v[2] if len(v) > 2 else WARM_ZOOM * RENDER_FACTOR)
 
 

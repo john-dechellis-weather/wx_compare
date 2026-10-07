@@ -310,10 +310,10 @@ def _warmer_status():
 
 PAGES = {
     "Forecast Tools": [
-        st.Page("pages/9_HiRes_CAMs.py",
-                title="Hi-Res CAMs"),
-        st.Page("pages/11_REFS_Ensemble.py",
-                title="REFS Ensemble"),
+        # 6 Oct: Hi-Res CAMs and REFS Ensemble merged into one page
+        # (the old files stay in pages/, unlisted).
+        st.Page("pages/18_Mesoscale_Models.py",
+                title="Mesoscale Models"),
         # Station Forecast replaced Forecast Wind Plots and Forecast
         # Flight Conditions: both plots, the NBM and LAMP grids, the
         # METAR/TAF, a radar snapshot and the JetBlue movement board

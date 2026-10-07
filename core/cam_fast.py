@@ -123,7 +123,7 @@ for _pk in ("PROB_CIG1000", "PROB_CIG500", "PROB_VIS1", "PROB_VIS3",
 # below this, so isolated cells fade at their own size instead of
 # being inflated to full-strength discs.
 # Bump whenever the basemap's content changes.
-BASEMAP_STYLE = 8   # v8: N90 outline from the gate-lobe hull (static/n90_fixes.json, 28 Sep)
+BASEMAP_STYLE = 9   # v9 (6 Oct): 5/20 mi white rings, all 120 JBU stations, other airports green
 # The ground every frame is composited on. Dark grey, almost black,
 # so the fields read the way radar does on the other maps.
 GROUND = (11, 12, 14, 255)
@@ -367,10 +367,13 @@ def basemap(key: str, extent, width: int, height: int,
         try:
             from core.hrrr_cam import draw_stations
 
+            from core.hrrr_cam import draw_major_airports
+
             if stations == "dots":
                 draw_stations(ax, w, s, e, n, skip=set(), labels=False,
                               dot_pt=5.0)
             else:
+                draw_major_airports(ax, w, s, e, n)
                 draw_stations(ax, w, s, e, n, skip=STATION_SKIP)
         except Exception:
             pass      # a basemap without stations is still a basemap

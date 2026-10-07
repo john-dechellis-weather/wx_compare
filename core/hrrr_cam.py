@@ -808,8 +808,63 @@ JBU_STATIONS = {
 # them without a deploy.
 STATION_DOT_PT = float(os.environ.get("CAM_STATION_DOT_PT", "13"))
 STATION_FONT_PT = float(os.environ.get("CAM_STATION_FONT_PT", "26"))
-# Range ring radius in NAUTICAL miles; 0 disables.
-STATION_RING_NM = float(os.environ.get("CAM_STATION_RING_NM", "10"))
+# Range rings (6 Oct): 5 and 20 statute miles around every JetBlue
+# station, thin white lines. CAM_STATION_RINGS_MI="" disables.
+STATION_RINGS_MI = [float(x) for x in os.environ.get(
+    "CAM_STATION_RINGS_MI", "5,20").split(",") if x.strip()]
+STATION_RING_NM = float(os.environ.get("CAM_STATION_RING_NM", "0"))   # legacy single ring, off
+
+
+def _all_jbu_stations() -> dict:
+    """Every JetBlue station from static/jbu_airports.json (120), with
+    the hand-kept table as fallback: {icao: (lat, lon)}."""
+    try:
+        import json as _json
+        from pathlib import Path as _P
+        d = _json.loads((_P(__file__).resolve().parent.parent / "static"
+                         / "jbu_airports.json").read_text())["stations"]
+        return {k: (float(v["lat"]), float(v["lon"])) for k, v in d.items()}
+    except Exception:
+        return dict(JBU_STATIONS)
+
+
+def _major_airports() -> dict:
+    """Non-JetBlue airports with major-carrier service (6 Oct,
+    static/major_airports.json): {icao: (lat, lon)}."""
+    try:
+        import json as _json
+        from pathlib import Path as _P
+        d = _json.loads((_P(__file__).resolve().parent.parent / "static"
+                         / "major_airports.json").read_text())["airports"]
+        return {k: (float(v["lat"]), float(v["lon"])) for k, v in d.items()}
+    except Exception:
+        return {}
+
+
+def draw_major_airports(ax, w: float, s: float, e: float, n: float,
+                        pad: float = 0.15, labels: bool = True) -> int:
+    """Other commercial airports in GREEN: a small dot and the
+    identifier, under the JetBlue marks."""
+    import cartopy.crs as ccrs
+    import matplotlib.patheffects as _pe
+
+    drawn = 0
+    _dot = STATION_DOT_PT * 0.55
+    _pt_per_deg = (ax.figure.get_size_inches()[1] * 72.0) / (n - s)
+    _gap_deg = (_dot / 2.0 + 2.0) / _pt_per_deg
+    for icao, (la, lo) in _major_airports().items():
+        if not (w + pad <= lo <= e - pad and s + pad <= la <= n - pad):
+            continue
+        ax.plot(lo, la, marker="o", markersize=_dot, markerfacecolor="#19C37D",
+                markeredgecolor="#063D26", markeredgewidth=0.8, linestyle="none",
+                transform=ccrs.PlateCarree(), zorder=6.5)
+        drawn += 1
+        if labels:
+            ax.text(lo, la + _gap_deg, icao[1:] if icao.startswith("K") else icao,
+                    fontsize=STATION_FONT_PT * 0.5, color="#19C37D", fontweight="bold",
+                    ha="center", va="bottom", transform=ccrs.PlateCarree(), zorder=6.6,
+                    path_effects=[_pe.withStroke(linewidth=2.0, foreground="#0B0C0E")])
+    return drawn
 
 
 def draw_stations(ax, w: float, s: float, e: float, n: float,
@@ -838,11 +893,21 @@ def draw_stations(ax, w: float, s: float, e: float, n: float,
             "CAM_STATION_SKIP", "KLGA,KEWR").split(",") if x.strip())
     drawn = 0
     _dot = STATION_DOT_PT if dot_pt is None else float(dot_pt)
-    for icao, (sla, slo) in JBU_STATIONS.items():
+    for icao, (sla, slo) in _all_jbu_stations().items():
         if icao in skip:
             continue
         if not (w + pad <= slo <= e - pad and s + pad <= sla <= n - pad):
             continue
+        # 5 and 20 mile rings (6 Oct): white, thin. True circles on
+        # the ground (longitude radius stretched by 1/cos lat).
+        if labels and STATION_RINGS_MI:
+            for _mi in STATION_RINGS_MI:
+                r_lat = _mi / 69.0
+                r_lon = r_lat / max(0.2, math.cos(math.radians(sla)))
+                th = np.linspace(0.0, 2.0 * np.pi, 73)
+                ax.plot(slo + r_lon * np.cos(th), sla + r_lat * np.sin(th),
+                        color="white", linewidth=0.55, alpha=0.85,
+                        transform=ccrs.PlateCarree(), zorder=6.8)
         # Sized to read on the SOC wall, not a laptop: a 13 pt dot
         # and 26 pt label on a ~2000 px frame. The first pass at
         # 3 pt / 6.5 pt was invisible at working zoom. Label offset
