@@ -1774,7 +1774,9 @@ map.addControl(new maplibregl.NavigationControl({{showCompass:false}}));
 const $ = id => document.getElementById(id);
 let ready = false, ti = 0, timer = null;
 const on = {{}}, op = {{}};
-document.querySelectorAll('.ly input[type=checkbox]').forEach(c => {{ on[c.dataset.f] = c.checked; c.onchange = () => {{ on[c.dataset.f] = c.checked; draw(); }}; }});
+// (7 Oct) :not(.mgf) - the meteogram's element boxes share the .ly rows and
+// were being read as map layers, drawing four layers nobody switched on.
+document.querySelectorAll('.ly input[type=checkbox]:not(.mgf)').forEach(c => {{ on[c.dataset.f] = c.checked; c.onchange = () => {{ on[c.dataset.f] = c.checked; draw(); }}; }});
 document.querySelectorAll('.ly input[type=range]').forEach(r => {{ op[r.dataset.f] = +r.value / 100; r.oninput = () => {{ op[r.dataset.f] = +r.value / 100; draw(); }}; }});
 function key(f) {{ return 'tio_' + (f.hub ? f.hub + '_' : '') + f.field + '_' + f.step; }}
 function frame(field, step) {{ return F.find(f => f.field === field && f.step === step && !f.hub); }}
@@ -1974,7 +1976,7 @@ function draw() {{
   let valid = '', built = '';
   const visible = new Set();
   FIELDS.forEach(field => {{
-    const box = document.querySelector('.ly input[data-f="' + field + '"]').parentElement.parentElement;
+    const box = document.querySelector('.ly input[data-f="' + field + '"]:not(.mgf)').parentElement.parentElement;
     const f = frame(field, step);
     box.classList.toggle('off', !on[field]);
     box.classList.toggle('none', on[field] && !f);
