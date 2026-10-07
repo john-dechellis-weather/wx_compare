@@ -123,7 +123,7 @@ for _pk in ("PROB_CIG1000", "PROB_CIG500", "PROB_VIS1", "PROB_VIS3",
 # below this, so isolated cells fade at their own size instead of
 # being inflated to full-strength discs.
 # Bump whenever the basemap's content changes.
-BASEMAP_STYLE = 10  # v10 (7 Oct): traced yellow N90 outline + fixes; v9 (6 Oct): 5/20 mi white rings, all 120 JBU stations, other airports green
+BASEMAP_STYLE = 11  # v11 (7 Oct): no text on the raster - labels are a constant-size overlay (marks_json); v10 (7 Oct): traced yellow N90 outline + fixes; v9 (6 Oct): 5/20 mi white rings, all 120 JBU stations, other airports green
 # The ground every frame is composited on. Dark grey, almost black,
 # so the fields read the way radar does on the other maps.
 GROUND = (11, 12, 14, 255)
@@ -373,9 +373,6 @@ def basemap(key: str, extent, width: int, height: int,
                         ax.plot(lo, la, marker="^", markersize=4.5, markerfacecolor=N90_LINE,
                                 markeredgecolor="#000000", markeredgewidth=0.5, linestyle="none",
                                 transform=ccrs.PlateCarree(), zorder=7.2)
-                        ax.text(lo, la + 3.5 / _ppd, f["name"], fontsize=7.5, color=N90_LINE,
-                                ha="center", va="bottom", transform=ccrs.PlateCarree(), zorder=7.3,
-                                path_effects=[_pe.withStroke(linewidth=1.8, foreground="#0B0C0E")])
     except Exception:
         pass
 
@@ -397,8 +394,8 @@ def basemap(key: str, extent, width: int, height: int,
                 draw_stations(ax, w, s, e, n, skip=set(), labels=False,
                               dot_pt=5.0)
             else:
-                draw_major_airports(ax, w, s, e, n)
-                draw_stations(ax, w, s, e, n, skip=STATION_SKIP)
+                draw_major_airports(ax, w, s, e, n, labels=False)
+                draw_stations(ax, w, s, e, n, skip=STATION_SKIP, text=False)
         except Exception:
             pass      # a basemap without stations is still a basemap
 
@@ -609,3 +606,45 @@ def supports(product: str) -> bool:
     if os.environ.get("CAM_FAST", "on").lower() == "off":
         return False
     return product in PALETTES
+
+
+def marks_json(extent) -> list:
+    """Labels for the viewer overlay (7 Oct): the text that used to be
+    baked into the basemap, as [{x, y, t, k}] with x/y as fractions of
+    the frame (PlateCarree is linear, same mapping as the raster) and
+    k the kind: "jbu", "apt" or "fix". Drawn by the page at a constant
+    screen size whatever the zoom."""
+    import json as _json
+    from core.hrrr_cam import _all_jbu_stations, _major_airports
+
+    w, s, e, n = extent
+    out = []
+
+    def _fx(lon):
+        return (lon - w) / (e - w)
+
+    def _fy(lat):
+        return (n - lat) / (n - s)
+
+    pad = 0.15
+    for icao, (la, lo) in _all_jbu_stations().items():
+        if icao in STATION_SKIP or not (w + pad <= lo <= e - pad and s + pad <= la <= n - pad):
+            continue
+        out.append({"x": round(_fx(lo), 4), "y": round(_fy(la), 4),
+                    "t": icao[1:] if icao.startswith("K") else icao, "k": "jbu"})
+    for icao, (la, lo) in _major_airports().items():
+        if not (w + pad <= lo <= e - pad and s + pad <= la <= n - pad):
+            continue
+        out.append({"x": round(_fx(lo), 4), "y": round(_fy(la), 4),
+                    "t": icao[1:] if icao.startswith("K") else icao, "k": "apt"})
+    try:
+        _fx_list = _json.loads((Path(__file__).resolve().parent.parent / "static"
+                                / "n90_fixes.json").read_text()).get("fixes") or []
+        for f in _fx_list:
+            la, lo = f.get("lat"), f.get("lon")
+            if la is None or lo is None or not (w < lo < e and s < la < n):
+                continue
+            out.append({"x": round(_fx(lo), 4), "y": round(_fy(la), 4), "t": f["name"], "k": "fix"})
+    except Exception:
+        pass
+    return out

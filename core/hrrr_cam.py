@@ -806,7 +806,7 @@ JBU_STATIONS = {
 # Station mark sizes in points. Four times the first attempt, which
 # was invisible at working zoom. CAM_STATION_DOT_PT / _FONT_PT tune
 # them without a deploy.
-STATION_DOT_PT = float(os.environ.get("CAM_STATION_DOT_PT", "13"))
+STATION_DOT_PT = float(os.environ.get("CAM_STATION_DOT_PT", "9"))   # 9 (7 Oct): labels are an overlay now, the dot no longer carries them
 STATION_FONT_PT = float(os.environ.get("CAM_STATION_FONT_PT", "26"))
 # Range rings (6 Oct): 5 and 20 statute miles around every JetBlue
 # station, thin white lines. CAM_STATION_RINGS_MI="" disables.
@@ -869,7 +869,7 @@ def draw_major_airports(ax, w: float, s: float, e: float, n: float,
 
 def draw_stations(ax, w: float, s: float, e: float, n: float,
                   skip=None, pad: float = 0.15, labels: bool = True,
-                  dot_pt: float = None) -> int:
+                  dot_pt: float = None, text: bool = True) -> int:
     """JetBlue station dots and identifiers on a cartopy axis.
 
     Shared by the matplotlib renderer here and the fast composite
@@ -929,7 +929,7 @@ def draw_stations(ax, w: float, s: float, e: float, n: float,
                 markeredgewidth=1.4 if labels else 0.8, linestyle="none",
                 transform=ccrs.PlateCarree(), zorder=7)
         drawn += 1
-        if not labels:
+        if not labels or not text:
             continue
         # Label just clear of the dot: offset is the dot radius plus
         # a small gap, in degrees, computed from the figure's own

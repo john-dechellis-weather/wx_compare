@@ -202,6 +202,11 @@ def _cycle_for(model: str, need_fhr: int, bucket: str):
     return cyc.isoformat() if cyc else None
 
 
+# Label overlay for the viewer (constant screen size): one list per sector.
+_la0, _lo0, _hw0 = _hub_geom(_sector)
+from core.cam_fast import marks_json as _marks_json
+_marks = _marks_json((_lo0 - _hw0, _la0 - _hw0, _lo0 + _hw0, _la0 + _hw0))
+
 _models_used = sorted({m for m, _p in _slots})
 _cycles = {m: _cycle_for(m, _RUNS[run_choice][m], bucket10) for m in _models_used}
 
@@ -241,26 +246,56 @@ def _frame(sector: str, src: str, field: str, h: int, cycle_iso: str):
     return cached_frame(src, field, cycle_iso, h, round(clat, 2), round(clon, 2), zm), "live"
 
 
-def _viewer(img: bytes, height: int) -> None:
+def _viewer(img: bytes, height: int, marks: list) -> None:
+    """Pan/zoom image viewer. Labels (JBU stations, other airports,
+    N90 fixes) are an HTML overlay positioned from the map transform,
+    so they stay a constant size on screen while the map zooms
+    (7 Oct) - the raster carries dots, rings and lines only."""
     import base64 as _b64
+    import json as _json
     import streamlit.components.v1 as _components
     mime = "image/webp" if img[:4] == b"RIFF" else "image/png"
     uri = f"data:{mime};base64," + _b64.b64encode(img).decode("ascii")
     _components.html(f"""
+<style>
+ .lb{{position:absolute;transform:translate(-50%,-100%);white-space:nowrap;pointer-events:none;
+      font-family:"DejaVu Sans",Arial,sans-serif;font-weight:700;line-height:1}}
+ .lb.jbu{{color:#4DA3FF;font-size:13px;text-shadow:0 0 3px #000,0 0 2px #000,1px 1px 0 #000}}
+ .lb.apt{{color:#19C37D;font-size:9px;text-shadow:0 0 2px #000,1px 1px 0 #000}}
+ .lb.fix{{color:#FFD400;font-size:8px;font-weight:600;text-shadow:0 0 2px #000,1px 1px 0 #000}}
+</style>
 <div id="w" style="width:100%;max-width:{height}px;height:{height}px;aspect-ratio:1/1;margin:0 auto;
      overflow:hidden;background:#0b0c0e;border-radius:8px;cursor:grab;position:relative">
  <img id="m" src="{uri}" draggable="false" style="position:absolute;left:0;top:0;width:100%;height:100%;transform-origin:0 0;user-select:none">
+ <div id="ov" style="position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none"></div>
 </div>
 <script>(function(){{
-  const w=document.getElementById('w'), m=document.getElementById('m');
+  const MARKS = {_json.dumps(marks)};
+  const OFF = {{jbu: 9, apt: 5, fix: 5}};   // px above the mark
+  const w=document.getElementById('w'), m=document.getElementById('m'), ov=document.getElementById('ov');
   let s=1, tx=0, ty=0, drag=null;
-  function apply(){{ m.style.transform=`translate(${{tx}}px,${{ty}}px) scale(${{s}})`; }}
+  const els = MARKS.map(k => {{ const d=document.createElement('div'); d.className='lb '+k.k; d.textContent=k.t; ov.appendChild(d); return d; }});
+  function place(){{
+    const W=w.clientWidth, H=w.clientHeight;
+    for (let i=0;i<MARKS.length;i++) {{
+      const k=MARKS[i], x=tx+k.x*W*s, y=ty+k.y*H*s;
+      const e=els[i];
+      if (x<-40||x>W+40||y<-20||y>H+20) {{ e.style.display='none'; continue; }}
+      e.style.display=''; e.style.left=x+'px'; e.style.top=(y-OFF[k.k])+'px';
+      // de-clutter: fixes and other airports only once zoomed in a little
+      if (k.k==='fix' && s<1.6) e.style.display='none';
+      if (k.k==='apt' && s<1.2) e.style.display='none';
+    }}
+  }}
+  function apply(){{ m.style.transform=`translate(${{tx}}px,${{ty}}px) scale(${{s}})`; place(); }}
   w.addEventListener('wheel', e=>{{ e.preventDefault(); const r=w.getBoundingClientRect(), x=e.clientX-r.left, y=e.clientY-r.top;
     const k=Math.exp(-e.deltaY*0.0015), ns=Math.min(12, Math.max(1, s*k)); tx = x-(x-tx)*(ns/s); ty = y-(y-ty)*(ns/s); s=ns; if(s===1){{tx=0;ty=0;}} apply(); }}, {{passive:false}});
   w.addEventListener('mousedown', e=>{{ drag={{x:e.clientX-tx, y:e.clientY-ty}}; w.style.cursor='grabbing'; }});
   window.addEventListener('mousemove', e=>{{ if(!drag) return; tx=e.clientX-drag.x; ty=e.clientY-drag.y; apply(); }});
   window.addEventListener('mouseup', ()=>{{ drag=null; w.style.cursor='grab'; }});
   w.addEventListener('dblclick', ()=>{{ s=1; tx=0; ty=0; apply(); }});
+  window.addEventListener('resize', place);
+  apply();
 }})();</script>""", height=height + 4)
 
 
@@ -306,7 +341,7 @@ def _pod(i: int):
         try:
             with st.spinner(""):
                 img, how = _frame(_sector, src, field, h, cycle_iso)
-            _viewer(img, pod_px)
+            _viewer(img, pod_px, _marks)
             st.markdown(_colorbar(field), unsafe_allow_html=True)
             if how == "live":
                 st.caption("rendered on demand")
