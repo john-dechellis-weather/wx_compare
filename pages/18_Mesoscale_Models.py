@@ -86,6 +86,17 @@ st.markdown(
     "[data-testid='stDialog'] [data-testid='stButton'] button[kind='primary']:disabled{"
     "background:#2A2A2A !important;color:#6E6E6E !important;"
     "-webkit-text-fill-color:#6E6E6E !important}"
+    # Plot selection boxes (7 Oct): white text was sitting on a white
+    # field; the model/product dropdowns are a semi-dark blue instead.
+    "[data-testid='stDialog'] [data-testid='stSelectbox'] div[data-baseweb='select'] > div{"
+    "background:#1B2A4A !important;border:1px solid #2D3957 !important;color:#FFFFFF !important}"
+    "[data-testid='stDialog'] [data-testid='stSelectbox'] div[data-baseweb='select'] *{"
+    "color:#FFFFFF !important;-webkit-text-fill-color:#FFFFFF !important}"
+    "[data-testid='stDialog'] [data-testid='stSelectbox'] svg{fill:#FFFFFF !important}"
+    "div[data-baseweb='popover'] ul, div[data-baseweb='popover'] li{"
+    "background:#1B2A4A !important;color:#FFFFFF !important}"
+    "div[data-baseweb='popover'] li:hover, div[data-baseweb='popover'] li[aria-selected='true']{"
+    "background:#2D3957 !important}"
     "</style>", unsafe_allow_html=True)
 
 

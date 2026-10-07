@@ -123,13 +123,13 @@ for _pk in ("PROB_CIG1000", "PROB_CIG500", "PROB_VIS1", "PROB_VIS3",
 # below this, so isolated cells fade at their own size instead of
 # being inflated to full-strength discs.
 # Bump whenever the basemap's content changes.
-BASEMAP_STYLE = 9   # v9 (6 Oct): 5/20 mi white rings, all 120 JBU stations, other airports green
+BASEMAP_STYLE = 10  # v10 (7 Oct): traced yellow N90 outline + fixes; v9 (6 Oct): 5/20 mi white rings, all 120 JBU stations, other airports green
 # The ground every frame is composited on. Dark grey, almost black,
 # so the fields read the way radar does on the other maps.
 GROUND = (11, 12, 14, 255)
 # N90 extent from static/n90_fixes.json ("hull": an approximation of
 # the delegated boundary), drawn on every basemap that covers it.
-N90_LINE = "#FF2A2A"
+N90_LINE = "#FFD400"   # yellow (7 Oct; was red)
 N90_WIDTH_PT = 3.5   # ~1.5 px once a 1950 px frame is shown at pod size
 
 # Stations NOT drawn on the basemap. New York metro shows JFK only.
@@ -339,19 +339,43 @@ def basemap(key: str, extent, width: int, height: int,
     gl.xlabel_style = {"size": 7, "color": "#8A96A6"}
     gl.ylabel_style = {"size": 7, "color": "#8A96A6"}
 
-    # N90 outline, 3 pt yellow, on every map that reaches it.
+    # N90 outline (7 Oct): the traced 67-point boundary from
+    # static/n90_outline.json, yellow; the old hull is the fallback.
+    # The coordination fixes from n90_fixes.json ride with it as small
+    # symbols with their names.
     try:
         import json as _json
-        _hull = _json.loads((Path(__file__).resolve().parent.parent
-                             / "static" / "n90_fixes.json").read_text()
-                            ).get("hull") or []
-        if len(_hull) >= 3:
-            xs = [pt[0] for pt in _hull]
-            ys = [pt[1] for pt in _hull]
+        _static = Path(__file__).resolve().parent.parent / "static"
+        _poly = []
+        try:
+            _poly = _json.loads((_static / "n90_outline.json").read_text()).get("polygon") or []
+        except Exception:
+            _poly = []
+        if len(_poly) < 3:
+            _poly = _json.loads((_static / "n90_fixes.json").read_text()).get("hull") or []
+        if len(_poly) >= 3:
+            xs = [pt[0] for pt in _poly]
+            ys = [pt[1] for pt in _poly]
             if max(xs) > w and min(xs) < e and max(ys) > s and min(ys) < n:
+                if (xs[0], ys[0]) != (xs[-1], ys[-1]):
+                    xs.append(xs[0]); ys.append(ys[0])
                 ax.plot(xs, ys, color=N90_LINE, linewidth=N90_WIDTH_PT,
                         solid_joinstyle="round", transform=ccrs.PlateCarree(),
                         zorder=7)
+                if stations == "full":
+                    import matplotlib.patheffects as _pe
+                    _fx = _json.loads((_static / "n90_fixes.json").read_text()).get("fixes") or []
+                    _ppd = (fig.get_size_inches()[1] * 72.0) / (n - s)
+                    for f in _fx:
+                        la, lo = f.get("lat"), f.get("lon")
+                        if la is None or lo is None or not (w < lo < e and s < la < n):
+                            continue
+                        ax.plot(lo, la, marker="^", markersize=4.5, markerfacecolor=N90_LINE,
+                                markeredgecolor="#000000", markeredgewidth=0.5, linestyle="none",
+                                transform=ccrs.PlateCarree(), zorder=7.2)
+                        ax.text(lo, la + 3.5 / _ppd, f["name"], fontsize=7.5, color=N90_LINE,
+                                ha="center", va="bottom", transform=ccrs.PlateCarree(), zorder=7.3,
+                                path_effects=[_pe.withStroke(linewidth=1.8, foreground="#0B0C0E")])
     except Exception:
         pass
 
