@@ -289,7 +289,11 @@ def _viewer(img: bytes, height: int, marks: list) -> None:
   }}
   function apply(){{ m.style.transform=`translate(${{tx}}px,${{ty}}px) scale(${{s}})`; place(); }}
   w.addEventListener('wheel', e=>{{ e.preventDefault(); const r=w.getBoundingClientRect(), x=e.clientX-r.left, y=e.clientY-r.top;
-    const k=Math.exp(-e.deltaY*0.0015), ns=Math.min(12, Math.max(1, s*k)); tx = x-(x-tx)*(ns/s); ty = y-(y-ty)*(ns/s); s=ns; if(s===1){{tx=0;ty=0;}} apply(); }}, {{passive:false}});
+    // Zoom cap (7 Oct): up to twice the frame's native pixel scale, so the
+    // raster never shows more than 2x upscaled (it blurred past that).
+    const nat = (m.naturalWidth || 1950) / Math.max(1, w.clientWidth);
+    const SMAX = Math.max(2, 2 * nat);
+    const k=Math.exp(-e.deltaY*0.0015), ns=Math.min(SMAX, Math.max(1, s*k)); tx = x-(x-tx)*(ns/s); ty = y-(y-ty)*(ns/s); s=ns; if(s===1){{tx=0;ty=0;}} apply(); }}, {{passive:false}});
   w.addEventListener('mousedown', e=>{{ drag={{x:e.clientX-tx, y:e.clientY-ty}}; w.style.cursor='grabbing'; }});
   window.addEventListener('mousemove', e=>{{ if(!drag) return; tx=e.clientX-drag.x; ty=e.clientY-drag.y; apply(); }});
   window.addEventListener('mouseup', ()=>{{ drag=null; w.style.cursor='grab'; }});
