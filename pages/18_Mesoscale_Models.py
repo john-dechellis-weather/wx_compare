@@ -88,11 +88,20 @@ st.markdown(
     "-webkit-text-fill-color:#6E6E6E !important}"
     # Plot selection boxes (7 Oct): white text was sitting on a white
     # field; the model/product dropdowns are a semi-dark blue instead.
-    "[data-testid='stDialog'] [data-testid='stSelectbox'] div[data-baseweb='select'] > div{"
-    "background:#1B2A4A !important;border:1px solid #2D3957 !important;color:#FFFFFF !important}"
-    "[data-testid='stDialog'] [data-testid='stSelectbox'] div[data-baseweb='select'] *{"
+    # Every layer of the BaseWeb select gets the blue field, and every
+    # piece of text in it white (the inner value div was painting white
+    # on white, 7 Oct).
+    "[data-testid='stDialog'] [data-baseweb='select'],"
+    "[data-testid='stDialog'] [data-baseweb='select'] > div,"
+    "[data-testid='stDialog'] [data-baseweb='select'] > div > div,"
+    "[data-testid='stDialog'] [data-baseweb='select'] div[value],"
+    "[data-testid='stDialog'] [data-baseweb='select'] input{"
+    "background:#1B2A4A !important;background-color:#1B2A4A !important;"
+    "color:#FFFFFF !important;-webkit-text-fill-color:#FFFFFF !important;"
+    "border-color:#2D3957 !important}"
+    "[data-testid='stDialog'] [data-baseweb='select'] *{"
     "color:#FFFFFF !important;-webkit-text-fill-color:#FFFFFF !important}"
-    "[data-testid='stDialog'] [data-testid='stSelectbox'] svg{fill:#FFFFFF !important}"
+    "[data-testid='stDialog'] [data-baseweb='select'] svg{fill:#FFFFFF !important;color:#FFFFFF !important}"
     "div[data-baseweb='popover'] ul, div[data-baseweb='popover'] li{"
     "background:#1B2A4A !important;color:#FFFFFF !important}"
     "div[data-baseweb='popover'] li:hover, div[data-baseweb='popover'] li[aria-selected='true']{"
