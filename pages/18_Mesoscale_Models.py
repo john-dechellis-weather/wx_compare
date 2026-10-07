@@ -102,6 +102,18 @@ st.markdown(
     "color:#FFFFFF !important;-webkit-text-fill-color:#FFFFFF !important;"
     "border-color:#2D3957 !important}"
     "[data-baseweb='select'] *{color:#FFFFFF !important;-webkit-text-fill-color:#FFFFFF !important}"
+    # Streamlit 1.50 dropped BaseWeb here: the box is now
+    # div[role=group] > input[role=combobox], and that input kept the
+    # light theme's white field (7 Oct, seen headlessly).
+    "[data-testid='stSelectbox'] [role='group'],"
+    "[data-testid='stSelectbox'] [role='group'] *,"
+    "[data-testid='stSelectbox'] input[role='combobox']{"
+    "background:#1B2A4A !important;background-color:#1B2A4A !important;"
+    "color:#FFFFFF !important;-webkit-text-fill-color:#FFFFFF !important;"
+    "caret-color:#FFFFFF !important;border-color:#2D3957 !important}"
+    "[data-testid='stSelectbox'] input[role='combobox']::placeholder{color:#B8B8B8 !important}"
+    "[data-testid='stSelectbox'] [role='group'] button, [data-testid='stSelectbox'] [role='group'] svg{"
+    "background:transparent !important;fill:#FFFFFF !important}"
     "[data-baseweb='select'] svg{fill:#FFFFFF !important;color:#FFFFFF !important}"
     "div[data-baseweb='popover'] ul, div[data-baseweb='popover'] li{"
     "background:#1B2A4A !important;color:#FFFFFF !important}"

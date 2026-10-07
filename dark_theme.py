@@ -336,6 +336,20 @@ html, body, .stApp,
 }}
 [data-baseweb="select"] svg,
 [data-testid="stPopoverBody"] svg {{ fill: var(--bm-text) !important; }}
+/* 7 Oct: Streamlit 1.50 renders the selectbox without BaseWeb -
+   div[role=group] > input[role=combobox] - and that input stayed a
+   white field with black text on every page. */
+[data-testid="stSelectbox"] [role="group"],
+[data-testid="stSelectbox"] input[role="combobox"] {{
+  background: var(--bm-panel) !important;
+  background-color: var(--bm-panel) !important;
+  color: var(--bm-text) !important;
+  -webkit-text-fill-color: var(--bm-text) !important;
+  caret-color: var(--bm-text) !important;
+  border-color: var(--bm-border) !important;
+  font-family: var(--bm-mono) !important;
+}}
+[data-testid="stSelectbox"] [role="group"] button {{ background: transparent !important; }}
 [data-baseweb="select"] [aria-selected="true"],
 [data-baseweb="menu"] [aria-selected="true"] {{ background: #1C1C22 !important; }}
 /* slider labels and values inside a popover */
