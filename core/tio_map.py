@@ -1349,6 +1349,26 @@ def _loop(outdir):
                  f"~{daily_estimate()}/day, cap {DAILY_CAP}/day, "
                  f"{restored} files restored from {PERSIST or 'no persistent disk'}, "
                  f"day so far {usage(outdir)['count']}")
+    # Key check (7 Oct): the Mac's key drew 401s and 429s that never
+    # showed on the tomorrow.io dashboard, i.e. the key it sent was not
+    # the account's. Log its shape (never the key) and one probe.
+    k = api_key()
+    if k:
+        raw = os.environ.get("TOMORROWIO_API_KEY") or os.environ.get("TOMORROW_API_KEY") or ""
+        odd = [w for w, t in (("quotes", '"' in raw or "'" in raw), ("spaces", raw != raw.strip()),
+                              ("CR/LF", "\r" in raw or "\n" in raw)) if t]
+        try:
+            import requests as _rq
+            r = _rq.get("https://api.tomorrow.io/v4/weather/realtime",
+                        params={"location": "40.64,-73.78", "apikey": k}, timeout=15)
+            probe = f"HTTP {r.status_code}" + ("" if r.ok else f" {r.text[:80]!r}")
+            if r.ok:
+                _add_usage(outdir, 1, "point KJFK keycheck")
+        except Exception as exc:
+            probe = f"{type(exc).__name__}: {exc}"
+        _log(outdir, f"key check: {len(k)} chars, {k[:4]}…{k[-4:]}"
+                     + (f", raw value has {', '.join(odd)}" if odd else "")
+                     + f"; realtime probe -> {probe}")
     next_now = next_fc = next_pt = next_hr = next_noaa = 0.0
     last_model = active_model(outdir)
     last_sector = None
