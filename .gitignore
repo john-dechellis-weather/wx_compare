@@ -28,3 +28,6 @@ static/etop_tags.json
 # Mac hosting secrets
 mac/.env
 mac/.env*
+
+# runtime logs written by the warmers into static/
+static/*.log
