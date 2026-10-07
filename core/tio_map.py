@@ -947,13 +947,20 @@ def build_frame(outdir, model: str, field: str, step: int, z: int,
         tstr = valid.strftime("%Y-%m-%dT%H:%M:%SZ")
     n = (x1 - x0 + 1) * (y1 - y0 + 1)
     prio = 2 if (hub or step > 24) else (1 if step else 0)
-    # charged up front; a failed tile still counts
-    _charge(outdir, n, prio, f"{field} +{step:02d}h" + (f" {hub}" if hub else ""))
+    # charged up front; a failed tile still counts - except a 429,
+    # which tomorrow.io did not serve (7 Oct: 150 rejected frames had
+    # booked 1,200 requests against the day)
+    what = f"{field} +{step:02d}h" + (f" {hub}" if hub else "")
+    _charge(outdir, n, prio, what)
     jobs = [(x, y) for y in range(y0, y1 + 1) for x in range(x0, x1 + 1)]
     t0 = time.time()
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        blobs = list(ex.map(lambda xy: _fetch_tile(z, xy[0], xy[1], field,
-                                                   tstr, key, query), jobs))
+    try:
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            blobs = list(ex.map(lambda xy: _fetch_tile(z, xy[0], xy[1], field,
+                                                       tstr, key, query), jobs))
+    except RateLimited:
+        _add_usage(outdir, -n, what)
+        raise
     img = Image.new("RGBA", ((x1 - x0 + 1) * TILE, (y1 - y0 + 1) * TILE),
                     (0, 0, 0, 0))
     for (x, y), b in zip(jobs, blobs):
@@ -1391,7 +1398,11 @@ def _loop(outdir):
 
     def _try(fn, what, *a) -> bool:
         """Run one build; True when it ran. Deferred/failed are logged
-        (deferrals at most once per 10 min) and never raise."""
+        (deferrals at most once per 10 min) and never raise. Nothing
+        runs while a 429 back-off is in force (7 Oct: one pass used to
+        go on to try every remaining frame in the same minute)."""
+        if in_backoff():
+            return False
         try:
             fn(*a)
             STATUS["last"] = time.time()
