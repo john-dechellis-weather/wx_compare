@@ -881,7 +881,6 @@ def build_spread_table(df_m, cycle: datetime, det_rrfs: dict, det_hrrr: dict,
 
 
 st.title("MOS Tables")
-st.caption("Side-by-side hourly NBM + GFS LAMP for one airport.")
 
 # ENTRY (7 Oct): one large "Enter ICAO" box, no menus. Four letters
 # open a pop-up listing every table with its range, all ticked; untick
