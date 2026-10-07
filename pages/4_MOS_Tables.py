@@ -883,21 +883,73 @@ def build_spread_table(df_m, cycle: datetime, det_rrfs: dict, det_hrrr: dict,
 st.title("MOS Tables")
 st.caption("Side-by-side hourly NBM + GFS LAMP for one airport.")
 
-# Settings live in a popover under the title (23 Sep): the
-# sidebar is hidden site-wide so the pages get the full width.
-with st.popover("Airport"):
-    st.header("Airport")
-    icao_input = st.text_input("ICAO code", value="KJFK", max_chars=4).strip().upper()
-    st.divider()
-    run_button = st.button("Refresh", type="primary", use_container_width=True)
-    st.divider()
-    st.caption(
-        "**Color coding:**\n\n"
-        "Yellow: vis < 3sm, cig < 3000ft, wind ≥ 25kt\n\n"
-        "Orange: vis < 2sm, cig ≤ 2000ft, wind ≥ 30kt\n\n"
-        "Red: vis < 1sm, cig ≤ 1000ft, wind ≥ 35kt\n\n"
-        "Pink: vis ≤ 0.5sm, cig < 400ft, wind ≥ 40kt"
-    )
+# ENTRY (7 Oct): one large "Enter ICAO" box, no menus. Four letters
+# open a pop-up listing every table with its range, all ticked; untick
+# what is not wanted and View. "Change tables" brings it back.
+TABLES = [
+    ("SPREAD", "Model spread box plots [24 hr]"),
+    ("NBH", "NBH hourly NBM + GFS LAMP [25 hr]"),
+    ("NBMP", "NBM flight-category probabilities [25 hr]"),
+    ("REFS", "REFS ensemble probabilities [24 hr]"),
+    ("RRFS", "RRFS point forecast [24 hr]"),
+    ("HRRR", "HRRR point forecast [24 hr]"),
+    ("NBS", "NBS 3-hourly NBM [72 hr]"),
+    ("NBE", "NBE 12-hourly NBM [185 hr]"),
+]
+st.markdown(
+    "<style>"
+    ".st-key-mos_icao input{font-size:30px !important;font-weight:700 !important;"
+    "letter-spacing:4px;text-transform:uppercase;height:64px !important;"
+    "color:#FFFFFF !important;-webkit-text-fill-color:#FFFFFF !important;"
+    "background:#1B2A4A !important;border:1px solid #2D3957 !important}"
+    ".st-key-mos_icao input::placeholder{color:#8A96A6 !important;-webkit-text-fill-color:#8A96A6 !important;"
+    "letter-spacing:1px;font-size:22px}"
+    "[data-testid='stDialog'] [data-testid='stButton'] button[kind='primary']{"
+    "background:#00C853 !important;color:#000 !important;-webkit-text-fill-color:#000 !important;"
+    "border:none !important;font-weight:700 !important;font-size:15px !important;width:100%;padding:10px 0}"
+    "[data-testid='stDialog'] [data-testid='stCheckbox'] label span{font-size:14px !important}"
+    "</style>", unsafe_allow_html=True)
+
+_e1, _e2 = st.columns([1.6, 3])
+with _e1:
+    icao_input = st.text_input("Enter ICAO", value=st.session_state.get("mos_icao", ""),
+                               max_chars=4, placeholder="Enter ICAO", key="mos_icao",
+                               label_visibility="collapsed").strip().upper()
+with _e2:
+    if st.session_state.get("mos_tables_done") and len(icao_input) == 4:
+        if st.button("Change tables", key="mos_change"):
+            st.session_state["mos_tables_done"] = False
+            st.rerun()
+
+
+@st.dialog(f"MOS tables for {icao_input or 'the station'}", width="large")
+def _pick_tables():
+    st.markdown("**All tables are on. Untick any you do not want.**")
+    prev = st.session_state.get("mos_tables", [k for k, _ in TABLES])
+    picked = []
+    c1, c2 = st.columns(2)
+    for i, (key, label) in enumerate(TABLES):
+        with (c1 if i % 2 == 0 else c2):
+            if st.checkbox(label, value=key in prev, key=f"mos_dlg_{key}"):
+                picked.append(key)
+    st.caption("Colour coding on the tables: yellow vis < 3 sm / cig < 3000 ft / wind ≥ 25 kt; "
+               "orange < 2 sm / ≤ 2000 ft / ≥ 30 kt; red < 1 sm / ≤ 1000 ft / ≥ 35 kt; "
+               "pink ≤ 0.5 sm / < 400 ft / ≥ 40 kt.")
+    if st.button("View", type="primary", disabled=not picked, key="mos_dlg_go"):
+        st.session_state["mos_tables"] = picked
+        st.session_state["mos_tables_done"] = True
+        st.session_state["mos_icao_done"] = icao_input
+        st.rerun()
+
+
+# A new 4-letter entry (or a changed one) re-opens the pop-up.
+if len(icao_input) == 4 and (not st.session_state.get("mos_tables_done")
+                             or st.session_state.get("mos_icao_done") != icao_input):
+    _pick_tables()
+    st.stop()
+
+run_button = len(icao_input) == 4 and st.session_state.get("mos_tables_done")
+_tables = set(st.session_state.get("mos_tables", [k for k, _ in TABLES]))
 
 
 if run_button:
@@ -931,230 +983,242 @@ if run_button:
         st.warning("No data in overlap window.")
         st.stop()
 
-    # ---- 0. Model spread box plots (1 Oct) ----
-    _sp = st.empty()
-    _sp.markdown(
-        "<p style='text-align:center;font-size:18px;font-weight:700;"
-        "margin:8px 0'>Loading model spread (RRFS, HRRR, REFS)\u2026</p>",
-        unsafe_allow_html=True)
-    _now = datetime.now(timezone.utc)
-    _bucket = _now.strftime("%Y%m%d%H") + str(_now.minute // 10)
-    _hours24 = tuple(range(1, 25))
-    _det = {}
-    for _m in ("rrfs", "hrrr"):
-        _c = cached_det_cycle(_m, 24, _bucket)
-        _det[_m] = cached_det_point(_m, icao_input, _c, _hours24)[0] if _c else {}
-    _rc0 = cached_refs_cycle(_bucket)
-    _probs0 = cached_refs_probs(icao_input, _rc0, _hours24)[0] if _rc0 else {}
-    _sp.empty()
-    try:
-        st.markdown(build_spread_table(df_c, cycle, _det["rrfs"], _det["hrrr"], _probs0),
-                    unsafe_allow_html=True)
-    except Exception as _se:
-        st.caption(f"Model spread unavailable \u2014 {type(_se).__name__}: {_se}")
-
-    # ---- 1. Hourly deterministic MOS ----
-    section("Hourly NBM and GFS LAMP MOS")
-
-    # Build table row by row as raw HTML strings
-    times = df_c["valid_time"].tolist()
-    fhrs = df_c["fhr"].tolist()
-
-    # Header row
-    header_cells = [make_th("Field", is_row_label=True)]
-    for t in times:
-        tstr = pd.to_datetime(t).strftime("%m/%d<br>%HZ")
-        header_cells.append(
-            f'<th style="background:#121212;color:#FFFFFF;'
-            f'-webkit-text-fill-color:#FFFFFF;'
-            f'font-family:Courier New,monospace;font-size:12px;'
-            f'font-weight:bold;'
-            f'padding:3px 5px;text-align:center;border:1px solid #333333;'
-            f'white-space:nowrap;min-width:38px;">{tstr}</th>'
-        )
-    header_row = "<tr>" + "".join(header_cells) + "</tr>"
-
-    # F+ row
-    fhr_cells = [make_th("F+", is_row_label=True)]
-    for f in fhrs:
-        fhr_cells.append(make_cell(f"f+{int(f)}"))
-    fhr_row = "<tr>" + "".join(fhr_cells) + "</tr>"
-
-    # NBM VIS row
-    nbm_vis_cells = [make_th("NBM VIS", is_row_label=True)]
-    for v in df_c["NBM_vis_sm"]:
-        colors = vis_bg(v)
-        if colors:
-            nbm_vis_cells.append(make_cell(fmt_vis(v), colors[0], colors[1]))
-        else:
-            nbm_vis_cells.append(make_cell(fmt_vis(v)))
-    nbm_vis_row = "<tr>" + "".join(nbm_vis_cells) + "</tr>"
-
-    # LAMP VIS row
-    lamp_vis_cells = [make_th("LAMP VIS", is_row_label=True)]
-    for v in df_c["LAMP_vis_sm"]:
-        colors = vis_bg(v)
-        if colors:
-            lamp_vis_cells.append(make_cell(fmt_vis(v), colors[0], colors[1]))
-        else:
-            lamp_vis_cells.append(make_cell(fmt_vis(v)))
-    lamp_vis_row = "<tr>" + "".join(lamp_vis_cells) + "</tr>"
-
-    # NBM CIG row
-    nbm_cig_cells = [make_th("NBM CIG", is_row_label=True)]
-    for c, u in zip(df_c["NBM_cig_ft"], df_c["NBM_cig_unl"]):
-        colors = cig_bg(c, u)
-        if colors:
-            nbm_cig_cells.append(make_cell(fmt_cig(c, u), colors[0], colors[1]))
-        else:
-            nbm_cig_cells.append(make_cell(fmt_cig(c, u)))
-    nbm_cig_row = "<tr>" + "".join(nbm_cig_cells) + "</tr>"
-
-    # LAMP CIG row
-    lamp_cig_cells = [make_th("LAMP CIG", is_row_label=True)]
-    for c, u in zip(df_c["LAMP_cig_ft"], df_c["LAMP_cig_unl"]):
-        colors = cig_bg(c, u)
-        if colors:
-            lamp_cig_cells.append(make_cell(fmt_cig(c, u), colors[0], colors[1]))
-        else:
-            lamp_cig_cells.append(make_cell(fmt_cig(c, u)))
-    lamp_cig_row = "<tr>" + "".join(lamp_cig_cells) + "</tr>"
-
-    def _temp_row(label, series, color=True):
-        cells = [make_th(label, is_row_label=True)]
-        for _t in series:
-            _c = temp_bg(_t) if color else None
-            cells.append(make_cell(fmt_temp(_t), _c[0], _c[1])
-                         if _c else make_cell(fmt_temp(_t)))
-        return "<tr>" + "".join(cells) + "</tr>"
-
-    nbm_tmp_row = _temp_row("NBM TMP", df_c["NBM_tmp_f"]) \
-        if "NBM_tmp_f" in df_c.columns else ""
-    nbm_dpt_row = _temp_row("NBM DPT", df_c["NBM_dpt_f"],
-                            color=False) \
-        if "NBM_dpt_f" in df_c.columns else ""
-    lamp_tmp_row = _temp_row("LAMP TMP", df_c["LAMP_tmp_f"]) \
-        if "LAMP_tmp_f" in df_c.columns else ""
-    lamp_dpt_row = _temp_row("LAMP DPT", df_c["LAMP_dpt_f"],
-                             color=False) \
-        if "LAMP_dpt_f" in df_c.columns else ""
-
-    # Wind rows — direction / sustained / gust, per model.
-    # WSP colored by sustained speed; GST colored by gust; WDR plain.
-    nbm_wdr_row = build_wind_row("NBM WDR", df_c["NBM_wind_dir"], fmt=fmt_wdr)
-    nbm_wsp_row = build_wind_row(
-        "NBM WSP", df_c["NBM_wind_spd"], colored=True,
-        spd_series=df_c["NBM_wind_spd"])
-    nbm_gst_row = build_wind_row(
-        "NBM GST", df_c["NBM_wind_gst"], colored=True,
-        gst_series=df_c["NBM_wind_gst"])
-    lamp_wdr_row = build_wind_row("LAMP WDR", df_c["LAMP_wind_dir"], fmt=fmt_wdr)
-    lamp_wsp_row = build_wind_row(
-        "LAMP WSP", df_c["LAMP_wind_spd"], colored=True,
-        spd_series=df_c["LAMP_wind_spd"])
-    lamp_gst_row = build_wind_row(
-        "LAMP GST", df_c["LAMP_wind_gst"], colored=True,
-        gst_series=df_c["LAMP_wind_gst"])
-
-    _wrap_open = (
-        '<div style="overflow-x:auto;background:#000000;padding:4px;'
-        'border:1px solid #333333;{margin}">'
-    )
-    _label = (
-        '<div style="font-family:Courier New,monospace;font-size:13px;'
-        'font-weight:bold;color:#FFFFFF;-webkit-text-fill-color:#FFFFFF;'
-        'padding:1px 2px;">{name}</div>'
-    )
-    table_html = (
-        _wrap_open.format(margin="margin-bottom:10px;")
-        + _label.format(name="NBM")
-        + '<table style="border-collapse:collapse;margin:0;">'
-        + f'<thead>{header_row}</thead>'
-        + f'<tbody>{fhr_row}{nbm_vis_row}{nbm_cig_row}'
-        + f'{nbm_tmp_row}{nbm_dpt_row}'
-        + f'{nbm_wdr_row}{nbm_wsp_row}{nbm_gst_row}</tbody>'
-        + '</table></div>'
-        + _wrap_open.format(margin="")
-        + _label.format(name="GFS LAMP")
-        + '<table style="border-collapse:collapse;margin:0;">'
-        + f'<thead>{header_row}</thead>'
-        + f'<tbody>{fhr_row}{lamp_vis_row}{lamp_cig_row}'
-        + f'{lamp_tmp_row}{lamp_dpt_row}'
-        + f'{lamp_wdr_row}{lamp_wsp_row}{lamp_gst_row}</tbody>'
-        + '</table></div>'
-    )
-
-    st.markdown(table_html, unsafe_allow_html=True)
-
-    # ---- 2. Probability matrix: NBM calibrated + REFS ensemble ----
-    section("REFS and NBM Flight Probability Matrix")
-    try:
-        _nbm_prob_html = build_nbm_prob_table(
-            df_c, datetime.fromisoformat(cycle_iso))
-    except Exception as _npe:
-        _nbm_prob_html = ""
-        st.caption(f"NBM probabilities unavailable \u2014 {_npe}")
-    if _nbm_prob_html:
-        st.markdown(_nbm_prob_html, unsafe_allow_html=True)
-
-    _rp = st.empty()
-    _rp.markdown(
-        "<p style='text-align:center;font-size:18px;font-weight:700;"
-        "margin:8px 0'>Loading REFS probabilities\u2026</p>",
-        unsafe_allow_html=True)
-    _refs_hours = tuple(range(1, 25))
-    _rc = cached_refs_cycle(
-        datetime.now(timezone.utc).strftime("%Y%m%d%H")
-        + str(datetime.now(timezone.utc).minute // 10))
-    if _rc:
-        _probs, _rerr = cached_refs_probs(icao_input, _rc, _refs_hours)
-        _rp.empty()
-        if _probs and any(_probs.values()):
-            st.markdown(build_refs_prob_table(
-                _probs, datetime.fromisoformat(_rc), _refs_hours),
-                unsafe_allow_html=True)
-        else:
-            st.caption("REFS probabilities unavailable"
-                       + (f" \u2014 {_rerr}" if _rerr else "") + ".")
-    else:
-        _rp.empty()
-        st.caption("REFS probabilities: no complete cycle found.")
-
-    # ---- 3. Point forecasts: RRFS and HRRR ----
-    section("RRFS and HRRR Point Forecast")
-    render_point_table("rrfs", "RRFS", icao_input)
-    render_point_table("hrrr", "HRRR", icao_input)
-
-    # ---- 4. Medium to long range ----
-    section("Medium to Long Range NBM")
-
-    # Extended tables: NBS (3-hourly) + NBE (12-hourly, wind + T/Td)
-    with st.spinner("Fetching NBS + NBE..."):
+    if "SPREAD" in _tables:
+        # ---- 0. Model spread box plots (1 Oct) ----
+        _sp = st.empty()
+        _sp.markdown(
+            "<p style='text-align:center;font-size:18px;font-weight:700;"
+            "margin:8px 0'>Loading model spread (RRFS, HRRR, REFS)\u2026</p>",
+            unsafe_allow_html=True)
+        _now = datetime.now(timezone.utc)
+        _bucket = _now.strftime("%Y%m%d%H") + str(_now.minute // 10)
+        _hours24 = tuple(range(1, 25))
+        _det = {}
+        for _m in ("rrfs", "hrrr"):
+            _c = cached_det_cycle(_m, 24, _bucket)
+            _det[_m] = cached_det_point(_m, icao_input, _c, _hours24)[0] if _c else {}
+        _rc0 = cached_refs_cycle(_bucket)
+        _probs0 = cached_refs_probs(icao_input, _rc0, _hours24)[0] if _rc0 else {}
+        _sp.empty()
         try:
-            nbs_df, nbe_df = cached_extended_tables(icao_input, cycle_iso)
-        except Exception as e:
-            nbs_df, nbe_df = pd.DataFrame(), pd.DataFrame()
-            st.warning(f"NBS/NBE fetch failed: {e}")
+            st.markdown(build_spread_table(df_c, cycle, _det["rrfs"], _det["hrrr"], _probs0),
+                        unsafe_allow_html=True)
+        except Exception as _se:
+            st.caption(f"Model spread unavailable \u2014 {type(_se).__name__}: {_se}")
 
-    if len(nbs_df):
-        st.markdown(
-            build_generic_table(nbs_df, "NBS (3-hourly)", show_viscig=True),
-            unsafe_allow_html=True,
-        )
-    else:
-        st.caption("NBS: no data for this cycle.")
+    if "NBH" in _tables:
+        # ---- 1. Hourly deterministic MOS ----
+        section("Hourly NBM and GFS LAMP MOS")
 
-    if len(nbe_df):
-        st.markdown(
-            build_generic_table(
-                nbe_df, "NBE (12-hourly \u00b7 T/Td and wind \u2014 "
-                "VIS/CIG not produced at extended range)",
-                show_viscig=False,
-            ),
-            unsafe_allow_html=True,
+        # Build table row by row as raw HTML strings
+        times = df_c["valid_time"].tolist()
+        fhrs = df_c["fhr"].tolist()
+
+        # Header row
+        header_cells = [make_th("Field", is_row_label=True)]
+        for t in times:
+            tstr = pd.to_datetime(t).strftime("%m/%d<br>%HZ")
+            header_cells.append(
+                f'<th style="background:#121212;color:#FFFFFF;'
+                f'-webkit-text-fill-color:#FFFFFF;'
+                f'font-family:Courier New,monospace;font-size:12px;'
+                f'font-weight:bold;'
+                f'padding:3px 5px;text-align:center;border:1px solid #333333;'
+                f'white-space:nowrap;min-width:38px;">{tstr}</th>'
+            )
+        header_row = "<tr>" + "".join(header_cells) + "</tr>"
+
+        # F+ row
+        fhr_cells = [make_th("F+", is_row_label=True)]
+        for f in fhrs:
+            fhr_cells.append(make_cell(f"f+{int(f)}"))
+        fhr_row = "<tr>" + "".join(fhr_cells) + "</tr>"
+
+        # NBM VIS row
+        nbm_vis_cells = [make_th("NBM VIS", is_row_label=True)]
+        for v in df_c["NBM_vis_sm"]:
+            colors = vis_bg(v)
+            if colors:
+                nbm_vis_cells.append(make_cell(fmt_vis(v), colors[0], colors[1]))
+            else:
+                nbm_vis_cells.append(make_cell(fmt_vis(v)))
+        nbm_vis_row = "<tr>" + "".join(nbm_vis_cells) + "</tr>"
+
+        # LAMP VIS row
+        lamp_vis_cells = [make_th("LAMP VIS", is_row_label=True)]
+        for v in df_c["LAMP_vis_sm"]:
+            colors = vis_bg(v)
+            if colors:
+                lamp_vis_cells.append(make_cell(fmt_vis(v), colors[0], colors[1]))
+            else:
+                lamp_vis_cells.append(make_cell(fmt_vis(v)))
+        lamp_vis_row = "<tr>" + "".join(lamp_vis_cells) + "</tr>"
+
+        # NBM CIG row
+        nbm_cig_cells = [make_th("NBM CIG", is_row_label=True)]
+        for c, u in zip(df_c["NBM_cig_ft"], df_c["NBM_cig_unl"]):
+            colors = cig_bg(c, u)
+            if colors:
+                nbm_cig_cells.append(make_cell(fmt_cig(c, u), colors[0], colors[1]))
+            else:
+                nbm_cig_cells.append(make_cell(fmt_cig(c, u)))
+        nbm_cig_row = "<tr>" + "".join(nbm_cig_cells) + "</tr>"
+
+        # LAMP CIG row
+        lamp_cig_cells = [make_th("LAMP CIG", is_row_label=True)]
+        for c, u in zip(df_c["LAMP_cig_ft"], df_c["LAMP_cig_unl"]):
+            colors = cig_bg(c, u)
+            if colors:
+                lamp_cig_cells.append(make_cell(fmt_cig(c, u), colors[0], colors[1]))
+            else:
+                lamp_cig_cells.append(make_cell(fmt_cig(c, u)))
+        lamp_cig_row = "<tr>" + "".join(lamp_cig_cells) + "</tr>"
+
+        def _temp_row(label, series, color=True):
+            cells = [make_th(label, is_row_label=True)]
+            for _t in series:
+                _c = temp_bg(_t) if color else None
+                cells.append(make_cell(fmt_temp(_t), _c[0], _c[1])
+                             if _c else make_cell(fmt_temp(_t)))
+            return "<tr>" + "".join(cells) + "</tr>"
+
+        nbm_tmp_row = _temp_row("NBM TMP", df_c["NBM_tmp_f"]) \
+            if "NBM_tmp_f" in df_c.columns else ""
+        nbm_dpt_row = _temp_row("NBM DPT", df_c["NBM_dpt_f"],
+                                color=False) \
+            if "NBM_dpt_f" in df_c.columns else ""
+        lamp_tmp_row = _temp_row("LAMP TMP", df_c["LAMP_tmp_f"]) \
+            if "LAMP_tmp_f" in df_c.columns else ""
+        lamp_dpt_row = _temp_row("LAMP DPT", df_c["LAMP_dpt_f"],
+                                 color=False) \
+            if "LAMP_dpt_f" in df_c.columns else ""
+
+        # Wind rows — direction / sustained / gust, per model.
+        # WSP colored by sustained speed; GST colored by gust; WDR plain.
+        nbm_wdr_row = build_wind_row("NBM WDR", df_c["NBM_wind_dir"], fmt=fmt_wdr)
+        nbm_wsp_row = build_wind_row(
+            "NBM WSP", df_c["NBM_wind_spd"], colored=True,
+            spd_series=df_c["NBM_wind_spd"])
+        nbm_gst_row = build_wind_row(
+            "NBM GST", df_c["NBM_wind_gst"], colored=True,
+            gst_series=df_c["NBM_wind_gst"])
+        lamp_wdr_row = build_wind_row("LAMP WDR", df_c["LAMP_wind_dir"], fmt=fmt_wdr)
+        lamp_wsp_row = build_wind_row(
+            "LAMP WSP", df_c["LAMP_wind_spd"], colored=True,
+            spd_series=df_c["LAMP_wind_spd"])
+        lamp_gst_row = build_wind_row(
+            "LAMP GST", df_c["LAMP_wind_gst"], colored=True,
+            gst_series=df_c["LAMP_wind_gst"])
+
+        _wrap_open = (
+            '<div style="overflow-x:auto;background:#000000;padding:4px;'
+            'border:1px solid #333333;{margin}">'
         )
-    else:
-        st.caption("NBE: no data for this cycle.")
+        _label = (
+            '<div style="font-family:Courier New,monospace;font-size:13px;'
+            'font-weight:bold;color:#FFFFFF;-webkit-text-fill-color:#FFFFFF;'
+            'padding:1px 2px;">{name}</div>'
+        )
+        table_html = (
+            _wrap_open.format(margin="margin-bottom:10px;")
+            + _label.format(name="NBM")
+            + '<table style="border-collapse:collapse;margin:0;">'
+            + f'<thead>{header_row}</thead>'
+            + f'<tbody>{fhr_row}{nbm_vis_row}{nbm_cig_row}'
+            + f'{nbm_tmp_row}{nbm_dpt_row}'
+            + f'{nbm_wdr_row}{nbm_wsp_row}{nbm_gst_row}</tbody>'
+            + '</table></div>'
+            + _wrap_open.format(margin="")
+            + _label.format(name="GFS LAMP")
+            + '<table style="border-collapse:collapse;margin:0;">'
+            + f'<thead>{header_row}</thead>'
+            + f'<tbody>{fhr_row}{lamp_vis_row}{lamp_cig_row}'
+            + f'{lamp_tmp_row}{lamp_dpt_row}'
+            + f'{lamp_wdr_row}{lamp_wsp_row}{lamp_gst_row}</tbody>'
+            + '</table></div>'
+        )
+
+        st.markdown(table_html, unsafe_allow_html=True)
+
+    if "NBMP" in _tables or "REFS" in _tables:
+        # ---- 2. Probability matrix: NBM calibrated + REFS ensemble ----
+        section("REFS and NBM Flight Probability Matrix")
+        if "NBMP" in _tables:
+            try:
+                _nbm_prob_html = build_nbm_prob_table(
+                    df_c, datetime.fromisoformat(cycle_iso))
+            except Exception as _npe:
+                _nbm_prob_html = ""
+                st.caption(f"NBM probabilities unavailable \u2014 {_npe}")
+            if _nbm_prob_html:
+                st.markdown(_nbm_prob_html, unsafe_allow_html=True)
+
+        if "REFS" in _tables:
+            _rp = st.empty()
+            _rp.markdown(
+                "<p style='text-align:center;font-size:18px;font-weight:700;"
+                "margin:8px 0'>Loading REFS probabilities\u2026</p>",
+                unsafe_allow_html=True)
+            _refs_hours = tuple(range(1, 25))
+            _rc = cached_refs_cycle(
+                datetime.now(timezone.utc).strftime("%Y%m%d%H")
+                + str(datetime.now(timezone.utc).minute // 10))
+            if _rc:
+                _probs, _rerr = cached_refs_probs(icao_input, _rc, _refs_hours)
+                _rp.empty()
+                if _probs and any(_probs.values()):
+                    st.markdown(build_refs_prob_table(
+                        _probs, datetime.fromisoformat(_rc), _refs_hours),
+                        unsafe_allow_html=True)
+                else:
+                    st.caption("REFS probabilities unavailable"
+                               + (f" \u2014 {_rerr}" if _rerr else "") + ".")
+            else:
+                _rp.empty()
+                st.caption("REFS probabilities: no complete cycle found.")
+
+    if "RRFS" in _tables or "HRRR" in _tables:
+        # ---- 3. Point forecasts: RRFS and HRRR ----
+        section("RRFS and HRRR Point Forecast")
+        if "RRFS" in _tables:
+            render_point_table("rrfs", "RRFS", icao_input)
+        if "HRRR" in _tables:
+            render_point_table("hrrr", "HRRR", icao_input)
+
+    if "NBS" in _tables or "NBE" in _tables:
+        # ---- 4. Medium to long range ----
+        section("Medium to Long Range NBM")
+
+        # Extended tables: NBS (3-hourly) + NBE (12-hourly, wind + T/Td)
+        with st.spinner("Fetching NBS + NBE..."):
+            try:
+                nbs_df, nbe_df = cached_extended_tables(icao_input, cycle_iso)
+            except Exception as e:
+                nbs_df, nbe_df = pd.DataFrame(), pd.DataFrame()
+                st.warning(f"NBS/NBE fetch failed: {e}")
+
+        if "NBS" in _tables:
+            if len(nbs_df):
+                st.markdown(
+                    build_generic_table(nbs_df, "NBS (3-hourly)", show_viscig=True),
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.caption("NBS: no data for this cycle.")
+
+        if "NBE" in _tables:
+            if len(nbe_df):
+                st.markdown(
+                    build_generic_table(
+                        nbe_df, "NBE (12-hourly \u00b7 T/Td and wind \u2014 "
+                        "VIS/CIG not produced at extended range)",
+                        show_viscig=False,
+                    ),
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.caption("NBE: no data for this cycle.")
+
 
     # CSV
     csv_df = pd.DataFrame({
@@ -1179,4 +1243,4 @@ if run_button:
     )
 
 else:
-    st.info("Enter an ICAO code and click Refresh.")
+    st.info("Type a four-letter ICAO above to open the table list.")
