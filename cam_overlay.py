@@ -32,6 +32,7 @@ from __future__ import annotations
 import io
 import math
 import os
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -204,7 +205,7 @@ def _daemon(outdir):
         try:
             import resource
             return resource.getrusage(
-                resource.RUSAGE_SELF).ru_maxrss / 1024
+                resource.RUSAGE_SELF).ru_maxrss / (1024 * 1024 if sys.platform == "darwin" else 1024)
         except Exception:
             return 0.0
 

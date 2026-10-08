@@ -39,6 +39,7 @@ a minute.
 from __future__ import annotations
 
 import os
+import sys
 import re
 import threading
 import time
@@ -134,10 +135,12 @@ MEM_CEILING_MB = float(os.environ.get("MRMS_MEM_CEILING_MB", "2400"))
 
 
 def _rss_mb() -> float:
+    # ru_maxrss is kilobytes on Linux but BYTES on macOS (7 Oct: on the
+    # Mac every pass was "SKIPPED, RSS 1176112 MB over 2400 MB").
     try:
         import resource
 
-        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 * 1024 if sys.platform == "darwin" else 1024)
     except Exception:
         return 0.0
 

@@ -49,6 +49,7 @@ from __future__ import annotations
 import gc
 import io
 import os
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -2058,7 +2059,7 @@ def _mem_mb():
     """Resident set size of this process, MB."""
     try:
         import resource
-        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 * 1024 if sys.platform == "darwin" else 1024)
     except Exception:
         return 0.0
 
