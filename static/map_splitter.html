@@ -92,7 +92,31 @@ const $ = id => document.getElementById(id);
 // token) or a static viewer under /app/static.
 // Catalogue (6 Oct): emptied on purpose - the owner will specify what
 // can be chosen, and how. Add entries as {g: 'Group', items: [{n, p, d}]}.
-const CATALOG = [];
+// 7 Oct: catalogue back. "c" is the API cost of putting the page in
+// a panel, shown under each item. The tomorrow.io frames are built
+// once by the warmer and shared by every viewer and panel, so the
+// Map Splitter does not multiply tile requests; the only per-panel
+// spend is a point forecast (1 request / station / hour) when a
+// station is opened in a Weather Mapping 2-panel.
+const CATALOG = [
+  {g: 'Forecast Tools', items: [
+    {n: 'Station Forecast', p: '/', d: 'scope, radar / satellite, winds, flight conditions', c: 'NOAA + NEXRAD + GOES only - no tomorrow.io'},
+    {n: 'Mesoscale Models', p: '/Mesoscale_Models', d: 'HRRR / RRFS / REFS by sector, 1-4 plots', c: 'NOAA only'},
+    {n: 'MOS Tables', p: '/MOS_Tables', d: 'NBM, LAMP, REFS, RRFS, HRRR for one station', c: 'NOAA only'},
+  ]},
+  {g: 'Situational Awareness', items: [
+    {n: 'JBU Weather Map CONUS', p: '/JBU_Weather_Map', d: 'network map, routes, fleet, SIGMETs', c: 'NOAA + OpenSky only'},
+    {n: 'Weather Mapping', p: '/Large_Scale_Map', d: 'tomorrow.io tiles + REFS / RRFS / HRRR / GFS layers', c: 'tomorrow.io: shares the warmer\'s frames (no extra tiles); 1 request per station per hour in the 2-panel'},
+  ]},
+  {g: 'Radar', items: [
+    {n: 'L2 Radar Lab', p: '/L2_Radar_Lab', d: 'Level II single-site', c: 'NOAA only'},
+    {n: 'Level III Radar', p: '/L3_Radar_N90', d: 'N90 Level III', c: 'NOAA only'},
+  ]},
+  {g: 'Archive', items: [
+    {n: 'Archive Satellite', p: '/Archive_Satellite_Position', d: 'GOES by time and position', c: 'NOAA only'},
+    {n: 'Archive Radar', p: '/Archive_Radar_Position', d: 'radar by time and position', c: 'NOAA only'},
+  ]},
+];
 function urlFor(it, icao) {
   if (it.p === 'scope') return `${BASE}/app/static/scope_${(icao || 'KJFK').toUpperCase()}.html`;
   if (it.p.startsWith('http')) return it.p;
@@ -211,7 +235,7 @@ let target = null;
 function openData(node) {
   target = node;
   $('catalog').innerHTML = CATALOG.map(g => `<div class="grp">${g.g.toUpperCase()}</div><div class="items">` +
-    g.items.map((it, j) => `<div class="item" data-g="${g.g}" data-j="${j}"><div>${it.n}</div><div class="d">${it.d}</div>${it.icao ? '<div class="row" style="margin:6px 0 0"><input type="text" maxlength="4" placeholder="ICAO" value="KJFK" style="width:70px" onclick="event.stopPropagation()"></div>' : ''}</div>`).join('') + '</div>').join('');
+    g.items.map((it, j) => `<div class="item" data-g="${g.g}" data-j="${j}"><div>${it.n}</div><div class="d">${it.d}</div>${it.c ? `<div class="d" style="color:${it.c.startsWith('tomorrow') ? '#FFD400' : '#6E6E6E'}">${it.c}</div>` : ''}${it.icao ? '<div class="row" style="margin:6px 0 0"><input type="text" maxlength="4" placeholder="ICAO" value="KJFK" style="width:70px" onclick="event.stopPropagation()"></div>' : ''}</div>`).join('') + '</div>').join('');
   $('catalog').querySelectorAll('.item').forEach(el => el.addEventListener('click', () => {
     const g = CATALOG.find(x => x.g === el.dataset.g), it = g.items[+el.dataset.j];
     const inp = el.querySelector('input'); const icao = inp ? inp.value.trim().toUpperCase() : '';
