@@ -31,3 +31,5 @@ mac/.env*
 
 # runtime logs written by the warmers into static/
 static/*.log
+static/splitter_catalog.json
+static/tio_map_*.html

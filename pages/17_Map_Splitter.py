@@ -9,7 +9,9 @@ the login token, so each panel is the real page with its own
 controls. This file only hosts the iframe and passes the token.
 """
 
+import hashlib
 import os
+from pathlib import Path
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -52,13 +54,30 @@ st.markdown(
 
 _base = _origin()
 _tok = st.query_params.get("k", "")
+
+# The Add Data catalogue (9 Oct): written here from the site's own
+# registries so the picker always matches what the pages can show.
+import json
+from core import tio_map as _TIO
+try:
+    from core import model_tiles as _MT
+    _model_layers = [{"k": k, "n": _MT.field_label(k)} for k in _MT.field_keys()]
+except Exception:
+    _model_layers = []
+_catalog = {
+    "wm_sectors": [{"k": "", "n": "CONUS"}] + [{"k": k, "n": v[0]} for k, v in _TIO.SECTORS.items()],
+    "wm_layers": ([{"k": f, "n": "tomorrow.io · " + _TIO.FIELD_LABEL.get(f, f)} for f in _TIO.FIELDS]
+                  + [{"k": d["k"], "n": "NOAA · " + d["n"]} for d in _model_layers]),
+}
+_cat_path = Path(__file__).resolve().parent.parent / "static" / "splitter_catalog.json"
+_cat_txt = json.dumps(_catalog)
+if not _cat_path.exists() or _cat_path.read_text() != _cat_txt:
+    _cat_path.write_text(_cat_txt)
 # Cache-buster: the iframe URL carries a hash of the file, so a new
 # version is always fetched (6 Oct: a stale copy kept the old catalogue).
-import hashlib
-from pathlib import Path
 _v = hashlib.md5((Path(__file__).resolve().parent.parent / "static" / "map_splitter.html")
                  .read_bytes()).hexdigest()[:10]
-_src = (f"{_base}/app/static/map_splitter.html?v={_v}&base={_base}"
+_src = (f"{_base}/app/static/map_splitter.html?v={_v}&base={_base}&cat={hashlib.md5(_cat_txt.encode()).hexdigest()[:8]}"
         + (f"&k={_tok}" if _tok else ""))
 with st.container(key="bm-splitter"):
     components.iframe(_src, height=HEIGHT)

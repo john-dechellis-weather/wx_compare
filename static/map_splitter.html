@@ -106,12 +106,21 @@ const CATALOG = [
     {k: 'NBS', n: 'NBS 3-hourly NBM [72 hr]'},
     {k: 'NBE', n: 'NBE 12-hourly NBM [185 hr]'},
   ]},
+  // sector + layer lists arrive from static/splitter_catalog.json
+  // (written by the page from the site's registries)
+  {g: 'Weather Mapping', page: '/Large_Scale_Map', param: 'layer', sectors: [], items: [],
+   note: 'one hi-res sector is warmed at a time (site-wide): the last sector chosen wins, CONUS costs nothing extra'},
 ];
-function urlFor(g, it, icao) {
+fetch(`${BASE}/app/static/splitter_catalog.json?_=${Q.get('cat') || Date.now()}`).then(r => r.json()).then(j => {
+  const g = CATALOG.find(x => x.g === 'Weather Mapping');
+  g.sectors = j.wm_sectors || []; g.items = j.wm_layers || [];
+}).catch(() => {});
+function urlFor(g, it, icao, sector) {
   // Streamlit page paths come from the file names; the page shows just
   // the one table / map when its "param" is given.
   return `${BASE}${g.page}?embed=true&${g.param}=${encodeURIComponent(it.k)}` +
-    (icao ? `&icao=${encodeURIComponent(icao)}` : '') + (TOK ? '&k=' + encodeURIComponent(TOK) : '');
+    (icao ? `&icao=${encodeURIComponent(icao)}` : '') + (sector ? `&sector=${encodeURIComponent(sector)}` : '') +
+    (TOK ? '&k=' + encodeURIComponent(TOK) : '');
 }
 
 // ---------------------------------------------------------------- layout tree
@@ -180,7 +189,7 @@ function render() {
   place(tree, 0, 0, R.width, R.height);
 }
 function emptyContent(node) {
-  return `<div class="empty"><div class="plus" title="Add data">+</div><div class="lbl">ADD DATA</div><div class="lbl2">pick a MOS table (more sources to follow)</div></div>`;
+  return `<div class="empty"><div class="plus" title="Add data">+</div><div class="lbl">ADD DATA</div><div class="lbl2">MOS tables and Weather Mapping layers</div></div>`;
 }
 function leafContent(node) {
   const c = node.content;
@@ -226,10 +235,11 @@ function openData(node) {
   target = node;
   $('catalog').innerHTML = CATALOG.map((g, gi) => `<div class="grp">${g.g}</div>
     <div class="row" style="gap:8px;flex-wrap:wrap;margin:4px 0 10px">
+      ${g.sectors ? `<select data-sector="${gi}" style="min-width:150px">${g.sectors.map(sc => `<option value="${sc.k}">${sc.n}</option>`).join('')}</select>` : ''}
       <select data-g="${gi}" style="flex:1;min-width:260px">${g.items.map((it, j) => `<option value="${j}">${it.n}</option>`).join('')}</select>
       ${g.icao ? `<input type="text" maxlength="4" placeholder="ICAO" value="${lastIcao}" style="width:80px;text-transform:uppercase" data-icao="${gi}">` : ''}
       <button class="primary" data-add="${gi}">Add</button>
-    </div>`).join('');
+    </div>${g.note ? `<div class="d" style="margin:-6px 0 10px;color:#6E6E6E">${g.note}</div>` : ''}`).join('');
   $('catalog').querySelectorAll('[data-add]').forEach(b => b.addEventListener('click', () => {
     const gi = +b.dataset.add, g = CATALOG[gi];
     const it = g.items[+$('catalog').querySelector(`select[data-g="${gi}"]`).value];
@@ -237,7 +247,10 @@ function openData(node) {
     const icao = inp ? inp.value.trim().toUpperCase() : '';
     if (g.icao && icao.length !== 4) { inp.focus(); inp.style.borderColor = '#FF3B30'; return; }
     if (icao) lastIcao = icao;
-    setContent({n: `${g.g} · ${it.n.replace(/ \[.*$/, '')}${icao ? ' · ' + icao : ''}`, url: urlFor(g, it, icao)});
+    const ss = $('catalog').querySelector(`select[data-sector="${gi}"]`);
+    const sector = ss ? ss.value : '';
+    const sname = ss ? ss.options[ss.selectedIndex].text : '';
+    setContent({n: `${g.g} · ${it.n.replace(/ \[.*$/, '')}${icao ? ' · ' + icao : ''}${sector ? ' · ' + sname : ''}`, url: urlFor(g, it, icao, sector)});
   }));
   $('mData').classList.add('show');
 }

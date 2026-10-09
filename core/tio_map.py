@@ -1603,7 +1603,7 @@ def stations_geojson(static_dir) -> dict:
 
 def map_html(man: dict, base: str, stations: dict, height: int = 860,
              model: str = None, pt_built: str = "", noaa_built: str = "",
-             sector: str = "") -> str:
+             sector: str = "", preset: list = None, fit: tuple = None) -> str:
     """MapLibre page: CARTO dark vector basemap, the active model's
     warmed frames as image sources (added lazily, first time a layer
     and hour are shown), layer toggles with their own opacity, an
@@ -1767,8 +1767,12 @@ const PT_FIELD = {json.dumps({f: POINT_FIELD.get(f, f) for f in FIELDS})};
 const PFIELDS = {json.dumps(pf)};
 const HIRES_MINZOOM = 5.5;
 const BB = [[{W},{S}],[{E},{N}]];
+// Map Splitter panel (9 Oct): PRESET = the one layer to show, FIT = the
+// sector box to open on (null = CONUS). Menus still work after that.
+const PRESET = {json.dumps(list(preset or []))};
+const FIT = {json.dumps([[fit[0], fit[1]], [fit[2], fit[3]]] if fit else None)};
 const map = new maplibregl.Map({{container:'m', style:{json.dumps(style)},
-  bounds:BB, fitBoundsOptions:{{padding:8}}, minZoom:2.2, maxZoom:9,
+  bounds:FIT || BB, fitBoundsOptions:{{padding:8}}, minZoom:2.2, maxZoom:9,
   maxBounds:[[{W - 25},{S - 15}],[{E + 25},{N + 8}]], attributionControl:true}});
 map.addControl(new maplibregl.NavigationControl({{showCompass:false}}));
 const $ = id => document.getElementById(id);
@@ -1776,7 +1780,9 @@ let ready = false, ti = 0, timer = null;
 const on = {{}}, op = {{}};
 // (7 Oct) :not(.mgf) - the meteogram's element boxes share the .ly rows and
 // were being read as map layers, drawing four layers nobody switched on.
-document.querySelectorAll('.ly input[type=checkbox]:not(.mgf)').forEach(c => {{ on[c.dataset.f] = c.checked; c.onchange = () => {{ on[c.dataset.f] = c.checked; draw(); }}; }});
+document.querySelectorAll('.ly input[type=checkbox]:not(.mgf)').forEach(c => {{
+  if (PRESET.length) c.checked = PRESET.includes(c.dataset.f);
+  on[c.dataset.f] = c.checked; c.onchange = () => {{ on[c.dataset.f] = c.checked; draw(); }}; }});
 document.querySelectorAll('.ly input[type=range]').forEach(r => {{ op[r.dataset.f] = +r.value / 100; r.oninput = () => {{ op[r.dataset.f] = +r.value / 100; draw(); }}; }});
 function key(f) {{ return 'tio_' + (f.hub ? f.hub + '_' : '') + f.field + '_' + f.step; }}
 function frame(field, step) {{ return F.find(f => f.field === field && f.step === step && !f.hub); }}
@@ -2246,7 +2252,7 @@ function applyFilter() {{
   ['st-dot','st-lab'].forEach(l => {{ map.setFilter(l, ['in', ['get','kind'], ['literal', kinds]]);
     map.setLayoutProperty(l, 'visibility', kinds.length ? 'visible' : 'none'); }});
 }}
-$('bfit').onclick = () => map.fitBounds(BB, {{padding:8}});
+$('bfit').onclick = () => map.fitBounds(FIT || BB, {{padding:8}});
 document.addEventListener('click', e => {{ document.querySelectorAll('details.dd[open]').forEach(d => {{ if (!d.contains(e.target)) d.removeAttribute('open'); }}); }});
 draw();
 </script></body></html>"""

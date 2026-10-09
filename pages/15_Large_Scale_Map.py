@@ -58,8 +58,23 @@ except Exception:
 # CONUS frame of RRFS / HRRR / NAM nest from core/model_map.py - the
 # lightning source, since tomorrow.io tiles are spent on the other
 # five fields.
+# PANEL MODE (9 Oct): the Map Splitter opens one layer, optionally on a
+# hi-res sector, with ?layer=<field | model:code>&sector=<key>. No
+# title, view radio, sector picker or status expander - just the map.
+_qp = st.query_params
+PANEL_LAYER = (_qp.get("layer") or "").strip() or None
+PANEL_SECTOR = (_qp.get("sector") or "").strip()
+if PANEL_LAYER:
+    st.session_state["bm_embed"] = True
+    st.markdown("<style>header,[data-testid='stHeader'],.bm-clock{display:none !important}"
+                ".stApp .block-container{padding:2px 4px 0 4px !important;max-width:100% !important}"
+                "</style>", unsafe_allow_html=True)
+    if PANEL_SECTOR and PANEL_SECTOR in TIO.SECTORS and TIO.active_sector(STATIC) != PANEL_SECTOR:
+        TIO.set_sector(STATIC, PANEL_SECTOR)      # site-wide: one sector warms at a time
+
 _h1, _h2 = st.columns([2, 1.6])
 with _h1:
+  if not PANEL_LAYER:
     st.markdown(
         '<div style="font-size:16px;font-weight:700;color:#FFFFFF;'
         'margin:0 0 2px 0">WEATHER MAPPING</div>'
@@ -70,9 +85,9 @@ with _h1:
         'frame of RRFS &middot; HRRR &middot; NAM nest incl. lightning</div>',
         unsafe_allow_html=True)
 with _h2:
-    view = st.radio("View", ["tomorrow.io", "NOAA models"],
-                    horizontal=True, key="lsm_view",
-                    label_visibility="collapsed")
+    view = "tomorrow.io" if PANEL_LAYER else st.radio(
+        "View", ["tomorrow.io", "NOAA models"], horizontal=True, key="lsm_view",
+        label_visibility="collapsed")
 
 if view == "NOAA models":
     from core import model_map as _MM
@@ -84,7 +99,7 @@ if view == "NOAA models":
 # warmer serves ONE model and a switch re-warms every frame (~1,280
 # requests). Shown only when TIO_MODELS names more than one.
 _active = TIO.active_model(STATIC)
-if len(TIO.MODELS) > 1:
+if len(TIO.MODELS) > 1 and not PANEL_LAYER:
     _m1, _m2 = st.columns([1.2, 3])
     with _m1:
         _pick = st.radio("Model", list(TIO.MODELS),
@@ -112,7 +127,7 @@ if len(TIO.MODELS) > 1:
 # High-resolution sector: one at a time, warmed at zoom 6 on the "now"
 # cadence for TIO_HIRES_FIELDS; "None" spends nothing.
 _sector = TIO.active_sector(STATIC)
-if TIO.HIRES_ON and TIO.SECTORS:
+if TIO.HIRES_ON and TIO.SECTORS and not PANEL_LAYER:
     _s1, _s2 = st.columns([1.2, 3])
     _opts = [""] + list(TIO.SECTORS)
     with _s1:
@@ -187,8 +202,14 @@ def _body():
                             height=HEIGHT, model=_active,
                             pt_built=_pt.get("built", ""),
                             noaa_built=_no.get("built", ""),
-                            sector=_sector)
-        name = "tio_map.html"
+                            sector=_sector,
+                            preset=[PANEL_LAYER] if PANEL_LAYER else None,
+                            fit=(TIO.SECTORS[PANEL_SECTOR][1]
+                                 if PANEL_LAYER and PANEL_SECTOR in TIO.SECTORS else None))
+        # Panels get their own file (one layer, one sector); the page
+        # keeps tio_map.html.
+        name = (f"tio_map_{PANEL_LAYER.replace(':', '-')}_{PANEL_SECTOR or 'conus'}.html"
+                if PANEL_LAYER else "tio_map.html")
         # Rewritten only when the page itself changes (model, sector);
         # new frames reach the open viewer through its own manifest
         # poll, so the iframe is never reloaded under the user.
@@ -206,6 +227,9 @@ def _body():
 
 
 _body()
+
+if PANEL_LAYER:
+    st.stop()
 
 with st.expander("tomorrow.io warmer status", expanded=False):
     u = TIO.usage(STATIC)
