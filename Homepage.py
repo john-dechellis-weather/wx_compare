@@ -486,7 +486,11 @@ def _top_nav(current) -> None:
 
 # Map Splitter panels (5 Oct) embed pages with ?embed=true: no top bar
 # there, the panel's title bar is the navigation.
-if st.query_params.get("embed") != "true":
+# 9 Oct: remembered in the session too - a rerun inside the embedded
+# page can arrive without the parameter and was showing the bar.
+if st.query_params.get("embed") == "true":
+    st.session_state["bm_embed"] = True
+if not st.session_state.get("bm_embed"):
     _top_nav(nav)
 else:
     st.markdown("<style>.stApp .block-container{padding-top:0.6rem !important}"

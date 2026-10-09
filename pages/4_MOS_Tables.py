@@ -880,7 +880,25 @@ def build_spread_table(df_m, cycle: datetime, det_rrfs: dict, det_hrrr: dict,
 
 
 
-st.title("MOS Tables")
+# PANEL MODE (9 Oct): the Map Splitter opens one table for one station
+# with ?table=<key>&icao=KXXX. No title, no entry box, no pop-up, no
+# cycle line - just that table, fitted to the panel with its own
+# horizontal scrollbar for the hours past the edge.
+_qp = st.query_params
+PANEL = (_qp.get("table") or "").upper() or None
+_panel_icao = (_qp.get("icao") or "").strip().upper()
+if PANEL and len(_panel_icao) == 4:
+    st.session_state["bm_embed"] = True
+    st.markdown(
+        "<style>"
+        "header,[data-testid='stHeader'],.bm-clock{display:none !important}"
+        ".stApp .block-container{padding:4px 6px 0 6px !important;max-width:100% !important}"
+        "[data-testid='stAlert']{display:none}"
+        "h1{display:none}"
+        "</style>", unsafe_allow_html=True)
+else:
+    PANEL = None
+    st.title("MOS Tables")
 
 # ENTRY (7 Oct): one large "Enter ICAO" box, no menus. Four letters
 # open a pop-up listing every table with its range, all ticked; untick
@@ -909,13 +927,19 @@ st.markdown(
     "[data-testid='stDialog'] [data-testid='stCheckbox'] label span{font-size:14px !important}"
     "</style>", unsafe_allow_html=True)
 
+if PANEL:
+    icao_input = _panel_icao
+    st.session_state["mos_tables"] = [PANEL]
+    st.session_state["mos_tables_done"] = True
+    st.session_state["mos_icao_done"] = icao_input
 _e1, _e2 = st.columns([1.6, 3])
-with _e1:
-    icao_input = st.text_input("Enter ICAO", value=st.session_state.get("mos_icao", ""),
-                               max_chars=4, placeholder="Enter ICAO", key="mos_icao",
-                               label_visibility="collapsed").strip().upper()
+if not PANEL:
+    with _e1:
+        icao_input = st.text_input("Enter ICAO", value=st.session_state.get("mos_icao", ""),
+                                   max_chars=4, placeholder="Enter ICAO", key="mos_icao",
+                                   label_visibility="collapsed").strip().upper()
 with _e2:
-    if st.session_state.get("mos_tables_done") and len(icao_input) == 4:
+    if not PANEL and st.session_state.get("mos_tables_done") and len(icao_input) == 4:
         if st.button("Change tables", key="mos_change"):
             st.session_state["mos_tables_done"] = False
             st.rerun()
@@ -963,7 +987,8 @@ if run_button:
         st.stop()
 
     cycle = datetime.fromisoformat(cycle_iso)
-    st.info(f"Cycle: **{cycle:%Y-%m-%d %H:%M UTC}**  ·  Station: **{icao_input}**")
+    if not PANEL:
+        st.info(f"Cycle: **{cycle:%Y-%m-%d %H:%M UTC}**  ·  Station: **{icao_input}**")
 
     with st.spinner("Fetching NBM + LAMP..."):
         df = cached_mos_tables(icao_input, cycle_iso)

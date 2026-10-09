@@ -75,7 +75,7 @@
 </div></div>
 
 <div class="modal" id="mData"><div class="box">
-  <h2>ADD DATA</h2><p>The list of data that can go in a panel is being defined.</p>
+  <h2>ADD DATA</h2><p>Pick a table, enter the station, Add. Each panel shows just that table.</p>
   <div id="catalog"></div>
   <div class="row" style="display:none"><span style="color:var(--ink2)">Any web page:</span><input type="text" id="urlIn" placeholder="https://..." style="flex:1"><button id="urlGo">Open</button></div>
   <div class="foot"><button onclick="closeModal('mData')">Cancel</button></div>
@@ -92,36 +92,26 @@ const $ = id => document.getElementById(id);
 // token) or a static viewer under /app/static.
 // Catalogue (6 Oct): emptied on purpose - the owner will specify what
 // can be chosen, and how. Add entries as {g: 'Group', items: [{n, p, d}]}.
-// 7 Oct: catalogue back. "c" is the API cost of putting the page in
-// a panel, shown under each item. The tomorrow.io frames are built
-// once by the warmer and shared by every viewer and panel, so the
-// Map Splitter does not multiply tile requests; the only per-panel
-// spend is a point forecast (1 request / station / hour) when a
-// station is opened in a Weather Mapping 2-panel.
+// 9 Oct: the splitter shows single tables and maps, never a whole
+// page with its navigation. Each group is a dropdown of what that
+// page has; MOS first, the others follow the same shape.
 const CATALOG = [
-  {g: 'Forecast Tools', items: [
-    {n: 'Station Forecast', p: '/', d: 'scope, radar / satellite, winds, flight conditions', c: 'NOAA + NEXRAD + GOES only - no tomorrow.io'},
-    {n: 'Mesoscale Models', p: '/Mesoscale_Models', d: 'HRRR / RRFS / REFS by sector, 1-4 plots', c: 'NOAA only'},
-    {n: 'MOS Tables', p: '/MOS_Tables', d: 'NBM, LAMP, REFS, RRFS, HRRR for one station', c: 'NOAA only'},
-  ]},
-  {g: 'Situational Awareness', items: [
-    {n: 'JBU Weather Map CONUS', p: '/JBU_Weather_Map', d: 'network map, routes, fleet, SIGMETs', c: 'NOAA + OpenSky only'},
-    {n: 'Weather Mapping', p: '/Large_Scale_Map', d: 'tomorrow.io tiles + REFS / RRFS / HRRR / GFS layers', c: 'tomorrow.io: shares the warmer\'s frames (no extra tiles); 1 request per station per hour in the 2-panel'},
-  ]},
-  {g: 'Radar', items: [
-    {n: 'L2 Radar Lab', p: '/L2_Radar_Lab', d: 'Level II single-site', c: 'NOAA only'},
-    {n: 'Level III Radar', p: '/L3_Radar_N90', d: 'N90 Level III', c: 'NOAA only'},
-  ]},
-  {g: 'Archive', items: [
-    {n: 'Archive Satellite', p: '/Archive_Satellite_Position', d: 'GOES by time and position', c: 'NOAA only'},
-    {n: 'Archive Radar', p: '/Archive_Radar_Position', d: 'radar by time and position', c: 'NOAA only'},
+  {g: 'MOS', icao: true, page: '/MOS_Tables', param: 'table', items: [
+    {k: 'SPREAD', n: 'Model spread box plots [24 hr]'},
+    {k: 'NBH', n: 'NBH hourly NBM + GFS LAMP [25 hr]'},
+    {k: 'NBMP', n: 'NBM flight-category probabilities [25 hr]'},
+    {k: 'REFS', n: 'REFS ensemble probabilities [24 hr]'},
+    {k: 'RRFS', n: 'RRFS point forecast [24 hr]'},
+    {k: 'HRRR', n: 'HRRR point forecast [24 hr]'},
+    {k: 'NBS', n: 'NBS 3-hourly NBM [72 hr]'},
+    {k: 'NBE', n: 'NBE 12-hourly NBM [185 hr]'},
   ]},
 ];
-function urlFor(it, icao) {
-  if (it.p === 'scope') return `${BASE}/app/static/scope_${(icao || 'KJFK').toUpperCase()}.html`;
-  if (it.p.startsWith('http')) return it.p;
-  // Streamlit page paths come from the file names (the default page is '/')
-  return `${BASE}${it.p === '/' ? '/' : it.p}?embed=true${TOK ? '&k=' + encodeURIComponent(TOK) : ''}`;
+function urlFor(g, it, icao) {
+  // Streamlit page paths come from the file names; the page shows just
+  // the one table / map when its "param" is given.
+  return `${BASE}${g.page}?embed=true&${g.param}=${encodeURIComponent(it.k)}` +
+    (icao ? `&icao=${encodeURIComponent(icao)}` : '') + (TOK ? '&k=' + encodeURIComponent(TOK) : '');
 }
 
 // ---------------------------------------------------------------- layout tree
@@ -190,7 +180,7 @@ function render() {
   place(tree, 0, 0, R.width, R.height);
 }
 function emptyContent(node) {
-  return `<div class="empty"><div class="plus" title="Add data">+</div><div class="lbl">ADD DATA</div><div class="lbl2">any map, plot, radar or satellite the site has</div></div>`;
+  return `<div class="empty"><div class="plus" title="Add data">+</div><div class="lbl">ADD DATA</div><div class="lbl2">pick a MOS table (more sources to follow)</div></div>`;
 }
 function leafContent(node) {
   const c = node.content;
@@ -234,16 +224,24 @@ function equalise(n) { if (!n || !n.dir) return; n.r = .5; equalise(n.a); equali
 let target = null;
 function openData(node) {
   target = node;
-  $('catalog').innerHTML = CATALOG.map(g => `<div class="grp">${g.g.toUpperCase()}</div><div class="items">` +
-    g.items.map((it, j) => `<div class="item" data-g="${g.g}" data-j="${j}"><div>${it.n}</div><div class="d">${it.d}</div>${it.c ? `<div class="d" style="color:${it.c.startsWith('tomorrow') ? '#FFD400' : '#6E6E6E'}">${it.c}</div>` : ''}${it.icao ? '<div class="row" style="margin:6px 0 0"><input type="text" maxlength="4" placeholder="ICAO" value="KJFK" style="width:70px" onclick="event.stopPropagation()"></div>' : ''}</div>`).join('') + '</div>').join('');
-  $('catalog').querySelectorAll('.item').forEach(el => el.addEventListener('click', () => {
-    const g = CATALOG.find(x => x.g === el.dataset.g), it = g.items[+el.dataset.j];
-    const inp = el.querySelector('input'); const icao = inp ? inp.value.trim().toUpperCase() : '';
-    setContent({n: it.n + (icao ? ' ' + icao : ''), url: urlFor(it, icao)});
+  $('catalog').innerHTML = CATALOG.map((g, gi) => `<div class="grp">${g.g}</div>
+    <div class="row" style="gap:8px;flex-wrap:wrap;margin:4px 0 10px">
+      <select data-g="${gi}" style="flex:1;min-width:260px">${g.items.map((it, j) => `<option value="${j}">${it.n}</option>`).join('')}</select>
+      ${g.icao ? `<input type="text" maxlength="4" placeholder="ICAO" value="${lastIcao}" style="width:80px;text-transform:uppercase" data-icao="${gi}">` : ''}
+      <button class="primary" data-add="${gi}">Add</button>
+    </div>`).join('');
+  $('catalog').querySelectorAll('[data-add]').forEach(b => b.addEventListener('click', () => {
+    const gi = +b.dataset.add, g = CATALOG[gi];
+    const it = g.items[+$('catalog').querySelector(`select[data-g="${gi}"]`).value];
+    const inp = $('catalog').querySelector(`input[data-icao="${gi}"]`);
+    const icao = inp ? inp.value.trim().toUpperCase() : '';
+    if (g.icao && icao.length !== 4) { inp.focus(); inp.style.borderColor = '#FF3B30'; return; }
+    if (icao) lastIcao = icao;
+    setContent({n: `${g.g} · ${it.n.replace(/ \[.*$/, '')}${icao ? ' · ' + icao : ''}`, url: urlFor(g, it, icao)});
   }));
-  if (!CATALOG.length) $('catalog').innerHTML = '<div style="color:var(--mute);padding:18px 4px;font-weight:400">Nothing to choose from yet - the data catalogue is being defined.</div>';
   $('mData').classList.add('show');
 }
+let lastIcao = 'KJFK';
 function setContent(c) { if (!target) return; target.content = c; closeModal('mData'); render(); persist(); }
 $('urlGo').onclick = () => { const u = $('urlIn').value.trim(); if (u) setContent({n: u.replace(/^https?:\/\//, '').slice(0, 40), url: u}); };
 function closeModal(id) { $(id).classList.remove('show'); }

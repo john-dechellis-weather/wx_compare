@@ -63,5 +63,5 @@ _src = (f"{_base}/app/static/map_splitter.html?v={_v}&base={_base}"
 with st.container(key="bm-splitter"):
     components.iframe(_src, height=HEIGHT)
 st.caption("Layouts and panels are kept in this browser (Save keeps named ones). "
-           "Panels are live pages: pick stations and products inside each one. "
+           "Each panel is one table or map. "
            "Esc leaves a full-screen panel.")
