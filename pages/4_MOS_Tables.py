@@ -792,11 +792,23 @@ def _spread_tier(kind, v):
     return wind_bg(v, None)
 
 
+def _spread_fmt(kind, v) -> str:
+    if kind == "cig":
+        return "UNL" if v >= 300 else f"{v:g}"
+    if kind == "vis":
+        return "10+" if v >= 10 else f"{v:g}"
+    return f"{v:.0f}"
+
+
 def _spread_cell(kind, vmax, vals, n_txt, r_txt) -> str:
-    """One <td> holding an SVG box plot of vals (list of floats)."""
+    """One <td> holding an SVG box plot of vals (list of floats).
+    9 Oct: twice the height, and the plot is labelled - max above the
+    top whisker, min below the bottom one, the median beside its bar
+    (yellow) - so the numbers read without hovering."""
     import numpy as np
 
-    W, H, T, B = 38, 58, 4, 54
+    W, H, T, B = 60, 116, 26, 106
+    FONT = 'font-family="Courier New,monospace" font-weight="bold"'
     if not vals:
         return (f'<td style="background:#0A0A0A;border:1px solid #333333;'
                 f'padding:0;min-width:{W}px;height:{H}px;text-align:center;'
@@ -822,24 +834,39 @@ def _spread_cell(kind, vmax, vals, n_txt, r_txt) -> str:
         r, g, b = (int(worst[i:i + 2], 16) for i in (1, 3, 5))
         fill = (f'<rect x="0" y="0" width="{W}" height="{H}" '
                 f'fill="rgba({r},{g},{b},{worst_n / len(vals):.2f})"/>')
-    cx = W / 2
-    bw = 14
-    box = (f'<line x1="{cx}" y1="{y(q0):.1f}" x2="{cx}" y2="{y(q4):.1f}" stroke="#FFFFFF" stroke-width="1"/>'
-           f'<line x1="{cx - 4}" y1="{y(q0):.1f}" x2="{cx + 4}" y2="{y(q0):.1f}" stroke="#FFFFFF" stroke-width="1"/>'
-           f'<line x1="{cx - 4}" y1="{y(q4):.1f}" x2="{cx + 4}" y2="{y(q4):.1f}" stroke="#FFFFFF" stroke-width="1"/>'
-           f'<rect x="{cx - bw / 2}" y="{y(q3):.1f}" width="{bw}" height="{max(1.0, y(q1) - y(q3)):.1f}" '
+    cx = 22                 # plot on the left; value labels to its right
+    bw = 16
+    ya, yb, ym = y(q4), y(q0), y(q2)
+    box = (f'<line x1="{cx}" y1="{yb:.1f}" x2="{cx}" y2="{ya:.1f}" stroke="#FFFFFF" stroke-width="1"/>'
+           f'<line x1="{cx - 5}" y1="{yb:.1f}" x2="{cx + 5}" y2="{yb:.1f}" stroke="#FFFFFF" stroke-width="1.5"/>'
+           f'<line x1="{cx - 5}" y1="{ya:.1f}" x2="{cx + 5}" y2="{ya:.1f}" stroke="#FFFFFF" stroke-width="1.5"/>'
+           f'<rect x="{cx - bw / 2}" y="{y(q3):.1f}" width="{bw}" height="{max(1.5, y(q1) - y(q3)):.1f}" '
            f'fill="rgba(0,229,255,0.35)" stroke="#00E5FF" stroke-width="1"/>'
-           f'<line x1="{cx - bw / 2}" y1="{y(q2):.1f}" x2="{cx + bw / 2}" y2="{y(q2):.1f}" stroke="#FFFFFF" stroke-width="2"/>')
+           f'<line x1="{cx - bw / 2 - 2}" y1="{ym:.1f}" x2="{cx + bw / 2 + 2}" y2="{ym:.1f}" stroke="#000000" stroke-width="4.5"/>'
+           f'<line x1="{cx - bw / 2 - 2}" y1="{ym:.1f}" x2="{cx + bw / 2 + 2}" y2="{ym:.1f}" stroke="#FFD400" stroke-width="2.5"/>')
+    # value labels: max, median, min, each beside its own line. When
+    # the spread is too small for three they collapse to the median.
+    lx = cx + bw / 2 + 4
+    labels = ""
+    if yb - ya >= 22:
+        labels += (f'<text x="{lx}" y="{max(T - 4, ya - 2):.1f}" font-size="9" {FONT} fill="#FFFFFF" stroke="#000000" stroke-width="1.5" paint-order="stroke">'
+                   f'{_spread_fmt(kind, q4)}</text>'
+                   f'<text x="{lx}" y="{min(H - 2, yb + 9):.1f}" font-size="9" {FONT} fill="#FFFFFF" stroke="#000000" stroke-width="1.5" paint-order="stroke">'
+                   f'{_spread_fmt(kind, q0)}</text>')
+    elif yb - ya >= 1:
+        labels += (f'<text x="{lx}" y="{ya - 2:.1f}" font-size="8" {FONT} fill="#FFFFFF" stroke="#000000" stroke-width="1.5" paint-order="stroke">'
+                   f'{_spread_fmt(kind, q4)}–{_spread_fmt(kind, q0)}</text>')
+    labels += (f'<text x="{lx}" y="{ym + 3.5:.1f}" font-size="10" {FONT} fill="#FFD400" '
+               f'stroke="#000000" stroke-width="2" paint-order="stroke">'
+               f'{_spread_fmt(kind, q2)}</text>')
     txt = ""
     if n_txt is not None:
-        txt += (f'<text x="2" y="10" font-family="Courier New,monospace" font-size="8" '
-                f'font-weight="bold" fill="#FFFFFF">N{n_txt}</text>')
+        txt += (f'<text x="2" y="10" font-size="9" {FONT} fill="#FFFFFF">N{n_txt}</text>')
     if r_txt is not None:
-        txt += (f'<text x="{W - 2}" y="10" text-anchor="end" font-family="Courier New,monospace" '
-                f'font-size="8" font-weight="bold" fill="#FFFFFF">R{r_txt}</text>')
+        txt += (f'<text x="2" y="20" font-size="9" {FONT} fill="#FFFFFF">R{r_txt}</text>')
     title = f"{kind}: " + ", ".join(f"{v:g}" for v in vals) + f" | median {q2:g}"
-    svg = (f'<svg width="100%" height="{H}" viewBox="0 0 {W} {H}" preserveAspectRatio="none" '
-           f'style="display:block"><title>{escape(title)}</title>{fill}{box}{txt}</svg>')
+    svg = (f'<svg width="{W}" height="{H}" viewBox="0 0 {W} {H}" '
+           f'style="display:block;margin:0 auto"><title>{escape(title)}</title>{fill}{box}{labels}{txt}</svg>')
     return (f'<td style="background:#0A0A0A;border:1px solid #333333;padding:0;'
             f'min-width:{W}px;height:{H}px">{svg}</td>')
 
@@ -872,7 +899,7 @@ def build_spread_table(df_m, cycle: datetime, det_rrfs: dict, det_hrrr: dict,
         'font-weight:bold;color:#FFFFFF;-webkit-text-fill-color:#FFFFFF;'
         'padding:1px 2px;">'
         f'Model spread \u2014 NBM, GFS LAMP, RRFS, HRRR ({n_models} models) '
-        f'\u00b7 box = middle half, bar = median, whiskers = range \u00b7 '
+        f'\u00b7 box = middle half, yellow bar + value = median, whiskers = range (max / min labelled) \u00b7 '
         'fill = worst tier any model reaches, opacity = share of models in it '
         '\u00b7 N = NBM %, R = REFS % (CIG &lt; 1000 ft, VIS &lt; 3 sm)</div>'
         '<table style="border-collapse:collapse;width:100%;background:#0A0A0A;'
