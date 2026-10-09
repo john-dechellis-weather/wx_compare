@@ -1603,7 +1603,8 @@ def stations_geojson(static_dir) -> dict:
 
 def map_html(man: dict, base: str, stations: dict, height: int = 860,
              model: str = None, pt_built: str = "", noaa_built: str = "",
-             sector: str = "", preset: list = None, fit: tuple = None) -> str:
+             sector: str = "", preset: list = None, fit: tuple = None,
+             mode: str = "", station: str = "") -> str:
     """MapLibre page: CARTO dark vector basemap, the active model's
     warmed frames as image sources (added lazily, first time a layer
     and hour are shown), layer toggles with their own opacity, an
@@ -1717,7 +1718,15 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
  .maplibregl-popup-close-button{{color:#fff;font-size:16px}} .maplibregl-popup-tip{{border-top-color:#333 !important}}
  .rd table{{border-collapse:collapse}} .rd td{{padding:1px 8px 1px 0;white-space:nowrap}} .rd td.v{{color:#FFD400;text-align:right}}
  .rd .h{{color:#00E5FF;font-weight:700;margin:4px 0 2px}} .rd .s{{color:#6E6E6E;font-size:10px}}
-</style></head><body>
+ /* Map Splitter panels (9 Oct). mode-map: a fixed map (zoom only) with
+    just TIME and the airspace overlays above it. mode-ts: the time
+    series plot alone, full width. */
+ body.mode-map #ddw,body.mode-map #ddn,body.mode-map #mdl,body.mode-map #bst,body.mode-map #balt,
+ body.mode-map #bfit,body.mode-map #b2,body.mode-map .bar .sp,body.mode-map .bar > span[style]{{display:none !important}}
+ body.mode-ts #mgsel,body.mode-ts #mgh label{{display:none !important}}
+ body.mode-ts .bar,body.mode-ts #m{{display:none !important}}
+ body.mode-ts #wrap{{height:{height - 8}px}} body.mode-ts #mg{{display:flex;flex:1 1 auto}}
+</style></head><body class="{('mode-' + mode) if mode else ''}">
 <div class="bar">
   <details class="dd" id="ddw"><summary id="ddws">General Weather &#9662;</summary><div class="menu">{rows}</div></details>
   <details class="dd" id="ddn"><summary id="ddns">NOAA Models &#9662;</summary><div class="menu">{nrows or '<div style="color:#6E6E6E;padding:6px 8px">no model layers enabled (MDL_MODELS)</div>'}</div></details>
@@ -1770,6 +1779,7 @@ const BB = [[{W},{S}],[{E},{N}]];
 // Map Splitter panel (9 Oct): PRESET = the one layer to show, FIT = the
 // sector box to open on (null = CONUS). Menus still work after that.
 const PRESET = {json.dumps(list(preset or []))};
+const MODE = {json.dumps(mode or "")}, PRESET_STATION = {json.dumps(station or "")};
 const FIT = {json.dumps([[fit[0], fit[1]], [fit[2], fit[3]]] if fit else None)};
 const map = new maplibregl.Map({{container:'m', style:{json.dumps(style)},
   bounds:FIT || BB, fitBoundsOptions:{{padding:8}}, minZoom:2.2, maxZoom:9,
@@ -1777,6 +1787,11 @@ const map = new maplibregl.Map({{container:'m', style:{json.dumps(style)},
 map.addControl(new maplibregl.NavigationControl({{showCompass:false}}));
 const $ = id => document.getElementById(id);
 let ready = false, ti = 0, timer = null;
+if (MODE === 'map') {{
+  // fixed: no panning or rotating; zoom in / out only (wheel, +/- control)
+  map.dragPan.disable(); map.dragRotate.disable(); map.keyboard.disable();
+  map.touchZoomRotate.disableRotation();
+}}
 const on = {{}}, op = {{}};
 // (7 Oct) :not(.mgf) - the meteogram's element boxes share the .ly rows and
 // were being read as map layers, drawing four layers nobody switched on.
@@ -2156,6 +2171,19 @@ $('b2').onclick = () => {{
   if (two && !NOAA && NOAA_URL) fetch(NOAA_URL).then(r => r.json()).then(j => {{ NOAA = j; drawMg(); }}).catch(() => {{}});
   drawMg();
 }};
+if (MODE === 'ts') {{
+  // Time Series Plot panel: open the meteogram for the station asked
+  // for (ICAO -> the 3-letter id the point set uses) and nothing else.
+  const want = PRESET_STATION.length === 4 && PRESET_STATION[0] === 'K' ? PRESET_STATION.slice(1) : PRESET_STATION;
+  $('b2').onclick();
+  const tryPick = () => {{
+    const ids = ST.features.map(f => f.properties.id);
+    if (ids.includes(want)) pick(want);
+    else if (ids.includes(PRESET_STATION)) pick(PRESET_STATION);
+    else $('mgn').textContent = PRESET_STATION + ' is not in the point-forecast set (JBU stations and Canadian alternates only).';
+  }};
+  setTimeout(tryPick, 300);
+}}
 // ---- airspace overlays -------------------------------------------------
 // Static JSON under /app/static (jet routes, N90 boundary, JFK STARs,
 // N90 fixes), fetched the first time a button is pressed and kept.

@@ -109,7 +109,11 @@ const CATALOG = [
   // sector + layer lists arrive from static/splitter_catalog.json
   // (written by the page from the site's registries)
   {g: 'Weather Mapping', page: '/Large_Scale_Map', param: 'layer', sectors: [], items: [],
-   note: 'one hi-res sector is warmed at a time (site-wide): the last sector chosen wins, CONUS costs nothing extra'},
+   note: 'a fixed map (zoom only) of that one layer; one hi-res sector is warmed at a time (site-wide): the last sector chosen wins, CONUS costs nothing extra'},
+  // Time Series Plot: ceiling / visibility / wind meteogram for one
+  // station - typed, not picked.
+  {g: 'Time Series Plot', page: '/Large_Scale_Map', param: 'ts', typed: true,
+   note: 'type the ICAO (JBU stations and Canadian alternates); 1 tomorrow.io request per station per hour'},
 ];
 fetch(`${BASE}/app/static/splitter_catalog.json?_=${Q.get('cat') || Date.now()}`).then(r => r.json()).then(j => {
   const g = CATALOG.find(x => x.g === 'Weather Mapping');
@@ -189,7 +193,7 @@ function render() {
   place(tree, 0, 0, R.width, R.height);
 }
 function emptyContent(node) {
-  return `<div class="empty"><div class="plus" title="Add data">+</div><div class="lbl">ADD DATA</div><div class="lbl2">MOS tables and Weather Mapping layers</div></div>`;
+  return `<div class="empty"><div class="plus" title="Add data">+</div><div class="lbl">ADD DATA</div><div class="lbl2">MOS tables, Weather Mapping layers, Time Series Plots</div></div>`;
 }
 function leafContent(node) {
   const c = node.content;
@@ -236,16 +240,18 @@ function openData(node) {
   $('catalog').innerHTML = CATALOG.map((g, gi) => `<div class="grp">${g.g}</div>
     <div class="row" style="gap:8px;flex-wrap:wrap;margin:4px 0 10px">
       ${g.sectors ? `<select data-sector="${gi}" style="min-width:150px">${g.sectors.map(sc => `<option value="${sc.k}">${sc.n}</option>`).join('')}</select>` : ''}
-      <select data-g="${gi}" style="flex:1;min-width:260px">${g.items.map((it, j) => `<option value="${j}">${it.n}</option>`).join('')}</select>
+      ${g.typed ? `<input type="text" maxlength="4" placeholder="Enter ICAO" value="" style="flex:1;min-width:200px;font-size:16px;text-transform:uppercase;letter-spacing:3px" data-icao="${gi}">`
+        : `<select data-g="${gi}" style="flex:1;min-width:260px">${g.items.map((it, j) => `<option value="${j}">${it.n}</option>`).join('')}</select>`}
       ${g.icao ? `<input type="text" maxlength="4" placeholder="ICAO" value="${lastIcao}" style="width:80px;text-transform:uppercase" data-icao="${gi}">` : ''}
       <button class="primary" data-add="${gi}">Add</button>
     </div>${g.note ? `<div class="d" style="margin:-6px 0 10px;color:#6E6E6E">${g.note}</div>` : ''}`).join('');
   $('catalog').querySelectorAll('[data-add]').forEach(b => b.addEventListener('click', () => {
     const gi = +b.dataset.add, g = CATALOG[gi];
-    const it = g.items[+$('catalog').querySelector(`select[data-g="${gi}"]`).value];
     const inp = $('catalog').querySelector(`input[data-icao="${gi}"]`);
     const icao = inp ? inp.value.trim().toUpperCase() : '';
-    if (g.icao && icao.length !== 4) { inp.focus(); inp.style.borderColor = '#FF3B30'; return; }
+    if ((g.icao || g.typed) && icao.length !== 4) { inp.focus(); inp.style.borderColor = '#FF3B30'; return; }
+    if (g.typed) { lastIcao = icao; setContent({n: `${g.g} · ${icao}`, url: urlFor(g, {k: icao}, '', '')}); return; }
+    const it = g.items[+$('catalog').querySelector(`select[data-g="${gi}"]`).value];
     if (icao) lastIcao = icao;
     const ss = $('catalog').querySelector(`select[data-sector="${gi}"]`);
     const sector = ss ? ss.value : '';

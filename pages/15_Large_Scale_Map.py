@@ -64,6 +64,10 @@ except Exception:
 _qp = st.query_params
 PANEL_LAYER = (_qp.get("layer") or "").strip() or None
 PANEL_SECTOR = (_qp.get("sector") or "").strip()
+# Time Series Plot panel: ?ts=KXXX - the meteogram alone for one station
+PANEL_TS = (_qp.get("ts") or "").strip().upper() or None
+if PANEL_TS and not PANEL_LAYER:
+    PANEL_LAYER = "__ts__"
 if PANEL_LAYER:
     st.session_state["bm_embed"] = True
     st.markdown("<style>header,[data-testid='stHeader'],.bm-clock{display:none !important}"
@@ -203,12 +207,15 @@ def _body():
                             pt_built=_pt.get("built", ""),
                             noaa_built=_no.get("built", ""),
                             sector=_sector,
-                            preset=[PANEL_LAYER] if PANEL_LAYER else None,
+                            preset=[PANEL_LAYER] if PANEL_LAYER and not PANEL_TS else None,
                             fit=(TIO.SECTORS[PANEL_SECTOR][1]
-                                 if PANEL_LAYER and PANEL_SECTOR in TIO.SECTORS else None))
-        # Panels get their own file (one layer, one sector); the page
-        # keeps tio_map.html.
-        name = (f"tio_map_{PANEL_LAYER.replace(':', '-')}_{PANEL_SECTOR or 'conus'}.html"
+                                 if PANEL_LAYER and PANEL_SECTOR in TIO.SECTORS else None),
+                            mode=("ts" if PANEL_TS else ("map" if PANEL_LAYER else "")),
+                            station=PANEL_TS or "")
+        # Panels get their own file (one layer, one sector / one station);
+        # the page keeps tio_map.html.
+        name = (f"tio_map_ts_{PANEL_TS}.html" if PANEL_TS
+                else f"tio_map_{PANEL_LAYER.replace(':', '-')}_{PANEL_SECTOR or 'conus'}.html"
                 if PANEL_LAYER else "tio_map.html")
         # Rewritten only when the page itself changes (model, sector);
         # new frames reach the open viewer through its own manifest
