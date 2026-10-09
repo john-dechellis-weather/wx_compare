@@ -488,7 +488,8 @@ def _top_nav(current) -> None:
 # there, the panel's title bar is the navigation.
 # 9 Oct: remembered in the session too - a rerun inside the embedded
 # page can arrive without the parameter and was showing the bar.
-if st.query_params.get("embed") == "true":
+_qp0 = st.query_params
+if _qp0.get("embed") == "true" or any(_qp0.get(k) for k in ("table", "layer", "ts", "panel")):
     st.session_state["bm_embed"] = True
 if not st.session_state.get("bm_embed"):
     _top_nav(nav)

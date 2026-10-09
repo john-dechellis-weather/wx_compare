@@ -70,7 +70,7 @@ if PANEL_TS and not PANEL_LAYER:
     PANEL_LAYER = "__ts__"
 if PANEL_LAYER:
     st.session_state["bm_embed"] = True
-    st.markdown("<style>header,[data-testid='stHeader'],.bm-clock{display:none !important}"
+    st.markdown("<style>header,[data-testid='stHeader'],.bm-clock,.st-key-topnav,.st-key-nav_warmers{display:none !important}"
                 ".stApp .block-container{padding:2px 4px 0 4px !important;max-width:100% !important}"
                 "</style>", unsafe_allow_html=True)
     if PANEL_SECTOR and PANEL_SECTOR in TIO.SECTORS and TIO.active_sector(STATIC) != PANEL_SECTOR:

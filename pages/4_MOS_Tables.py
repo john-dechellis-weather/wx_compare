@@ -891,7 +891,7 @@ if PANEL and len(_panel_icao) == 4:
     st.session_state["bm_embed"] = True
     st.markdown(
         "<style>"
-        "header,[data-testid='stHeader'],.bm-clock{display:none !important}"
+        "header,[data-testid='stHeader'],.bm-clock,.st-key-topnav,.st-key-nav_warmers{display:none !important}"
         ".stApp .block-container{padding:4px 6px 0 6px !important;max-width:100% !important}"
         "[data-testid='stAlert']{display:none}"
         "h1{display:none}"
