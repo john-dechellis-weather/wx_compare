@@ -1245,6 +1245,78 @@ with c_rad:
                         + (f'<br>{_where}{_on}' if _where else "")
                         + "</div>", unsafe_allow_html=True)
 
+# ============================================================ arrivals
+# JBU ARRIVALS (11 Oct): RadarBox schedules + live for the station -
+# what is due in over the next 10 h and where the airborne ones are.
+# Fetched when the station is viewed, cached 3 h for everyone, hard
+# monthly credit cap (core/radarbox.py).
+from core import radarbox as RBX
+
+
+def _arrivals_pod():
+    _force = st.session_state.pop("sf_arr_force", False)
+    doc, note = RBX.fetch(icao, force=_force)
+    _b = RBX.budget()
+    _sub = (f"RadarBox · next {RBX.HOURS_AHEAD} h · "
+            + (f"fetched {RBX.age_min(doc):.0f} min ago, {doc.get('cost', 0)} credits"
+               if doc else "no data yet")
+            + f" · month {_b['used']:,} / {_b['cap']:,}")
+    pod_title(f"JBU arrivals {icao}", _sub)
+    _h1, _h2 = st.columns([5, 1])
+    with _h2:
+        if st.button("Refresh", key="sf_arr_refresh", help="Fetch again now (spends credits)"):
+            st.session_state["sf_arr_force"] = True
+            st.rerun()
+    if note:
+        st.caption(note)
+    if not doc:
+        return
+    rows = RBX.rows(doc)
+    if not rows:
+        st.caption(f"No JetBlue arrivals in the next {RBX.HOURS_AHEAD} h.")
+        return
+    n_air = sum(1 for r in rows if r["phase"] == "airborne")
+    n_sch = sum(1 for r in rows if r["phase"] in ("scheduled", "taxiing"))
+    n_lnd = sum(1 for r in rows if r["phase"] == "landed")
+    with _h1:
+        st.markdown(f'<div style="color:{INK2};font-size:11px;font-weight:700;margin-top:6px">'
+                    f'<span style="color:#00E5FF">{n_air} airborne</span> &middot; '
+                    f'{n_sch} scheduled &middot; <span style="color:#6E6E6E">{n_lnd} landed</span>'
+                    '</div>', unsafe_allow_html=True)
+    cells = []
+    for r in rows:
+        eta = r["eta"].strftime("%H:%MZ") if r["eta"] else "--"
+        sta = r["sta"].strftime("%H:%MZ") if r["sta"] else "--"
+        d = r["delta_min"]
+        if r["phase"] == "landed":
+            col, tag = "#6E6E6E", f"landed {r['landed']:%H:%MZ}"
+        elif r["phase"] == "airborne":
+            col = "#00E5FF"
+            tag = (f"in {r['mins_out']} min" if r["mins_out"] is not None and r["mins_out"] >= 0
+                   else "landing")
+        elif r["phase"] == "taxiing":
+            col, tag = "#FFD400", "departed"
+        else:
+            col, tag = "#B8B8B8", "scheduled"
+        dtxt = ("" if d is None or r["phase"] == "scheduled"
+                else (f' <span style="color:#FF8A00">+{d}</span>' if d > 5
+                      else f' <span style="color:#00FF7F">{d:+d}</span>' if d < -5
+                      else f' <span style="color:#6E6E6E">{d:+d}</span>'))
+        cells.append(
+            f'<div style="border:1px solid {"#1A2233" if r["phase"] == "landed" else "#2D3957"};'
+            f'border-left:3px solid {col};padding:4px 8px;font-family:DejaVu Sans Mono,monospace;'
+            f'font-size:11px;color:{"#6E6E6E" if r["phase"] == "landed" else INK};background:#05070B">'
+            f'<b>{r["flight"]}</b> <span style="color:{INK2}">{r["from"]}</span>'
+            f'{" &middot; " + r["type"] if r["type"] else ""}<br>'
+            f'<span style="color:{INK2}">STA</span> {sta} &rarr; <b>{eta}</b>{dtxt}<br>'
+            f'<span style="color:{col}">{tag}</span></div>')
+    st.markdown('<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));'
+                'gap:6px;margin:6px 0 2px">' + "".join(cells) + '</div>', unsafe_allow_html=True)
+
+
+with st.container(border=True):
+    _arrivals_pod()
+
 _g1, _g2 = st.columns(2, gap="small")
 for _col, (model, label, rows_fn) in zip(
         (_g1, _g2), (("NBM", "NBM hourly", G.nbm_rows),

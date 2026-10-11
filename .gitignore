@@ -33,3 +33,5 @@ mac/.env*
 static/*.log
 static/splitter_catalog.json
 static/tio_map_*.html
+static/rbx/
+static/rbx_usage.json
