@@ -1725,7 +1725,8 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
  body.mode-map #bfit,body.mode-map #b2,body.mode-map .bar .sp,body.mode-map .bar > span[style]{{display:none !important}}
  body.mode-ts #mgsel,body.mode-ts #mgh label{{display:none !important}}
  body.mode-ts .bar,body.mode-ts #m{{display:none !important}}
- body.mode-ts #wrap{{height:{height - 8}px}} body.mode-ts #mg{{display:flex;flex:1 1 auto}}
+ body.mode-map #wrap{{height:calc(100vh - 100px)}}
+ body.mode-ts #wrap{{height:calc(100vh - 10px)}} body.mode-ts #mg{{display:flex;flex:1 1 auto}}
 </style></head><body class="{('mode-' + mode) if mode else ''}">
 <div class="bar">
   <details class="dd" id="ddw"><summary id="ddws">General Weather &#9662;</summary><div class="menu">{rows}</div></details>

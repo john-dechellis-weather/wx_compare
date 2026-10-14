@@ -527,13 +527,16 @@ NBM_PROB_ROWS = [
 
 
 def section(title: str) -> None:
-    """Rule + subtitle between table groups.
+    """Rule + subtitle between table groups (nothing in panel mode -
+    the one table's own heading is enough).
 
     Four groups now share one page and read very differently — a
     calibrated probability, a raw ensemble count and a single model's
     diagnostic all look like the same grid of numbers. The heading
     is what says which is which.
     """
+    if PANEL:
+        return
     st.markdown(
         '<div style="border-top:1px solid #333333;margin:18px 0 6px;"></div>'
         '<div style="font-family:Courier New,monospace;font-size:13px;'
@@ -918,10 +921,10 @@ if PANEL and len(_panel_icao) == 4:
     st.session_state["bm_embed"] = True
     st.markdown(
         "<style>"
-        "header,[data-testid='stHeader'],.bm-clock,.st-key-topnav,.st-key-nav_warmers{display:none !important}"
-        ".stApp .block-container{padding:4px 6px 0 6px !important;max-width:100% !important}"
-        "[data-testid='stAlert']{display:none}"
-        "h1{display:none}"
+        "header,[data-testid='stHeader'],.bm-clock,.st-key-topnav,.st-key-nav_warmers,"
+        "[data-testid='stStatusWidget'],[data-testid='stAlert'],h1,[data-testid='stDownloadButton']{display:none !important}"
+        ".stApp .block-container{padding:0 4px 0 4px !important;max-width:100% !important}"
+        "[data-testid='stVerticalBlock']{gap:4px !important}"
         "</style>", unsafe_allow_html=True)
 else:
     PANEL = None
@@ -959,7 +962,7 @@ if PANEL:
     st.session_state["mos_tables"] = [PANEL]
     st.session_state["mos_tables_done"] = True
     st.session_state["mos_icao_done"] = icao_input
-_e1, _e2 = st.columns([1.6, 3])
+_e1, _e2 = st.columns([1.6, 3]) if not PANEL else (st.empty(), st.empty())
 if not PANEL:
     with _e1:
         icao_input = st.text_input("Enter ICAO", value=st.session_state.get("mos_icao", ""),

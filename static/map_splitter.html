@@ -163,19 +163,32 @@ function useTemplate(i) {
 
 // ---------------------------------------------------------------- render
 function leaves(n, out = []) { if (!n) return out; if (n.dir) { leaves(n.a, out); leaves(n.b, out); } else out.push(n); return out; }
+// Incremental render (14 Oct): the leaf elements - and the iframes in
+// them - persist across layout changes; only their position and size
+// change. Rebuilding the DOM on every drag re-created every iframe,
+// which reloaded every page each time a divider moved.
+function findLeaf(id, n = tree) { if (!n) return null; if (!n.dir) return n.id === id ? n : null; return findLeaf(id, n.a) || findLeaf(id, n.b); }
 function render() {
-  const root = $('root'); root.innerHTML = ''; root.className = editing ? 'edit' : '';
-  if (!tree) return;
+  const root = $('root'); root.className = editing ? 'edit' : '';
+  if (!tree) { root.innerHTML = ''; return; }
+  root.querySelectorAll('.div').forEach(d => d.remove());
   const R = root.getBoundingClientRect();
+  const seen = new Set();
   let k = 0;
-  const place = (node, x, y, w, h, parent) => {
+  const place = (node, x, y, w, h) => {
     if (!node.dir) {
-      k += 1;
-      const el = document.createElement('div'); el.className = 'leaf'; el.dataset.n = k; el.dataset.id = node.id;
+      k += 1; seen.add(String(node.id));
+      let el = root.querySelector(`.leaf[data-id="${node.id}"]`);
+      if (!el) {
+        el = document.createElement('div'); el.className = 'leaf'; el.dataset.id = node.id;
+        el.addEventListener('click', ev => { const n = findLeaf(+el.dataset.id); if (n) onLeafClick(ev, n, el); });
+        root.appendChild(el);
+      }
+      const sig = node.content ? node.content.url : '';
+      if (el.dataset.sig !== sig) { el.innerHTML = node.content ? leafContent(node) : emptyContent(node); el.dataset.sig = sig; }
+      el.dataset.n = k;
       Object.assign(el.style, {left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px'});
-      el.innerHTML = node.content ? leafContent(node) : emptyContent(node);
-      el.addEventListener('click', ev => onLeafClick(ev, node, el));
-      root.appendChild(el); return;
+      return;
     }
     const gap = 6;
     if (node.dir === 'v') {
@@ -191,6 +204,7 @@ function render() {
     }
   };
   place(tree, 0, 0, R.width, R.height);
+  root.querySelectorAll('.leaf').forEach(el => { if (!seen.has(el.dataset.id)) el.remove(); });
 }
 function emptyContent(node) {
   return `<div class="empty"><div class="plus" title="Add data">+</div><div class="lbl">ADD DATA</div><div class="lbl2">MOS tables, Weather Mapping layers, Time Series Plots</div></div>`;
