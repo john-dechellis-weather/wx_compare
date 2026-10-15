@@ -58,12 +58,14 @@ def check_password() -> bool:
                 st.query_params[_PARAM] = tok
         except Exception:
             pass
+        _duty()
         return True
 
     # New session, but the browser URL carries a valid token
     try:
         if st.query_params.get(_PARAM) == tok:
             st.session_state["password_correct"] = True
+            _duty()
             return True
     except Exception:
         pass
@@ -94,6 +96,21 @@ def check_password() -> bool:
             st.error("Incorrect password.")
 
     st.stop()
+
+
+def _duty() -> None:
+    """Duty prompts (14 Oct): role / shift / X-shift, once per session,
+    after the password. Never the reason a page fails to draw."""
+    try:
+        import duty
+        duty.gate()
+    except Exception as exc:
+        # st.stop() / switch_page raise control-flow exceptions that
+        # must propagate; anything else is swallowed.
+        if type(exc).__name__ in ("StopException", "RerunException", "StreamlitAPIException"):
+            raise
+        if "Stop" in type(exc).__name__ or "Rerun" in type(exc).__name__:
+            raise
 
 
 def _get_expected_password() -> str | None:

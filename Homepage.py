@@ -323,6 +323,8 @@ PAGES = {
                 title="Station Forecast", default=True),
         st.Page("pages/4_MOS_Tables.py",
                 title="MOS Tables"),
+        st.Page("pages/19_Duty_Shift_Checklist.py",
+                title="Duty Shift Check List"),
     ],
     "Situational Awareness": [
         st.Page("pages/3_JBU_Weather_Map.py",
