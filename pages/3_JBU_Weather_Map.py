@@ -2927,10 +2927,19 @@ if run_button or _auto:
                 _gsv = d.get("gs") or 0
                 _ground = ((_alt is None or _alt < 1500)
                            and _gsv < 60)
+                # Driving condition at the destination, for the card
+                _wx = ""
+                if warn:
+                    _wx = f"{warn} in METAR"
+                elif ltg_arr:
+                    _wx = f"{dest_ltg[dest]} in RMK"
+                elif rain_arr:
+                    _wx = f"{dest_rain[dest]} in METAR"
                 _entries.append(({
                     "lon": d["lon"], "lat": d["lat"],
                     "cs": d.get("callsign", ""),
-                    "alt": _alt, "gs": _gsv,      # for the click card
+                    "alt": _alt, "gs": _gsv, "wx": _wx,   # for the click card
+                    "dest": dest,
                     "tip": tip,
                     "angle": d.get("angle", 0),
                     "icon": (_AC_ICON_PUR
@@ -3106,6 +3115,41 @@ if run_button or _auto:
                 get_angle="angle",
                 pickable=True,
             ))
+            # ROUTE of the clicked aircraft (15 Oct): dotted great
+            # circle origin -> aircraft (flown, pale) and aircraft ->
+            # destination (to go, blue), from the RadarBox record.
+            _sel_cs0 = st.session_state.get("cm_sel_cs")
+            if _sel_cs0:
+                try:
+                    from core import radarbox as _RBX0
+                    _rec0, _ = _RBX0.flight_card(_sel_cs0)
+                    _me = next((e for e in fleet_disp
+                                if (e.get("cs") or "").strip().upper() == _sel_cs0), None)
+                    if _rec0 and _me:
+                        _dots = []
+                        if _rec0.get("depAirportLatitude") is not None:
+                            for pt in _RBX0.gc_points(_rec0["depAirportLatitude"], _rec0["depAirportLongitude"],
+                                                      _me["lat"], _me["lon"]):
+                                _dots.append({"position": pt, "color": [120, 170, 255, 200]})
+                        if _rec0.get("arrAirportLatitude") is not None:
+                            for pt in _RBX0.gc_points(_me["lat"], _me["lon"],
+                                                      _rec0["arrAirportLatitude"], _rec0["arrAirportLongitude"]):
+                                _dots.append({"position": pt, "color": [77, 163, 255, 255]})
+                        _ends = [{"position": [_rec0[k + "Longitude"], _rec0[k + "Latitude"]]}
+                                 for k in ("depAirport", "arrAirport")
+                                 if _rec0.get(k + "Latitude") is not None]
+                        if _dots:
+                            layers.append(pdk.Layer(
+                                "ScatterplotLayer", data=_dots, get_position="position",
+                                get_fill_color="color", radius_min_pixels=2, radius_max_pixels=2,
+                                pickable=False))
+                            layers.append(pdk.Layer(
+                                "ScatterplotLayer", data=_ends, get_position="position",
+                                get_fill_color=[77, 163, 255, 255], get_line_color=[255, 255, 255, 255],
+                                stroked=True, line_width_min_pixels=1.5,
+                                radius_min_pixels=5, radius_max_pixels=5, pickable=False))
+                except Exception:
+                    pass
             if gnd_disp:
                 layers.append(pdk.Layer(
                     "IconLayer", data=gnd_disp,
@@ -3255,12 +3299,16 @@ if run_button or _auto:
             from core import radarbox as _RBX
             _rec, _note = _RBX.flight_card(_sel_cs)
             _row = st.session_state.get("cm_sel_row") or {}
-            _c1, _c2 = _card_cols
-            with _c2:
-                st.markdown(_RBX.card_html(_sel_cs, _rec, _note,
-                                           alt=_row.get("alt"), gs=_row.get("gs")),
-                            unsafe_allow_html=True)
-                if st.button("Close card", key="cm_card_close"):
+            # Overlaid on the map's bottom-right corner: the card is
+            # drawn right after the chart and pulled up over it.
+            _card = _RBX.card_html(_sel_cs, _rec, _note, alt=_row.get("alt"), gs=_row.get("gs"),
+                                   wx=_row.get("wx") or "", color=_row.get("lcolor"))
+            st.markdown(
+                '<div style="position:relative;height:0;overflow:visible;z-index:20">'
+                '<div style="position:absolute;right:14px;bottom:28px;pointer-events:auto">'
+                + _card + '</div></div>', unsafe_allow_html=True)
+            with _card_cols[1]:
+                if st.button("Close aircraft card", key="cm_card_close"):
                     st.session_state.pop("cm_sel_cs", None)
                     st.session_state.pop("cm_sel_row", None)
                     st.rerun()

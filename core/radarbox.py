@@ -142,7 +142,8 @@ def _slim(f: dict) -> dict:
             "aircraftType", "depAirportIcao", "depAirportIata", "depAirportCity",
             "scheduledDeparture", "estimatedDeparture", "actualDeparture", "actualTakeoff",
             "scheduledArrival", "estimatedArrival", "actualLanding", "status",
-            "latitude", "longitude", "heading", "distance", "duration", "plannedDuration")
+            "latitude", "longitude", "heading", "distance", "duration", "plannedDuration",
+            "depAirportLatitude", "depAirportLongitude", "arrAirportLatitude", "arrAirportLongitude")
     return {k: f.get(k) for k in keys if f.get(k) is not None}
 
 
@@ -285,8 +286,33 @@ def flight_card(callsign: str) -> tuple[dict | None, str]:
     return rec, ("" if rec else f"{cs}: no live record at RadarBox")
 
 
-def card_html(callsign: str, rec: dict | None, note: str = "", alt=None, gs=None) -> str:
-    """The aircraft card, styled like the Station Forecast scope's."""
+def gc_points(lat1, lon1, lat2, lon2, step_nm: float = 25.0) -> list:
+    """Points along the great circle, every step_nm, as [lon, lat]."""
+    import math
+    p1, l1, p2, l2 = map(math.radians, (lat1, lon1, lat2, lon2))
+    d = 2 * math.asin(math.sqrt(math.sin((p2 - p1) / 2) ** 2
+                                + math.cos(p1) * math.cos(p2) * math.sin((l2 - l1) / 2) ** 2))
+    if d < 1e-9:
+        return [[lon1, lat1]]
+    n = max(2, int(d * 3440.065 / step_nm))
+    out = []
+    for i in range(n + 1):
+        f = i / n
+        a = math.sin((1 - f) * d) / math.sin(d)
+        b = math.sin(f * d) / math.sin(d)
+        x = a * math.cos(p1) * math.cos(l1) + b * math.cos(p2) * math.cos(l2)
+        y = a * math.cos(p1) * math.sin(l1) + b * math.cos(p2) * math.sin(l2)
+        z = a * math.sin(p1) + b * math.sin(p2)
+        out.append([math.degrees(math.atan2(y, x)), math.degrees(math.atan2(z, math.sqrt(x * x + y * y)))])
+    return out
+
+
+def card_html(callsign: str, rec: dict | None, note: str = "", alt=None, gs=None,
+              wx: str = "", color=None) -> str:
+    """Compact aircraft card for the map's bottom-right corner. wx =
+    the driving METAR condition at the destination (e.g. "TSRA in
+    METAR"); when given, the card is tinted with the aircraft's colour
+    and the condition sits top right."""
     from html import escape
 
     cs = escape((callsign or "").upper())
@@ -302,47 +328,49 @@ def card_html(callsign: str, rec: dict | None, note: str = "", alt=None, gs=None
         a = float(a)
         return f"FL{int(round(a / 100)):03d}" if a >= 18000 else f"{int(round(a)):,} ft"
 
-    rows = ""
+    spd = (str(int(round(float(gs)))) + " kt") if gs not in (None, "") else "n/a"
+    r, g, b = (color or [0, 90, 220])[:3]
+    bg = f"rgba({r},{g},{b},0.22)" if wx else "#0A0A0A"
+    edge = f"rgb({r},{g},{b})" if wx else "#2D3957"
+    wx_html = ('<span class="wx">' + escape(wx) + '</span>') if wx else ""
+    rows = f'<div class="row"><span class="k">Alt / spd</span><span class="v">{_fl(alt)} &middot; {spd}</span></div>'
     legs = ""
-    foot = ""
     if rec:
         status = (rec.get("status") or "").replace("_", " ").title()
         eta, sta = _dt(rec.get("estimatedArrival")), _dt(rec.get("scheduledArrival"))
         delta = round((eta - sta).total_seconds() / 60) if eta and sta else None
         dtxt = (f' <span style="color:#FF8A00">+{delta}</span>' if delta is not None and delta > 5
                 else f' <span style="color:#00FF7F">{delta:+d}</span>' if delta is not None and delta < -5
-                else f' <span style="color:#6E6E6E">{delta:+d}</span>' if delta is not None else "")
+                else f' <span style="color:#9AA0A6">{delta:+d}</span>' if delta is not None else "")
         rows = (
-            f'<div class="row"><span class="k">Aircraft</span><span class="v">{escape(rec.get("aircraftType") or "n/a")}'
-            f'{(" &middot; " + escape(rec["aircraftRegistration"])) if rec.get("aircraftRegistration") else ""}</span></div>'
-            f'<div class="row"><span class="k">Altitude / speed</span><span class="v">{_fl(alt)} &middot; '
-            f'{(str(int(round(float(gs)))) + " kt") if gs not in (None, "") else "n/a"}</span></div>'
-            f'<div class="row"><span class="k">Status</span><span class="v">{escape(status) or "n/a"}</span></div>'
-            f'<div class="row"><span class="k">Departure</span><span class="v">STD {_t(rec.get("scheduledDeparture"))}'
-            f'{(" &middot; off " + _t(rec.get("actualTakeoff"))) if rec.get("actualTakeoff") else (" &middot; out " + _t(rec.get("actualDeparture"))) if rec.get("actualDeparture") else ""}</span></div>'
-            f'<div class="row"><span class="k">Arrival</span><span class="v">STA {_t(rec.get("scheduledArrival"))} &rarr; '
-            f'<b>ETA {_t(rec.get("estimatedArrival"))}</b>{dtxt}'
+            f'<div class="row"><span class="k">{escape(rec.get("aircraftType") or "")}'
+            f'{(" &middot; " + escape(rec["aircraftRegistration"])) if rec.get("aircraftRegistration") else ""}</span>'
+            f'<span class="v">{_fl(alt)} &middot; {spd}</span></div>'
+            f'<div class="row"><span class="k">STD {_t(rec.get("scheduledDeparture"))}'
+            f'{(" &middot; off " + _t(rec.get("actualTakeoff"))) if rec.get("actualTakeoff") else ""}</span>'
+            f'<span class="v">{escape(status)}</span></div>'
+            f'<div class="row"><span class="k">STA {_t(rec.get("scheduledArrival"))}</span>'
+            f'<span class="v"><b>ETA {_t(rec.get("estimatedArrival"))}</b>{dtxt}'
             f'{(" &middot; landed " + _t(rec.get("actualLanding"))) if rec.get("actualLanding") else ""}</span></div>')
         legs = (
-            f'<div class="leg orig"><div class="nm">ORIGIN</div><div class="ap">{escape(rec.get("depAirportIcao") or "")}</div>'
-            f'<div class="nm">{escape(rec.get("depAirportName") or rec.get("depAirportCity") or "")}</div></div>'
-            f'<div class="leg dest"><div class="nm">DESTINATION</div><div class="ap">{escape(rec.get("arrAirportIcao") or "")}</div>'
-            f'<div class="nm">{escape(rec.get("arrAirportName") or rec.get("arrAirportCity") or "")}</div></div>')
-        foot = '<div class="ft">RadarBox live record &middot; 1 credit, cached 10 min</div>'
-    else:
-        rows = (f'<div class="row"><span class="k">Altitude / speed</span><span class="v">{_fl(alt)} &middot; '
-                f'{(str(int(round(float(gs)))) + " kt") if gs not in (None, "") else "n/a"}</span></div>')
-        foot = f'<div class="ft">{escape(note or "no RadarBox record")}</div>'
+            f'<div class="leg orig"><span class="nm">ORIGIN:</span> <b>{escape(rec.get("depAirportIcao") or "")}</b>'
+            f' <span class="nm">{escape(rec.get("depAirportCity") or "")}</span></div>'
+            f'<div class="leg dest"><span class="nm">DESTINATION:</span> <b>{escape(rec.get("arrAirportIcao") or "")}</b>'
+            f' <span class="nm">{escape(rec.get("arrAirportCity") or "")}</span></div>')
+    elif note:
+        legs = f'<div class="ft">{escape(note)}</div>'
     return (
-        '<style>.bm-ac{font-family:DejaVu Sans Mono,Courier New,monospace;background:#0A0A0A;border:1px solid #2D3957;'
-        'border-radius:8px;padding:10px 12px;color:#FFFFFF;font-size:12px;max-width:380px;margin:0 0 6px auto}'
-        '.bm-ac .hd{display:flex;gap:8px;align-items:baseline;border-bottom:1px solid #1A2233;padding-bottom:6px;margin-bottom:6px}'
-        '.bm-ac .hd b{font-size:16px}.bm-ac .hd span{color:#B8B8B8;font-size:11px}'
-        '.bm-ac .row{display:flex;justify-content:space-between;gap:10px;padding:2px 0}'
-        '.bm-ac .k{color:#B8B8B8}.bm-ac .v{text-align:right}'
-        '.bm-ac .leg{border:1px solid #1A2233;border-left:3px solid #4DA3FF;background:#05070B;padding:5px 8px;margin-top:6px}'
-        '.bm-ac .leg.dest{border-left-color:#00E5FF}.bm-ac .leg .nm{color:#B8B8B8;font-size:10px}.bm-ac .leg .ap{font-size:15px;font-weight:700}'
-        '.bm-ac .ft{color:#6E6E6E;font-size:10px;margin-top:6px}</style>'
-        f'<div class="bm-ac"><div class="hd"><b>{cs}</b>{("<span>/ " + iata + "</span>") if iata else ""}'
-        f'<span>{escape((rec or {}).get("airlineName") or ("JetBlue Airways" if iata else ""))}</span></div>'
-        f'{rows}{legs}{foot}</div>')
+        '<style>.bm-ac{font-family:DejaVu Sans Mono,Courier New,monospace;border-radius:6px;padding:7px 9px;'
+        'color:#FFFFFF;font-size:11px;width:300px;line-height:1.35;backdrop-filter:blur(2px)}'
+        '.bm-ac .hd{display:flex;gap:6px;align-items:baseline;border-bottom:1px solid rgba(255,255,255,.15);padding-bottom:4px;margin-bottom:4px}'
+        '.bm-ac .hd b{font-size:14px}.bm-ac .hd span{color:#C8CDD3;font-size:10px}'
+        '.bm-ac .hd .wx{margin-left:auto;color:#FFFFFF;font-weight:700;font-size:11px;letter-spacing:.3px}'
+        '.bm-ac .row{display:flex;justify-content:space-between;gap:8px;padding:1px 0}'
+        '.bm-ac .k{color:#C8CDD3}.bm-ac .v{text-align:right;white-space:nowrap}'
+        '.bm-ac .leg{border-left:3px solid #4DA3FF;padding:2px 6px;margin-top:4px;background:rgba(0,0,0,.35)}'
+        '.bm-ac .leg.dest{border-left-color:#00E5FF}.bm-ac .leg .nm{color:#C8CDD3;font-size:10px}'
+        '.bm-ac .ft{color:#9AA0A6;font-size:10px;margin-top:4px}</style>'
+        f'<div class="bm-ac" style="background:{bg};border:1px solid {edge}">'
+        f'<div class="hd"><b>{cs}</b>{("<span>/ " + iata + "</span>") if iata else ""}'
+        f'{wx_html}</div>'
+        f'{rows}{legs}</div>')
