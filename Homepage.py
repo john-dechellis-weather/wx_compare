@@ -323,6 +323,11 @@ PAGES = {
                 title="Station Forecast", default=True),
         st.Page("pages/4_MOS_Tables.py",
                 title="MOS Tables"),
+        # 15 Oct: tomorrow.io -> TAF (G. Delanjian's taf_maker),
+        # several stations at once, each beside the govt TAF, METARs
+        # and the NBM/LAMP grids.
+        st.Page("pages/20_TAF_Generator.py",
+                title="TAF Generator"),
         st.Page("pages/19_Duty_Shift_Checklist.py",
                 title="Duty Shift Check List"),
     ],

@@ -35,6 +35,10 @@ else:
 if st.button("Change duty details", key="duty_reset"):
     st.session_state["duty"] = {}
     st.session_state["duty_done"] = False
+    try:
+        del st.query_params["d"]
+    except Exception:
+        pass
     st.rerun()
 st.markdown("<div style='color:#6E6E6E;margin-top:24px'>Checklist items to follow.</div>",
             unsafe_allow_html=True)

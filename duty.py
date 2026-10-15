@@ -27,6 +27,39 @@ import streamlit as st
 
 LANDING = "pages/3_JBU_Weather_Map.py"
 _PANEL_PARAMS = ("embed", "table", "layer", "ts", "panel")
+#: URL param carrying the answers, so a reload / new tab does not ask
+#: again (15 Oct): "M" for MetExpert, "S-AM-Y-N" for SOC MET.
+_PARAM = "d"
+
+
+def _encode(d: dict) -> str:
+    if d.get("role") == "MetExpert":
+        return "M"
+    return "S-" + (d.get("shift") or "").split()[0] + "-" + \
+        ("Y" if d.get("x_today") == "Yes" else "N") + "-" + \
+        ("Y" if d.get("x_tomorrow") == "Yes" else "N")
+
+
+def _decode(code: str) -> dict | None:
+    code = (code or "").strip().upper()
+    if code == "M":
+        return {"role": "MetExpert"}
+    bits = code.split("-")
+    if len(bits) == 4 and bits[0] == "S" and bits[1] in ("AM", "PM") \
+            and bits[2] in ("Y", "N") and bits[3] in ("Y", "N"):
+        return {"role": "SOC MET", "shift": bits[1] + " Shift",
+                "x_today": "Yes" if bits[2] == "Y" else "No",
+                "x_tomorrow": "Yes" if bits[3] == "Y" else "No"}
+    return None
+
+
+def _keep_param() -> None:
+    try:
+        code = _encode(st.session_state.get("duty") or {})
+        if st.query_params.get(_PARAM) != code:
+            st.query_params[_PARAM] = code
+    except Exception:
+        pass
 
 
 def answered() -> bool:
@@ -133,7 +166,20 @@ def _prompts() -> None:
 def gate() -> None:
     """Draw the login board with the prompts until answered; then land
     on the CONUS map. Returns silently when nothing is needed."""
-    if answered() or _embedded():
+    if answered():
+        _keep_param()
+        return
+    if _embedded():
+        return
+    # a reload or a new tab with the answers in the URL
+    try:
+        restored = _decode(st.query_params.get(_PARAM, ""))
+    except Exception:
+        restored = None
+    if restored:
+        restored["at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+        st.session_state["duty"] = restored
+        st.session_state["duty_done"] = True
         return
     try:
         import login_board
@@ -150,6 +196,7 @@ def _finish(d: dict) -> None:
     d["at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
     st.session_state["duty"] = d
     st.session_state["duty_done"] = True
+    _keep_param()
     try:
         st.switch_page(LANDING)
     except Exception:
