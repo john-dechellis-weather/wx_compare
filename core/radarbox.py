@@ -242,3 +242,107 @@ def rows(doc: dict) -> list[dict]:
         })
     out.sort(key=lambda r: (r["when"] or datetime.max.replace(tzinfo=timezone.utc)))
     return out
+
+
+# ------------------------------------------------- one aircraft (card)
+CARD_TTL_MIN = int(os.environ.get("RBX_CARD_TTL_MIN", "10"))
+_card_cache: dict = {}      # callsign -> (time.time(), record | None)
+
+
+def flight_card(callsign: str) -> tuple[dict | None, str]:
+    """The live record for one callsign (JBUxxxx), 1 credit, cached
+    CARD_TTL_MIN. (record, note)."""
+    cs = (callsign or "").strip().upper()
+    if not cs:
+        return None, ""
+    hit = _card_cache.get(cs)
+    if hit and time.time() - hit[0] < CARD_TTL_MIN * 60:
+        return hit[1], ""
+    if not token():
+        return None, "RADARBOX_TOKEN is not set"
+    b = budget()
+    if b["left"] < 5:
+        return None, f"RadarBox month cap reached ({b['used']:,} / {b['cap']:,})"
+    ids = [cs]
+    if cs.startswith("JBU"):
+        ids.append("B6" + cs[3:])
+    try:
+        live = _post("/flights/live", {"flightIds": ids})
+    except Exception as exc:
+        return None, f"RadarBox: {type(exc).__name__}: {exc}"
+    _add_usage(int(live.get("cost") or 0), "card")
+    rec = None
+    for f in live.get("flights") or []:
+        if (f.get("callsign") or "").upper() == cs or (f.get("flightNumberIata") or "").upper() in ids:
+            rec = _slim(f)
+            rec["airlineName"] = f.get("airlineName")
+            rec["depAirportName"] = f.get("depAirportName")
+            rec["arrAirportName"] = f.get("arrAirportName")
+            rec["arrAirportIcao"] = f.get("arrAirportIcao")
+            rec["arrAirportCity"] = f.get("arrAirportCity")
+            break
+    _card_cache[cs] = (time.time(), rec)
+    return rec, ("" if rec else f"{cs}: no live record at RadarBox")
+
+
+def card_html(callsign: str, rec: dict | None, note: str = "", alt=None, gs=None) -> str:
+    """The aircraft card, styled like the Station Forecast scope's."""
+    from html import escape
+
+    cs = escape((callsign or "").upper())
+    iata = ("B6" + cs[3:]) if cs.startswith("JBU") else ""
+
+    def _t(s):
+        d = _dt(s)
+        return d.strftime("%H:%MZ") if d else "--"
+
+    def _fl(a):
+        if a is None:
+            return "n/a"
+        a = float(a)
+        return f"FL{int(round(a / 100)):03d}" if a >= 18000 else f"{int(round(a)):,} ft"
+
+    rows = ""
+    legs = ""
+    foot = ""
+    if rec:
+        status = (rec.get("status") or "").replace("_", " ").title()
+        eta, sta = _dt(rec.get("estimatedArrival")), _dt(rec.get("scheduledArrival"))
+        delta = round((eta - sta).total_seconds() / 60) if eta and sta else None
+        dtxt = (f' <span style="color:#FF8A00">+{delta}</span>' if delta is not None and delta > 5
+                else f' <span style="color:#00FF7F">{delta:+d}</span>' if delta is not None and delta < -5
+                else f' <span style="color:#6E6E6E">{delta:+d}</span>' if delta is not None else "")
+        rows = (
+            f'<div class="row"><span class="k">Aircraft</span><span class="v">{escape(rec.get("aircraftType") or "n/a")}'
+            f'{(" &middot; " + escape(rec["aircraftRegistration"])) if rec.get("aircraftRegistration") else ""}</span></div>'
+            f'<div class="row"><span class="k">Altitude / speed</span><span class="v">{_fl(alt)} &middot; '
+            f'{(str(int(round(float(gs)))) + " kt") if gs not in (None, "") else "n/a"}</span></div>'
+            f'<div class="row"><span class="k">Status</span><span class="v">{escape(status) or "n/a"}</span></div>'
+            f'<div class="row"><span class="k">Departure</span><span class="v">STD {_t(rec.get("scheduledDeparture"))}'
+            f'{(" &middot; off " + _t(rec.get("actualTakeoff"))) if rec.get("actualTakeoff") else (" &middot; out " + _t(rec.get("actualDeparture"))) if rec.get("actualDeparture") else ""}</span></div>'
+            f'<div class="row"><span class="k">Arrival</span><span class="v">STA {_t(rec.get("scheduledArrival"))} &rarr; '
+            f'<b>ETA {_t(rec.get("estimatedArrival"))}</b>{dtxt}'
+            f'{(" &middot; landed " + _t(rec.get("actualLanding"))) if rec.get("actualLanding") else ""}</span></div>')
+        legs = (
+            f'<div class="leg orig"><div class="nm">ORIGIN</div><div class="ap">{escape(rec.get("depAirportIcao") or "")}</div>'
+            f'<div class="nm">{escape(rec.get("depAirportName") or rec.get("depAirportCity") or "")}</div></div>'
+            f'<div class="leg dest"><div class="nm">DESTINATION</div><div class="ap">{escape(rec.get("arrAirportIcao") or "")}</div>'
+            f'<div class="nm">{escape(rec.get("arrAirportName") or rec.get("arrAirportCity") or "")}</div></div>')
+        foot = '<div class="ft">RadarBox live record &middot; 1 credit, cached 10 min</div>'
+    else:
+        rows = (f'<div class="row"><span class="k">Altitude / speed</span><span class="v">{_fl(alt)} &middot; '
+                f'{(str(int(round(float(gs)))) + " kt") if gs not in (None, "") else "n/a"}</span></div>')
+        foot = f'<div class="ft">{escape(note or "no RadarBox record")}</div>'
+    return (
+        '<style>.bm-ac{font-family:DejaVu Sans Mono,Courier New,monospace;background:#0A0A0A;border:1px solid #2D3957;'
+        'border-radius:8px;padding:10px 12px;color:#FFFFFF;font-size:12px;max-width:380px;margin:0 0 6px auto}'
+        '.bm-ac .hd{display:flex;gap:8px;align-items:baseline;border-bottom:1px solid #1A2233;padding-bottom:6px;margin-bottom:6px}'
+        '.bm-ac .hd b{font-size:16px}.bm-ac .hd span{color:#B8B8B8;font-size:11px}'
+        '.bm-ac .row{display:flex;justify-content:space-between;gap:10px;padding:2px 0}'
+        '.bm-ac .k{color:#B8B8B8}.bm-ac .v{text-align:right}'
+        '.bm-ac .leg{border:1px solid #1A2233;border-left:3px solid #4DA3FF;background:#05070B;padding:5px 8px;margin-top:6px}'
+        '.bm-ac .leg.dest{border-left-color:#00E5FF}.bm-ac .leg .nm{color:#B8B8B8;font-size:10px}.bm-ac .leg .ap{font-size:15px;font-weight:700}'
+        '.bm-ac .ft{color:#6E6E6E;font-size:10px;margin-top:6px}</style>'
+        f'<div class="bm-ac"><div class="hd"><b>{cs}</b>{("<span>/ " + iata + "</span>") if iata else ""}'
+        f'<span>{escape((rec or {}).get("airlineName") or ("JetBlue Airways" if iata else ""))}</span></div>'
+        f'{rows}{legs}{foot}</div>')

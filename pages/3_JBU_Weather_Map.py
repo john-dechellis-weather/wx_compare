@@ -2930,6 +2930,7 @@ if run_button or _auto:
                 _entries.append(({
                     "lon": d["lon"], "lat": d["lat"],
                     "cs": d.get("callsign", ""),
+                    "alt": _alt, "gs": _gsv,      # for the click card
                     "tip": tip,
                     "angle": d.get("angle", 0),
                     "icon": (_AC_ICON_PUR
@@ -3097,6 +3098,7 @@ if run_button or _auto:
                 ))
             layers.append(pdk.Layer(
                 "IconLayer", data=fleet_disp,
+                id="jbu_fleet",          # selection target (14 Oct)
                 get_position="[lon, lat]",
                 get_icon="icon",
                 get_size=24, size_min_pixels=14,
@@ -3211,6 +3213,7 @@ if run_button or _auto:
         # flashing "rendering" over it turns a brief redraw into a
         # visible interruption. The notice exists for the cold open,
         # where the wait is real.
+        _card_cols = st.columns([2.2, 1])
         _map_notice = st.empty()
         if not st.session_state.get("_map_drawn_once"):
             _map_notice.markdown(
@@ -3233,7 +3236,34 @@ if run_button or _auto:
         # elements are identified by POSITION in the script, so
         # calling pydeck_chart at the same point each run already
         # replaces the previous chart.
-        st.pydeck_chart(deck, height=map_height)
+        # AIRCRAFT CARD (14 Oct): click a JBU aircraft and a card like
+        # the Station Forecast scope's draws above the map, filled from
+        # the RadarBox live record (1 credit, cached 10 min) plus the
+        # sweep's altitude / speed. Drawn in a placeholder claimed
+        # BEFORE the chart so it sits above the map, right-aligned.
+        _ev = st.pydeck_chart(deck, height=map_height, on_select="rerun",
+                              selection_mode="single-object", key="jbu_conus_map")
+        try:
+            _objs = (_ev.selection.objects or {}).get("jbu_fleet") or []
+            if _objs:
+                st.session_state["cm_sel_cs"] = (_objs[0].get("cs") or "").strip().upper()
+                st.session_state["cm_sel_row"] = _objs[0]
+        except Exception:
+            pass
+        _sel_cs = st.session_state.get("cm_sel_cs")
+        if _sel_cs:
+            from core import radarbox as _RBX
+            _rec, _note = _RBX.flight_card(_sel_cs)
+            _row = st.session_state.get("cm_sel_row") or {}
+            _c1, _c2 = _card_cols
+            with _c2:
+                st.markdown(_RBX.card_html(_sel_cs, _rec, _note,
+                                           alt=_row.get("alt"), gs=_row.get("gs")),
+                            unsafe_allow_html=True)
+                if st.button("Close card", key="cm_card_close"):
+                    st.session_state.pop("cm_sel_cs", None)
+                    st.session_state.pop("cm_sel_row", None)
+                    st.rerun()
         _map_notice.empty()
         st.session_state["_map_drawn_once"] = True
         st.caption(
