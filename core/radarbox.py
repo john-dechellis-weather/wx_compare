@@ -307,6 +307,54 @@ def gc_points(lat1, lon1, lat2, lon2, step_nm: float = 25.0) -> list:
     return out
 
 
+def card_text(callsign: str, rec: dict | None, note: str = "", alt=None, gs=None,
+              wx: str = "") -> str:
+    """Plain-text card (15 Oct) for a deck.gl TextLayer drawn NEXT TO
+    the aircraft on the CONUS map, tethered by a line. Monospace rows,
+    same content as card_html."""
+    cs = (callsign or "").upper()
+    iata = ("B6" + cs[3:]) if cs.startswith("JBU") else ""
+
+    def _t(s):
+        d = _dt(s)
+        return d.strftime("%H:%MZ") if d else "--"
+
+    def _fl(a):
+        if a is None:
+            return "n/a"
+        a = float(a)
+        return f"FL{int(round(a / 100)):03d}" if a >= 18000 else f"{int(round(a)):,} ft"
+
+    spd = (str(int(round(float(gs)))) + " kt") if gs not in (None, "") else "n/a"
+    W = 34
+    head = cs + (f" / {iata}" if iata else "")
+    if wx:
+        head = head + " " * max(1, W - len(head) - len(wx)) + wx
+    lines = [head, "-" * W]
+    if rec:
+        status = (rec.get("status") or "").replace("_", " ").title()
+        eta, sta = _dt(rec.get("estimatedArrival")), _dt(rec.get("scheduledArrival"))
+        delta = round((eta - sta).total_seconds() / 60) if eta and sta else None
+        dtxt = f" ({delta:+d} min)" if delta is not None and abs(delta) > 5 else ""
+        typ = (rec.get("aircraftType") or "") + (
+            (" " + rec["aircraftRegistration"]) if rec.get("aircraftRegistration") else "")
+        lines += [
+            f"{typ:<{W - len(_fl(alt)) - len(spd) - 3}}{_fl(alt)} / {spd}"[:W + 4],
+            f"STD {_t(rec.get('scheduledDeparture'))}"
+            + (f"  off {_t(rec.get('actualTakeoff'))}" if rec.get("actualTakeoff") else "")
+            + f"  {status}",
+            f"STA {_t(rec.get('scheduledArrival'))}  ETA {_t(rec.get('estimatedArrival'))}{dtxt}"
+            + (f"  landed {_t(rec.get('actualLanding'))}" if rec.get("actualLanding") else ""),
+            f"ORIGIN:      {rec.get('depAirportIcao') or ''}  {rec.get('depAirportCity') or ''}",
+            f"DESTINATION: {rec.get('arrAirportIcao') or ''}  {rec.get('arrAirportCity') or ''}",
+        ]
+    else:
+        lines.append(f"Alt / spd  {_fl(alt)} / {spd}")
+        if note:
+            lines.append(note)
+    return "\n".join(lines)
+
+
 def card_html(callsign: str, rec: dict | None, note: str = "", alt=None, gs=None,
               wx: str = "", color=None) -> str:
     """Compact aircraft card for the map's bottom-right corner. wx =

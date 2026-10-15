@@ -3126,28 +3126,87 @@ if run_button or _auto:
                     _me = next((e for e in fleet_disp
                                 if (e.get("cs") or "").strip().upper() == _sel_cs0), None)
                     if _rec0 and _me:
-                        _dots = []
+                        # GeoJson lines: Streamlit dims getFillColor /
+                        # getColor on every layer while a selection is
+                        # active, but leaves GeoJson getLineColor alone.
+                        _feats = []
                         if _rec0.get("depAirportLatitude") is not None:
-                            for pt in _RBX0.gc_points(_rec0["depAirportLatitude"], _rec0["depAirportLongitude"],
-                                                      _me["lat"], _me["lon"]):
-                                _dots.append({"position": pt, "color": [120, 170, 255, 200]})
+                            _feats.append({"type": "Feature", "properties": {"c": [120, 170, 255, 210]},
+                                           "geometry": {"type": "LineString", "coordinates":
+                                               _RBX0.gc_points(_rec0["depAirportLatitude"], _rec0["depAirportLongitude"],
+                                                               _me["lat"], _me["lon"])}})
                         if _rec0.get("arrAirportLatitude") is not None:
-                            for pt in _RBX0.gc_points(_me["lat"], _me["lon"],
-                                                      _rec0["arrAirportLatitude"], _rec0["arrAirportLongitude"]):
-                                _dots.append({"position": pt, "color": [77, 163, 255, 255]})
-                        _ends = [{"position": [_rec0[k + "Longitude"], _rec0[k + "Latitude"]]}
-                                 for k in ("depAirport", "arrAirport")
-                                 if _rec0.get(k + "Latitude") is not None]
-                        if _dots:
+                            _feats.append({"type": "Feature", "properties": {"c": [77, 163, 255, 255]},
+                                           "geometry": {"type": "LineString", "coordinates":
+                                               _RBX0.gc_points(_me["lat"], _me["lon"],
+                                                               _rec0["arrAirportLatitude"], _rec0["arrAirportLongitude"])}})
+                        for k in ("depAirport", "arrAirport"):
+                            if _rec0.get(k + "Latitude") is not None:
+                                _feats.append({"type": "Feature", "properties": {"c": [255, 255, 255, 255]},
+                                               "geometry": {"type": "Point",
+                                                            "coordinates": [_rec0[k + "Longitude"], _rec0[k + "Latitude"]]}})
+                        if _feats:
                             layers.append(pdk.Layer(
-                                "ScatterplotLayer", data=_dots, get_position="position",
-                                get_fill_color="color", radius_min_pixels=2, radius_max_pixels=2,
+                                "GeoJsonLayer", data={"type": "FeatureCollection", "features": _feats},
+                                stroked=True, filled=False, point_type='"circle"',
+                                get_line_color="properties.c", get_line_width=2, line_width_units='"pixels"',
+                                line_width_min_pixels=2, get_point_radius=5, point_radius_units='"pixels"',
                                 pickable=False))
-                            layers.append(pdk.Layer(
-                                "ScatterplotLayer", data=_ends, get_position="position",
-                                get_fill_color=[77, 163, 255, 255], get_line_color=[255, 255, 255, 255],
-                                stroked=True, line_width_min_pixels=1.5,
-                                radius_min_pixels=5, radius_max_pixels=5, pickable=False))
+                    # CARD NEXT TO THE AIRCRAFT (15 Oct): a text panel
+                    # anchored ~90px north-east of the icon at the
+                    # page's zoom, tethered to it by a line. Drawn as
+                    # deck.gl layers so it rides with the map.
+                    if _me:
+                        import math as _m
+                        # same zoom the view below will use
+                        _z = 4.3
+                        try:
+                            if chip_tier > 0:
+                                _z = float(_CHIP_ZOOM[chip_tier])
+                            if st.session_state.get("_locate_cs") and any(
+                                    (d.get("callsign") or "").strip().upper()
+                                    == st.session_state["_locate_cs"] for d in (fleet or [])):
+                                _z = 8.5
+                        except Exception:
+                            pass
+                        _ppd = 512.0 * (2.0 ** _z) / 360.0          # px per degree lon
+                        _dlon = 90.0 / _ppd
+                        _dlat = 90.0 / _ppd * _m.cos(_m.radians(float(_me["lat"])))
+                        _anchor = [float(_me["lon"]) + _dlon, float(_me["lat"]) + _dlat]
+                        _wx0 = _me.get("wx") or ""
+                        _c0 = (_me.get("lcolor") or [0, 90, 220])[:3]
+                        _txt = _RBX0.card_text(_sel_cs0, _rec0, "" if _rec0 else "no live record at RadarBox",
+                                               alt=_me.get("alt"), gs=_me.get("gs"), wx=_wx0)
+                        # Light card, black (default) text: Streamlit
+                        # dims any getColor it finds while a selection is
+                        # active, so the text colour is left unset.
+                        _bg = ([int(_c0[0] * .25 + 255 * .75), int(_c0[1] * .25 + 255 * .75),
+                                int(_c0[2] * .25 + 255 * .75), 245] if _wx0 else [236, 240, 246, 245])
+                        _edge = [int(_c0[0]), int(_c0[1]), int(_c0[2]), 255] if _wx0 else [77, 163, 255, 255]
+                        layers.append(pdk.Layer(
+                            "GeoJsonLayer",
+                            data={"type": "FeatureCollection", "features": [
+                                {"type": "Feature", "properties": {},
+                                 "geometry": {"type": "LineString",
+                                              "coordinates": [[float(_me["lon"]), float(_me["lat"])], _anchor]}},
+                                {"type": "Feature", "properties": {},
+                                 "geometry": {"type": "Point", "coordinates": _anchor}}]},
+                            stroked=True, filled=False, point_type='"circle"',
+                            get_line_color=_edge, get_line_width=1.5, line_width_units='"pixels"',
+                            line_width_min_pixels=1.5, get_point_radius=3, point_radius_units='"pixels"',
+                            pickable=False))
+                        layers.append(pdk.Layer(
+                            "TextLayer", data=[{"position": _anchor, "text": _txt}],
+                            get_position="position", get_text="text",
+                            get_size=12, size_units='"pixels"',
+                            get_text_anchor='"start"', get_alignment_baseline='"bottom"',
+                            get_pixel_offset=[6, -6],
+                            font_family='"DejaVu Sans Mono, Menlo, Consolas, Courier New, monospace"',
+                            font_weight=700, line_height=1.25,
+                            background=True, get_background_color=_bg,
+                            background_padding=[8, 6, 8, 6],
+                            get_border_color=_edge, get_border_width=1,
+                            pickable=False))
                 except Exception:
                     pass
             if gnd_disp:
@@ -3290,28 +3349,53 @@ if run_button or _auto:
         try:
             _objs = (_ev.selection.objects or {}).get("jbu_fleet") or []
             if _objs:
-                st.session_state["cm_sel_cs"] = (_objs[0].get("cs") or "").strip().upper()
+                _new_cs = (_objs[0].get("cs") or "").strip().upper()
                 st.session_state["cm_sel_row"] = _objs[0]
+                if _new_cs and _new_cs != st.session_state.get("cm_sel_cs"):
+                    # the card is part of the deck: rebuild it now rather
+                    # than on the next 2-minute beat
+                    st.session_state["cm_sel_cs"] = _new_cs
+                    st.rerun()
         except Exception:
             pass
         _sel_cs = st.session_state.get("cm_sel_cs")
         if _sel_cs:
-            from core import radarbox as _RBX
-            _rec, _note = _RBX.flight_card(_sel_cs)
-            _row = st.session_state.get("cm_sel_row") or {}
-            # Overlaid on the map's bottom-right corner: the card is
-            # drawn right after the chart and pulled up over it.
-            _card = _RBX.card_html(_sel_cs, _rec, _note, alt=_row.get("alt"), gs=_row.get("gs"),
-                                   wx=_row.get("wx") or "", color=_row.get("lcolor"))
-            st.markdown(
-                '<div style="position:relative;height:0;overflow:visible;z-index:20">'
-                '<div style="position:absolute;right:14px;bottom:28px;pointer-events:auto">'
-                + _card + '</div></div>', unsafe_allow_html=True)
+            # The card itself is drawn ON the map, next to the aircraft
+            # (TextLayer + tether line, built with the layers above).
+            # A fresh click re-selects; this button clears it.
             with _card_cols[1]:
-                if st.button("Close aircraft card", key="cm_card_close"):
+                if st.button(f"Close {_sel_cs} card", key="cm_card_close",
+                             use_container_width=True):
                     st.session_state.pop("cm_sel_cs", None)
                     st.session_state.pop("cm_sel_row", None)
                     st.rerun()
+        # OPENING HINT (15 Oct): a popup over the map's top-left corner
+        # until the user presses its X. Once per session.
+        if not st.session_state.get("cm_hint_closed"):
+            st.markdown(
+                "<style>"
+                ".st-key-cm_hint{position:relative !important;height:0 !important;min-height:0 !important;"
+                "overflow:visible !important;z-index:30;gap:0 !important}"
+                ".st-key-cm_hint > div[data-testid='stLayoutWrapper']{"
+                f"position:absolute;left:14px;bottom:{int(map_height) - 72}px;width:480px;"
+                "background:#0A0A0A;border:2px solid #00E5FF;border-radius:8px;"
+                "padding:6px 6px 6px 14px;box-shadow:0 4px 18px rgba(0,0,0,.6);align-items:center}"
+                ".st-key-cm_hint .bm-hint{font-size:16px;font-weight:800;letter-spacing:.5px;"
+                "color:#FFFFFF;-webkit-text-fill-color:#FFFFFF;white-space:nowrap;margin:0}"
+                ".st-key-cm_hint [data-testid='stButton'] button{min-height:34px;height:34px;width:34px;"
+                "padding:0;background:#1B2A4A !important;border:1px solid #00E5FF !important;border-radius:6px}"
+                ".st-key-cm_hint [data-testid='stButton'] button p{font-size:18px !important;font-weight:800;"
+                "color:#FFFFFF !important;-webkit-text-fill-color:#FFFFFF !important}"
+                "</style>", unsafe_allow_html=True)
+            with st.container(key="cm_hint"):
+                _h1, _h2 = st.columns([10, 1], gap="small", vertical_alignment="center")
+                with _h1:
+                    st.markdown('<p class="bm-hint">CLICK ON AIRCRAFT ICON FOR FLIGHT INFO</p>',
+                                unsafe_allow_html=True)
+                with _h2:
+                    if st.button("✕", key="cm_hint_x", help="Close"):
+                        st.session_state["cm_hint_closed"] = True
+                        st.rerun()
         _map_notice.empty()
         st.session_state["_map_drawn_once"] = True
         st.caption(
