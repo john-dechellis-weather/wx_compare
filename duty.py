@@ -1,19 +1,22 @@
-"""Duty prompts after the password (14 Oct).
+"""Duty prompts after the password (14-15 Oct).
 
 Once a session is signed in, before the first page draws, the user
 says who they are and - for SOC MET - which shift and whether the
-X-shift is on today / scheduled tomorrow. The answers live in
-st.session_state["duty"] for the Duty Shift Check List page, and the
-session then lands on the JBU CONUS map.
+X-shift is on today / scheduled tomorrow. The prompts are drawn ON
+THE LOGIN BOARD, in the sign-in column under the (now disabled)
+password box, so the network chips and the SPC map stay on screen
+until the last answer. The answers live in st.session_state["duty"]
+for the Duty Shift Check List page, and the session then lands on
+the JBU CONUS map.
 
-Steps (each one screen, two big buttons):
+Steps (two buttons each, in the sign-in column):
   1. SOC MET | MetExpert
-  2. Select shift: AM Shift | PM Shift            (SOC MET only)
+  2. Select Shift: AM Shift | PM Shift            (SOC MET only)
   3. Is X-shift working today?  Yes | No           (SOC MET only)
   4. Is there a scheduled X-shift tomorrow?  Yes | No   (SOC MET only)
 
-Embedded panels (Map Splitter) and token-authenticated reloads of an
-already-answered session never see the prompts.
+Embedded panels (Map Splitter) and reloads of an already-answered
+session never see the prompts.
 """
 
 from __future__ import annotations
@@ -46,25 +49,22 @@ def _css() -> None:
     st.markdown(
         "<style>"
         ".st-key-duty [data-testid='stButton'] button{"
-        "height:84px !important;font-size:22px !important;font-weight:700 !important;"
-        "letter-spacing:1px;width:100%;background:#1B2A4A !important;color:#FFFFFF !important;"
-        "-webkit-text-fill-color:#FFFFFF !important;border:1px solid #2D3957 !important;"
-        "border-radius:8px !important}"
+        "height:52px !important;width:100%;background:#1B2A4A !important;"
+        "border:1px solid #2D3957 !important;border-radius:6px !important}"
         ".st-key-duty [data-testid='stButton'] button:hover{background:#2D3957 !important;"
         "border-color:#00E5FF !important}"
         ".st-key-duty [data-testid='stButton'] button p,.st-key-duty [data-testid='stButton'] button div{"
-        "font-size:24px !important;font-weight:700 !important;color:#FFFFFF !important;"
+        "font-size:17px !important;font-weight:700 !important;color:#FFFFFF !important;"
         "-webkit-text-fill-color:#FFFFFF !important}"
-        ".duty-q{font-size:30px !important;font-weight:700;color:#FFFFFF;-webkit-text-fill-color:#FFFFFF;"
-        "margin:40px 0 22px 0;text-align:center}"
-        ".duty-s{font-size:14px !important;color:#B8B8B8;text-align:center;margin:60px 0 0 0;letter-spacing:2px}"
-        ".duty-crumb{font-size:13px !important;color:#6E6E6E;text-align:center;margin-top:22px;letter-spacing:.5px}"
+        ".duty-q{font-size:17px !important;font-weight:700;color:#FFFFFF;-webkit-text-fill-color:#FFFFFF;"
+        "margin:14px 0 8px 0}"
+        ".duty-crumb{font-size:12px !important;color:#6E6E6E;margin-top:10px;letter-spacing:.3px}"
         "</style>", unsafe_allow_html=True)
 
 
 def _two(label_a: str, label_b: str, key: str) -> str | None:
     with st.container(key="duty"):
-        _l, c1, c2, _r = st.columns([1, 1.2, 1.2, 1])
+        c1, c2 = st.columns(2)
         with c1:
             if st.button(label_a, key=f"{key}_a", use_container_width=True):
                 return label_a
@@ -88,15 +88,10 @@ def _crumb(d: dict) -> None:
                     unsafe_allow_html=True)
 
 
-def gate() -> None:
-    """Show the prompts until answered; then land on the CONUS map.
-    Returns silently when nothing is needed."""
-    if answered() or _embedded():
-        return
+def _prompts() -> None:
+    """The question for the current step, in the sign-in column."""
     d = st.session_state.setdefault("duty", {})
     _css()
-    st.markdown('<div class="duty-s">BLUEMET &middot; sign-in</div>', unsafe_allow_html=True)
-
     if not d.get("role"):
         st.markdown('<div class="duty-q">Who is signing in?</div>', unsafe_allow_html=True)
         pick = _two("SOC MET", "MetExpert", "duty_role")
@@ -105,8 +100,7 @@ def gate() -> None:
             if pick == "MetExpert":
                 _finish(d)
             st.rerun()
-        st.stop()
-
+        return
     if not d.get("shift"):
         st.markdown('<div class="duty-q">Select Shift</div>', unsafe_allow_html=True)
         pick = _two("AM Shift", "PM Shift", "duty_shift")
@@ -114,8 +108,7 @@ def gate() -> None:
             d["shift"] = pick
             st.rerun()
         _crumb(d)
-        st.stop()
-
+        return
     if d.get("x_today") is None:
         st.markdown('<div class="duty-q">Is X-shift working today?</div>', unsafe_allow_html=True)
         pick = _two("Yes", "No", "duty_xt")
@@ -123,8 +116,7 @@ def gate() -> None:
             d["x_today"] = pick
             st.rerun()
         _crumb(d)
-        st.stop()
-
+        return
     if d.get("x_tomorrow") is None:
         st.markdown('<div class="duty-q">Is there a scheduled X-shift tomorrow?</div>',
                     unsafe_allow_html=True)
@@ -134,9 +126,24 @@ def gate() -> None:
             _finish(d)
             st.rerun()
         _crumb(d)
-        st.stop()
-
+        return
     _finish(d)
+
+
+def gate() -> None:
+    """Draw the login board with the prompts until answered; then land
+    on the CONUS map. Returns silently when nothing is needed."""
+    if answered() or _embedded():
+        return
+    try:
+        import login_board
+        login_board.render(after_password=_prompts)
+    except Exception as exc:
+        # st.stop / st.rerun / switch_page are control flow: let them go
+        if "Stop" in type(exc).__name__ or "Rerun" in type(exc).__name__:
+            raise
+        _prompts()
+    st.stop()
 
 
 def _finish(d: dict) -> None:

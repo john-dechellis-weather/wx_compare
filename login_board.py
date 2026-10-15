@@ -485,8 +485,14 @@ def _chips(statuses) -> str:
     return f'<div style="display:flex;gap:9px;flex-wrap:wrap">{cells}</div>'
 
 
-def render() -> str | None:
-    """Draw the board. Returns the typed password, or None."""
+def render(after_password=None) -> str | None:
+    """Draw the board. Returns the typed password, or None.
+
+    after_password (15 Oct): when the password is already accepted,
+    a callable that draws the duty prompts (SOC MET / MetExpert, the
+    shift, the X-shift questions) in the sign-in column, under a
+    disabled password box, so the board - chips and map - stays on
+    screen until the questions are answered."""
     T.apply_dark_theme()
     st.markdown(
         "<style>"
@@ -556,8 +562,14 @@ def render() -> str | None:
             f'<div style="font-size:13px;color:{T.TEXT_2};'
             f'margin:8px 0 14px 0">This site is for authorized users '
             f'only.</div>', unsafe_allow_html=True)
-        pw = st.text_input("Password", type="password",
-                           key="password_input")
+        if after_password is not None:
+            st.text_input("Password", type="password", value="\u2022" * 8,
+                          key="password_done", disabled=True)
+            pw = None
+            after_password()
+        else:
+            pw = st.text_input("Password", type="password",
+                               key="password_input")
         st.markdown(
             f'<div style="color:{T.MUTED};font-size:12px;margin-top:18px">'
             f'bluemet.org</div>', unsafe_allow_html=True)
