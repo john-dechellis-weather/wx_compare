@@ -14,6 +14,13 @@ password is entered once per browser, not once per session.
 Password is read from Streamlit secrets (or env var as fallback).
 Never store the password in code.
 
+18 Oct: a committed HASH can override both. If password.sha256 next
+to this file holds a hex digest, the password is whatever hashes to
+it (sha256 of _PW_SALT + password) and the host's APP_PASSWORD is
+ignored - so the password can be changed with a git push while the
+Mac auto-pulls, without touching mac/.env. Make a digest with:
+    python3 -c "import hashlib,getpass;print(hashlib.sha256(('bluemet-pw-v1'+getpass.getpass()).encode()).hexdigest())"
+
 The login SCREEN is login_board.py - the network board, with station
 condition chips and a fixed-view radar map. This module still owns the
 decision; if the board raises for any reason it falls back to a plain
@@ -26,12 +33,32 @@ import streamlit as st
 
 _SALT = "bluemet-url-token-v1"
 _PARAM = "k"
+_PW_SALT = "bluemet-pw-v1"
+_HASH_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "password.sha256")
 
 
 def _token(password: str) -> str:
     return hashlib.sha256(
         (_SALT + password).encode("utf-8")
     ).hexdigest()[:24]
+
+
+def _pw_hash(password: str) -> str:
+    return hashlib.sha256((_PW_SALT + password).encode("utf-8")).hexdigest()
+
+
+def _committed_hash() -> str | None:
+    """The digest in password.sha256, or None when the file is absent
+    or empty (then the host's APP_PASSWORD applies)."""
+    try:
+        with open(_HASH_FILE, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    return line.lower() if len(line) == 64 else None
+    except Exception:
+        pass
+    return None
 
 
 def check_password() -> bool:
@@ -41,15 +68,21 @@ def check_password() -> bool:
     the URL token (survives restarts and reconnects). Otherwise shows
     the login form and st.stop()s.
     """
-    expected = _get_expected_password()
-    if expected is None:
+    committed = _committed_hash()
+    expected = None if committed else _get_expected_password()
+    if committed is None and expected is None:
         st.error(
             "\u26a0 Site is not configured with a password. "
             "Contact the administrator."
         )
         st.stop()
 
-    tok = _token(expected)
+    # The URL token derives from the digest when one is committed, so
+    # every browser is signed out the moment the password changes.
+    tok = _token(committed) if committed else _token(expected)
+
+    def _ok(pw: str) -> bool:
+        return _pw_hash(pw) == committed if committed else pw == expected
 
     # Already authenticated in this session: keep the URL token fresh
     if st.session_state.get("password_correct", False):
@@ -85,7 +118,7 @@ def check_password() -> bool:
         )
 
     if password:
-        if password == expected:
+        if _ok(password):
             st.session_state["password_correct"] = True
             try:
                 st.query_params[_PARAM] = tok
