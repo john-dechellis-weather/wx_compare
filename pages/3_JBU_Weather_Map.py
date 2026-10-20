@@ -834,10 +834,12 @@ def _legend_html() -> str:
         '<svg viewBox="0 0 320 168" width="100%" '
         'style="max-width:160px; display:block;" '
         'xmlns="http://www.w3.org/2000/svg">'
-        '<circle cx="74" cy="96" r="26" fill="none" '
-        'stroke="#FF00FF" stroke-width="5"/>'
-        '<circle cx="74" cy="96" r="11" fill="#FF00FF" '
-        'stroke="#000000"/>'
+        # bullseye (20 Oct): ring just outside the dot, a thin black
+        # line between; different colours so both parts read
+        '<circle cx="74" cy="96" r="13.5" fill="none" '
+        'stroke="#FF00FF" stroke-width="4"/>'
+        '<circle cx="74" cy="96" r="10" fill="#E01A1A" '
+        'stroke="#000000" stroke-width="1.5"/>'
         '<text x="74" y="47" text-anchor="middle" '
         'font-family="Arial, Helvetica, sans-serif" '
         'font-size="22" font-weight="900" fill="#FF5A5A" '
@@ -847,16 +849,15 @@ def _legend_html() -> str:
         f'<line x1="93" y1="40" x2="112" y2="40" {LINE}/>'
         f'<text x="{LX}" y="44" {LBL}>Thunderstorm in current '
         "METAR</text>"
-        # ring leader: rim right point at its own height (100,88)
-        # rim point toward label: (74+25.9, 96-7) ~ (100, 89)
-        f'<line x1="101" y1="89" x2="112" y2="89" {LINE}/>'
-        f'<text x="{LX}" y="93" {LBL}>TAF below '
-        "criteria</text>"
-        # dot leader: down from dot bottom (74,107)+edge, elbow
+        # ring leader: from the ring's outer rim (r=15.5) to the label
+        f'<line x1="89" y1="92" x2="112" y2="92" {LINE}/>'
+        f'<text x="{LX}" y="96" {LBL}>TAF below '
+        "criteria (ring)</text>"
+        # dot leader: down from the marker's bottom edge, elbow
         # right at y=140
-        f'<polyline points="74,110 74,140 112,140" {LINE}/>'
+        f'<polyline points="74,112 74,140 112,140" {LINE}/>'
         f'<text x="{LX}" y="144" {LBL}>METAR below '
-        "criteria</text>"
+        "criteria (dot)</text>"
         "</svg>"
     )
     row = ("display:flex; align-items:center; gap:10px; "
@@ -884,16 +885,25 @@ def _legend_html() -> str:
         )
     )
     def ring_sw(color, dot=None):
+        if dot and dot.lower() == color.lower():
+            # same colour in TAF and METAR: one disc, black line at
+            # half its radius
+            return ('<svg width="18" height="18" style="flex:none;" '
+                    'xmlns="http://www.w3.org/2000/svg">'
+                    f'<circle cx="9" cy="9" r="6.2" fill="{color}" '
+                    'stroke="#000000" stroke-width="0.6"/>'
+                    '<circle cx="9" cy="9" r="3.1" fill="none" '
+                    'stroke="#000000" stroke-width="0.8"/></svg>')
         inner = ""
         if dot:
             inner = (f'<circle cx="9" cy="9" r="3.2" '
                      f'fill="{dot}" stroke="#000000" '
-                     'stroke-width="0.7"/>')
+                     'stroke-width="0.8"/>')
         return ('<svg width="18" height="18" '
                 'style="flex:none;" '
                 'xmlns="http://www.w3.org/2000/svg">'
-                f'<circle cx="9" cy="9" r="6.3" fill="none" '
-                f'stroke="{color}" stroke-width="2.4"/>'
+                f'<circle cx="9" cy="9" r="4.9" fill="none" '
+                f'stroke="{color}" stroke-width="1.9"/>'
                 + inner + "</svg>")
 
     ktxt = (f"color:{_INK}; -webkit-text-fill-color:{_INK}; "
@@ -1358,13 +1368,46 @@ def _legacy_station_layers(fills, rings, ts_marks, label_px) -> list:
     """The pre-chip markers: METAR dot, TAF ring, TS bolt, ID label."""
     import pydeck as pdk
     layers = []
-    if fills:
+    # SAME COLOUR in TAF and METAR (20 Oct): one filled disc the size
+    # of the ring's outer edge, with a thin black line at half its
+    # radius, instead of a ring and a dot that would fuse anyway.
+    _ring_at = {}
+    for r in (rings or []):
+        _ring_at[(round(r["lat"], 4), round(r["lon"], 4))] = r
+    merged, fills2 = [], []
+    for f in (fills or []):
+        k = (round(f["lat"], 4), round(f["lon"], 4))
+        r = _ring_at.get(k)
+        if r is not None and list(r["color"][:3]) == list(f["color"][:3]):
+            merged.append(f)
+            _ring_at.pop(k)
+        else:
+            fills2.append(f)
+    rings2 = list(_ring_at.values())
+    # SIZES (20 Oct, smaller): dot 11000 m / 3-8 px with a 1 px black
+    # edge; ring centre-line 2 px further out (13000 m / 5-10 px,
+    # 2 px stroke) so a thin black line separates them.
+    if fills2:
         layers.append(pdk.Layer(
-            "ScatterplotLayer", data=fills, get_position="[lon, lat]",
-            get_fill_color="color", get_radius=15000,
-            radius_min_pixels=4, radius_max_pixels=11,
+            "ScatterplotLayer", data=fills2, get_position="[lon, lat]",
+            get_fill_color="color", get_radius=11000,
+            radius_min_pixels=3, radius_max_pixels=8,
             stroked=True, get_line_color=[0, 0, 0],
-            line_width_min_pixels=1, pickable=True))
+            line_width_min_pixels=1, line_width_max_pixels=1, pickable=True))
+    if merged:
+        layers.append(pdk.Layer(
+            "ScatterplotLayer", data=merged, get_position="[lon, lat]",
+            get_fill_color="color", get_radius=14400,
+            radius_min_pixels=6, radius_max_pixels=11,
+            stroked=True, get_line_color=[0, 0, 0],
+            line_width_min_pixels=0.8, line_width_max_pixels=0.8, pickable=True))
+        layers.append(pdk.Layer(
+            "ScatterplotLayer", data=merged, get_position="[lon, lat]",
+            get_line_color=[0, 0, 0, 255], get_radius=7200,
+            radius_min_pixels=3, radius_max_pixels=5.5,
+            filled=False, stroked=True, line_width_min_pixels=0.8,
+            line_width_max_pixels=0.8, pickable=False))
+    fills, rings = fills2 + merged, rings2
     _seen, _lbl = set(), []
     for r in (rings or []) + (fills or []):
         k = (round(r["lat"], 3), round(r["lon"], 3))
@@ -1381,10 +1424,10 @@ def _legacy_station_layers(fills, rings, ts_marks, label_px) -> list:
     if rings:
         layers.append(pdk.Layer(
             "ScatterplotLayer", data=rings, get_position="[lon, lat]",
-            get_line_color="color", get_radius=22500,
-            radius_min_pixels=8, radius_max_pixels=16,
-            filled=False, stroked=True, line_width_min_pixels=2.5,
-            pickable=True))
+            get_line_color="color", get_radius=13000,
+            radius_min_pixels=5, radius_max_pixels=10,
+            filled=False, stroked=True, line_width_min_pixels=2,
+            line_width_max_pixels=2, pickable=True))
     if ts_marks:
         for d in ts_marks:
             d["icon"] = _TS_TEXT_ICON
@@ -1392,7 +1435,7 @@ def _legacy_station_layers(fills, rings, ts_marks, label_px) -> list:
             "IconLayer", data=ts_marks, get_position="[lon, lat]",
             get_icon="icon", get_size=32344, size_units="meters",
             size_min_pixels=11.5, size_max_pixels=23,
-            get_pixel_offset=[0, -20], pickable=True))
+            get_pixel_offset=[0, -17], pickable=True))
     return layers
 
 
@@ -2744,7 +2787,7 @@ if run_button or _auto:
         # the name readable as a name rather than as part of the
         # symbol.
         CLEAR_LABEL_PX = 5      # above the dot
-        ALERT_LABEL_PX = 34     # below the marker (42 before the 20 Oct bullseye ring)
+        ALERT_LABEL_PX = 28     # below the marker (42 before the 20 Oct bullseye ring)
 
         # Stations with a marker get their label UNDER the marker
         # (below); the green dot's label above would otherwise sit
