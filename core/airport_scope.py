@@ -312,33 +312,58 @@ def traffic(lat: float, lon: float, radius_nm: float = 30.0) -> list:
     """
     diag = {"source": "", "fetched": 0, "kept": 0, "error": ""}
     rows = []
+    # FLEET SNAPSHOT FIRST (20 Oct): the JetBlue Live System Map's
+    # sweep (core.fleet) already holds every airliner over CONUS from
+    # paced, rate-limit-aware calls; the scope's own unpaced calls to
+    # the same hosts were getting 429s on the Mac and drew nothing.
     try:
-        from core.flights import fetch_positions_near
-        planes = list(fetch_positions_near(lat, lon,
-                                           radius_deg=radius_nm / 60.0) or [])
-        diag["source"] = "core.flights"
-        diag["fetched"] = len(planes)
-        for p in planes:
-            g = (lambda *names: next(
-                (getattr(p, n) for n in names
-                 if getattr(p, n, None) not in (None, "")), None))
-            if isinstance(p, dict):
-                g = (lambda *names: next(
-                    (p[n] for n in names if p.get(n) not in (None, "")), None))
-            rows.append({
-                "hex": g("hex", "icao24") or "",
-                "flight": g("callsign", "flight", "cs") or "",
-                "lat": g("lat", "latitude"), "lon": g("lon", "longitude"),
-                "track": g("heading_deg", "track", "heading", "trk"),
-                "alt_baro": g("alt_ft", "alt_baro", "alt", "altitude"),
-                "gs": g("gs_kt", "speed_kt", "gs", "ground_speed"),
-                "t": g("ac_type", "aircraft_type", "type", "t") or "",
-            })
+        from core import fleet as _FL
+        _res, _err, _ = _FL.fleet_now(first_wait_s=0)
+        if _res:
+            _jbu, _others = _res[0], (_res[6] if len(_res) > 6 else [])
+            for a in _jbu:
+                if distance_nm(lat, lon, a["lat"], a["lon"]) <= radius_nm:
+                    rows.append({"hex": "", "flight": a["callsign"], "lat": a["lat"], "lon": a["lon"],
+                                 "track": (360.0 - float(a.get("angle") or 0)) % 360.0,
+                                 "alt_baro": a.get("alt"), "gs": a.get("gs"), "t": ""})
+            for a in _others:
+                if distance_nm(lat, lon, a["lat"], a["lon"]) <= radius_nm:
+                    rows.append({"hex": "", "flight": a["cs"], "lat": a["lat"], "lon": a["lon"],
+                                 "track": a.get("trk"), "alt_baro": a.get("alt"), "gs": None, "t": ""})
+            if rows:
+                diag["source"] = "fleet snapshot"
+                diag["fetched"] = len(rows)
     except Exception as exc:
-        diag["error"] = f"core.flights: {type(exc).__name__}: {exc}"[:120]
+        diag["error"] = f"fleet: {type(exc).__name__}: {exc}"[:120]
         rows = []
     if not rows:
-        # core.flights returned nothing at all - seen at BOS at midday,
+      try:
+          from core.flights import fetch_positions_near
+          planes = list(fetch_positions_near(lat, lon,
+                                             radius_deg=radius_nm / 60.0) or [])
+          diag["source"] = "core.flights"
+          diag["fetched"] = len(planes)
+          for p in planes:
+              g = (lambda *names: next(
+                  (getattr(p, n) for n in names
+                   if getattr(p, n, None) not in (None, "")), None))
+              if isinstance(p, dict):
+                  g = (lambda *names: next(
+                      (p[n] for n in names if p.get(n) not in (None, "")), None))
+              rows.append({
+                  "hex": g("hex", "icao24") or "",
+                  "flight": g("callsign", "flight", "cs") or "",
+                  "lat": g("lat", "latitude"), "lon": g("lon", "longitude"),
+                  "track": g("heading_deg", "track", "heading", "trk"),
+                  "alt_baro": g("alt_ft", "alt_baro", "alt", "altitude"),
+                  "gs": g("gs_kt", "speed_kt", "gs", "ground_speed"),
+                  "t": g("ac_type", "aircraft_type", "type", "t") or "",
+              })
+      except Exception as exc:
+          diag["error"] = f"core.flights: {type(exc).__name__}: {exc}"[:120]
+          rows = []
+    if not rows:
+        # nothing from the snapshot or core.flights - seen at BOS at midday,
         # with no error, so it is not the filter. Ask the point
         # endpoints directly; the diagnostic line says which served.
         rows = _traffic_direct(lat, lon, radius_nm)
@@ -377,7 +402,8 @@ def _traffic_direct(lat, lon, radius_nm) -> list:
         try:
             r = requests.get(u, timeout=8, headers=hdrs)
             if r.status_code == 200:
-                rows = (r.json() or {}).get("ac") or []
+                j = r.json() or {}
+                rows = j.get("ac") or j.get("aircraft") or []    # adsb.fi says "aircraft"
                 if rows:
                     return rows
         except Exception:
