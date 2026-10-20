@@ -588,9 +588,11 @@ PANEL_CLOSE = "</div>"
 # --------------------------------------------------------------- clock
 
 def clock_html(now=None, fixed: bool = True) -> str:
-    """Zulu and Eastern time, white 17 pt bold. fixed=True pins it to
-    the top right of the window (every page); fixed=False returns the
-    same text right-aligned in the flow (the login header)."""
+    """Day, date, Zulu and Eastern time. fixed=True pins it INSIDE
+    Streamlit's header bar, top right, left of the Deploy / ⋮ menu
+    (20 Oct - it used to sit under the bar and could overlap page
+    text); fixed=False returns the same text right-aligned in the
+    flow (the login header)."""
     from datetime import datetime, timezone
     try:
         from zoneinfo import ZoneInfo
@@ -599,14 +601,17 @@ def clock_html(now=None, fixed: bool = True) -> str:
         _est = None
     now = now or datetime.now(timezone.utc)
     et = now.astimezone(_est) if _est else None
-    txt = f"{now:%H:%M}Z"
+    date = f"{now:%a %d %b %Y}"
+    times = f"{now:%H:%M}Z"
     if et:
-        txt += f" &middot; {et:%-I:%M %p} {et:%Z}"
-    # Below Streamlit's own header bar (the Deploy menu), top right.
-    pos = ("position:fixed;top:52px;right:22px;z-index:999998;"
-           if fixed else "text-align:right;")
+        times += f" &middot; {et:%-I:%M %p} {et:%Z}"
+    txt = (f'<span class="bm-clock-date" style="color:#B8B8B8;-webkit-text-fill-color:#B8B8B8;'
+           f'margin-right:28px">{date}</span><span class="bm-clock-time">{times}</span>')
+    pos = ("position:fixed;top:0;right:170px;height:3.75rem;line-height:3.75rem;"   # clears "Stop Deploy ⋮"
+           "z-index:999999;font-size:14pt;"
+           if fixed else "text-align:right;font-size:17pt;")
     return (f'<div class="bm-clock" style="{pos}color:{TEXT};-webkit-text-fill-color:{TEXT};'
-            f'font-family:var(--bm-mono);font-size:17pt;font-weight:700;'
+            f'font-family:var(--bm-mono);font-weight:700;'
             f'white-space:nowrap">{txt}</div>')
 
 
