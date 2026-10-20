@@ -109,7 +109,7 @@ const CATALOG = [
   // sector + layer lists arrive from static/splitter_catalog.json
   // (written by the page from the site's registries)
   {g: 'Weather Mapping', page: '/Large_Scale_Map', param: 'layer', sectors: [], items: [],
-   note: 'a fixed map (zoom only) of that one layer; one hi-res sector is warmed at a time (site-wide): the last sector chosen wins, CONUS costs nothing extra'},
+   note: 'a fixed CONUS map (zoom only) of that one NOAA model layer'},
   // Time Series Plot: ceiling / visibility / wind meteogram for one
   // station - typed, not picked.
   {g: 'Time Series Plot', page: '/Large_Scale_Map', param: 'ts', typed: true,
@@ -117,7 +117,7 @@ const CATALOG = [
 ];
 fetch(`${BASE}/app/static/splitter_catalog.json?_=${Q.get('cat') || Date.now()}`).then(r => r.json()).then(j => {
   const g = CATALOG.find(x => x.g === 'Weather Mapping');
-  g.sectors = j.wm_sectors || []; g.items = j.wm_layers || [];
+  g.sectors = (j.wm_sectors && j.wm_sectors.length) ? j.wm_sectors : null; g.items = j.wm_layers || [];
 }).catch(() => {});
 function urlFor(g, it, icao, sector) {
   // Streamlit page paths come from the file names; the page shows just

@@ -65,9 +65,10 @@ try:
 except Exception:
     _model_layers = []
 _catalog = {
-    "wm_sectors": [{"k": "", "n": "CONUS"}] + [{"k": k, "n": v[0]} for k, v in _TIO.SECTORS.items()],
-    "wm_layers": ([{"k": f, "n": "tomorrow.io · " + _TIO.FIELD_LABEL.get(f, f)} for f in _TIO.FIELDS]
-                  + [{"k": d["k"], "n": "NOAA · " + d["n"]} for d in _model_layers]),
+    # 20 Oct: Weather Mapping is NOAA-only - no tomorrow.io layers, no
+    # hi-res sectors (those were tomorrow.io tiles).
+    "wm_sectors": [],
+    "wm_layers": [{"k": d["k"], "n": d["n"]} for d in _model_layers],
 }
 _cat_path = Path(__file__).resolve().parent.parent / "static" / "splitter_catalog.json"
 _cat_txt = json.dumps(_catalog)

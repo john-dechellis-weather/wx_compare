@@ -1,5 +1,12 @@
-"""Large Scale Map - tomorrow.io tiles over CONUS (125W-66W, 24N-50N)
-plus the Canadian alternates in range.
+"""Weather Mapping - NOAA model layers over CONUS (125W-66W, 24N-50N).
+
+20 Oct: tomorrow.io layers removed from this page. The toolbar has
+one dropdown per model (REFS ensemble, RRFS, HRRR, GFS) from
+core/model_tiles; the viewer, TIME slider and airspace overlays are
+the same MapLibre page (core/tio_map.map_html, noaa_only=True). The
+tomorrow.io warmer still runs for the other pages; a Map Splitter
+Time Series panel (?ts=) and a tomorrow.io layer panel keep the old
+viewer.
 
 The frames are built by the tomorrow.io warmer in core/tio_map.py
 (started from Homepage.py) and stitched into WebPs under static/.
@@ -68,6 +75,9 @@ PANEL_SECTOR = (_qp.get("sector") or "").strip()
 PANEL_TS = (_qp.get("ts") or "").strip().upper() or None
 if PANEL_TS and not PANEL_LAYER:
     PANEL_LAYER = "__ts__"
+# NOAA-only viewer: the page itself, and any model-layer panel. A
+# tomorrow.io field panel or the time-series panel keeps the full viewer.
+NOAA_ONLY = (not PANEL_LAYER) or (":" in PANEL_LAYER)
 if PANEL_LAYER:
     st.session_state["bm_embed"] = True
     st.markdown("<style>header,[data-testid='stHeader'],.bm-clock,.st-key-topnav,.st-key-nav_warmers,"
@@ -87,27 +97,17 @@ with _h1:
         '<div style="font-size:16px;font-weight:700;color:#FFFFFF;'
         'margin:0 0 2px 0">WEATHER MAPPING</div>'
         '<div style="font-size:11px;font-weight:700;color:#B8B8B8;'
-        'margin:0 0 8px 0">tomorrow.io layers &middot; NOAA model layers '
-        '(REFS ensemble first; RRFS, HRRR, GFS to follow) &middot; hourly '
-        'to +24 h, 3-hourly to +72 h &nbsp;|&nbsp; NOAA MODELS view: a CONUS '
-        'frame of RRFS &middot; HRRR &middot; NAM nest incl. lightning</div>',
+        'margin:0 0 8px 0">NOAA model layers &middot; REFS ensemble, RRFS, '
+        'HRRR, GFS &middot; pick layers from each model\'s dropdown above the '
+        'map &middot; hourly to +24 h, 3-hourly to +72 h</div>',
         unsafe_allow_html=True)
-with _h2:
-    view = "tomorrow.io" if PANEL_LAYER else st.radio(
-        "View", ["tomorrow.io", "NOAA models"], horizontal=True, key="lsm_view",
-        label_visibility="collapsed")
-
-if view == "NOAA models":
-    from core import model_map as _MM
-
-    _MM.render()
-    st.stop()
 
 # Model switch: a page control, not a per-viewer toggle, because the
 # warmer serves ONE model and a switch re-warms every frame (~1,280
 # requests). Shown only when TIO_MODELS names more than one.
+# (tomorrow.io controls are hidden on the NOAA-only page, 20 Oct.)
 _active = TIO.active_model(STATIC)
-if len(TIO.MODELS) > 1 and not PANEL_LAYER:
+if len(TIO.MODELS) > 1 and not PANEL_LAYER and not NOAA_ONLY:
     _m1, _m2 = st.columns([1.2, 3])
     with _m1:
         _pick = st.radio("Model", list(TIO.MODELS),
@@ -135,7 +135,7 @@ if len(TIO.MODELS) > 1 and not PANEL_LAYER:
 # High-resolution sector: one at a time, warmed at zoom 6 on the "now"
 # cadence for TIO_HIRES_FIELDS; "None" spends nothing.
 _sector = TIO.active_sector(STATIC)
-if TIO.HIRES_ON and TIO.SECTORS and not PANEL_LAYER:
+if TIO.HIRES_ON and TIO.SECTORS and not PANEL_LAYER and not NOAA_ONLY:
     _s1, _s2 = st.columns([1.2, 3])
     _opts = [""] + list(TIO.SECTORS)
     with _s1:
@@ -186,7 +186,9 @@ def _body():
     _fc = {k: v for k, v in (man.get(_active) or {}).items()
            if not k.startswith("hires:")}
     n = sum(len(v) for v in _fc.values())
-    if TIO.DEMO:
+    if NOAA_ONLY:
+        pass
+    elif TIO.DEMO:
         st.warning("TIO_DEMO=on: synthetic tiles and station series, no "
                    "tomorrow.io calls. Remove the env var for live data.")
     elif not TIO.api_key():
@@ -215,12 +217,12 @@ def _body():
                             fit=(TIO.SECTORS[PANEL_SECTOR][1]
                                  if PANEL_LAYER and PANEL_SECTOR in TIO.SECTORS else None),
                             mode=("ts" if PANEL_TS else ("map" if PANEL_LAYER else "")),
-                            station=PANEL_TS or "")
+                            station=PANEL_TS or "", noaa_only=NOAA_ONLY)
         # Panels get their own file (one layer, one sector / one station);
         # the page keeps tio_map.html.
         name = (f"tio_map_ts_{PANEL_TS}.html" if PANEL_TS
                 else f"tio_map_{PANEL_LAYER.replace(':', '-')}_{PANEL_SECTOR or 'conus'}.html"
-                if PANEL_LAYER else "tio_map.html")
+                if PANEL_LAYER else "tio_map_noaa.html")
         # Rewritten only when the page itself changes (model, sector);
         # new frames reach the open viewer through its own manifest
         # poll, so the iframe is never reloaded under the user.
@@ -242,7 +244,18 @@ _body()
 if PANEL_LAYER:
     st.stop()
 
-with st.expander("tomorrow.io warmer status", expanded=False):
+with st.expander("model layer status", expanded=False):
+    try:
+        from core import model_tiles as _MT
+        st.caption(f"Model layers: {', '.join(_MT.MODELS_ON) or 'none'} "
+                   f"({len(_MT.field_keys())} layers) | "
+                   + (f"building {_MT.STATUS['busy']}" if _MT.STATUS.get("busy") else "idle")
+                   + (f" | last error: {_MT.STATUS['err']}" if _MT.STATUS.get("err") else ""))
+        st.code("\n".join(_MT.log_tail(STATIC, 10)) or "(no model log yet)")
+    except Exception as _me:
+        st.caption(f"model layers unavailable: {_me}")
+
+with st.expander("tomorrow.io warmer status (other pages)", expanded=False):
     u = TIO.usage(STATIC)
     st.caption(f"Requests today ({u['day']} UTC): {u['count']:,} / "
                f"{TIO.DAILY_CAP:,} cap  |  model {TIO.model_label(_active)}  |  "
@@ -270,12 +283,3 @@ with st.expander("tomorrow.io warmer status", expanded=False):
         st.error(TIO.STATUS["err"])
     lines = TIO.log_tail(STATIC, 15)
     st.code("\n".join(lines) or "(no log yet)")
-    try:
-        from core import model_tiles as _MT
-        st.caption(f"Model layers: {', '.join(_MT.MODELS_ON) or 'none'} "
-                   f"({len(_MT.field_keys())} layers) | "
-                   + (f"building {_MT.STATUS['busy']}" if _MT.STATUS.get("busy") else "idle")
-                   + (f" | last error: {_MT.STATUS['err']}" if _MT.STATUS.get("err") else ""))
-        st.code("\n".join(_MT.log_tail(STATIC, 10)) or "(no model log yet)")
-    except Exception as _me:
-        st.caption(f"model layers unavailable: {_me}")

@@ -1604,7 +1604,7 @@ def stations_geojson(static_dir) -> dict:
 def map_html(man: dict, base: str, stations: dict, height: int = 860,
              model: str = None, pt_built: str = "", noaa_built: str = "",
              sector: str = "", preset: list = None, fit: tuple = None,
-             mode: str = "", station: str = "") -> str:
+             mode: str = "", station: str = "", noaa_only: bool = False) -> str:
     """MapLibre page: CARTO dark vector basemap, the active model's
     warmed frames as image sources (added lazily, first time a layer
     and hour are shown), layer toggles with their own opacity, an
@@ -1613,8 +1613,12 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
     not srcdoc)."""
     model = model or next(iter(MODELS))
     mman = man.get(model) or {}
+    # noaa_only (20 Oct): no tomorrow.io layers at all - no frames, no
+    # General Weather menu, no 2-panel meteogram; one dropdown per
+    # NOAA model on the toolbar instead of one long NOAA Models menu.
+    tfields = [] if noaa_only else list(FIELDS)
     frames = []
-    for field in FIELDS:
+    for field in tfields:
         for step in [0] + FCST_HOURS:
             e = (mman.get(field) or {}).get(str(step))
             if e:
@@ -1623,7 +1627,7 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
                                "built": e["built"], "b": e["bounds"], "hub": ""})
     # High-resolution hub frames ("now" only): same field, drawn over
     # the CONUS frame once the map is zoomed in.
-    for k, v in mman.items():
+    for k, v in (mman.items() if not noaa_only else []):
         if not k.startswith("hires:") or k[6:] != sector:
             continue
         for field, steps in v.items():
@@ -1634,7 +1638,7 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
     style = os.environ.get(
         "BLUEMET_MAP_STYLE",
         "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json")
-    labels = {f: FIELD_LABEL.get(f, f) for f in FIELDS}
+    labels = {f: FIELD_LABEL.get(f, f) for f in tfields}
     pt_url = f"{base}/app/static/tio_pt_{model}.json"
     noaa_url = f"{base}/app/static/tio_noaa.json?v={noaa_built}" if noaa_built else ""
     # GENERAL WEATHER menu: one row per layer, checkbox + opacity.
@@ -1643,7 +1647,7 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
         f'<div class="ly"><label><input type="checkbox" data-f="{f}"'
         f'{" checked" if i == 0 else ""}> {labels[f]}</label>'
         f'<input type="range" data-f="{f}" min="10" max="100" value="{85 if i == 0 else 70}"></div>'
-        for i, f in enumerate(FIELDS))
+        for i, f in enumerate(tfields))
     # METEOGRAM menu: the point fields, up to four at once. Ceiling,
     # visibility and wind speed / gust start ticked (7 Oct: an empty
     # panel read as "no data"); untick to swap in others.
@@ -1663,17 +1667,37 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
         _by_model = {}
         for k in mkeys:
             _by_model.setdefault(k.split(":")[0], []).append(k)
+        _first = mkeys[0] if (noaa_only and mkeys) else None   # one layer on at start
+        def _mrow(k):
+            return (f'<div class="ly"><label><input type="checkbox" data-f="{k}"{" checked" if k == _first else ""}> '
+                    f'{_MT.field_label(k).split(" ", 1)[1]}</label>'
+                    f'<input type="range" data-f="{k}" min="10" max="100" value="80"></div>')
         nrows = "".join(
             f'<div style="color:#6E6E6E;font-size:10px;padding:4px 8px 0;letter-spacing:1px">{_MT.MODEL_LABEL.get(m, m).upper()}</div>'
-            + "".join(
-                f'<div class="ly"><label><input type="checkbox" data-f="{k}"> {_MT.field_label(k).split(" ", 1)[1]}</label>'
-                f'<input type="range" data-f="{k}" min="10" max="100" value="80"></div>'
-                for k in ks)
+            + "".join(_mrow(k) for k in ks)
+            for m, ks in _by_model.items())
+        # noaa_only: one dropdown per model, side by side on the bar
+        nmenus = "".join(
+            f'<details class="dd ddn" data-model="{m}"><summary data-label="{_MT.MODEL_LABEL.get(m, m).upper()}">'
+            f'{_MT.MODEL_LABEL.get(m, m).upper()} &#9662;</summary><div class="menu">'
+            + "".join(_mrow(k) for k in ks) + '</div></details>'
             for m, ks in _by_model.items())
         mpal = _MT.palette_json()
         mlabels = {k: _MT.field_label(k) for k in mkeys}
     except Exception:
-        mkeys, nrows, mpal, mlabels = [], "", {}, {}
+        mkeys, nrows, nmenus, mpal, mlabels = [], "", "", {}, {}
+    if noaa_only:
+        bar_menus = (nmenus or '<span style="color:#6E6E6E">no model layers enabled (MDL_MODELS)</span>')
+        legend_src = ("NOAA model layers (" + ", ".join(_MT.MODEL_LABEL.get(m, m) for m in _by_model)
+                      + f") · CONUS · hourly to +{int(os.environ.get('TIO_FCST_HOURLY_TO', '24'))} h, "
+                      f"3-hourly to +{FCST_HOURS[-1] if FCST_HOURS else 0} h") if mkeys else "NOAA model layers"
+    else:
+        bar_menus = (f'<details class="dd" id="ddw"><summary id="ddws">General Weather &#9662;</summary><div class="menu">{rows}</div></details>'
+                     f'<details class="dd ddn" id="ddn"><summary id="ddns">NOAA Models &#9662;</summary><div class="menu">'
+                     + (nrows or '<div style="color:#6E6E6E;padding:6px 8px">no model layers enabled (MDL_MODELS)</div>') + '</div></details>')
+        legend_src = (f"tomorrow.io {model_label(model)} tiles · CONUS"
+                      + ((" · " + SECTORS[sector][0] + " hi-res past zoom 5.5") if sector in SECTORS else "")
+                      + f" · hourly to +{int(os.environ.get('TIO_FCST_HOURLY_TO', '24'))} h, 3-hourly to +{FCST_HOURS[-1] if FCST_HOURS else 0} h")
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
@@ -1721,16 +1745,16 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
  /* Map Splitter panels (9 Oct). mode-map: a fixed map (zoom only) with
     just TIME and the airspace overlays above it. mode-ts: the time
     series plot alone, full width. */
- body.mode-map #ddw,body.mode-map #ddn,body.mode-map #mdl,body.mode-map #bst,body.mode-map #balt,
+ body.noaa #mdl,body.noaa #b2,body.noaa .bar .sp{{display:none !important}}
+ body.mode-map #ddw,body.mode-map .ddn,body.mode-map #mdl,body.mode-map #bst,body.mode-map #balt,
  body.mode-map #bfit,body.mode-map #b2,body.mode-map .bar .sp,body.mode-map .bar > span[style]{{display:none !important}}
  body.mode-ts #mgsel,body.mode-ts #mgh label{{display:none !important}}
  body.mode-ts .bar,body.mode-ts #m{{display:none !important}}
  body.mode-map #wrap{{height:calc(100vh - 100px)}}
  body.mode-ts #wrap{{height:calc(100vh - 10px)}} body.mode-ts #mg{{display:flex;flex:1 1 auto}}
-</style></head><body class="{('mode-' + mode) if mode else ''}">
+</style></head><body class="{('mode-' + mode) if mode else ''}{' noaa' if noaa_only else ''}">
 <div class="bar">
-  <details class="dd" id="ddw"><summary id="ddws">General Weather &#9662;</summary><div class="menu">{rows}</div></details>
-  <details class="dd" id="ddn"><summary id="ddns">NOAA Models &#9662;</summary><div class="menu">{nrows or '<div style="color:#6E6E6E;padding:6px 8px">no model layers enabled (MDL_MODELS)</div>'}</div></details>
+  {bar_menus}
   <span class="sp"></span><span id="mdl">{model_label(model)}{" &middot; DEMO DATA" if DEMO else ""}</span>
   <button id="bst" class="on">Stations</button><button id="balt" class="on">CA alternates</button>
   <button id="bfit">Fit</button><button id="b2" title="Map + meteogram of the layers that are on, for a station you click">2-panel</button>
@@ -1748,7 +1772,7 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
 <div id="wrap">
 <div id="m"><div class="lg" id="lg"><div id="mlg"></div><span class="d" style="background:#4DA3FF"></span>JBU station &nbsp;
  <span class="d" style="background:#9AA0A6"></span>Canadian alternate<br>
- <span style="color:#6E6E6E">tomorrow.io {model_label(model)} tiles · CONUS{(" · " + SECTORS[sector][0] + " hi-res past zoom 5.5") if sector in SECTORS else ""} · hourly to +{int(os.environ.get("TIO_FCST_HOURLY_TO", "24"))} h, 3-hourly to +{FCST_HOURS[-1] if FCST_HOURS else 0} h</span></div></div>
+ <span style="color:#6E6E6E">{legend_src}</span></div></div>
 <div id="mg">
   <div id="mgh"><label>STATION</label><select id="mgsel"><option value="">click a dot…</option></select>
     <details class="dd" id="ddm"><summary id="ddms">Elements &#9662;</summary><div class="menu">{mrows}
@@ -1760,7 +1784,7 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
 <script>
 const F = {json.dumps(frames)};
 const ST = {json.dumps(stations)};
-const TFIELDS = {json.dumps(FIELDS)};
+const TFIELDS = {json.dumps(tfields)};
 const MFIELDS = {json.dumps(mkeys)};
 const FIELDS = TFIELDS.concat(MFIELDS);
 const MDL_URL = {json.dumps(base + "/app/static/mdl_manifest.json")};
@@ -2009,8 +2033,13 @@ function draw() {{
   if (ready) added.forEach(k => {{ if (map.getLayer(k)) {{ const p = k.split('_'); const fld = p[p.length > 3 ? 2 : 1]; map.setPaintProperty(k, 'raster-opacity', visible.has(k) ? op[fld] : 0); }} }});
   const nOn = FIELDS.filter(f => on[f]).length;
   const nT = TFIELDS.filter(f => on[f]).length, nM = MFIELDS.filter(f => on[f]).length;
-  $('ddws').innerHTML = 'General Weather' + (nT ? ' <span style="color:#00E5FF">' + nT + '</span>' : '') + ' &#9662;';
+  if ($('ddws')) $('ddws').innerHTML = 'General Weather' + (nT ? ' <span style="color:#00E5FF">' + nT + '</span>' : '') + ' &#9662;';
   if ($('ddns')) $('ddns').innerHTML = 'NOAA Models' + (nM ? ' <span style="color:#00E5FF">' + nM + '</span>' : '') + ' &#9662;';
+  document.querySelectorAll('details.ddn[data-model]').forEach(d => {{
+    const m = d.dataset.model, s = d.querySelector('summary');
+    const k = MFIELDS.filter(f => on[f] && f.split(':')[0] === m).length;
+    s.innerHTML = s.dataset.label + (k ? ' <span style="color:#00E5FF">' + k + '</span>' : '') + ' &#9662;';
+  }});
   renderLegends();
   $('valid').textContent = (step ? '+' + step + ' h' : 'now') + (valid ? '  valid ' + valid : (nOn ? '  fetching…' : '  (no layer on)'));
   sendDemand(false);
