@@ -36,3 +36,4 @@ static/tio_map_*.html
 static/rbx/
 static/rbx_usage.json
 static/scope_*.html
+static/map_routes_full.geojson

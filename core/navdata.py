@@ -669,3 +669,33 @@ def load(cache_root) -> dict | None:
         return json.loads(files[-1].read_text())
     except Exception:
         return None
+
+
+def export_geojson(cache_root, out_path) -> int:
+    """Write the cached cycle's routes (the JBU CONUS map's set, at
+    full NASR / AIS length) as a GeoJSON FeatureCollection for the
+    MapLibre viewer (Weather Mapping, 20 Oct). Rewritten only when the
+    content changes. Returns the number of routes, 0 when there is no
+    cache yet (the viewer then falls back to the bundled file)."""
+    nd = load(cache_root)
+    rts = (nd or {}).get("routes") or []
+    rts = [r for r in rts if len(r.get("path") or []) > 1]
+    if not rts:
+        return 0
+    fc = {"type": "FeatureCollection",
+          "cycle": nd.get("cycle", ""),
+          "features": [{"type": "Feature",
+                        "properties": {"ident": r["id"], "type": r.get("type", "")},
+                        "geometry": {"type": "LineString", "coordinates": r["path"]}}
+                       for r in rts]}
+    out = Path(out_path)
+    txt = json.dumps(fc, separators=(",", ":"))
+    try:
+        if out.exists() and out.read_text() == txt:
+            return len(rts)
+        tmp = out.with_name("." + out.name + ".tmp")
+        tmp.write_text(txt)
+        tmp.replace(out)
+    except Exception:
+        pass
+    return len(rts)

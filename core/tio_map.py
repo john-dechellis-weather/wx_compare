@@ -1604,7 +1604,8 @@ def stations_geojson(static_dir) -> dict:
 def map_html(man: dict, base: str, stations: dict, height: int = 860,
              model: str = None, pt_built: str = "", noaa_built: str = "",
              sector: str = "", preset: list = None, fit: tuple = None,
-             mode: str = "", station: str = "", noaa_only: bool = False) -> str:
+             mode: str = "", station: str = "", noaa_only: bool = False,
+             routes_file: str = "map_routes.geojson") -> str:
     """MapLibre page: CARTO dark vector basemap, the active model's
     warmed frames as image sources (added lazily, first time a layer
     and hour are shown), layer toggles with their own opacity, an
@@ -2223,10 +2224,12 @@ const ovOn = {{}}, ovLoaded = {{}};
 function lineFC(items) {{ return {{type:'FeatureCollection', features: items.map(([coords, props]) => ({{type:'Feature', properties:props, geometry:{{type:'LineString', coordinates:coords}}}}))}}; }}
 function ptFC(items) {{ return {{type:'FeatureCollection', features: items.map(([lon, lat, props]) => ({{type:'Feature', properties:props, geometry:{{type:'Point', coordinates:[lon, lat]}}}}))}}; }}
 const OV = {{
-  routes: {{ file:'map_routes.geojson', build: j => {{
-      // the same 58 routes the JBU CONUS map draws (28 Sep)
-      map.addSource('ov-routes', {{type:'geojson', data: lineFC(j.features.map(f => [f.geometry.coordinates, {{ident:f.properties.ident, rnav:f.properties.type === 'RNAV'}}]))}});
-      map.addLayer({{id:'ov-routes', type:'line', source:'ov-routes', paint:{{'line-color':['case', ['get','rnav'], '#22D3EE', '#9AA0A6'], 'line-width':1.1, 'line-opacity':0.85}}}}, 'st-dot');
+  routes: {{ file:{json.dumps(routes_file)}, build: j => {{
+      // the same routes the JBU CONUS map draws; map_routes_full.geojson
+      // (20 Oct) is that map's full-length NASR/AIS geometry, exported
+      // by the page from the navdata cache
+      map.addSource('ov-routes', {{type:'geojson', data: lineFC(j.features.map(f => [f.geometry.coordinates, {{ident:f.properties.ident, rnav:f.properties.type === 'RNAV', ocean:f.properties.type === 'OCEAN'}}]))}});
+      map.addLayer({{id:'ov-routes', type:'line', source:'ov-routes', paint:{{'line-color':['case', ['get','rnav'], '#22D3EE', ['get','ocean'], '#6B7FB3', '#9AA0A6'], 'line-width':1.1, 'line-opacity':0.85}}}}, 'st-dot');
       map.addLayer({{id:'ov-routes-lab', type:'symbol', source:'ov-routes', layout:{{'symbol-placement':'line', 'text-field':['get','ident'], 'text-size':10, 'text-font':['Open Sans Bold'], 'symbol-spacing':900}},
         paint:{{'text-color':['case', ['get','rnav'], '#22D3EE', '#C8CCD2'], 'text-halo-color':'#000', 'text-halo-width':1.2}}}}, 'st-dot');
       return ['ov-routes', 'ov-routes-lab']; }} }},

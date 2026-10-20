@@ -168,6 +168,23 @@ def _origin() -> str:
             or os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
 
 
+# JET ROUTES at full length (20 Oct): the JBU CONUS map's routes come
+# from the NASR navdata cache; export them for the viewer. Same cache
+# root as that page. Falls back to the bundled 58-route file until the
+# cache has been built.
+_NAV_ROOT = Path("/opt/render/project/src/cache")
+_NAV_ROOT = _NAV_ROOT if _NAV_ROOT.exists() else Path("/tmp/wx_compare_cache")
+ROUTES_FILE = "map_routes.geojson"
+try:
+    from core import navdata as _ND
+    _NAV_ROOT.mkdir(parents=True, exist_ok=True)
+    _ND.ensure(_NAV_ROOT)
+    if _ND.export_geojson(_NAV_ROOT, STATIC / "map_routes_full.geojson"):
+        ROUTES_FILE = "map_routes_full.geojson"
+except Exception:
+    pass
+
+
 @st.fragment(run_every=60)
 def _body():
     base = _origin()
@@ -217,7 +234,8 @@ def _body():
                             fit=(TIO.SECTORS[PANEL_SECTOR][1]
                                  if PANEL_LAYER and PANEL_SECTOR in TIO.SECTORS else None),
                             mode=("ts" if PANEL_TS else ("map" if PANEL_LAYER else "")),
-                            station=PANEL_TS or "", noaa_only=NOAA_ONLY)
+                            station=PANEL_TS or "", noaa_only=NOAA_ONLY,
+                            routes_file=ROUTES_FILE)
         # Panels get their own file (one layer, one sector / one station);
         # the page keeps tio_map.html.
         name = (f"tio_map_ts_{PANEL_TS}.html" if PANEL_TS
