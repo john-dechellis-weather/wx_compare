@@ -1517,6 +1517,13 @@ def _loop(outdir):
                    [h for h in [0] + FCST_HOURS if 0 < step - h <= 1]
             for st_ in want:
                 for f in dm.get("fields") or []:
+                    # NOAA model layers ("refs:PMMN") ride in the same
+                    # demand for core.model_tiles; they are NOT
+                    # tomorrow.io fields. Until 20 Oct they fell through
+                    # here and each one cost 8 tomorrow.io tile requests
+                    # per slider step for a frame that could never build.
+                    if f not in FIELDS:
+                        continue
                     if st_ and st_ not in steps_for(f):
                         continue
                     if _stale(model, f, st_):
