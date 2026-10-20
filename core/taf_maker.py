@@ -443,6 +443,7 @@ def fetch_timelines_one_location(
         "endTime": end.isoformat().replace("+00:00", "Z"),
     }
 
+    raise RuntimeError("tomorrow.io is cut off (20 Oct); the TAF generator runs on NBM")
     r = requests.post(
         TOMORROW_TIMELINES_URL,
         params={"apikey": api_key},
@@ -3243,64 +3244,186 @@ def run_for_icao(icao: str, api_key: str, hours: int, cache_path: str, taf_start
 
 
 # ----------------------------
-# BlueMet entry point
+# BlueMet entry point: NBM-driven (20 Oct)
 # ----------------------------
+# tomorrow.io is cut off. The pipeline above is fed from the NBM hourly
+# bulletin instead: the station's own series stands in for all 27
+# ring points, with the ring-dependent signals derived from NBM
+# probabilities:
+#   precip in 5 mi      P01 >= POP_PREVAIL (prevailing precip)
+#   showers in 10 mi    POP_VC <= P01 < POP_PREVAIL        (VCSH)
+#   thunder in 5 mi     T01 >= TS_PREVAIL                   (TSRA)
+#   thunder in 25 mi    TS_VC <= T01 < TS_PREVAIL           (VCTS)
+# Precip type = the largest of PRA/PSN/PZR/PPL (temperature decides
+# when the bulletin has none); intensity from the hourly QPF.
+# Hours past the NBH range (3-hourly NBS) are interpolated to hourly.
 
-REQUESTS_PER_TAF = 27   # 9 points x 3 rings, one Timelines call each
+POP_PREVAIL = float(os.environ.get("TAF_POP_PREVAIL", "40"))
+POP_VC = float(os.environ.get("TAF_POP_VC", "25"))
+TS_PREVAIL = float(os.environ.get("TAF_TS_PREVAIL", "30"))
+TS_VC = float(os.environ.get("TAF_TS_VC", "15"))
+SOURCE_NOTE = "NBM"
+
+
+def _nbm_hourly(icao: str, start: dt.datetime, end: dt.datetime, cache_root: str) -> Tuple[list, str]:
+    """[(valid, row-dict)] hourly from start to end inclusive from the
+    newest complete NBM cycle; row keys are the compare-frame columns.
+    3-hourly NBS rows are interpolated to the hours between."""
+    from pathlib import Path
+    from models.nbm import Nbm
+    nbm = Nbm(cache_dir=Path(cache_root) / "nbm")
+    now = utcnow().replace(minute=0, second=0, microsecond=0)
+    cyc = None
+    for back in range(1, 10):
+        c = now - dt.timedelta(hours=back)
+        try:
+            if nbm.is_cycle_complete(c):
+                cyc = c
+                break
+        except Exception:
+            continue
+    if cyc is None:
+        raise RuntimeError("no complete NBM cycle found on NOMADS")
+    p = nbm.fetch(cyc, [icao])
+    df = nbm.parse(p, [icao], cyc) if p is not None else None
+    if df is None or not len(df):
+        raise RuntimeError(f"NBM bulletin has no block for {icao}")
+    df = df[df["station_id"] == icao].sort_values("valid_time")
+    cols = ["ceiling_ft", "ceiling_unlimited", "vsby_sm", "wind_speed_kt", "wind_gust_kt",
+            "wind_dir_deg", "temp_f", "sky_pct", "pop1", "qpf_in", "p_tstm",
+            "p_ra", "p_sn", "p_zr", "p_pl", "lcb_ft"]
+    rows = {}
+    for _, r in df.iterrows():
+        vt = r["valid_time"].to_pydatetime()
+        d = {}
+        for c in cols:
+            v = r[c] if c in df.columns else None
+            if v is None or (isinstance(v, float) and math.isnan(v)) or v is pd_NA:
+                d[c] = None
+            else:
+                d[c] = bool(v) if c == "ceiling_unlimited" else float(v)
+        rows[vt] = d
+    times = sorted(rows)
+    out = []
+    t = start
+    while t <= end:
+        if t in rows:
+            out.append((t, rows[t]))
+        else:
+            before = [x for x in times if x < t]
+            after = [x for x in times if x > t]
+            if before and after:
+                a, b = before[-1], after[0]
+                f = (t - a).total_seconds() / (b - a).total_seconds()
+                ra, rb = rows[a], rows[b]
+                d = {}
+                for c in cols:
+                    va, vb = ra.get(c), rb.get(c)
+                    if c == "ceiling_unlimited":
+                        d[c] = va if f < 0.5 else vb
+                    elif isinstance(va, (int, float)) and isinstance(vb, (int, float)):
+                        d[c] = va + (vb - va) * f
+                    else:
+                        d[c] = va if f < 0.5 else vb
+                # a 3-hourly QPF/PoP window is spread over its hours
+                out.append((t, d))
+            elif before:
+                out.append((t, rows[before[-1]]))
+            elif after:
+                out.append((t, rows[after[0]]))
+        t += dt.timedelta(hours=1)
+    return out, cyc.strftime("%d/%HZ")
+
+
+try:
+    import pandas as _pd
+    pd_NA = _pd.NA
+except Exception:                      # pragma: no cover
+    pd_NA = object()
+
+
+def _interval(t: dt.datetime, d: dict, ring: str) -> dict:
+    """One tomorrow.io-shaped interval (imperial units) for a ring."""
+    wsp, gst = d.get("wind_speed_kt"), d.get("wind_gust_kt")
+    cig, unl = d.get("ceiling_ft"), bool(d.get("ceiling_unlimited"))
+    pop, qpf, tst = d.get("pop1") or 0.0, d.get("qpf_in") or 0.0, d.get("p_tstm") or 0.0
+    # precip type: the largest conditional probability, else by temperature
+    probs = {1: d.get("p_ra"), 2: d.get("p_sn"), 3: d.get("p_zr"), 4: d.get("p_pl")}
+    probs = {k: v for k, v in probs.items() if v is not None}
+    if probs and max(probs.values()) > 0:
+        ptype = max(probs, key=probs.get)
+    else:
+        tf = d.get("temp_f")
+        ptype = 2 if (tf is not None and tf <= 32) else 1
+    precip_here = pop >= POP_PREVAIL if ring == "5" else (POP_VC <= pop) if ring == "10" else False
+    mmph = max(0.2, qpf * 25.4) if precip_here else 0.0
+    ts_here = (tst >= TS_PREVAIL) if ring == "5" else (tst >= TS_VC) if ring == "25" else False
+    v = {
+        "windSpeed": (wsp / 0.868976) if wsp is not None else None,
+        "windDirection": d.get("wind_dir_deg"),
+        "windGust": (gst / 0.868976) if gst is not None else None,
+        "visibility": d.get("vsby_sm"),
+        "cloudCover": d.get("sky_pct"),
+        "cloudBase": (d["lcb_ft"] / 3280.84) if d.get("lcb_ft") is not None else None,
+        "cloudCeiling": None if (unl or cig is None) else cig / 3280.84,
+        "precipitationType": ptype if precip_here else 0,
+        "precipitationIntensity": mmph,
+        "weatherCode": 8000 if ts_here else (4000 if precip_here else 1000),
+        "lightningFlashRateDensity": 1.0 if ts_here else 0.0,
+    }
+    return {"startTime": t.isoformat().replace("+00:00", "Z"), "values": v}
 
 
 def generate(icao: str, hours: int = 24, start: Optional[dt.datetime] = None,
              cache_root: Optional[str] = None) -> Dict[str, Any]:
-    """Build one TAF. Returns {"icao", "taf", "banner", "issued",
-    "valid_from", "valid_to"}; raises on a bad station, a missing key
-    or a tomorrow.io error. The 27 requests are charged to the site's
-    tomorrow.io budget first (core.tio_map._charge) so a run of TAFs
-    cannot starve the map warmer."""
-    from core import tio_map as _TIO
-    key = _TIO.api_key()
-    if os.environ.get("BLUEMET_TAF_FAKE"):
-        # layout testing without a key or a charge: synthetic timelines
-        global fetch_timelines_one_location
-        fetch_timelines_one_location = _fake_timelines
-        key = "fake"
-    elif not key:
-        raise RuntimeError("tomorrow.io data is disabled on this site (TIO_ENABLED is not on)"
-                           if not getattr(_TIO, "TIO_ENABLED", True)
-                           else "tomorrow.io key is not configured on this instance")
+    """Build one TAF from NBM. Returns {"icao", "taf", "banner", "issued",
+    "valid_from", "valid_to", "cycle"}; raises on a bad station or a
+    missing bulletin. No API spend."""
     root = cache_root or os.environ.get("BLUEMET_CACHE", "/tmp/wx_compare_cache")
     os.makedirs(root, exist_ok=True)
     cache_path = os.path.join(root, "airports.csv")
-    static = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
-    try:
-        if key != "fake":
-            _TIO._charge(static, REQUESTS_PER_TAF, 1, f"taf {icao}")
-    except Exception as exc:
-        raise RuntimeError(f"tomorrow.io budget: {exc}") from exc
-    text = run_for_icao(icao.strip().upper(), key, max(6, min(30, int(hours))), cache_path, start)
-    banner, _, taf = text.partition("\n")
+    icao = icao.strip().upper()
+    hours = max(6, min(30, int(hours)))
+    lat, lon, name, iso_country = icao_to_airport_info(icao, cache_path)
+    imperial = is_imperial_station(icao, iso_country)
+    api_units = "imperial"            # the NBM adapter always writes imperial
+    output_style = "US" if imperial else "METRIC"
     issue = start if start is not None else utcnow()
-    vf = round_to_hour(issue)
-    return {"icao": icao.strip().upper(), "taf": taf, "banner": banner.lstrip("# "),
-            "issued": issue, "valid_from": vf, "valid_to": vf + dt.timedelta(hours=int(hours))}
-
-
-def _fake_timelines(api_key, lat, lon, start, end, timestep, units):
-    """BLUEMET_TAF_FAKE=1: a plausible 24 h (fog + showers + a wind
-    shift) so the page can be laid out without spending requests."""
-    out, t = [], start
-    while t <= end:
-        h = (t - start).total_seconds() / 3600
-        imp = units == "imperial"
-        v = {"windSpeed": 12 + 6 * (h > 8), "windDirection": 220 + 40 * (h > 8),
-             "windGust": 24 if 8 < h < 14 else 0,
-             "visibility": (2 if imp else 3.2) if 3 <= h <= 6 else (10 if imp else 16),
-             "cloudCover": 90 if 2 <= h <= 9 else 20,
-             "cloudBase": (800 if imp else 0.25) if 2 <= h <= 9 else (4000 if imp else 1.2),
-             "cloudCeiling": (800 if imp else 0.25) if 2 <= h <= 9 else None,
-             "precipitationType": 1 if 3 <= h <= 6 else 0,
-             "precipitationIntensity": 0.05 if 3 <= h <= 6 else 0,
-             "weatherCode": 8000 if 4 <= h <= 5 else 4000 if 3 <= h <= 6 else 1000,
-             "lightningFlashRateDensity": 0}
-        out.append({"startTime": t.isoformat().replace("+00:00", "Z"), "values": v})
-        t += dt.timedelta(hours=1)
-    return out
+    valid_from = round_to_hour(issue)
+    valid_to = valid_from + dt.timedelta(hours=hours)
+    hourly, cycle = _nbm_hourly(icao, valid_from, valid_to, root)
+    if not hourly:
+        raise RuntimeError("NBM has no hours in the TAF window")
+    series5 = [[_interval(t, d, "5") for t, d in hourly]] * 9
+    series10 = [[_interval(t, d, "10") for t, d in hourly]] * 9
+    series25 = [[_interval(t, d, "25") for t, d in hourly]] * 9
+    n = len(hourly)
+    aggregated = [aggregate_interval([s[i] for s in series5], [s[i] for s in series10], [s[i] for s in series25])
+                  for i in range(n)]
+    steps_raw = to_steps_from_aggregated(aggregated, api_units=api_units, output_style=output_style, station_lat=lat)
+    steps_raw = [s for s in steps_raw if s.t < valid_to]
+    steps = enforce_min_2hr_rules([replace(s) for s in steps_raw])
+    steps_by_time = {s.t: s for s in steps}
+    groups = build_groups(steps)
+    groups = merge_adjacent_same_category_groups(groups, steps_by_time)
+    groups = smooth_precip_blocks_to_prevailing_plus_tempo(groups, steps_by_time, valid_to)
+    groups = apply_tempo_omissions(groups, steps_by_time)
+    groups = prune_transient_and_trend_fm_groups(groups, steps_by_time, valid_to)
+    groups = compress_consecutive_vfr_fm_groups(groups, steps_by_time)
+    groups = collapse_identical_fm_wind_vis_sky(groups)
+    groups = fix_zero_ceiling_layers(groups, placeholder='SCT015')
+    groups = remove_1hr_wx_blip_fm_groups(groups, valid_to)
+    groups = smooth_init_first_fm_promote_if_one_cat(groups)
+    groups = smooth_3hr_precip_same_intensity_blip(groups, valid_to)
+    groups = remove_1hr_dry_blips_between_precip(groups, valid_to)
+    groups = remove_1hr_dry_improvement_blips(groups, valid_to)
+    groups = merge_adjacent_dry_bkn_ovc_same_height(groups, valid_to)
+    groups = merge_adjacent_same_category_groups(groups, steps_by_time)
+    groups = merge_close_precip_groups(groups)
+    groups = final_merge_similar_fm_groups(groups, valid_to)
+    taf = format_taf(icao, issue, valid_from, valid_to, groups).rstrip("\n") + "\n  RMK NBM/"
+    banner = (f"{icao} \u2014 {name} ({lat:.4f},{lon:.4f}) country={iso_country} "
+              f"output={output_style} NBM cycle {cycle} \u00b7 PoP\u2265{POP_PREVAIL:.0f}% prevailing, "
+              f"\u2265{POP_VC:.0f}% VC \u00b7 T01\u2265{TS_PREVAIL:.0f}% TS, \u2265{TS_VC:.0f}% VCTS")
+    return {"icao": icao, "taf": taf, "banner": banner, "issued": issue,
+            "valid_from": valid_from, "valid_to": valid_to, "cycle": cycle}

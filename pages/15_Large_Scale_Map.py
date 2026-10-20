@@ -55,6 +55,11 @@ try:
     MT.ensure_model_warmer(STATIC)
 except Exception:
     MT = None
+try:
+    from core.noaa_points import ensure_noaa_points as _enp
+    _enp(STATIC)
+except Exception:
+    pass
 
 # Two views behind one switch (28 Sep). TOMORROW.IO (default): the
 # warmed tile map - five layers that stack, an hourly TIME slider to
@@ -75,9 +80,9 @@ PANEL_SECTOR = (_qp.get("sector") or "").strip()
 PANEL_TS = (_qp.get("ts") or "").strip().upper() or None
 if PANEL_TS and not PANEL_LAYER:
     PANEL_LAYER = "__ts__"
-# NOAA-only viewer: the page itself, and any model-layer panel. A
-# tomorrow.io field panel or the time-series panel keeps the full viewer.
-NOAA_ONLY = (not PANEL_LAYER) or (":" in PANEL_LAYER)
+# NOAA-only viewer everywhere (20 Oct): the page, model-layer panels
+# and the Time Series panel (meteogram from NBM).
+NOAA_ONLY = True
 if PANEL_LAYER:
     st.session_state["bm_embed"] = True
     st.markdown("<style>header,[data-testid='stHeader'],.bm-clock,.st-key-topnav,.st-key-nav_warmers,"
@@ -278,32 +283,3 @@ with st.expander("model layer status", expanded=False):
         st.code("\n".join(_MT.log_tail(STATIC, 10)) or "(no model log yet)")
     except Exception as _me:
         st.caption(f"model layers unavailable: {_me}")
-
-with st.expander("tomorrow.io warmer status (other pages)", expanded=False):
-    u = TIO.usage(STATIC)
-    st.caption(f"Requests today ({u['day']} UTC): {u['count']:,} / "
-               f"{TIO.DAILY_CAP:,} cap  |  model {TIO.model_label(_active)}  |  "
-               f"fields {', '.join(TIO.FIELDS)}  |  "
-               f"now z{TIO.NOW_ZOOM} ({TIO.tile_count(TIO.NOW_ZOOM)} tiles) "
-               f"every {TIO.NOW_MIN} min  |  forecast {len(TIO.FCST_HOURS)} steps "
-               f"to +{TIO.FCST_HOURS[-1] if TIO.FCST_HOURS else 0} h "
-               f"z{TIO.FCST_ZOOM} ({TIO.tile_count(TIO.FCST_ZOOM)} tiles each) "
-               f"every {TIO.FCST_MIN} min  |  hi-res sector "
-               f"{TIO.SECTORS[_sector][0] if _sector in TIO.SECTORS else 'none'}"
-               f"  |  on demand: ~{TIO.daily_estimate():,}/day with two layers in "
-               "use all day and 40 scrubbed frames")
-    _b = TIO.budget(STATIC)
-    if _b.get("by"):
-        st.caption("Spent on: " + "  |  ".join(
-            f"{k} {v:,}" for k, v in sorted(_b["by"].items(), key=lambda kv: -kv[1]))
-            + f"  (cap {TIO.CAP_PCT:.0f}% of the {TIO.PLAN_DAY:,}/day plan)")
-    st.caption(f"Budget: {_b['left']:,} left today, of which {_b['mandatory_left']:,} "
-               f"is owed to the hourly now-frames and {_b['reserve']:,} is the reserve "
-               f"→ {_b['free']:,} free for forecast / points / hi-res  |  this hour "
-               f"{_b['hour_used']:,} / {_b['hour_cap']:,}  |  "
-               + ("nobody viewing for %.0f min (paused)" % _b["idle_min"]
-                  if _b["idle_min"] > TIO.IDLE_MIN else "viewer present"))
-    if TIO.STATUS.get("err"):
-        st.error(TIO.STATUS["err"])
-    lines = TIO.log_tail(STATIC, 15)
-    st.code("\n".join(lines) or "(no log yet)")

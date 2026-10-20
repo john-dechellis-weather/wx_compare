@@ -296,6 +296,14 @@ def _parse_block(
     # parse failure.
     _prob_rows = {k: _extract_row(block, k)
                   for k in ("MVC", "IFC", "LIC", "MVV", "IFV", "LIV")}
+    # 20 Oct: the rows the meteogram and TAF generator need. NBH has
+    # the hourly ones (P01 Q01 T01); NBS carries 3/6-hourly P06 Q06
+    # T03 instead - those are read under the same names so the
+    # extended hours are not blank.
+    _x_rows = {k: (_extract_row(block, k) or _extract_row(block, alt) if alt else _extract_row(block, k))
+               for k, alt in (("SKY", None), ("P01", "P06"), ("Q01", "Q06"), ("T01", "T03"),
+                              ("PRA", None), ("PSN", None), ("PZR", None), ("PPL", None),
+                              ("LCB", None))}
     vis_fields = _slice_fields(vis_row, n_hours) if vis_row else [""] * n_hours
     cig_fields = _slice_fields(cig_row, n_hours) if cig_row else [""] * n_hours
     wdr_fields = _slice_fields(wdr_row, n_hours) if wdr_row else [""] * n_hours
@@ -305,6 +313,8 @@ def _parse_block(
     dpt_fields = _slice_fields(dpt_row, n_hours) if dpt_row else [""] * n_hours
     _prob_fields = {k: (_slice_fields(r, n_hours) if r else [""] * n_hours)
                     for k, r in _prob_rows.items()}
+    _x_fields = {k: (_slice_fields(r, n_hours) if r else [""] * n_hours)
+                 for k, r in _x_rows.items()}
 
     records: list[ForecastRecord] = []
     for i, vt in enumerate(valid_times):
@@ -326,6 +336,13 @@ def _parse_block(
             if v is None or v < 0:
                 return None
             return float(min(100, v))
+
+        def _x(k, scale=1.0, missing_neg=True):
+            f = _x_fields[k]
+            v = _parse_int_field(f[i]) if i < len(f) else None
+            if v is None or (missing_neg and v < 0):
+                return None
+            return float(v) * scale
 
         # VIS: 1/10ths of miles. So 100 -> 10.0 sm, 5 -> 0.5 sm.
         vis_raw = _parse_int_field(vis_fields[i]) if i < len(vis_fields) else None
@@ -377,6 +394,10 @@ def _parse_block(
             p_vis_mvfr=_pct("MVV"),
             p_vis_ifr=_pct("IFV"),
             p_vis_lifr=_pct("LIV"),
+            sky_pct=_x("SKY"), pop1=_x("P01"), qpf_in=_x("Q01", 0.01),
+            p_tstm=_x("T01"), p_ra=_x("PRA"), p_sn=_x("PSN"),
+            p_zr=_x("PZR"), p_pl=_x("PPL"),
+            lcb_ft=(None if _x("LCB") is None or _x("LCB") >= 888 else _x("LCB") * 100.0),
             source_file=source_file,
         ))
     return records

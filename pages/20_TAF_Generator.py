@@ -1,13 +1,12 @@
-"""TAF Generator (15 Oct).
+"""TAF Generator (15 Oct; NBM-driven since 20 Oct).
 
-Builds a TAF from tomorrow.io Timelines data with George Delanjian's
+Builds a TAF from NBM hourly guidance with George Delanjian's
 "practically perfect" criteria (core/taf_maker.py) for one or more
 stations at once, and sets each result beside what a forecaster
 would check it against: the government TAF, the last 6 hours of
 METARs, and the NBM hourly + GFS LAMP MOS grids.
 
-Each TAF costs 27 tomorrow.io requests, charged to the site's daily
-budget before the run starts.
+No API spend: the NBM bulletins are the same ones the MOS grids use.
 """
 
 from __future__ import annotations
@@ -135,18 +134,11 @@ st.markdown(
     f'<div style="font-size:3.2rem;font-weight:700;line-height:1.1;'
     f'color:{INK};-webkit-text-fill-color:{INK};margin:0">TAF Generator</div>',
     unsafe_allow_html=True)
-st.caption("tomorrow.io Timelines → TAF (practically-perfect criteria, G. Delanjian). "
+st.caption("NBM hourly guidance → TAF (practically-perfect criteria, G. Delanjian). "
            "Each generated TAF is shown beside the government TAF, the last "
            f"{METAR_HOURS} h of METARs and the NBM / GFS LAMP guidance.")
 
-try:
-    from core import tio_map as TIO
-    _b = TIO.budget(STATIC)
-    _free = int(_b.get("free", 0))
-    _bud_txt = (f"tomorrow.io today: {_b['used']:,} of {_b['cap']:,} used · "
-                f"{_free:,} free for TAFs ({_free // 27} TAFs at 27 requests each)")
-except Exception:
-    TIO, _free, _bud_txt = None, 0, "tomorrow.io budget unavailable"
+_bud_txt = "NBM hourly guidance \u00b7 no API spend"
 
 # ------------------------------------------------------------- controls
 with st.container(border=True):
@@ -156,7 +148,7 @@ with st.container(border=True):
         _raw = st.text_input("Stations (ICAO, space or comma separated)",
                              value=st.session_state.get("tg_icaos", "KJFK KBOS KFLL"),
                              key="tg_icaos_in",
-                             help="Up to 12 stations per run. Each TAF costs 27 tomorrow.io requests.")
+                             help="Up to 12 stations per run (NBM bulletins, no API spend).")
     with c2:
         _now = datetime.now(timezone.utc)
         _hours_opts = ["now"] + [f"{h:02d}Z" for h in range(24)]
@@ -212,7 +204,7 @@ if not _results:
 _run_at = st.session_state.get("tg_run_at")
 st.caption(f"Generated {_run_at:%d %b %H:%MZ} · {len(_results)} station"
            f"{'s' if len(_results) != 1 else ''} · "
-           f"{sum(1 for r in _results if not r['error']) * 27} tomorrow.io requests")
+           "NBM guidance")
 
 # ------------------------------------------------------------- stations
 now = datetime.now(timezone.utc)
@@ -234,8 +226,8 @@ for r in _results:
                 pod_title("Generated TAF", "failed")
                 st.error(r["error"])
             else:
-                pod_title("Generated TAF · tomorrow.io",
-                          f"issued {r['issued']:%d%H%MZ} · valid "
+                pod_title("Generated TAF · NBM",
+                          f"cycle {r.get('cycle', '')} · issued {r['issued']:%d%H%MZ} · valid "
                           f"{r['valid_from']:%d%H}/{r['valid_to']:%d%H}")
                 st.markdown(wx_colored_box(r["taf"].splitlines(), taf_mode=True, font_px=TEXT_PX),
                             unsafe_allow_html=True)

@@ -40,8 +40,17 @@ COLUMNS = [
     "p_vis_mvfr",        # P(visibility <= 5 mi)
     "p_vis_ifr",         # P(visibility < 3 mi)
     "p_vis_lifr",        # P(visibility < 1 mi)
+    # NBM extras (20 Oct, for the meteogram and the TAF generator):
+    "sky_pct",           # SKY cover, percent
+    "pop1",              # P01: P(precip >= 0.01 in) in the hour, percent
+    "qpf_in",            # Q01: hourly QPF, inches
+    "p_tstm",            # T01: P(thunder) in the hour, percent
+    "p_ra", "p_sn", "p_zr", "p_pl",   # conditional precip-type probs, percent
+    "lcb_ft",            # LCB: lowest cloud base, feet AGL
     "source_file",       # provenance: filename or URL fragment
 ]
+
+NBM_EXTRA = ("sky_pct", "pop1", "qpf_in", "p_tstm", "p_ra", "p_sn", "p_zr", "p_pl", "lcb_ft")
 
 
 @dataclass
@@ -75,6 +84,15 @@ class ForecastRecord:
     p_vis_mvfr: Optional[float] = None
     p_vis_ifr: Optional[float] = None
     p_vis_lifr: Optional[float] = None
+    sky_pct: Optional[float] = None
+    pop1: Optional[float] = None
+    qpf_in: Optional[float] = None
+    p_tstm: Optional[float] = None
+    p_ra: Optional[float] = None
+    p_sn: Optional[float] = None
+    p_zr: Optional[float] = None
+    p_pl: Optional[float] = None
+    lcb_ft: Optional[float] = None
     source_file: str = ""
 
 
@@ -113,6 +131,7 @@ def _enforce_dtypes(df: pd.DataFrame) -> pd.DataFrame:
             "p_cig_mvfr": "float64", "p_cig_ifr": "float64",
             "p_cig_lifr": "float64", "p_vis_mvfr": "float64",
             "p_vis_ifr": "float64", "p_vis_lifr": "float64",
+            **{c: "float64" for c in NBM_EXTRA},
             "source_file": "string",
         })
     df = df.copy()
@@ -133,7 +152,9 @@ def _enforce_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     df["dewpoint_f"] = pd.to_numeric(df["dewpoint_f"],
                                      errors="coerce")
     for _c in ("p_cig_mvfr", "p_cig_ifr", "p_cig_lifr",
-               "p_vis_mvfr", "p_vis_ifr", "p_vis_lifr"):
+               "p_vis_mvfr", "p_vis_ifr", "p_vis_lifr") + NBM_EXTRA:
+        if _c not in df.columns:
+            df[_c] = None            # frames saved before 20 Oct
         df[_c] = pd.to_numeric(df[_c], errors="coerce")
     df["source_file"] = df["source_file"].astype("string")
     return df

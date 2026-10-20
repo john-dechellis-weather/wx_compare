@@ -546,17 +546,15 @@ _lock = threading.Lock()
 _started = False
 
 
-#: 20 Oct: ALL tomorrow.io use is off unless TIO_ENABLED=on is set in
-#: the environment. api_key() returns "" while disabled, so the warmer,
-#: the TAF generator and every other caller see "no key".
-TIO_ENABLED = os.environ.get("TIO_ENABLED", "off").lower() in ("on", "1", "yes", "true")
+#: 20 Oct: tomorrow.io is CUT OFF for good. api_key() is always empty,
+#: the warmer never starts, and no caller can reach the API. The
+#: module stays for the MapLibre viewer, the NOAA point doc and the
+#: budget/usage plumbing other code imports. There is no switch.
+TIO_ENABLED = False
 
 
 def api_key() -> str:
-    if not TIO_ENABLED:
-        return ""
-    return (os.environ.get("TOMORROWIO_API_KEY")
-            or os.environ.get("TOMORROW_API_KEY") or "").strip()
+    return ""
 
 
 # ---------------------------------------------------------------- model
@@ -1580,8 +1578,7 @@ def _loop(outdir):
 
 def ensure_tio_warmer(outdir) -> bool:
     """Idempotent. TIO_WARMER=off disables without a deploy."""
-    if os.environ.get("TIO_WARMER", "on").lower() == "off" or not TIO_ENABLED:
-        return False
+    return False          # tomorrow.io is cut off (20 Oct); never starts
     global _started
     with _lock:
         if _started:
@@ -1659,7 +1656,7 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
         "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json")
     labels = {f: FIELD_LABEL.get(f, f) for f in tfields}
     pt_url = f"{base}/app/static/tio_pt_{model}.json"
-    noaa_url = f"{base}/app/static/tio_noaa.json?v={noaa_built}" if noaa_built else ""
+    noaa_url = f"{base}/app/static/tio_noaa.json?v={noaa_built or 'x'}"
     # GENERAL WEATHER menu: one row per layer, checkbox + opacity.
     # Precipitation reflectivity on by default.
     rows = "".join(
@@ -1670,9 +1667,13 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
     # METEOGRAM menu: the point fields, up to four at once. Ceiling,
     # visibility and wind speed / gust start ticked (7 Oct: an empty
     # panel read as "no data"); untick to swap in others.
-    pf = point_fields()
-    plabels = {f: FIELD_LABEL.get(f, f) for f in pf}
-    mg_default = [f for f in ("cloudCeiling", "visibility", "windSpeed", "windGust") if f in pf][:4]
+    # 20 Oct: NBM elements (core/noaa_points). Up to four panels.
+    MG_ELEMENTS = [("cig", "Ceiling"), ("vis", "Visibility"), ("wind", "Wind speed / gust"),
+                   ("wdir", "Wind direction"), ("temp", "Temperature / dewpoint"),
+                   ("precip", "P(precip) / QPF"), ("tstm", "P(thunder)"), ("sky", "Sky cover")]
+    pf = [k for k, _ in MG_ELEMENTS]
+    plabels = dict(MG_ELEMENTS)
+    mg_default = ["cig", "vis", "wind", "precip"]
     mrows = "".join(
         f'<div class="ly"><label><input type="checkbox" class="mgf" data-f="{f}"'
         f'{" checked" if f in mg_default else ""}> {plabels[f]}</label></div>'
@@ -1797,7 +1798,7 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
 <div id="mg">
   <div id="mgh"><label>STATION</label><select id="mgsel"><option value="">click a dot…</option></select>
     <details class="dd" id="ddm"><summary id="ddms">Elements &#9662;</summary><div class="menu">{mrows}
-      <div style="color:#6E6E6E;font-weight:normal;padding:2px 8px">up to four &middot; NBM (purple) and REFS (cyan) join for ceiling, visibility and wind at the compare hubs</div></div></details>
+      <div style="color:#6E6E6E;font-weight:normal;padding:2px 8px">up to four &middot; NBM hourly to +25 h, 3-hourly to +72 h &middot; REFS probabilities (cyan) at the compare hubs</div></div></details>
     <span id="mgt"></span><span class="sp"></span><span id="mgs"></span>
     <button id="mgx" title="Close the plot and go back to the map alone">&#10005; Close plot</button></div>
   <div id="mgc"></div><div id="mgn"></div>
@@ -2068,14 +2069,13 @@ function draw() {{
   $('built').textContent = built ? ' · built ' + built : '';
   if (two && PT && sel) drawMg();
 }}
-// ---- 2-panel meteogram -------------------------------------------------
-// Point forecasts for every station (one tomorrow.io timelines call
-// each, warmed server-side) drawn with plotly: one panel per layer
-// that is switched on, in the map's layer order, with the TIME
-// slider's hour as a cursor. Click a dot or pick from the list.
+// ---- 2-panel meteogram (NBM, 20 Oct) ----------------------------------
+// Point forecasts from core/noaa_points (NBM hourly + 3-hourly, REFS
+// probabilities at the hubs) drawn with plotly: one panel per element
+// that is ticked, with the TIME slider's hour as a cursor. Click a
+// station (or its hit circle) or pick from the list.
 let PT = null, NOAA = null, two = false, sel = '';
 const mgOn = {{}};
-// Elements ticked in the HTML start on (7 Oct).
 document.querySelectorAll('.mgf').forEach(c => {{ if (c.checked) mgOn[c.dataset.f] = true; }});
 {{ const m0 = PFIELDS.filter(f => mgOn[f]).length;
   if (m0) $('ddms').innerHTML = 'Elements <span style="color:#00E5FF">' + m0 + '</span> &#9662;'; }}
@@ -2087,91 +2087,77 @@ document.querySelectorAll('.mgf').forEach(c => c.onchange = () => {{
   $('ddms').innerHTML = 'Elements' + (m ? ' <span style="color:#00E5FF">' + m + '</span>' : '') + ' &#9662;';
   drawMg();
 }});
-const NOAA_FIELDS = new Set(['cloudCeiling', 'visibility', 'windSpeed', 'windDirection']);
-const KT = 1.943844, SM = 0.621371, FT = 3280.84;
 const CAT = {{VFR:'#00FF7F', MVFR:'#FFD400', IFR:'#FF8A00', LIFR:'#FF00C8'}};
 function cat(cig_ft, vis_sm) {{
   const c = cig_ft == null ? 1e9 : cig_ft, v = vis_sm == null ? 99 : vis_sm;
   if (c < 500 || v < 1) return 'LIFR'; if (c < 1000 || v < 3) return 'IFR';
   if (c <= 3000 || v <= 5) return 'MVFR'; return 'VFR';
 }}
-function cursorTime(st) {{
-  const step = STEPS[ti]; const t = st.t;
-  return t[Math.min(t.length - 1, step)] || t[0];
+function cursorTime(nb) {{
+  const step = STEPS[ti]; const t = nb.t;
+  // NBM hours are 1..25 hourly then 3-hourly: pick the nearest valid time
+  const now = new Date(); now.setUTCMinutes(0, 0, 0);
+  const want = now.getTime() + step * 3600e3;
+  let best = t[0], bd = 1e18;
+  t.forEach(x => {{ const d = Math.abs(new Date(x).getTime() - want); if (d < bd) {{ bd = d; best = x; }} }});
+  return best;
 }}
-// Panels for the elements picked in the meteogram menu (its own set,
-// not the map's). Wind speed and gust share one. Where the station is
-// a compare hub, NBM (purple) rides along on ceiling / visibility /
-// wind, and REFS P(CIG<1000) / P(VIS<3) (cyan, right axis) on ceiling
-// and visibility. A trace is [name, y, colour, mode, x?, opts?].
-function panels(st) {{
-  const nb = (NOAA && NOAA.stations[sel] && NOAA.stations[sel].nbm) || null;
-  const rf = (NOAA && NOAA.stations[sel] && NOAA.stations[sel].refs) || null;
-  const out = [], wind = [];
+// A trace is [name, y, colour, mode, x?, opts?]. REFS (cyan, right
+// axis) joins ceiling and visibility at the hubs.
+function panels(nb, rf) {{
+  const out = [];
   PFIELDS.forEach(pf => {{
     if (!mgOn[pf]) return;
-    const v = st[pf];
-    if (pf === 'thunderstormProbability') {{
-      // tomorrow.io P(thunder) plus NBM P(thunder) (20 Oct); the
-      // panel shows whenever either exists
-      const tr = [];
-      if (v && v.some(x => x != null)) tr.push([LABELS[pf], v, '#FFD400', 'lines+markers']);
-      if (nb && nb.tstm_pct && nb.tstm_pct.some(x => x != null)) tr.push(['NBM P(thunder)', nb.tstm_pct, '#B388FF', 'lines', nb.t]);
-      if (tr.length) out.push({{title:'tstorm (%)', range:[0, 100], traces:tr}});
-      return;
-    }}
-    if (!v) return;
-    if (pf === 'windSpeed' || pf === 'windGust') {{
-      wind.push([pf, v.map(x => x == null ? null : x * KT)]);
-      if (nb && pf === 'windSpeed') wind.push(['NBM wind', nb.windSpeed_kt, '#B388FF', nb.t]);
-      if (nb && pf === 'windGust') wind.push(['NBM gust', nb.windGust_kt, '#B388FF', nb.t, 'dot']);
-      return;
-    }}
-    if (pf === 'cloudCeiling') {{
-      const tr = [[LABELS[pf], v.map(x => x == null ? null : Math.min(25000, x * FT)), '#4FA8E8', 'lines+markers']];
-      if (nb) tr.push(['NBM ceiling', nb.cloudCeiling_ft, '#B388FF', 'lines', nb.t]);
+    if (pf === 'cig') {{
+      const tr = [['NBM ceiling (ft)', nb.cloudCeiling_ft.map(x => x == null ? 25000 : Math.min(25000, x)), '#B388FF', 'lines+markers']];
+      if (nb.p_cig_ifr) tr.push(['NBM P(CIG<1000)', nb.p_cig_ifr, '#FFD400', 'lines', null, {{y2:true, dash:'dot'}}]);
       if (rf) tr.push(['REFS P(CIG<1000)', rf.p_cig1000, '#00E5FF', 'lines', rf.t, {{y2:true, dash:'dot'}}]);
-      out.push({{title:'ceiling (ft)', log:true, traces:tr, y2: rf ? 'P %' : null}});
-    }} else if (pf === 'visibility') {{
-      const tr = [[LABELS[pf], v.map(x => x == null ? null : Math.min(10, x * SM)), '#FFFFFF', 'lines+markers']];
-      if (nb) tr.push(['NBM vis', nb.visibility_sm, '#B388FF', 'lines', nb.t]);
+      out.push({{title:'ceiling (ft)', log:true, traces:tr, y2:'P %'}});
+    }} else if (pf === 'vis') {{
+      const tr = [['NBM vis (sm)', nb.visibility_sm.map(x => x == null ? null : Math.min(10, x)), '#FFFFFF', 'lines+markers']];
+      if (nb.p_vis_ifr) tr.push(['NBM P(VIS<3)', nb.p_vis_ifr, '#FFD400', 'lines', null, {{y2:true, dash:'dot'}}]);
       if (rf) tr.push(['REFS P(VIS<3)', rf.p_vis3, '#00E5FF', 'lines', rf.t, {{y2:true, dash:'dot'}}]);
-      out.push({{title:'vis (sm)', range:[0, 10.5], traces:tr, y2: rf ? 'P %' : null}});
-    }} else if (pf === 'windDirection') {{
-      const tr = [[LABELS[pf], v, '#FFFFFF', 'markers']];
-      if (nb) tr.push(['NBM dir', nb.windDirection, '#B388FF', 'markers', nb.t]);
-      out.push({{title:'wind dir (\u00b0)', range:[0, 360], tick:90, traces:tr}});
-    }} else {{
-      out.push({{title: pf === 'precipitationIntensity' ? 'precip (mm/h)' : LABELS[pf], bar:true, traces:[[LABELS[pf], v, '#00E5FF', 'bar']]}});
+      out.push({{title:'vis (sm)', range:[0, 10.5], traces:tr, y2:'P %'}});
+    }} else if (pf === 'wind') {{
+      out.push({{title:'wind (kt)', rangemode:'tozero', traces:[['NBM wind', nb.windSpeed_kt, '#FFFFFF', 'lines+markers'],
+        ['NBM gust', nb.windGust_kt, '#FF8A00', 'lines', null, {{dash:'dot'}}]]}});
+    }} else if (pf === 'wdir') {{
+      out.push({{title:'wind dir (°)', range:[0, 360], tick:90, traces:[['NBM dir', nb.windDirection, '#FFFFFF', 'markers']]}});
+    }} else if (pf === 'temp') {{
+      out.push({{title:'temp (°F)', traces:[['NBM temp', nb.tmp_f, '#FF5A5A', 'lines'], ['NBM dewpoint', nb.dpt_f, '#3DDC84', 'lines']]}});
+    }} else if (pf === 'precip') {{
+      out.push({{title:'P(precip) %', range:[0, 100], traces:[['NBM P01', nb.pop1, '#4FA8E8', 'bar'],
+        ['NBM QPF (in)', nb.qpf_in, '#00E5FF', 'lines', null, {{y2:true}}]], y2:'QPF in', y2range:[0, 0.5]}});
+    }} else if (pf === 'tstm') {{
+      out.push({{title:'P(thunder) %', range:[0, 100], traces:[['NBM T01', nb.tstm_pct, '#FFD400', 'bar']]}});
+    }} else if (pf === 'sky') {{
+      out.push({{title:'sky cover %', range:[0, 100], traces:[['NBM sky', nb.sky_pct, '#B8B8B8', 'lines+markers']]}});
     }}
   }});
-  if (wind.length) {{
-    const cols = {{windSpeed:'#FFFFFF', windGust:'#FF8A00'}};
-    out.push({{title:'wind (kt)', rangemode:'tozero', traces: wind.map(w => w.length > 2 ? [w[0], w[1], w[2], 'lines', w[3], w[4] ? {{dash:w[4]}} : null] : [LABELS[w[0]], w[1], cols[w[0]], 'lines+markers'])}});
-  }}
   return out;
 }}
 function drawMg() {{
   if (!two) return;
   const box = $('mgc'), note = $('mgn');
-  if (!PT) {{ note.textContent = 'loading station forecasts…'; box.innerHTML = ''; return; }}
-  const st = PT.stations[sel];
-  if (!st) {{ note.textContent = sel ? 'fetching ' + sel + ' from tomorrow.io…' : 'click a station dot on the map'; box.innerHTML = ''; $('mgt').textContent = sel || ''; return; }}
-  const ps = panels(st);
+  if (!NOAA) {{ note.textContent = 'loading NBM point forecasts…'; box.innerHTML = ''; return; }}
+  const stn = NOAA.stations && NOAA.stations[sel];
+  const nb = stn && stn.nbm, rf = stn && stn.refs;
+  if (!nb) {{ note.textContent = sel ? 'no NBM guidance for ' + sel + ' yet' : 'click a station dot on the map'; box.innerHTML = ''; $('mgt').textContent = sel || ''; return; }}
+  const ps = panels(nb, rf);
   if (!ps.length) {{ note.textContent = 'pick up to four elements from the Elements menu'; box.innerHTML = ''; return; }}
   note.textContent = '';
-  $('mgt').textContent = sel; $('mgs').textContent = PT.model + ' · built ' + ((PT.built_by && PT.built_by[sel]) || PT.built) + 'Z';
-  const t = st.t.map(x => x.replace('Z', ''));
-  const cig = st.cloudCeiling, vis = st.visibility;
+  $('mgt').textContent = sel; $('mgs').textContent = 'NBM ' + (nb.cycle || '') + (rf ? ' · REFS' : '') + ' · built ' + (NOAA.built || '') ;
+  const t = nb.t.map(x => x.replace('Z', ''));
+  const cig = nb.cloudCeiling_ft, vis = nb.visibility_sm;
   const haveCat = cig && vis;
   const n = ps.length + (haveCat ? 1 : 0);
-  const data = [], layout = {{paper_bgcolor:'#0A0A0A', plot_bgcolor:'#05070B', margin:{{l:52, r:14, t:8, b:34}},
+  const data = [], layout = {{paper_bgcolor:'#0A0A0A', plot_bgcolor:'#05070B', margin:{{l:52, r:40, t:8, b:34}},
     font:{{color:'#B8B8B8', size:11, family:'DejaVu Sans Mono, monospace'}}, showlegend:true, legend:{{orientation:'h', y:-0.06, font:{{size:9}}}}, hovermode:'x unified',
     shapes:[], annotations:[]}};
   let row = 1;
   const yax = (i) => 'y' + (i === 1 ? '' : i), xax = (i) => 'x' + (i === 1 ? '' : i);
   if (haveCat) {{
-    const cats = t.map((_, k) => cat(cig[k] == null ? null : cig[k] * FT, vis[k] == null ? null : vis[k] * SM));
+    const cats = t.map((_, k) => cat(cig[k], vis[k]));
     data.push({{type:'bar', x:t, y:t.map(() => 1), marker:{{color:cats.map(c => CAT[c])}}, text:cats, hovertemplate:'%{{text}}<extra></extra>', showlegend:false,
       xaxis:xax(row), yaxis:yax(row), width:3600e3}});
     layout['yaxis' + (row === 1 ? '' : row)] = {{domain:[1 - 0.055, 1], anchor:xax(row), showticklabels:false, fixedrange:true, title:{{text:'cat', standoff:4}}}};
@@ -2182,43 +2168,40 @@ function drawMg() {{
     const i = row + k;
     p.traces.forEach(([name, y, color, mode, xs, o]) => {{
       const x = xs ? xs.map(v => v.replace('Z', '')) : t; o = o || {{}};
-      if (mode === 'bar') data.push({{type:'bar', name, x, y, marker:{{color}}, xaxis:xax(i), yaxis:yax(i), width:3600e3}});
-      else data.push({{type:'scatter', name, x, y, mode, line:{{color, width: name.startsWith('NBM') || name.startsWith('REFS') ? 1.5 : 2, dash:o.dash || 'solid'}},
-        marker:{{size: mode === 'markers' ? 5 : 4}}, connectgaps:false, xaxis:xax(i), yaxis: o.y2 ? 'y' + (i + 50) : yax(i)}});
+      if (mode === 'bar') data.push({{type:'bar', name, x, y, marker:{{color}}, xaxis:xax(i), yaxis: o.y2 ? 'y' + (i + 50) : yax(i), width:3600e3}});
+      else data.push({{type:'scatter', name, x, y, mode, line:{{color, width: name.startsWith('REFS') ? 1.5 : 2, dash:o.dash || 'solid'}},
+        marker:{{size: mode === 'markers' ? 5 : 4}}, connectgaps:true, xaxis:xax(i), yaxis: o.y2 ? 'y' + (i + 50) : yax(i)}});
     }});
     const h = haveCat ? (1 - 0.07) / ps.length : 1 / ps.length;
     const top = (haveCat ? 1 - 0.07 : 1) - k * h;
     const ya = {{domain:[top - h + 0.035, top], anchor:xax(i), gridcolor:'#1A2233', zerolinecolor:'#1A2233', title:{{text:p.title, standoff:6}}}};
     if (p.log) ya.type = 'log'; if (p.range) ya.range = p.range; if (p.rangemode) ya.rangemode = p.rangemode; if (p.tick) ya.dtick = p.tick;
     layout['yaxis' + (i === 1 ? '' : i)] = ya;
-    if (p.y2) layout['yaxis' + (i + 50)] = {{domain: ya.domain, anchor:xax(i), overlaying: yax(i), side:'right', range:[0, 100], showgrid:false, title:{{text:p.y2, standoff:4}}, tickfont:{{color:'#00E5FF'}}}};
+    if (p.y2) layout['yaxis' + (i + 50)] = {{domain: ya.domain, anchor:xax(i), overlaying: yax(i), side:'right', range: p.y2range || [0, 100], showgrid:false, title:{{text:p.y2, standoff:4}}, tickfont:{{color:'#00E5FF'}}}};
     layout['xaxis' + (i === 1 ? '' : i)] = {{anchor:yax(i), gridcolor:'#1A2233', showticklabels: k === ps.length - 1, tickformat:'%HZ<br>%d', matches: k === ps.length - 1 ? undefined : xax(row + ps.length - 1)}};
-    // default window: the first 48 h (20 Oct); drag / scroll to see more
+    // default window: the first 48 h; drag / scroll to see more
     if (k === ps.length - 1 && t.length) {{ const t0 = new Date(t[0] + 'Z'); layout['xaxis' + (i === 1 ? '' : i)].range = [t[0], new Date(t0.getTime() + 48 * 3600e3).toISOString().slice(0, 19)]; }}
     if (p.log) {{ [500, 1000, 3000].forEach(v => layout.shapes.push({{type:'line', xref:'paper', x0:0, x1:1, yref:yax(i), y0:v, y1:v, line:{{color:'#3A424C', width:1, dash:'dot'}}}})); }}
   }});
-  const ct = cursorTime(st).replace('Z', '');
+  const ct = cursorTime(nb).replace('Z', '');
   layout.shapes.push({{type:'line', xref:'x' + (n === 1 ? '' : n), x0:ct, x1:ct, yref:'paper', y0:0, y1:1, line:{{color:'#FFD400', width:1.5}}}});
   Plotly.react(box, data, layout, {{displayModeBar:false, responsive:true}});
   box.removeAllListeners && box.removeAllListeners('plotly_click');
   box.on('plotly_click', ev => {{
-    const k = ev.points[0].pointIndex; const h = Math.max(0, k);
+    const x = new Date(ev.points[0].x + 'Z'); const now = new Date(); now.setUTCMinutes(0, 0, 0);
+    const h = Math.max(0, Math.round((x.getTime() - now.getTime()) / 3600e3));
     let best = 0; STEPS.forEach((s, i) => {{ if (Math.abs(s - h) < Math.abs(STEPS[best] - h)) best = i; }});
     ti = best; $('tm').value = ti; draw();
   }});
 }}
-let ptPoll = null;
+function loadNoaa(cb) {{
+  if (!NOAA_URL) {{ if (cb) cb(); return; }}
+  fetch(NOAA_URL.split('?')[0] + '?_=' + Date.now(), {{cache:'no-store'}}).then(r => r.ok ? r.json() : null).then(j => {{ if (j) NOAA = j; if (cb) cb(); }}).catch(() => {{ if (cb) cb(); }});
+}}
+setInterval(() => {{ if (two) loadNoaa(drawMg); }}, 10 * 60e3);     // newer cycle every 10 min
 function pick(icao) {{
   sel = icao; $('mgsel').value = icao; sendDemand(true); drawMg();
-  clearInterval(ptPoll);
-  if (icao && !(PT && PT.stations && PT.stations[icao])) {{
-    let tries = 0;
-    ptPoll = setInterval(() => {{
-      tries++;
-      fetch(PT_URL + '?_=' + Date.now(), {{cache:'no-store'}}).then(r => r.json()).then(j => {{ PT = j; fillSel(); if (PT.stations && PT.stations[sel]) {{ clearInterval(ptPoll); }} drawMg(); }}).catch(() => {{}});
-      if (tries > 20) clearInterval(ptPoll);
-    }}, 4000);
-  }}
+  if (icao && !(NOAA && NOAA.stations && NOAA.stations[icao])) loadNoaa(drawMg);
 }}
 function fillSel() {{
   const ids = ST.features.map(f => f.properties.id).sort();
@@ -2230,9 +2213,8 @@ $('mgx').onclick = () => {{ if (two) $('b2').onclick(); }};
 $('b2').onclick = () => {{
   two = !two; $('b2').classList.toggle('on', two); document.body.classList.toggle('two', two);
   setTimeout(() => map.resize(), 30);
-  if (two && !PT && PT_URL) fetch(PT_URL + '?_=' + Date.now(), {{cache:'no-store'}}).then(r => r.ok ? r.json() : {{stations:{{}}}}).then(j => {{ PT = j; fillSel(); drawMg(); }}).catch(() => {{ PT = {{stations:{{}}}}; fillSel(); drawMg(); }});
-  if (two && !NOAA && NOAA_URL) fetch(NOAA_URL).then(r => r.json()).then(j => {{ NOAA = j; drawMg(); }}).catch(() => {{}});
-  drawMg();
+  fillSel();
+  if (two) loadNoaa(drawMg); else drawMg();
 }};
 if (MODE === 'ts') {{
   // Time Series Plot panel: open the meteogram for the station asked

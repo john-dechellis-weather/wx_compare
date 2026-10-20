@@ -199,22 +199,14 @@ except Exception as _exc:
     _warm_notes.append(f"Echo-top tag warmer FAILED: "
                        f"{type(_exc).__name__}: {_exc}")
 
-# tomorrow.io tiles for the Large Scale Map (core/tio_map.py): the
-# fixed tile set for 125W-50W / 52N-5S, stitched into WebPs under
-# static/. Keeps the API key server-side and the spend fixed (about
-# 6,900 requests/day of the 10,000 plan; TIO_DAILY_CAP stops it at
-# 9,000). I/O-bound. TIO_WARMER=off stops it.
+# tomorrow.io was cut off on 20 Oct: no warmer, no key, no requests.
+# NBM point forecasts for the meteograms (core/noaa_points.py).
 try:
-    from core.tio_map import ensure_tio_warmer
-    from core import tio_map as _TIOh
-
-    if ensure_tio_warmer(_static_mrms):
-        _warm_notes.append("tomorrow.io warmer started (Large Scale Map)")
-    else:
-        _warm_notes.append("tomorrow.io off" + ("" if _TIOh.TIO_ENABLED else " (TIO_ENABLED not set)"))
+    from core.noaa_points import ensure_noaa_points
+    if ensure_noaa_points(_static_mrms):
+        _warm_notes.append("NBM point-forecast warmer started")
 except Exception as _exc:
-    _warm_notes.append(f"tomorrow.io warmer FAILED: "
-                       f"{type(_exc).__name__}: {_exc}")
+    _warm_notes.append(f"NBM point warmer FAILED: {type(_exc).__name__}: {_exc}")
 
 # NOAA model layers for the Weather Mapping page (core/model_tiles.py):
 # REFS first, then RRFS / HRRR as MDL_MODELS enables them. Demand-
@@ -295,16 +287,6 @@ def _warmer_status():
                       / "l3_warmer.log")
             for _ln in _l3log.read_text().splitlines()[-3:]:
                 st.caption("level III: " + _ln)
-        except Exception:
-            pass
-        try:
-            from core import tio_map as _tio
-            _u = _tio.usage(Path(__file__).resolve().parent / "static")
-            st.caption(f"tomorrow.io: {_u['count']}/{_tio.DAILY_CAP} "
-                       "requests today")
-            for _ln in _tio.log_tail(
-                    Path(__file__).resolve().parent / "static", 2):
-                st.caption("tomorrow.io: " + _ln)
         except Exception:
             pass
 

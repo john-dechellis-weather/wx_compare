@@ -113,7 +113,7 @@ const CATALOG = [
   // Time Series Plot: ceiling / visibility / wind meteogram for one
   // station - typed, not picked.
   {g: 'Time Series Plot', page: '/Large_Scale_Map', param: 'ts', typed: true,
-   note: 'type the ICAO (JBU stations and Canadian alternates); 1 tomorrow.io request per station per hour'},
+   note: 'type the ICAO (JBU stations and Canadian alternates); NBM hourly guidance with REFS probabilities at the hubs'},
 ];
 fetch(`${BASE}/app/static/splitter_catalog.json?_=${Q.get('cat') || Date.now()}`).then(r => r.json()).then(j => {
   const g = CATALOG.find(x => x.g === 'Model Weather Map');
