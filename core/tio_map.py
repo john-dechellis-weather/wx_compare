@@ -1221,7 +1221,8 @@ def build_noaa(outdir) -> str:
            "built": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
            "stations": doc.get("stations", {})}
     n_nbm = 0
-    if cyc and cyc != doc.get("nbm_cycle"):
+    _has_tstm = any("tstm_pct" in (v.get("nbm") or {}) for v in doc.get("stations", {}).values())
+    if cyc and (cyc != doc.get("nbm_cycle") or not _has_tstm):
         for icao in CW.HUBS:
             got = CW.read_frame(cache_root, icao, cyc)
             if not got:
@@ -1244,7 +1245,9 @@ def build_noaa(outdir) -> str:
                 "t": [pd_ts.strftime("%Y-%m-%dT%H:%M:%SZ") for pd_ts in dm["valid_time"]],
                 "cloudCeiling_ft": cig, "visibility_sm": col("vsby_sm"),
                 "windSpeed_kt": col("wind_speed_kt"), "windGust_kt": col("wind_gust_kt"),
-                "windDirection": col("wind_dir_deg")}
+                "windDirection": col("wind_dir_deg"),
+                # NBM P(thunder) (20 Oct): the tstorm panel's NOAA trace
+                "tstm_pct": col("p_tstm") if "p_tstm" in dm.columns else col("tstm_prob")}
             n_nbm += 1
         out["nbm_cycle"] = cyc
     n_refs = 0
@@ -1711,6 +1714,8 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
  body.two #mg{{display:flex}}
  #mgh{{display:flex;align-items:center;gap:10px;padding:6px 10px;border-bottom:1px solid #222}}
  #mgh select{{font:bold 12px "DejaVu Sans Mono",monospace;background:#0A0A0A;color:#fff;border:1px solid #333;border-radius:6px;padding:4px 8px}}
+ #mgx{{font:bold 12px "DejaVu Sans Mono",monospace;background:#0A0A0A;color:#fff;border:1px solid #333;border-radius:6px;padding:4px 10px;cursor:pointer}}
+ #mgx:hover{{border-color:#00E5FF}} body.mode-ts #mgx{{display:none}}
  #mgt{{color:#FFD400}} #mgs{{color:#B8B8B8;font-weight:normal}}
  #mgc{{flex:1;min-height:0}}
  #mgn{{color:#B8B8B8;padding:20px;font-weight:normal}}
@@ -1778,7 +1783,8 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
   <div id="mgh"><label>STATION</label><select id="mgsel"><option value="">click a dot…</option></select>
     <details class="dd" id="ddm"><summary id="ddms">Elements &#9662;</summary><div class="menu">{mrows}
       <div style="color:#6E6E6E;font-weight:normal;padding:2px 8px">up to four &middot; NBM (purple) and REFS (cyan) join for ceiling, visibility and wind at the compare hubs</div></div></details>
-    <span id="mgt"></span><span class="sp"></span><span id="mgs"></span></div>
+    <span id="mgt"></span><span class="sp"></span><span id="mgs"></span>
+    <button id="mgx" title="Close the plot and go back to the map alone">&#10005; Close plot</button></div>
   <div id="mgc"></div><div id="mgn"></div>
 </div>
 </div>
@@ -2089,7 +2095,17 @@ function panels(st) {{
   const out = [], wind = [];
   PFIELDS.forEach(pf => {{
     if (!mgOn[pf]) return;
-    const v = st[pf]; if (!v) return;
+    const v = st[pf];
+    if (pf === 'thunderstormProbability') {{
+      // tomorrow.io P(thunder) plus NBM P(thunder) (20 Oct); the
+      // panel shows whenever either exists
+      const tr = [];
+      if (v && v.some(x => x != null)) tr.push([LABELS[pf], v, '#FFD400', 'lines+markers']);
+      if (nb && nb.tstm_pct && nb.tstm_pct.some(x => x != null)) tr.push(['NBM P(thunder)', nb.tstm_pct, '#B388FF', 'lines', nb.t]);
+      if (tr.length) out.push({{title:'tstorm (%)', range:[0, 100], traces:tr}});
+      return;
+    }}
+    if (!v) return;
     if (pf === 'windSpeed' || pf === 'windGust') {{
       wind.push([pf, v.map(x => x == null ? null : x * KT)]);
       if (nb && pf === 'windSpeed') wind.push(['NBM wind', nb.windSpeed_kt, '#B388FF', nb.t]);
@@ -2110,8 +2126,6 @@ function panels(st) {{
       const tr = [[LABELS[pf], v, '#FFFFFF', 'markers']];
       if (nb) tr.push(['NBM dir', nb.windDirection, '#B388FF', 'markers', nb.t]);
       out.push({{title:'wind dir (\u00b0)', range:[0, 360], tick:90, traces:tr}});
-    }} else if (pf === 'thunderstormProbability') {{
-      out.push({{title:'tstorm (%)', range:[0, 100], traces:[[LABELS[pf], v, '#FFD400', 'lines+markers']]}});
     }} else {{
       out.push({{title: pf === 'precipitationIntensity' ? 'precip (mm/h)' : LABELS[pf], bar:true, traces:[[LABELS[pf], v, '#00E5FF', 'bar']]}});
     }}
@@ -2164,6 +2178,8 @@ function drawMg() {{
     layout['yaxis' + (i === 1 ? '' : i)] = ya;
     if (p.y2) layout['yaxis' + (i + 50)] = {{domain: ya.domain, anchor:xax(i), overlaying: yax(i), side:'right', range:[0, 100], showgrid:false, title:{{text:p.y2, standoff:4}}, tickfont:{{color:'#00E5FF'}}}};
     layout['xaxis' + (i === 1 ? '' : i)] = {{anchor:yax(i), gridcolor:'#1A2233', showticklabels: k === ps.length - 1, tickformat:'%HZ<br>%d', matches: k === ps.length - 1 ? undefined : xax(row + ps.length - 1)}};
+    // default window: the first 48 h (20 Oct); drag / scroll to see more
+    if (k === ps.length - 1 && t.length) {{ const t0 = new Date(t[0] + 'Z'); layout['xaxis' + (i === 1 ? '' : i)].range = [t[0], new Date(t0.getTime() + 48 * 3600e3).toISOString().slice(0, 19)]; }}
     if (p.log) {{ [500, 1000, 3000].forEach(v => layout.shapes.push({{type:'line', xref:'paper', x0:0, x1:1, yref:yax(i), y0:v, y1:v, line:{{color:'#3A424C', width:1, dash:'dot'}}}})); }}
   }});
   const ct = cursorTime(st).replace('Z', '');
@@ -2195,6 +2211,7 @@ function fillSel() {{
   if (sel) $('mgsel').value = sel;
 }}
 $('mgsel').onchange = e => pick(e.target.value);
+$('mgx').onclick = () => {{ if (two) $('b2').onclick(); }};
 $('b2').onclick = () => {{
   two = !two; $('b2').classList.toggle('on', two); document.body.classList.toggle('two', two);
   setTimeout(() => map.resize(), 30);
@@ -2286,10 +2303,16 @@ map.on('load', () => {{
              'text-anchor':'bottom-left', 'text-font':['Open Sans Bold'], 'text-allow-overlap':false}},
     paint:{{'text-color':['case', ['==', ['get','kind'], 'jbu'], '#FFFFFF', '#B8B8B8'],
             'text-halo-color':'#000', 'text-halo-width':1.4}}}});
-  map.on('click', 'st-dot', e => {{ const id = e.features[0].properties.id; if (!two) $('b2').onclick(); pick(id); }});
-  map.on('click', e => {{ if (map.queryRenderedFeatures(e.point, {{layers: ['st-dot']}}).length) return; readout(e.lngLat); }});
-  map.on('mouseenter', 'st-dot', () => map.getCanvas().style.cursor = 'pointer');
-  map.on('mouseleave', 'st-dot', () => map.getCanvas().style.cursor = '');
+  // HIT AREA (20 Oct): an invisible 14 px circle under each dot so a
+  // click near the station opens the 2-panel plot; the dot itself
+  // stays small.
+  map.addLayer({{id:'st-hit', type:'circle', source:'st',
+    paint:{{'circle-radius':14, 'circle-color':'#000', 'circle-opacity':0}}}}, 'st-dot');
+  const stClick = e => {{ const id = e.features[0].properties.id; if (!two) $('b2').onclick(); pick(id); }};
+  map.on('click', 'st-hit', stClick);
+  map.on('click', e => {{ if (map.queryRenderedFeatures(e.point, {{layers: ['st-hit']}}).length) return; readout(e.lngLat); }});
+  map.on('mouseenter', 'st-hit', () => map.getCanvas().style.cursor = 'pointer');
+  map.on('mouseleave', 'st-hit', () => map.getCanvas().style.cursor = '');
   map.on('zoomend', () => sendDemand(false));
   ready = true; draw();
 }});
@@ -2312,7 +2335,7 @@ $('balt').onclick = () => {{ $('balt').classList.toggle('on'); applyFilter(); }}
 function applyFilter() {{
   if (!ready) return;
   const kinds = []; if ($('bst').classList.contains('on')) kinds.push('jbu'); if ($('balt').classList.contains('on')) kinds.push('alt');
-  ['st-dot','st-lab'].forEach(l => {{ map.setFilter(l, ['in', ['get','kind'], ['literal', kinds]]);
+  ['st-dot','st-lab','st-hit'].forEach(l => {{ map.setFilter(l, ['in', ['get','kind'], ['literal', kinds]]);
     map.setLayoutProperty(l, 'visibility', kinds.length ? 'visible' : 'none'); }});
 }}
 $('bfit').onclick = () => map.fitBounds(FIT || BB, {{padding:8}});
