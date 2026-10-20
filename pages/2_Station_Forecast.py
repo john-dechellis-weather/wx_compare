@@ -1092,6 +1092,58 @@ def _scope_pod():
                         get_alignment_baseline='"center"', pickable=False))
                 except Exception as _n90e:
                     st.caption(f"N90 overlay unavailable: {type(_n90e).__name__}")
+            # JFK STARs (20 Oct): every Standard Terminal Arrival into
+            # JFK (CAMRN4, IGN1, LENDY8, PARCH3, ROBER2, PWL2 from
+            # static/jfk_stars.json) drawn in its gate colour, with a
+            # five-point STAR symbol and the procedure name at the
+            # fix the arrival is named for.
+            if icao.upper() == "KJFK":
+                try:
+                    import json as _sj
+                    import urllib.parse as _sup
+                    _sd = Path(__file__).resolve().parent.parent / "static"
+                    _doc = _sj.loads((_sd / "jfk_stars.json").read_text())
+                    _fix = dict(_doc.get("fixes") or {})
+                    _fix.setdefault("LENDY", {"lat": 41.0553, "lon": -74.8697})
+                    _legs, _marks = [], []
+                    for _st in _doc.get("stars") or []:
+                        _c = list(_st.get("col") or [255, 255, 255])[:3]
+                        for _l in _st.get("legs") or []:
+                            _legs.append({"path": _l["path"], "label": _l.get("label", ""),
+                                          "color": _c + ([150] if _l.get("dashed") else [235]),
+                                          "w": 1.2 if _l.get("dashed") else 2.2})
+                        _nm = "".join(ch for ch in _st["star"] if not ch.isdigit())
+                        _f = _fix.get(_nm)
+                        if _f:
+                            _hex = "#%02x%02x%02x" % tuple(_c)
+                            _svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="64" '
+                                    'height="64" viewBox="0 0 64 64">'
+                                    '<polygon points="32,4 39.6,23.6 60,24.4 44,37.2 49.6,57 32,45.6 '
+                                    '14.4,57 20,37.2 4,24.4 24.4,23.6" '
+                                    f'fill="{_hex}" stroke="#000" stroke-width="3"/></svg>')
+                            _marks.append({"position": [_f["lon"], _f["lat"]],
+                                           "name": _st["star"], "color": _c + [255],
+                                           "icon": {"url": "data:image/svg+xml;charset=utf-8,"
+                                                           + _sup.quote(_svg),
+                                                    "width": 64, "height": 64,
+                                                    "anchorX": 32, "anchorY": 32, "mask": False}})
+                    layers.append(pdk.Layer(
+                        "PathLayer", _legs, get_path="path", get_color="color",
+                        get_width=300, width_min_pixels=1.2, width_max_pixels=2.2,
+                        pickable=False))
+                    layers.append(pdk.Layer(
+                        "IconLayer", _marks, get_position="position", get_icon="icon",
+                        get_size=2600, size_units="meters",
+                        size_min_pixels=14, size_max_pixels=22, pickable=False))
+                    layers.append(pdk.Layer(
+                        "TextLayer", _marks, get_position="position",
+                        get_text="name", get_color="color",
+                        get_size=2600, size_units="meters", size_min_pixels=0,
+                        size_max_pixels=12, get_pixel_offset=[12, 8],
+                        get_text_anchor='"start"',
+                        get_alignment_baseline='"center"', pickable=False))
+                except Exception as _ste:
+                    st.caption(f"JFK STARs unavailable: {type(_ste).__name__}")
             _vs = AS.view(coords[0], coords[1], width_px=780, width_nm=20)
             # Zoom out to about a 300-mile radius (~600 mi across the
             # 780 px view), no further.
