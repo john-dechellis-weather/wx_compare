@@ -478,7 +478,7 @@ ROUTE_PREFIXES = set(x.strip().upper() for x in os.environ.get(
     "NAVDATA_ROUTES", "").split(",") if x.strip())
 # Idents drawn at full NASR length for pages other than the JetBlue
 # Live System Map (which draws exactly the bundled 58).
-EXTRA_ROUTES = {"J174"}
+EXTRA_ROUTES = set()        # was {"J174"} for a few hours on 20 Oct
 
 # The 58 routes the map draws — 42 domestic J and Q routes and 16
 # oceanic L-routes — from the FAA AIS Open Data ATS Route layer,
@@ -691,7 +691,7 @@ def export_geojson(cache_root, out_path) -> int:
     cache yet (the viewer then falls back to the bundled file)."""
     nd = load(cache_root)
     rts = (nd or {}).get("routes") or []
-    rts = [r for r in rts if len(r.get("path") or []) > 1]
+    rts = [r for r in rts if len(r.get("path") or []) > 1 and not r.get("extra")]
     if not rts:
         return 0
     fc = {"type": "FeatureCollection",

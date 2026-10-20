@@ -175,8 +175,9 @@ def _origin() -> str:
 _NAV_ROOT = Path("/opt/render/project/src/cache")
 _NAV_ROOT = _NAV_ROOT if _NAV_ROOT.exists() else Path("/tmp/wx_compare_cache")
 ROUTES_FILE = "map_routes.geojson"
-# Only these on this page (20 Oct); the JetBlue Live System Map keeps all 58.
-ROUTES_ONLY = ["Q75", "Q99", "Q87", "Q85", "Q97", "J174"]
+# Exactly the JetBlue Live System Map's routes (all 58, full length).
+# A short list here limits the page to those idents.
+ROUTES_ONLY = []
 try:
     from core import navdata as _ND
     _NAV_ROOT.mkdir(parents=True, exist_ok=True)
