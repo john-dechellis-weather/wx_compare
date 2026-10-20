@@ -206,11 +206,12 @@ except Exception as _exc:
 # 9,000). I/O-bound. TIO_WARMER=off stops it.
 try:
     from core.tio_map import ensure_tio_warmer
+    from core import tio_map as _TIOh
 
     if ensure_tio_warmer(_static_mrms):
         _warm_notes.append("tomorrow.io warmer started (Large Scale Map)")
     else:
-        _warm_notes.append("tomorrow.io warmer off (TIO_WARMER=off)")
+        _warm_notes.append("tomorrow.io off" + ("" if _TIOh.TIO_ENABLED else " (TIO_ENABLED not set)"))
 except Exception as _exc:
     _warm_notes.append(f"tomorrow.io warmer FAILED: "
                        f"{type(_exc).__name__}: {_exc}")

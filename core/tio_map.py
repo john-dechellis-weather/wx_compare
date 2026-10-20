@@ -546,7 +546,15 @@ _lock = threading.Lock()
 _started = False
 
 
+#: 20 Oct: ALL tomorrow.io use is off unless TIO_ENABLED=on is set in
+#: the environment. api_key() returns "" while disabled, so the warmer,
+#: the TAF generator and every other caller see "no key".
+TIO_ENABLED = os.environ.get("TIO_ENABLED", "off").lower() in ("on", "1", "yes", "true")
+
+
 def api_key() -> str:
+    if not TIO_ENABLED:
+        return ""
     return (os.environ.get("TOMORROWIO_API_KEY")
             or os.environ.get("TOMORROW_API_KEY") or "").strip()
 
@@ -1572,7 +1580,7 @@ def _loop(outdir):
 
 def ensure_tio_warmer(outdir) -> bool:
     """Idempotent. TIO_WARMER=off disables without a deploy."""
-    if os.environ.get("TIO_WARMER", "on").lower() == "off":
+    if os.environ.get("TIO_WARMER", "on").lower() == "off" or not TIO_ENABLED:
         return False
     global _started
     with _lock:

@@ -72,7 +72,11 @@ class TomorrowIO(ModelSource):
 
     # --- API key handling --------------------------------------------------
     def _api_key(self) -> Optional[str]:
-        key = os.environ.get(ENV_KEY)
+        try:                                   # 20 Oct: site-wide switch
+            from core.tio_map import api_key as _tio_key
+            key = _tio_key() or None
+        except Exception:
+            key = os.environ.get(ENV_KEY)
         if not key:
             print(f"[{self.name}] Set environment variable {ENV_KEY} to enable this source.")
             return None

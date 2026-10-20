@@ -1520,7 +1520,8 @@ if run_button:
                 "IR opacity", 10, 90, 45, 5, key="sat_op_f",
                 help="Transparency of the satellite layer",
             ) / 100.0
-            _tio_key = _os.environ.get("TOMORROW_API_KEY", "").strip()
+            from core import tio_map as _TIOk
+            _tio_key = _TIOk.api_key()        # "" while tomorrow.io is disabled (20 Oct)
             if not _tio_key:
                 st.warning(
                     "Satellite layer needs TOMORROW_API_KEY set in "

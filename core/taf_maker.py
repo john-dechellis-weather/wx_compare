@@ -3264,7 +3264,9 @@ def generate(icao: str, hours: int = 24, start: Optional[dt.datetime] = None,
         fetch_timelines_one_location = _fake_timelines
         key = "fake"
     elif not key:
-        raise RuntimeError("tomorrow.io key is not configured on this instance")
+        raise RuntimeError("tomorrow.io data is disabled on this site (TIO_ENABLED is not on)"
+                           if not getattr(_TIO, "TIO_ENABLED", True)
+                           else "tomorrow.io key is not configured on this instance")
     root = cache_root or os.environ.get("BLUEMET_CACHE", "/tmp/wx_compare_cache")
     os.makedirs(root, exist_ok=True)
     cache_path = os.path.join(root, "airports.csv")
