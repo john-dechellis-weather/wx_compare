@@ -2744,7 +2744,7 @@ if run_button or _auto:
         # the name readable as a name rather than as part of the
         # symbol.
         CLEAR_LABEL_PX = 5      # above the dot
-        ALERT_LABEL_PX = 42     # below the marker (was 21)
+        ALERT_LABEL_PX = 34     # below the marker (42 before the 20 Oct bullseye ring)
 
         # Stations with a marker get their label UNDER the marker
         # (below); the green dot's label above would otherwise sit
@@ -3401,7 +3401,7 @@ if run_button or _auto:
         st.session_state["_map_drawn_once"] = True
         st.caption(
             "Solid dot = METAR breach NOW; ring = TAF "
-            "forecast (concentric = both); orange TS above = "
+            "forecast (bullseye = both); orange TS above = "
             "thunderstorm. "
             "RED aircraft = "
             "destination METAR has TS / LIFR / gusts over "
