@@ -70,7 +70,7 @@ ARTCC_IDS = set(x.strip().upper() for x in os.environ.get(
 # cache for a cycle is rebuilt when its stored version is older —
 # without this, a deploy that adds routes or more centres appears to
 # do nothing until the next 28-day cycle.
-DATA_VERSION = 7
+DATA_VERSION = 8      # 8: EXTRA_ROUTES (J174) tagged "extra"
 
 _lock = threading.Lock()
 _started = set()
@@ -433,6 +433,15 @@ def build(cache_root, cycle: date = None, log=None) -> dict:
     if ROUTE_PREFIXES:
         routes += parse_awy(got["AWY"], fixes, nav_pos, ROUTE_PREFIXES,
                             log)
+    # Routes wanted by other pages but NOT on the JetBlue Live System
+    # Map (20 Oct: J174 for the Model Weather Map). Tagged so that map
+    # can leave them out.
+    extra = EXTRA_ROUTES - seen
+    if extra:
+        for r in parse_awy(got["AWY"], fixes, nav_pos, extra, log):
+            routes.append({**r, "type": r.get("type") or ("RNAV" if r["id"][:1] == "Q" else "CONV"),
+                           "extra": True})
+        log(f"extra routes: {', '.join(sorted(extra))}")
     # Fixes that sit on a drawn route, with positions, for the
     # middle density setting on the map.
     on_route = {}
@@ -467,6 +476,9 @@ def build(cache_root, cycle: date = None, log=None) -> dict:
 # adds every high-altitude airway in the country on top of them.
 ROUTE_PREFIXES = set(x.strip().upper() for x in os.environ.get(
     "NAVDATA_ROUTES", "").split(",") if x.strip())
+# Idents drawn at full NASR length for pages other than the JetBlue
+# Live System Map (which draws exactly the bundled 58).
+EXTRA_ROUTES = {"J174"}
 
 # The 58 routes the map draws — 42 domestic J and Q routes and 16
 # oceanic L-routes — from the FAA AIS Open Data ATS Route layer,

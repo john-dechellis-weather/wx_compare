@@ -22,7 +22,7 @@ from pathlib import Path
 import streamlit as st
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Weather Mapping", layout="wide")
+st.set_page_config(page_title="BlueMet — Model Weather Map", layout="wide")
 
 from retro_theme import apply_retro_theme
 
@@ -95,7 +95,7 @@ with _h1:
   if not PANEL_LAYER:
     st.markdown(
         '<div style="font-size:16px;font-weight:700;color:#FFFFFF;'
-        'margin:0 0 2px 0">WEATHER MAPPING</div>'
+        'margin:0 0 2px 0">MODEL WEATHER MAP</div>'
         '<div style="font-size:11px;font-weight:700;color:#B8B8B8;'
         'margin:0 0 8px 0">NOAA model layers &middot; REFS ensemble, RRFS, '
         'HRRR, GFS &middot; pick layers from each model\'s dropdown above the '
@@ -175,6 +175,8 @@ def _origin() -> str:
 _NAV_ROOT = Path("/opt/render/project/src/cache")
 _NAV_ROOT = _NAV_ROOT if _NAV_ROOT.exists() else Path("/tmp/wx_compare_cache")
 ROUTES_FILE = "map_routes.geojson"
+# Only these on this page (20 Oct); the JetBlue Live System Map keeps all 58.
+ROUTES_ONLY = ["Q75", "Q99", "Q87", "Q85", "Q97", "J174"]
 try:
     from core import navdata as _ND
     _NAV_ROOT.mkdir(parents=True, exist_ok=True)
@@ -235,7 +237,7 @@ def _body():
                                  if PANEL_LAYER and PANEL_SECTOR in TIO.SECTORS else None),
                             mode=("ts" if PANEL_TS else ("map" if PANEL_LAYER else "")),
                             station=PANEL_TS or "", noaa_only=NOAA_ONLY,
-                            routes_file=ROUTES_FILE)
+                            routes_file=ROUTES_FILE, routes_only=ROUTES_ONLY)
         # Panels get their own file (one layer, one sector / one station);
         # the page keeps tio_map.html.
         name = (f"tio_map_ts_{PANEL_TS}.html" if PANEL_TS

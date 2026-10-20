@@ -33,7 +33,7 @@ PRODUCTS = [
      "and the JetBlue movement board for one station.",
      "Open <b>Station &amp; plot settings</b> under the title to pick a "
      "station."),
-    ("pages/3_JBU_Weather_Map.py", "JBU Weather Map CONUS", "#22d3ee",
+    ("pages/3_JBU_Weather_Map.py", "JetBlue Live System Map", "#22d3ee",
      "Live national map: MRMS radar, station conditions, echo-top tags, "
      "fleet positions, holding and diversion alerts.",
      "Hover a station for its METAR. Thresholds are under "

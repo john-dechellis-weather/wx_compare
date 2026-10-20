@@ -108,7 +108,7 @@ const CATALOG = [
   ]},
   // sector + layer lists arrive from static/splitter_catalog.json
   // (written by the page from the site's registries)
-  {g: 'Weather Mapping', page: '/Large_Scale_Map', param: 'layer', sectors: [], items: [],
+  {g: 'Model Weather Map', page: '/Large_Scale_Map', param: 'layer', sectors: [], items: [],
    note: 'a fixed CONUS map (zoom only) of that one NOAA model layer'},
   // Time Series Plot: ceiling / visibility / wind meteogram for one
   // station - typed, not picked.
@@ -116,7 +116,7 @@ const CATALOG = [
    note: 'type the ICAO (JBU stations and Canadian alternates); 1 tomorrow.io request per station per hour'},
 ];
 fetch(`${BASE}/app/static/splitter_catalog.json?_=${Q.get('cat') || Date.now()}`).then(r => r.json()).then(j => {
-  const g = CATALOG.find(x => x.g === 'Weather Mapping');
+  const g = CATALOG.find(x => x.g === 'Model Weather Map');
   g.sectors = (j.wm_sectors && j.wm_sectors.length) ? j.wm_sectors : null; g.items = j.wm_layers || [];
 }).catch(() => {});
 function urlFor(g, it, icao, sector) {
@@ -207,7 +207,7 @@ function render() {
   root.querySelectorAll('.leaf').forEach(el => { if (!seen.has(el.dataset.id)) el.remove(); });
 }
 function emptyContent(node) {
-  return `<div class="empty"><div class="plus" title="Add data">+</div><div class="lbl">ADD DATA</div><div class="lbl2">MOS tables, Weather Mapping layers, Time Series Plots</div></div>`;
+  return `<div class="empty"><div class="plus" title="Add data">+</div><div class="lbl">ADD DATA</div><div class="lbl2">MOS tables, Model Weather Map layers, Time Series Plots</div></div>`;
 }
 function leafContent(node) {
   const c = node.content;

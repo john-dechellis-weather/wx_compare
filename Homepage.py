@@ -333,9 +333,9 @@ PAGES = {
     ],
     "Situational Awareness": [
         st.Page("pages/3_JBU_Weather_Map.py",
-                title="JBU Weather Map CONUS"),
+                title="JetBlue Live System Map"),
         st.Page("pages/15_Large_Scale_Map.py",
-                title="Weather Mapping"),
+                title="Model Weather Map"),
         # 5 Oct: split the screen into panels, each showing any page
         st.Page("pages/17_Map_Splitter.py",
                 title="Map Splitter"),

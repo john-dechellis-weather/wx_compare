@@ -15,7 +15,7 @@ from datetime import datetime, timezone, timedelta
 import streamlit as st
 
 st.set_page_config(
-    page_title="BlueMet — JBU Weather Map CONUS",
+    page_title="BlueMet — JetBlue Live System Map",
     layout="wide",
 )
 
@@ -1771,7 +1771,7 @@ def cached_analyze(
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
-st.title("JBU Weather Map CONUS")
+st.title("JetBlue Live System Map")
 st.markdown(
     """
     <style>
@@ -2554,7 +2554,8 @@ if run_button or _auto:
 
                     _rt_data = [{"path": r["path"], "id": r["id"],
                                  "color": _rt_color(r)}
-                                for r in _rts if len(r["path"]) > 1]
+                                for r in _rts
+                                if len(r["path"]) > 1 and not r.get("extra")]
                     layers.append(pdk.Layer(
                         "PathLayer", data=_rt_data,
                         get_path="path", get_color="color",
