@@ -250,6 +250,9 @@ with st.expander("model layer status", expanded=False):
         st.caption(f"Model layers: {', '.join(_MT.MODELS_ON) or 'none'} "
                    f"({len(_MT.field_keys())} layers) | "
                    + (f"building {_MT.STATUS['busy']}" if _MT.STATUS.get("busy") else "idle")
+                   + (f" | full warm: {'on' if _MT.FULL_WARM else 'off'}, "
+                      f"{len(_MT._sweep(STATIC))} frames in the sweep, "
+                      f"{_MT.STATUS.get('pending', 0)} still to build")
                    + (f" | last error: {_MT.STATUS['err']}" if _MT.STATUS.get("err") else ""))
         st.code("\n".join(_MT.log_tail(STATIC, 10)) or "(no model log yet)")
     except Exception as _me:

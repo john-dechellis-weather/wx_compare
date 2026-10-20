@@ -83,6 +83,12 @@ MODELS_ON = [m.strip() for m in os.environ.get("MDL_MODELS", "refs,rrfs,hrrr,gfs
              if m.strip() and m.strip() in LAYERS]
 
 PREFETCH_H = int(os.environ.get("MDL_PREFETCH_H", "6"))
+# 20 Oct: FULL WARM - every layer at every slider step, all the time,
+# so the slider is instant. Viewer demand still goes first; when
+# nobody is watching the sweep continues at a gentler pace. MDL_FULL_WARM=off
+# restores the on-demand-only warmer.
+FULL_WARM = os.environ.get("MDL_FULL_WARM", "on").lower() not in ("off", "0", "no")
+IDLE_SLEEP_S = float(os.environ.get("MDL_IDLE_SLEEP_S", "2"))
 ACTIVE_MIN = int(os.environ.get("MDL_ACTIVE_MIN", "120"))
 REFRESH_MIN = int(os.environ.get("MDL_REFRESH_MIN", "60"))   # look for a newer cycle
 WIDTH_PX = int(os.environ.get("MDL_WIDTH_PX", "1400"))
@@ -465,7 +471,12 @@ def build_frame(outdir, key: str, valid: datetime) -> dict | None:
     man = manifest(outdir)
     ent = (man.get(model) or {}).get(code, {}).get(_iso(valid))
     if ent and ent.get("name") == name and (outdir / name).exists():
-        return ent                      # already have this run's frame
+        # already have this run's frame: note the re-check so the
+        # sweep leaves it alone for another REFRESH_MIN
+        ent["checked"] = _iso(datetime.now(timezone.utc))
+        man.setdefault(model, {}).setdefault(code, {})[_iso(valid)] = ent
+        _save_manifest(outdir, man)
+        return ent
     t0 = time.time()
     STATUS["busy"] = f"{key} {_iso(valid)} ({cyc:%d/%H}Z f{fhr:02d})"
     la, lo = CONUS_CENTER
@@ -551,13 +562,30 @@ def _wanted(outdir) -> list:
     return uniq
 
 
-def _is_fresh(outdir, key: str, valid: datetime) -> bool:
+def _sweep(outdir) -> list:
+    """[(key, valid)] for every layer at every slider step, nearest
+    hours first across all models, within each model's horizon."""
+    from core import tio_map as T
+    from core.hrrr_cam import MODELS as _SRC
+    now_h = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    out = []
+    for step in [0] + list(T.FCST_HOURS):
+        for key in field_keys():
+            src, _ = _spec(key)
+            if step > int(_SRC.get(src, {}).get("max_fhr", 60)):
+                continue
+            out.append((key, now_h + timedelta(hours=step)))
+    return out
+
+
+def _is_fresh(outdir, key: str, valid: datetime, man: dict | None = None) -> bool:
     model, code = key.split(":", 1)
-    ent = (manifest(outdir).get(model) or {}).get(code, {}).get(_iso(valid))
+    ent = ((man if man is not None else manifest(outdir)).get(model) or {}).get(code, {}).get(_iso(valid))
     if not ent or not (Path(outdir) / ent["name"]).exists():
         return False
     try:
-        built = datetime.strptime(ent["built"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=timezone.utc)
+        built = datetime.strptime(ent.get("checked") or ent["built"],
+                                  "%Y-%m-%dT%H:%MZ").replace(tzinfo=timezone.utc)
     except ValueError:
         return False
     # re-check for a newer run once an hour
@@ -570,38 +598,59 @@ def _loop(outdir):
     outdir = Path(outdir)
     time.sleep(12)
     _log(outdir, f"warmer start: models={MODELS_ON} layers={len(field_keys())} "
-                 f"prefetch +{PREFETCH_H} h, {WIDTH_PX} px frames")
+                 f"prefetch +{PREFETCH_H} h, {WIDTH_PX} px frames, "
+                 f"full warm {'ON (every layer, every step)' if FULL_WARM else 'off'}")
     last_prune = 0.0
+    sweep_stats = {"built": 0, "none": 0, "t0": time.time()}
     while True:
         try:
             if time.time() - last_prune > 900:
                 prune(outdir)
                 last_prune = time.time()
-            if T.is_idle(outdir):
+            idle = T.is_idle(outdir)
+            if idle and not FULL_WARM:
                 time.sleep(15)
                 continue
-            if _answer_point(outdir):
+            if not idle and _answer_point(outdir):
                 continue
             built = 0
-            for key, valid in _wanted(outdir):
-                if built >= MAX_PER_TICK:
-                    break
-                if _is_fresh(outdir, key, valid):
+            man = manifest(outdir)
+            todo = [] if idle else _wanted(outdir)
+            if FULL_WARM:
+                seen = set(todo)
+                todo += [kv for kv in _sweep(outdir) if kv not in seen]
+            per_tick = 1 if idle else MAX_PER_TICK
+            pending = 0
+            for key, valid in todo:
+                if built >= per_tick:
+                    pending += 1
+                    continue
+                if _is_fresh(outdir, key, valid, man):
                     continue
                 try:
                     if build_frame(outdir, key, valid) is not None:
                         built += 1
+                        sweep_stats["built"] += 1
                         STATUS["last"] = time.time()
                         STATUS["err"] = None
                     else:
-                        # no run has this hour yet: mark so we do not
-                        # probe it every tick (probe cache covers 10 min)
-                        pass
+                        # no run has this hour yet (probe cache covers
+                        # 10 min, so this costs nothing until then)
+                        sweep_stats["none"] += 1
                 except Exception as exc:
                     STATUS["err"] = f"{key}: {type(exc).__name__}: {exc}"
                     STATUS["busy"] = ""
                     _log(outdir, f"FAILED {key} {_iso(valid)}: {STATUS['err'][:160]}")
-            time.sleep(1 if built else 2)
+            STATUS["pending"] = pending
+            if FULL_WARM and not pending and not built and sweep_stats["built"]:
+                _log(outdir, f"sweep complete: {sweep_stats['built']} frames built, "
+                             f"{sweep_stats['none']} hours not yet published, "
+                             f"{time.time() - sweep_stats['t0']:.0f}s")
+                sweep_stats = {"built": 0, "none": 0, "t0": time.time()}
+            if built:
+                time.sleep(IDLE_SLEEP_S if idle else 0.5)
+            else:
+                time.sleep(20 if FULL_WARM else 2)
         except Exception as exc:
             _log(outdir, f"loop error: {type(exc).__name__}: {exc}")
             time.sleep(10)
