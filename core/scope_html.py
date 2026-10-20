@@ -52,6 +52,8 @@ def _clean(obj):
 def scope_html(deck_json: dict, frames: list, style_url: str, icao: str,
                height: int = 560, tooltip: dict | None = None,
                radar_index: int | None = None, loop_ms: int = 500) -> str:
+    from core.airport_scope import AIRPORT_ZOOM as _AZ
+    airport_zoom = _AZ
     """deck_json: json.loads(pdk.Deck(...).to_json()) WITHOUT the radar
     layer. frames: [{"url", "bounds":[w,s,e,n], "label"}] oldest first;
     they are inserted at layer index `radar_index` (default: after the
@@ -186,8 +188,20 @@ function showPanel(a) {{
   el.style.display = 'block';
 }}
 function select(a) {{ sel = a; showPanel(a); dk.setProps({{layers: allLayers()}}); }}
+// DECLUTTER (20 Oct): ground aircraft come as two sets of layers -
+// ac_gnd_agg* (one glyph + count per airport) for the wide view and
+// ac_gnd_* (every aircraft) for the airport-scale view. Zoom decides.
+const AIRPORT_ZOOM = {airport_zoom};
+let curZoom = null, zoomMode = null;
 function allLayers() {{
-  const b = baseLayers();
+  const z = curZoom == null ? (DJ.initialViewState || {{}}).zoom : curZoom;
+  const close = z != null && z >= AIRPORT_ZOOM;
+  const b = baseLayers().map(l => {{
+    const id = l.id || '';
+    if (id.startsWith('ac_gnd_agg')) return l.clone({{visible: !close}});
+    if (id.startsWith('ac_gnd_')) return l.clone({{visible: close}});
+    return l;
+  }});
   return b.slice(0, RADAR_AT).concat(radarLayers(), routeLayers(), b.slice(RADAR_AT));
 }}
 let saved = null;
@@ -205,6 +219,9 @@ const dk = new deck.DeckGL({{
   layers: allLayers(),
   onViewStateChange: ({{viewState}}) => {{
     try {{ sessionStorage.setItem(KEY, JSON.stringify({{longitude: viewState.longitude, latitude: viewState.latitude, zoom: viewState.zoom}})); }} catch (e) {{}}
+    curZoom = viewState.zoom;
+    const mode = curZoom >= AIRPORT_ZOOM;
+    if (mode !== zoomMode) {{ zoomMode = mode; dk.setProps({{layers: allLayers()}}); }}
   }},
   getTooltip: ({{object}}) => object && TIP.html ? {{html: fill(TIP.html, object), style: TIP.style || {{}}}} : null,
   onClick: info => {{ select(info && info.object && info.object.callsign ? info.object : null); }}

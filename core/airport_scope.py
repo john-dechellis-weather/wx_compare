@@ -562,6 +562,84 @@ def aircraft_layers(ac: list, cards_on: bool = True) -> list:
     import pydeck as pdk
     from core import cards as _C
 
+    # DECLUTTER (20 Oct): aircraft on the ground (ground speed under
+    # GROUND_KT) are split off. Zoomed out, the viewer shows ONE grey
+    # glyph per airport with a count ("JFK 23") instead of a pile of
+    # parked aircraft; past AIRPORT_ZOOM it shows them individually.
+    # Layer ids tell the viewer (core/scope_html.py) which is which.
+    ground, airborne = [], []
+    for a in ac:
+        gs = a.get("gs")
+        try:
+            on_gnd = gs is not None and gs != "" and float(gs) < GROUND_KT
+        except (TypeError, ValueError):
+            on_gnd = False
+        (ground if on_gnd else airborne).append(a)
+    out = []
+    if ground:
+        out.extend(_ground_agg_layers(ground))
+        out.extend(_plane_layers(ground, cards_on, prefix="ac_gnd"))
+    out.extend(_plane_layers(airborne, cards_on, prefix="ac_air"))
+    return out
+
+
+GROUND_KT = float(os.environ.get("BLUEMET_SCOPE_GROUND_KT", "50"))
+AIRPORT_ZOOM = float(os.environ.get("BLUEMET_SCOPE_AIRPORT_ZOOM", "10.2"))
+
+
+def _ground_agg_layers(ground: list) -> list:
+    """One glyph + 'XXX n' label per airport for aircraft on the
+    ground; a cluster that is not near a known airport is labelled
+    by count alone."""
+    import pydeck as pdk
+    from core import cards as _C
+    from core import airports as _AP
+    try:
+        fields = [(k, _AP.centre(k)) for k in _AP.stations()]
+        fields = [(k, c) for k, c in fields if c]
+    except Exception:
+        fields = []
+    groups = {}
+    for a in ground:
+        lo, la = a["position"]
+        best, bd = None, 3.0
+        for k, (fla, flo) in fields:
+            d = distance_nm(la, lo, fla, flo)
+            if d < bd:
+                best, bd = k, d
+        key = best or f"{round(la, 2)},{round(lo, 2)}"
+        g = groups.setdefault(key, {"n": 0, "lat": 0.0, "lon": 0.0, "name": best or ""})
+        g["n"] += 1
+        g["lat"] += la
+        g["lon"] += lo
+    rows = []
+    for key, g in groups.items():
+        la, lo = g["lat"] / g["n"], g["lon"] / g["n"]
+        if g["name"]:
+            c = _AP.centre(g["name"]) or (la, lo)
+            la, lo = c
+        short = (g["name"][1:] if g["name"][:1] == "K" and len(g["name"]) == 4 else g["name"]) or ""
+        rows.append({"position": [lo, la], "icon": _C.plane_icon("#9AA0A6"),
+                     "text": f"{short} {g['n']}".strip() + " on ground",
+                     "n": g["n"]})
+    return [
+        pdk.Layer("IconLayer", rows, id="ac_gnd_agg", get_position="position",
+                  get_icon="icon", get_angle=0, get_size=5000,
+                  size_min_pixels=16, size_max_pixels=16, pickable=False),
+        pdk.Layer("TextLayer", rows, id="ac_gnd_agg_lab", get_position="position",
+                  get_text="text", get_color=[200, 204, 210, 235], get_size=5000,
+                  size_min_pixels=_C.TAG_FS, size_max_pixels=_C.TAG_FS,
+                  get_pixel_offset=[10, 6], get_text_anchor='"start"',
+                  get_alignment_baseline='"top"', font_family=_C.FONT,
+                  font_weight=700, pickable=False),
+    ]
+
+
+def _plane_layers(ac: list, cards_on: bool, prefix: str) -> list:
+    """Icons, cards / tags and trails for one set of aircraft."""
+    import pydeck as pdk
+    from core import cards as _C
+
     planes, by_h, tags, trails = [], {}, [], []
     for a in ac:
         cs = a.get("callsign", "")
@@ -594,12 +672,12 @@ def aircraft_layers(ac: list, cards_on: bool = True) -> list:
     if trails:
         # 2-minute track, under everything else, in the aircraft's colour
         out.append(pdk.Layer(
-            "PathLayer", trails, get_path="path", get_color="color",
+            "PathLayer", trails, id=f"{prefix}_trails", get_path="path", get_color="color",
             get_width=60, width_min_pixels=1.5, width_max_pixels=2,
             pickable=False))
     for h, rows in sorted(by_h.items()):
         out.append(pdk.Layer(
-            "IconLayer", rows, get_position="position", get_icon="icon",
+            "IconLayer", rows, id=f"{prefix}_cards_{h}", get_position="position", get_icon="icon",
             get_size=5000, size_min_pixels=h, size_max_pixels=h,
             pickable=False))
     if tags:
@@ -608,7 +686,7 @@ def aircraft_layers(ac: list, cards_on: bool = True) -> list:
         # per aircraft at 30 nm is unreadable; this still identifies
         # everything without covering the weather.
         out.append(pdk.Layer(
-            "TextLayer", tags, get_position="position", get_text="text",
+            "TextLayer", tags, id=f"{prefix}_tags", get_position="position", get_text="text",
             get_color="color", get_size=5000,
             size_min_pixels=_C.TAG_FS, size_max_pixels=_C.TAG_FS,
             get_pixel_offset=[7, 8],
@@ -617,7 +695,7 @@ def aircraft_layers(ac: list, cards_on: bool = True) -> list:
             font_family=_C.FONT, font_weight=700, pickable=False))
     # aircraft drawn last so they sit on top of every leader line
     out.append(pdk.Layer(
-        "IconLayer", planes, get_position="position", get_icon="icon",
+        "IconLayer", planes, id=f"{prefix}_planes", get_position="position", get_icon="icon",
         get_angle="angle", get_size=5000,
         size_min_pixels=22, size_max_pixels=22,
         pickable=True, auto_highlight=False))
