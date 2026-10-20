@@ -569,11 +569,18 @@ def aircraft_layers(ac: list, cards_on: bool = True) -> list:
     # Layer ids tell the viewer (core/scope_html.py) which is which.
     ground, airborne = [], []
     for a in ac:
-        gs = a.get("gs")
+        gs, alt = a.get("gs"), a.get("alt")
         try:
-            on_gnd = gs is not None and gs != "" and float(gs) < GROUND_KT
+            gs = float(gs) if gs not in (None, "") else None
         except (TypeError, ValueError):
-            on_gnd = False
+            gs = None
+        try:
+            alt = float(alt) if alt not in (None, "", "ground") else None
+        except (TypeError, ValueError):
+            alt = None
+        # other-airline rows from the fleet snapshot carry no ground
+        # speed: judge them by altitude instead (none / low = parked)
+        on_gnd = (gs < GROUND_KT) if gs is not None else (alt is None or alt < 1500)
         (ground if on_gnd else airborne).append(a)
     out = []
     if ground:

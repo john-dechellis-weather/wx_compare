@@ -1021,15 +1021,15 @@ def _scope_pod():
                                if r.get("lat") is not None]
                 if _fleet_rows:
                     import urllib.parse as _up
+                    # B airliner glyph (20 Oct), same silhouette as the
+                    # scope's static/icons/plane_twin.png
                     _svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="64" '
-                            'height="64" viewBox="-11 -11 22 22"><path d="M0,-10 '
-                            'L0.35,-9.6 L0.55,-8.8 L0.6,-6 L0.6,-1.6 L9.2,3.2 '
-                            'L9.6,3.4 L9.6,4 L9.1,4.1 L2.6,3.3 L0.6,3.1 L0.6,6.4 '
-                            'L3.3,8.2 L3.3,9 L0.5,8.5 L0.45,9.4 L0,9.7 L-0.45,9.4 '
-                            'L-0.5,8.5 L-3.3,9 L-3.3,8.2 L-0.6,6.4 L-0.6,3.1 '
-                            'L-2.6,3.3 L-9.1,4.1 L-9.6,4 L-9.6,3.4 L-9.2,3.2 '
-                            'L-0.6,-1.6 L-0.6,-6 L-0.55,-8.8 L-0.35,-9.6 Z" '
-                            'fill="#4DA3FF" stroke="#000" stroke-width="0.6"/></svg>')
+                            'height="64" viewBox="0 0 96 96"><path d="M48 4 C50.5 4 52 8 52 14 '
+                            'L52 36 L90 54 L90 60 L52 50 L52 72 L62 80 L62 85 L48 81 L34 85 '
+                            'L34 80 L44 72 L44 50 L6 60 L6 54 L44 36 L44 14 C44 8 45.5 4 48 4 Z" '
+                            'fill="#4DA3FF" stroke="#000" stroke-width="2"/>'
+                            '<rect x="29" y="44" width="6" height="14" rx="3" fill="#4DA3FF"/>'
+                            '<rect x="61" y="44" width="6" height="14" rx="3" fill="#4DA3FF"/></svg>')
                     _icon = {"url": "data:image/svg+xml;charset=utf-8,"
                                     + _up.quote(_svg), "width": 64, "height": 64,
                              "anchorX": 32, "anchorY": 32, "mask": False}
