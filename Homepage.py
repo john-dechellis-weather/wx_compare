@@ -319,6 +319,9 @@ PAGES = {
                 title="JetBlue Live System Map"),
         st.Page("pages/15_Large_Scale_Map.py",
                 title="Model Weather Map"),
+        # 22 Oct: one big live Level II scope for any JBU station
+        st.Page("pages/21_Airport_Radar.py",
+                title="Airport Radar"),
         # 5 Oct: split the screen into panels, each showing any page
         st.Page("pages/17_Map_Splitter.py",
                 title="Map Splitter"),

@@ -40,3 +40,4 @@ static/map_routes_full.geojson
 static/mdl_manifest.json
 static/mdl_*.png
 static/mdl_*.webp
+static/aradar_*
