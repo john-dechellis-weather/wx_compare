@@ -52,7 +52,7 @@ def _clean(obj):
 def scope_html(deck_json: dict, frames: list, style_url: str, icao: str,
                height: int = 560, tooltip: dict | None = None,
                radar_index: int | None = None, loop_ms: int = 500,
-               live_url: str | None = None) -> str:
+               live_url: str | None = None, declutter: bool = False) -> str:
     from core.airport_scope import AIRPORT_ZOOM as _AZ
     airport_zoom = _AZ
     """deck_json: json.loads(pdk.Deck(...).to_json()) WITHOUT the radar
@@ -113,6 +113,7 @@ const STYLE = {json.dumps(style_url)};
 const TIP = {json.dumps(tip)};
 const RADAR_AT = {radar_index};
 const LIVE = {json.dumps(live_url)};
+const DECLUTTER = {json.dumps(bool(declutter))};
 const KEY = 'bm_scope_view_' + {json.dumps(icao)};
 const SPEEDS = [250, 500, 900];
 let ms = {loop_ms}, i = FRAMES.length - 1, playing = FRAMES.length > 1, tick = null;
@@ -293,6 +294,12 @@ function retone() {{
     const st = m.getStyle(); if (!st || !st.layers) return;
     for (const l of st.layers) {{
       try {{
+        // DECLUTTER (22 Oct, Airport Radar): minor roads, buildings,
+        // rail, road names, POIs and small place names go; motorways,
+        // trunks, water, boundaries, towns and cities stay.
+        if (DECLUTTER && /service|minor|_sec_|_pri_|path|rail|tunnel|bridge|building|roadname|housenumber|poi_|place_hamlet|place_suburbs|place_villages|landuse|park_|watername_lake|waterway/.test(l.id)) {{
+          m.setLayoutProperty(l.id, 'visibility', 'none'); continue;
+        }}
         if (l.type === 'background') m.setPaintProperty(l.id, 'background-color', '#2A2C30');
         else if (l.type === 'fill' && /water/.test(l.id)) m.setPaintProperty(l.id, 'fill-color', '#15181D');
         else if (l.type === 'fill' && /land|park|wood|green|grass|cemetery|pitch|stadium/.test(l.id)) m.setPaintProperty(l.id, 'fill-color', '#2E3035');

@@ -38,6 +38,9 @@ _persistent = Path("/opt/render/project/src/cache")
 CACHE_ROOT = _persistent if _persistent.exists() else Path("/tmp/wx_compare_cache")
 CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 SCOPE_H = int(os.environ.get("BLUEMET_ARADAR_H", "1050"))
+NAV_NM = float(os.environ.get("BLUEMET_ARADAR_NAV_NM", "80"))     # VOR-class navaids drawn
+HOLD_NM = float(os.environ.get("BLUEMET_ARADAR_HOLD_NM", "30"))   # published holding fixes drawn
+_FONT = "'Roboto Mono', 'DejaVu Sans Mono', Menlo, Consolas, monospace"
 EDGE, PANEL, INK, INK2, MUTED = "#2D3957", "#0A0A0A", "#FFFFFF", "#B8B8B8", "#6E6E6E"
 
 AR.ensure_warmer(STATIC)
@@ -180,6 +183,51 @@ def _scope():
                                 get_color=[255, 212, 0, 255], get_size=2600, size_min_pixels=0,
                                 size_max_pixels=12, get_pixel_offset=[0, -22],
                                 get_text_anchor='"middle"', pickable=False))
+    # NAVAIDS (22 Oct): VOR-class navaids within NAV_NM and published
+    # holding fixes within HOLD_NM, from the FAA NASR cycle the
+    # system map already caches. Navaid = ring + centre dot + ident;
+    # hold fix = small triangle + ident. Under the aircraft.
+    try:
+        from core import navdata as ND
+        ND.ensure(CACHE_ROOT)
+        _nd = ND.load(CACHE_ROOT) or {}
+    except Exception:
+        _nd = {}
+    _navs = [{"position": [n["lon"], n["lat"]], "id": n["id"], "name": f"{n['type']} {n['id']} {n['name']}"}
+             for n in _nd.get("navaids", [])
+             if AS.distance_nm(coords[0], coords[1], n["lat"], n["lon"]) <= NAV_NM]
+    _seen = set()
+    _holds = []
+    for h in _nd.get("holds", []):
+        if h["id"] in _seen or AS.distance_nm(coords[0], coords[1], h["lat"], h["lon"]) > HOLD_NM:
+            continue
+        _seen.add(h["id"])
+        _holds.append({"position": [h["lon"], h["lat"]], "id": h["id"],
+                       "name": f"hold {h['id']} {h.get('course') or ''}° {h.get('turn') or ''}"})
+    _NAV_C = [170, 200, 255, 230]
+    _HLD_C = [230, 190, 60, 165]
+    if _holds:
+        layers.append(pdk.Layer("ScatterplotLayer", _holds, id="nav_holds", get_position="position",
+                                get_radius=400, radius_min_pixels=3, radius_max_pixels=4,
+                                filled=True, get_fill_color=_HLD_C, pickable=False))
+        layers.append(pdk.Layer("TextLayer", _holds, id="nav_holds_lab", get_position="position", get_text="id",
+                                get_color=_HLD_C, get_size=3000, size_min_pixels=0, size_max_pixels=9,
+                                get_pixel_offset=[0, -7], get_text_anchor='"middle"',
+                                get_alignment_baseline='"bottom"', font_family=_FONT, font_weight=700,
+                                pickable=False))
+    if _navs:
+        layers.append(pdk.Layer("ScatterplotLayer", _navs, id="nav_ring", get_position="position",
+                                get_radius=900, radius_min_pixels=7, radius_max_pixels=9,
+                                filled=False, stroked=True, get_line_color=_NAV_C,
+                                line_width_min_pixels=1.5, pickable=False))
+        layers.append(pdk.Layer("ScatterplotLayer", _navs, id="nav_dot", get_position="position",
+                                get_radius=200, radius_min_pixels=2, radius_max_pixels=2,
+                                filled=True, get_fill_color=_NAV_C, pickable=False))
+        layers.append(pdk.Layer("TextLayer", _navs, id="nav_lab", get_position="position", get_text="id",
+                                get_color=_NAV_C, get_size=3000, size_min_pixels=0, size_max_pixels=12,
+                                get_pixel_offset=[11, 0], get_text_anchor='"start"',
+                                get_alignment_baseline='"center"', font_family=_FONT, font_weight=700,
+                                pickable=False))
     # echo-top tags
     tags = []
     try:
@@ -210,7 +258,7 @@ def _scope():
                                                                   "inertia": True})],
                     map_style=None, map_provider=None, parameters={"clearColor": [0, 0, 0, 1]})
     html = scope_html(json.loads(deck.to_json()), frames, style, icao, height=SCOPE_H, tooltip=_tip,
-                      live_url=f"{base}/app/static/{LT.path(STATIC, icao).name}")
+                      live_url=f"{base}/app/static/{LT.path(STATIC, icao).name}", declutter=True)
     name = f"aradar_scope_{icao}_{'tdwr' if use_tdwr else 'l2'}.html"
     v = hashlib.md5(html.encode()).hexdigest()[:10]
     p = STATIC / name
@@ -223,6 +271,7 @@ def _scope():
     _src = (f"live {_lst.get('host', '')} every {LT.LIVE_S:.0f} s" if live_ok
             else ("live feed starting" if not _lst.get("err") else f"live feed: {_lst['err']}"))
     st.caption(f"{rtxt} · {_n_ac} aircraft ({_src}) · {len(tags)} echo-top tags · "
+               f"{len(_navs)} navaids · {len(_holds)} holding fixes · "
                f"ATIS {cfg.get('code', '') or '-'} · {now:%H:%MZ}")
     components.iframe(f"{base}/app/static/{name}?v={v}", height=SCOPE_H + 44)
 
