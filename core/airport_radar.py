@@ -95,6 +95,10 @@ def box_bounds(rlat: float, rlon: float) -> list:
     return [rlon - dlon, _inv_merc_y(y0 - dy), rlon + dlon, _inv_merc_y(y0 + dy)]
 
 
+class IncompleteSweep(RuntimeError):
+    pass
+
+
 def rasterise(f, rlat: float, rlon: float):
     """metpy Level2File -> (comp dBZ float32 [PX, PX], bounds). Sweep 0,
     REF moment, nearest gate per pixel, max where gates overlap."""
@@ -132,11 +136,22 @@ def rasterise(f, rlat: float, rlon: float):
     ref[clutter] = np.nan
     order = np.argsort(az)
     az, ref = az[order], ref[order]
+    # A live volume arrives in chunks; sweep 0 is only usable once it
+    # has gone all the way round. Fewer rays, or an azimuth gap wider
+    # than a few degrees, means the radar is mid-sweep: say so (the
+    # caller keeps the previous frame) rather than smear the rays
+    # present across the gap (seen 22 Oct as bright arcs over Boca).
+    gaps = np.diff(np.concatenate([az, [az[0] + 360.0]]))
+    if len(az) < 300 or gaps.max() > 4.0:
+        raise IncompleteSweep(f"{len(az)} rays, largest gap {gaps.max():.1f} deg")
     # pixel grid in Mercator metres around the radar
     bounds = box_bounds(rlat, rlon)
     w, s, e, n = bounds
     xs = np.linspace(w, e, PX, dtype="float64")
-    ys = np.array([_inv_merc_y(v) for v in np.linspace(_merc_y(n), _merc_y(s), PX)])
+    # row 0 = SOUTH: radar_l2.render_png draws with origin="lower"
+    # (found 22 Oct - the first cut built north-first and the image
+    # came out mirrored, so cells looked to move the wrong way)
+    ys = np.array([_inv_merc_y(v) for v in np.linspace(_merc_y(s), _merc_y(n), PX)])
     lon_g, lat_g = np.meshgrid(xs, ys)
     k = 111320.0
     dx = (lon_g - rlon) * k * math.cos(math.radians(rlat))
@@ -151,7 +166,8 @@ def rasterise(f, rlat: float, rlon: float):
     d_next = np.abs((az[ai] - brg + 180.0) % 360.0 - 180.0)
     d_prev = np.abs((az[prev] - brg + 180.0) % 360.0 - 180.0)
     ai = np.where(d_prev < d_next, prev, ai)
-    ok = (gi >= 0) & (gi < ngates)
+    d_ray = np.minimum(d_prev, d_next)
+    ok = (gi >= 0) & (gi < ngates) & (d_ray <= 1.5)
     comp = np.full(brg.shape, np.nan, dtype="float32")
     comp[ok] = ref[ai[ok], gi[ok]]
     comp[comp < DBZ_MIN] = np.nan
@@ -221,7 +237,11 @@ def render_live(outdir, site: str) -> tuple:
     f = Level2File(io.BytesIO(raw))
     rlat = float(f.sweeps[0][0][1].lat)
     rlon = float(f.sweeps[0][0][1].lon)
-    comp, bounds = rasterise(f, rlat, rlon)
+    try:
+        comp, bounds = rasterise(f, rlat, rlon)
+    except IncompleteSweep as exc:
+        STATUS["busy"] = ""
+        return stamp, f"waiting: sweep 0 incomplete ({exc})"
     name = f"aradar_{site}_{stamp}.png"
     tmp = outdir / f".{name}.tmp.png"
     _png(comp, tmp)
@@ -303,7 +323,7 @@ def _loop(outdir):
             for site in demanded(outdir):
                 try:
                     stamp, note = render_live(outdir, site)
-                    if note != "cached":
+                    if note != "cached" and not note.startswith("waiting"):
                         _log(outdir, f"{site} {stamp}: {note}")
                     STATUS["err"] = None
                 except Exception as exc:

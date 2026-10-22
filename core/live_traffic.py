@@ -26,7 +26,7 @@ from pathlib import Path
 
 LIVE_S = float(os.environ.get("BLUEMET_LIVE_S", "10"))
 EXPIRE_S = float(os.environ.get("BLUEMET_LIVE_EXPIRE_S", "300"))
-TRAIL_S = float(os.environ.get("BLUEMET_LIVE_TRAIL_S", "300"))
+TRAIL_S = float(os.environ.get("BLUEMET_LIVE_TRAIL_S", "180"))
 RADIUS_NM = 150
 
 STATUS: dict = {}            # icao -> {"last", "n", "err", "host"}
