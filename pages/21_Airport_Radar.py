@@ -31,6 +31,7 @@ check_password()
 
 from core import airport_radar as AR
 from core import airport_scope as AS
+from core import live_traffic as LT
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
 _persistent = Path("/opt/render/project/src/cache")
@@ -144,8 +145,15 @@ def _scope():
             rtxt = f"{l2_site} Level II: first volume rendering (about a minute)"
     # layers: surface, rings, finals, aircraft
     surface = AS.surface(CACHE_ROOT / "scope", icao, coords[0], coords[1])
+    # LIVE AIRCRAFT (22 Oct): a point query every LIVE_S around this
+    # airport feeds aradar_live_<ICAO>.json; the viewer polls it and
+    # dead-reckons between fixes. The server-side aircraft are only
+    # the first paint until that file is fresh (and leaving them out
+    # keeps the HTML stable, so the iframe is not reloaded every run).
+    LT.demand(icao, coords[0], coords[1], STATIC)
+    live_ok = LT.fresh(STATIC, icao, 60)
     try:
-        ac_all = AS.traffic(coords[0], coords[1], 150)
+        ac_all = [] if live_ok else AS.traffic(coords[0], coords[1], 150)
     except Exception:
         ac_all = []
     ac = [a for a in ac_all if a.get("jbu") or (a.get("airline") and AS.distance_nm(
@@ -164,11 +172,11 @@ def _scope():
     hold_rows = [{"position": a["position"], "cs": a.get("callsign", "")} for a in ac_all
                  if a.get("callsign") in hold_cs]
     if hold_rows:
-        layers.append(pdk.Layer("ScatterplotLayer", hold_rows, get_position="position",
+        layers.append(pdk.Layer("ScatterplotLayer", hold_rows, id="hold_ring", get_position="position",
                                 get_radius=2600, radius_min_pixels=16, radius_max_pixels=26,
                                 filled=False, stroked=True, get_line_color=[255, 212, 0, 255],
                                 line_width_min_pixels=2.5, pickable=False))
-        layers.append(pdk.Layer("TextLayer", hold_rows, get_position="position", get_text="cs",
+        layers.append(pdk.Layer("TextLayer", hold_rows, id="hold_lab", get_position="position", get_text="cs",
                                 get_color=[255, 212, 0, 255], get_size=2600, size_min_pixels=0,
                                 size_max_pixels=12, get_pixel_offset=[0, -22],
                                 get_text_anchor='"middle"', pickable=False))
@@ -201,7 +209,8 @@ def _scope():
                                                                   "dragRotate": False, "doubleClickZoom": True,
                                                                   "inertia": True})],
                     map_style=None, map_provider=None, parameters={"clearColor": [0, 0, 0, 1]})
-    html = scope_html(json.loads(deck.to_json()), frames, style, icao, height=SCOPE_H, tooltip=_tip)
+    html = scope_html(json.loads(deck.to_json()), frames, style, icao, height=SCOPE_H, tooltip=_tip,
+                      live_url=f"{base}/app/static/{LT.path(STATIC, icao).name}")
     name = f"aradar_scope_{icao}_{'tdwr' if use_tdwr else 'l2'}.html"
     v = hashlib.md5(html.encode()).hexdigest()[:10]
     p = STATIC / name
@@ -209,7 +218,11 @@ def _scope():
         tmp = STATIC / f".{name}.tmp"
         tmp.write_text(html)
         os.replace(tmp, p)
-    st.caption(f"{rtxt} · {len(ac)} aircraft · {len(tags)} echo-top tags · "
+    _lst = LT.STATUS.get(icao.upper(), {})
+    _n_ac = _lst.get("n", len(ac)) if live_ok else len(ac)
+    _src = (f"live {_lst.get('host', '')} every {LT.LIVE_S:.0f} s" if live_ok
+            else ("live feed starting" if not _lst.get("err") else f"live feed: {_lst['err']}"))
+    st.caption(f"{rtxt} · {_n_ac} aircraft ({_src}) · {len(tags)} echo-top tags · "
                f"ATIS {cfg.get('code', '') or '-'} · {now:%H:%MZ}")
     components.iframe(f"{base}/app/static/{name}?v={v}", height=SCOPE_H + 44)
 

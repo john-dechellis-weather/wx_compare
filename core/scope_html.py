@@ -51,7 +51,8 @@ def _clean(obj):
 
 def scope_html(deck_json: dict, frames: list, style_url: str, icao: str,
                height: int = 560, tooltip: dict | None = None,
-               radar_index: int | None = None, loop_ms: int = 500) -> str:
+               radar_index: int | None = None, loop_ms: int = 500,
+               live_url: str | None = None) -> str:
     from core.airport_scope import AIRPORT_ZOOM as _AZ
     airport_zoom = _AZ
     """deck_json: json.loads(pdk.Deck(...).to_json()) WITHOUT the radar
@@ -111,6 +112,7 @@ const LABELS = {json.dumps(labels)};
 const STYLE = {json.dumps(style_url)};
 const TIP = {json.dumps(tip)};
 const RADAR_AT = {radar_index};
+const LIVE = {json.dumps(live_url)};
 const KEY = 'bm_scope_view_' + {json.dumps(icao)};
 const SPEEDS = [250, 500, 900];
 let ms = {loop_ms}, i = FRAMES.length - 1, playing = FRAMES.length > 1, tick = null;
@@ -118,7 +120,8 @@ const $ = id => document.getElementById(id);
 
 // pydeck's JSON -> deck.gl layers, exactly as the Streamlit component does it
 const converter = new deck.JSONConverter({{configuration: new deck.JSONConfiguration({{classes: Object.assign({{}}, deck)}})}});
-function baseLayers() {{ return converter.convert({{layers: DJ.layers}}).layers; }}
+let baseCache = null;
+function baseLayers() {{ if (!baseCache) baseCache = converter.convert({{layers: DJ.layers}}).layers; return baseCache; }}
 function radarLayers() {{
   // A frame is either one image ({{url, bounds}}: Level III) or a tile
   // template ({{tiles, maxZoom}}: GOES visible from NASA GIBS, 5 Oct).
@@ -188,6 +191,58 @@ function showPanel(a) {{
   el.style.display = 'block';
 }}
 function select(a) {{ sel = a; showPanel(a); dk.setProps({{layers: allLayers()}}); }}
+// ---- LIVE AIRCRAFT (22 Oct): poll aradar_live_<ICAO>.json every few
+// seconds and dead-reckon each airborne aircraft from its last fix
+// (ground speed along track), so icons glide between fixes instead
+// of jumping once a sweep. When live data is in hand the server-drawn
+// ac_* and hold_* layers are hidden and these take their place.
+let live = null, liveAt = 0;
+async function pollLive() {{
+  if (!LIVE) return;
+  try {{
+    const r = await fetch(LIVE + (LIVE.includes('?') ? '&' : '?') + 't=' + Date.now(), {{cache: 'no-store'}});
+    if (r.ok) {{
+      live = await r.json(); liveAt = Date.now();
+      if (sel) {{ const s = (live.ac || []).find(a => a.callsign === sel.callsign); if (s) sel = Object.assign(sel, s); }}
+    }}
+  }} catch (e) {{}}
+}}
+function drPos(a) {{
+  if (!live || a.ground || !a.gs || a.gs < 50) return a.position;
+  // seconds since the fix: wall clock minus (server write time - feed age)
+  const dt = Math.min(150, Math.max(0, Date.now() / 1000 - (live.t - (a.age || 0))));
+  const r = Math.PI / 180, b = (a.hdg || 0) * r, d = a.gs * dt / 3600;   // nm
+  return [a.position[0] + d / 60 * Math.sin(b) / Math.cos(a.position[1] * r), a.position[1] + d / 60 * Math.cos(b)];
+}}
+function liveLayers() {{
+  if (!live) return [];
+  const z = curZoom == null ? (DJ.initialViewState || {{}}).zoom : curZoom;
+  const close = z != null && z >= AIRPORT_ZOOM;
+  const rows = (live.ac || []).filter(a => close || !a.ground)
+    .map(a => Object.assign({{}}, a, {{position: drPos(a), angle: (360 - (a.hdg || 0)) % 360}}));
+  const trails = rows.filter(a => !a.ground && a.trail && a.trail.length > 0)
+    .map(a => ({{path: a.trail.concat([a.position]), color: a.rgb.concat([140])}}));
+  const holdSet = new Set(live.hold || []);
+  const holds = rows.filter(a => holdSet.has(a.callsign));
+  const P = {{depthTest: false}};
+  return [
+    new deck.PathLayer({{id: 'live_trails', data: trails, getPath: d => d.path, getColor: d => d.color,
+      getWidth: 60, widthMinPixels: 1.5, widthMaxPixels: 2, pickable: false, parameters: P}}),
+    new deck.ScatterplotLayer({{id: 'live_hold', data: holds, getPosition: d => d.position, getRadius: 2600,
+      radiusMinPixels: 16, radiusMaxPixels: 26, filled: false, stroked: true, getLineColor: [255, 212, 0, 255],
+      lineWidthMinPixels: 2.5, pickable: false, parameters: P}}),
+    new deck.TextLayer({{id: 'live_hold_lab', data: holds, getPosition: d => d.position, getText: d => d.callsign + ' HOLDING',
+      getColor: [255, 212, 0, 255], getSize: 12, sizeUnits: 'pixels', getPixelOffset: [0, -24],
+      getTextAnchor: 'middle', fontFamily: live.font || 'monospace', fontWeight: 700, pickable: false, parameters: P}}),
+    new deck.TextLayer({{id: 'live_tags', data: rows, getPosition: d => d.position, getText: d => d.callsign,
+      getColor: d => d.rgb.concat([235]), getSize: live.tag_fs || 7, sizeUnits: 'pixels', getPixelOffset: [7, 8],
+      getTextAnchor: 'start', getAlignmentBaseline: 'top', fontFamily: live.font || 'monospace', fontWeight: 700,
+      pickable: false, parameters: P}}),
+    new deck.IconLayer({{id: 'live_planes', data: rows, getPosition: d => d.position, getIcon: d => (live.icons || {{}})[d.colour],
+      getAngle: d => d.angle, getSize: 5000, sizeMinPixels: 22, sizeMaxPixels: 22, pickable: true,
+      autoHighlight: false, parameters: P}})
+  ];
+}}
 // DECLUTTER (20 Oct): ground aircraft come as two sets of layers -
 // ac_gnd_agg* (one glyph + count per airport) for the wide view and
 // ac_gnd_* (every aircraft) for the airport-scale view. Zoom decides.
@@ -199,10 +254,11 @@ function allLayers() {{
   const b = baseLayers().map(l => {{
     const id = l.id || '';
     if (id.startsWith('ac_gnd_agg')) return l.clone({{visible: !close}});
+    if (live && (id.startsWith('ac_') || id.startsWith('hold_'))) return l.clone({{visible: false}});
     if (id.startsWith('ac_gnd_')) return l.clone({{visible: close}});
     return l;
   }});
-  return b.slice(0, RADAR_AT).concat(radarLayers(), routeLayers(), b.slice(RADAR_AT));
+  return b.slice(0, RADAR_AT).concat(radarLayers(), routeLayers(), b.slice(RADAR_AT), liveLayers());
 }}
 let saved = null;
 try {{ saved = JSON.parse(sessionStorage.getItem(KEY) || 'null'); }} catch (e) {{}}
@@ -277,4 +333,10 @@ document.addEventListener('keydown', e => {{ if (e.key === 'ArrowLeft') $('pv').
 // Preload every frame so the first loop is already smooth.
 FRAMES.forEach(f => {{ if (f.url) {{ const im = new Image(); im.src = f.url; }} }});
 show(i); play(playing);
+if (LIVE) {{
+  pollLive(); setInterval(pollLive, 6000);
+  // redraw at 2 Hz: positions are dead-reckoned, so this is movement
+  // between fixes, not a server round trip
+  setInterval(() => {{ if (live) dk.setProps({{layers: allLayers()}}); }}, 500);
+}}
 </script></body></html>"""
