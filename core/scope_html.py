@@ -215,6 +215,23 @@ function drPos(a) {{
   const r = Math.PI / 180, b = (a.hdg || 0) * r, d = a.gs * dt / 3600;   // nm
   return [a.position[0] + d / 60 * Math.sin(b) / Math.cos(a.position[1] * r), a.position[1] + d / 60 * Math.cos(b)];
 }}
+// Catmull-Rom through every fix (22 Oct): fixes come every ~10 s, so
+// a straight polyline shows a turn as a chain of doglegs. The spline
+// passes through each fix exactly and rounds the corners between
+// them; the current (dead-reckoned) position is the last knot.
+function smooth(pts, n) {{
+  if (pts.length < 3) return pts;
+  const out = [pts[0]];
+  for (let i = 0; i < pts.length - 1; i++) {{
+    const p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(pts.length - 1, i + 2)];
+    for (let k = 1; k <= n; k++) {{
+      const t = k / n, t2 = t * t, t3 = t2 * t;
+      out.push([0, 1].map(j => 0.5 * ((2 * p1[j]) + (-p0[j] + p2[j]) * t
+        + (2 * p0[j] - 5 * p1[j] + 4 * p2[j] - p3[j]) * t2 + (-p0[j] + 3 * p1[j] - 3 * p2[j] + p3[j]) * t3)));
+    }}
+  }}
+  return out;
+}}
 function liveLayers() {{
   if (!live) return [];
   const z = curZoom == null ? (DJ.initialViewState || {{}}).zoom : curZoom;
@@ -222,7 +239,7 @@ function liveLayers() {{
   const rows = (live.ac || []).filter(a => close || !a.ground)
     .map(a => Object.assign({{}}, a, {{position: drPos(a), angle: (360 - (a.hdg || 0)) % 360}}));
   const trails = rows.filter(a => !a.ground && a.trail && a.trail.length > 0)
-    .map(a => ({{path: a.trail.concat([a.position]), color: a.rgb.concat([140])}}));
+    .map(a => ({{path: smooth(a.trail.concat([a.position]), 6), color: a.rgb.concat([140])}}));
   const holdSet = new Set(live.hold || []);
   const holds = rows.filter(a => holdSet.has(a.callsign));
   const P = {{depthTest: false}};
