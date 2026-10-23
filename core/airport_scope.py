@@ -647,15 +647,16 @@ def _plane_layers(ac: list, cards_on: bool, prefix: str) -> list:
     import pydeck as pdk
     from core import cards as _C
 
-    planes, by_h, tags, trails = [], {}, [], []
+    planes, by_h, tags, trails = {}, {}, [], []
     for a in ac:
         cs = a.get("callsign", "")
         col = _C.colour(cs)
+        glyph = _C.kind(cs, a.get("type", ""))
         t = trail(cs)
         if len(t) > 1:
             trails.append({"path": t, "color": _rgb(col) + [140]})
-        planes.append({"position": a["position"],
-                       "icon": _C.plane_icon(col),
+        planes.setdefault(glyph, []).append({"position": a["position"],
+                       "icon": _C.plane_icon(col, glyph),
                        # IconLayer turns counter-clockwise; track is
                        # clockwise from north
                        "angle": (360.0 - float(a.get("hdg") or 0)) % 360.0,
@@ -700,12 +701,15 @@ def _plane_layers(ac: list, cards_on: bool, prefix: str) -> list:
             get_text_anchor='"start"',
             get_alignment_baseline='"top"',
             font_family=_C.FONT, font_weight=700, pickable=False))
-    # aircraft drawn last so they sit on top of every leader line
-    out.append(pdk.Layer(
-        "IconLayer", planes, id=f"{prefix}_planes", get_position="position", get_icon="icon",
-        get_angle="angle", get_size=5000,
-        size_min_pixels=22, size_max_pixels=22,
-        pickable=True, auto_highlight=False))
+    # aircraft drawn last so they sit on top of every leader line;
+    # one layer per glyph because the pixel clamp is per layer
+    for glyph, rows in planes.items():
+        px = _C.ICON_PX.get(glyph, 22)
+        out.append(pdk.Layer(
+            "IconLayer", rows, id=f"{prefix}_planes_{glyph}", get_position="position", get_icon="icon",
+            get_angle="angle", get_size=5000,
+            size_min_pixels=px, size_max_pixels=px,
+            pickable=True, auto_highlight=False))
     return out
 
 

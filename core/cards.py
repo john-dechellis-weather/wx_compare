@@ -33,16 +33,86 @@ _ROOT = Path(__file__).resolve().parent.parent / "static"
 _PLANE = _ROOT / "icons" / "plane_twin.png"
 _LOGOS = _ROOT / "logos"
 
-# Aircraft and card-outline colour per carrier, from the r202 card.
+# Aircraft and card-outline colour per carrier (23 Oct, "option A"):
+# one colour per major, brand-leaning, all readable on the charcoal
+# scope. United left steel grey (it matched American's silver) for
+# violet; Alaska left navy (invisible on black) for teal.
 CARRIERS = {
-    "AAL": "#C9D3E3",
-    "JBU": "#1463F3",
-    "UAL": "#A7B5CB",
-    "ASA": "#3A5075",
-    "SWA": "#5D60C8",
-    "DAL": "#E0344C",
+    "JBU": "#1463F3",   # JetBlue blue
+    "DAL": "#E0344C",   # Delta red
+    "AAL": "#D8DEE8",   # American silver
+    "UAL": "#9B8CFF",   # United violet
+    "SWA": "#F5C518",   # Southwest gold
+    "NKS": "#FFF200",   # Spirit yellow
+    "FFT": "#35C759",   # Frontier green
+    "ASA": "#2BC4D6",   # Alaska teal
+    "HAL": "#E85DB1",   # Hawaiian magenta
+    "FDX": "#FF7A1A",   # FedEx orange
+    "UPS": "#B0744A",   # UPS brown
 }
-OTHER = "#9AA0A6"
+# Regional operators take the colour of the major whose livery they
+# fly. SkyWest and Republic fly for several; they get the partner
+# they fly most for.
+REGIONAL = {
+    "EDV": "DAL",       # Endeavor
+    "JIA": "AAL",       # PSA
+    "PDT": "AAL",       # Piedmont
+    "ENY": "AAL",       # Envoy
+    "RPA": "AAL",       # Republic (also DL, UA)
+    "ASH": "UAL",       # Mesa
+    "GJS": "UAL",       # GoJet
+    "SKW": "UAL",       # SkyWest (also AA, DL, AS)
+    "CPZ": "DAL",       # Compass
+    "QXE": "ASA",       # Horizon
+    "AWI": "AAL",       # Air Wisconsin
+}
+# Private / fractional / charter jet operators: grey, bizjet glyph.
+PRIVATE = {"EJA", "XOJ", "LXJ", "FLX", "JTL", "VTE", "WUP", "EDG", "DCM",
+           "GAJ", "TWY", "JAS", "PJS", "NJE", "FJO"}
+PRIVATE_COLOUR = "#9AA0A6"
+OTHER = "#6E7681"
+
+# ---------------------------------------------------- glyph by aircraft
+# Four glyphs (23 Oct): bizjet (smaller), regional CRJ/ERJ (T-tail,
+# slightly smaller), the airliner, and a widebody (larger).
+_GLYPHS = {
+    "bizjet": _ROOT / "icons" / "plane_bizjet.png",
+    "regional": _ROOT / "icons" / "plane_regional.png",
+    "narrow": _PLANE,
+    "wide": _ROOT / "icons" / "plane_wide.png",
+}
+ICON_PX = {"bizjet": 17, "regional": 19, "narrow": 22, "wide": 27}
+WIDE_TYPES = ("A33", "A34", "A35", "A38", "B74", "B76", "B77", "B78",
+              "MD11", "DC10", "A306", "A310", "IL96", "B703", "A124", "C5M",
+              "C17", "K35R", "B52", "E3", "E6")
+REGIONAL_TYPES = ("CRJ", "E135", "E145", "E170", "E175", "E75", "E17",
+                  "AT4", "AT7", "DH8", "SF34", "E120")
+BIZJET_TYPES = ("C25", "C50", "C51", "C52", "C55", "C56", "C68", "C70",
+                "C750", "CL30", "CL35", "CL60", "GLF", "GL5", "GL6", "GL7",
+                "GLEX", "GA5", "GA6", "GA7", "E55P", "E50P", "E545", "E550",
+                "LJ", "H25", "HA4", "PRM1", "BE40", "FA7X", "FA8X", "F2TH",
+                "F900", "FA50", "FA10", "F406", "G150", "G280", "ASTR",
+                "GALX", "PC24", "EA50", "HDJT", "SBR1", "WW24", "C650",
+                "GLXP", "GLX")
+
+
+def kind(callsign: str, actype: str = "") -> str:
+    """Which glyph: 'wide' / 'narrow' / 'regional' / 'bizjet'."""
+    t = (actype or "").strip().upper()
+    c = (callsign or "")[:3].upper()
+    if t:
+        if t.startswith(WIDE_TYPES):
+            return "wide"
+        if t.startswith(BIZJET_TYPES):
+            return "bizjet"
+        if t.startswith(REGIONAL_TYPES):
+            return "regional"
+        return "narrow"
+    if c in PRIVATE:
+        return "bizjet"
+    if c in REGIONAL:
+        return "regional"
+    return "narrow"
 COMPACT = {"DAL"}                  # mark to the right, four rows
 
 FONT = ("'Roboto Mono', 'DejaVu Sans Mono', Menlo, Consolas, "
@@ -59,7 +129,14 @@ _LOCK = threading.Lock()
 
 
 def colour(callsign: str) -> str:
-    return CARRIERS.get((callsign or "")[:3].upper(), OTHER)
+    c = (callsign or "")[:3].upper()
+    if c in CARRIERS:
+        return CARRIERS[c]
+    if c in REGIONAL:
+        return CARRIERS.get(REGIONAL[c], OTHER)
+    if c in PRIVATE:
+        return PRIVATE_COLOUR
+    return OTHER
 
 
 def carrier(callsign: str) -> str:
@@ -69,13 +146,13 @@ def carrier(callsign: str) -> str:
 
 # ----------------------------------------------------------- aircraft
 
-@lru_cache(maxsize=16)
-def plane_icon(hex_colour: str) -> dict:
+@lru_cache(maxsize=64)
+def plane_icon(hex_colour: str, glyph: str = "narrow") -> dict:
     """IconLayer icon for the silhouette in one colour. Cached per
-    colour: there are seven, not one per aircraft."""
+    colour and glyph."""
     from PIL import Image
 
-    base = Image.open(_PLANE).convert("RGBA")
+    base = Image.open(_GLYPHS.get(glyph, _PLANE)).convert("RGBA")
     r, g, b = (int(hex_colour.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
     tinted = Image.new("RGBA", base.size, (r, g, b, 255))
     tinted.putalpha(base.getchannel("A"))

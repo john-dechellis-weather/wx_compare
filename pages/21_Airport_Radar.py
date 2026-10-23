@@ -140,7 +140,12 @@ def _scope():
             rtxt = f"TDWR {tdwr[2:]} · {len(frames)} frames" if frames else f"TDWR {tdwr[2:]}: no frames yet"
     else:
         man = AR.manifest(STATIC, l2_site)
-        if man.get("frames") and man.get("bounds"):
+        # frames older than 90 min are history, not a loop (the warmer
+        # may have been down); leave them out
+        _fresh = [f for f in man.get("frames", [])
+                  if (now - datetime.strptime(f["stamp"], "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)).total_seconds() < 5400]
+        if _fresh and man.get("bounds"):
+            man = dict(man, frames=_fresh)
             frames = [{"url": f"{base}/app/static/{f['name']}", "bounds": man["bounds"], "label": f["valid"]}
                       for f in man["frames"]]
             rtxt = f"{l2_site} Level II 0.5° · {len(frames)} frames · latest {man['frames'][-1]['valid']}"

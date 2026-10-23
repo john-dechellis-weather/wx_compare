@@ -127,6 +127,7 @@ def build_rows(raw: list, lat: float, lon: float) -> list:
             alt = None
         ground = (gs < AS.GROUND_KT) if gs is not None else (alt is None or alt < 1500)
         col = C.colour(cs)
+        glyph = C.kind(cs, a.get("type", ""))
         r = {}
         if F is not None:
             try:
@@ -141,7 +142,7 @@ def build_rows(raw: list, lat: float, lon: float) -> list:
                      "origin": r.get("o") or "", "dest": r.get("d") or "",
                      "origin_name": r.get("on") or "", "dest_name": r.get("dn") or "",
                      "oll": r.get("oll"), "dll": r.get("dll"),
-                     "colour": col, "rgb": AS._rgb(col),
+                     "colour": col, "rgb": AS._rgb(col), "glyph": glyph, "ikey": f"{glyph}:{col}",
                      "trail": [] if ground else AS.trail(cs, TRAIL_S)})
     if F is not None:
         try:
@@ -161,9 +162,9 @@ def write(outdir, icao: str, rows: list, host: str = "") -> None:
     except Exception:
         pass
     # one icon per colour, not per aircraft (the data URL is ~2 KB)
-    icons = {c: C.plane_icon(c) for c in {r["colour"] for r in rows}}
+    icons = {k: C.plane_icon(k.split(":")[1], k.split(":")[0]) for k in {r["ikey"] for r in rows}}
     doc = {"icao": icao, "t": time.time(), "host": host, "ac": rows, "hold": hold,
-           "icons": icons, "tag_fs": C.TAG_FS, "font": C.FONT}
+           "icons": icons, "icon_px": C.ICON_PX, "tag_fs": C.TAG_FS, "font": C.FONT}
     p = path(outdir, icao)
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(doc))

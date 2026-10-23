@@ -103,6 +103,7 @@ def scope_html(deck_json: dict, frames: list, style_url: str, icao: str,
   <input id="sl" type="range" min="0" max="{max(len(frames) - 1, 0)}" value="{max(len(frames) - 1, 0)}">
   <span id="t"></span><span id="n"></span>
   <button id="sp" title="loop speed">{loop_ms} ms</button>
+  <span id="opl" title="radar opacity" style="color:#B8B8B8">radar</span><input id="op" type="range" min="10" max="100" value="85" style="flex:0 0 90px" title="radar opacity">
   <button id="rv" title="back to the opening view">Reset view</button>
 </div>
 <script>
@@ -117,6 +118,9 @@ const DECLUTTER = {json.dumps(bool(declutter))};
 const KEY = 'bm_scope_view_' + {json.dumps(icao)};
 const SPEEDS = [250, 500, 900];
 let ms = {loop_ms}, i = FRAMES.length - 1, playing = FRAMES.length > 1, tick = null;
+// radar opacity (23 Oct): slider in the bar, remembered per browser
+let radarOp = 0.85;
+try {{ const v = localStorage.getItem('bm_radar_op'); if (v) radarOp = Math.max(0.1, Math.min(1, +v)); }} catch (e) {{}}
 const $ = id => document.getElementById(id);
 
 // pydeck's JSON -> deck.gl layers, exactly as the Streamlit component does it
@@ -130,7 +134,7 @@ function radarLayers() {{
   // before the loop reaches it.
   return FRAMES.map((f, k) => f.tiles
     ? new deck.TileLayer({{id: 'sat_' + k, data: f.tiles, minZoom: 0, maxZoom: f.maxZoom || 7,
-        tileSize: 256, opacity: k === i ? (f.opacity != null ? f.opacity : 1) : 0, visible: true,
+        tileSize: 256, opacity: k === i ? (f.opacity != null ? f.opacity : 1) * radarOp : 0, visible: true,
         maxRequests: 12, refinementStrategy: 'no-overlap',
         renderSubLayers: props => {{
           const {{west, south, east, north}} = props.tile.bbox;
@@ -138,7 +142,7 @@ function radarLayers() {{
             bounds: [west, south, east, north], parameters: {{depthTest: false}}}});
         }}}})
     : new deck.BitmapLayer({{id: 'l3_' + k, image: f.url, bounds: f.bounds,
-        opacity: k === i ? 1 : 0, visible: true, parameters: {{depthTest: false}}}}));
+        opacity: k === i ? radarOp : 0, visible: true, parameters: {{depthTest: false}}}}));
 }}
 // ---- selected aircraft: panel + dotted track (3 Oct) ----
 let sel = null;
@@ -256,10 +260,13 @@ function liveLayers() {{
       getColor: d => d.rgb.concat([235]), getSize: live.tag_fs || 7, sizeUnits: 'pixels', getPixelOffset: [7, 8],
       getTextAnchor: 'start', getAlignmentBaseline: 'top', fontFamily: live.font || 'monospace', fontWeight: 700,
       pickable: false, parameters: P}}),
-    new deck.IconLayer({{id: 'live_planes', data: rows, getPosition: d => d.position, getIcon: d => (live.icons || {{}})[d.colour],
-      getAngle: d => d.angle, getSize: 5000, sizeMinPixels: 22, sizeMaxPixels: 22, pickable: true,
-      autoHighlight: false, parameters: P}})
-  ];
+  ].concat(['bizjet', 'regional', 'narrow', 'wide'].map(g => {{
+    const px = (live.icon_px || {{}})[g] || 22;
+    return new deck.IconLayer({{id: 'live_planes_' + g, data: rows.filter(d => (d.glyph || 'narrow') === g),
+      getPosition: d => d.position, getIcon: d => (live.icons || {{}})[d.ikey || d.colour],
+      getAngle: d => d.angle, getSize: 5000, sizeMinPixels: px, sizeMaxPixels: px, pickable: true,
+      autoHighlight: false, parameters: P}});
+  }}));
 }}
 // DECLUTTER (20 Oct): ground aircraft come as two sets of layers -
 // ac_gnd_agg* (one glyph + count per airport) for the wide view and
@@ -352,6 +359,8 @@ $('pv').onclick = () => {{ play(false); show(i - 1); }};
 $('nx').onclick = () => {{ play(false); show(i + 1); }};
 $('sl').oninput = e => {{ play(false); show(+e.target.value); }};
 $('sp').onclick = () => {{ ms = SPEEDS[(SPEEDS.indexOf(ms) + 1) % SPEEDS.length]; $('sp').textContent = ms + ' ms'; if (playing) play(true); }};
+$('op').value = Math.round(radarOp * 100);
+$('op').oninput = e => {{ radarOp = +e.target.value / 100; try {{ localStorage.setItem('bm_radar_op', radarOp); }} catch (e2) {{}} dk.setProps({{layers: allLayers()}}); }};
 $('rv').onclick = () => {{ try {{ sessionStorage.removeItem(KEY); }} catch (e) {{}} dk.setProps({{initialViewState: Object.assign({{}}, vs0, {{transitionDuration: 300}})}}); }};
 document.addEventListener('keydown', e => {{ if (e.key === 'ArrowLeft') $('pv').onclick(); if (e.key === 'ArrowRight') $('nx').onclick(); if (e.key === ' ') {{ e.preventDefault(); play(!playing); }} }});
 // Preload every frame so the first loop is already smooth.
