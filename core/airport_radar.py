@@ -42,9 +42,14 @@ PX = int(os.environ.get("ARADAR_PX", "1200"))
 KEEP = int(os.environ.get("ARADAR_KEEP", "12"))
 DEMAND_S = int(os.environ.get("ARADAR_DEMAND_S", "900"))     # keep warming 15 min after the last view
 PERIOD_S = int(os.environ.get("ARADAR_PERIOD_S", "45"))
+# RAW (23 Oct): every gate of the 0.5 deg sweep is drawn, nearest gate
+# per pixel, hard AWIPS 5 dBZ steps, no smoothing, no speckle filter,
+# no correlation-coefficient filter. The one cut is the dBZ floor:
+# gates of DBZ_MIN and below are left out. ARADAR_CC_MIN=0.9 and
+# ARADAR_SPECKLE_MIN=5 switch the old filters back on.
 DBZ_MIN = float(os.environ.get("ARADAR_DBZ_MIN", "10"))
-CC_MIN = float(os.environ.get("ARADAR_CC_MIN", "0.92"))
-SPECKLE_MIN = int(os.environ.get("ARADAR_SPECKLE_MIN", "6"))
+CC_MIN = float(os.environ.get("ARADAR_CC_MIN", "0"))          # 0 = off
+SPECKLE_MIN = int(os.environ.get("ARADAR_SPECKLE_MIN", "0"))  # 0 = off
 STATUS: dict = {"started": False, "busy": "", "err": None, "last": None}
 _lock = threading.Lock()
 _started = False
@@ -144,9 +149,10 @@ def polar_sweep(f) -> dict:
     ref[~np.isfinite(ref)] = np.nan
     # Clutter / non-met: the L3 rule - drop gates with correlation
     # coefficient under CC_MIN unless the echo is strong (>= 40 dBZ)
-    rho_known = np.isfinite(rho)
-    clutter = rho_known & (rho < CC_MIN) & (ref < 40.0)
-    ref[clutter] = np.nan
+    if CC_MIN > 0:
+        rho_known = np.isfinite(rho)
+        clutter = rho_known & (rho < CC_MIN) & (ref < 40.0)
+        ref[clutter] = np.nan
     order = np.argsort(az)
     az, ref = az[order], ref[order]
     # A live volume arrives in chunks; sweep 0 is only usable once it
@@ -157,18 +163,19 @@ def polar_sweep(f) -> dict:
     gaps = np.diff(np.concatenate([az, [az[0] + 360.0]]))
     if len(az) < 300 or gaps.max() > 4.0:
         raise IncompleteSweep(f"{len(az)} rays, largest gap {gaps.max():.1f} deg")
-    ref[ref < DBZ_MIN] = np.nan
+    ref[ref <= DBZ_MIN] = np.nan
     # speckle in GATE space (23 Oct; was per pixel, which let single
     # gates through on the fine inner tile): drop gates with fewer
     # than SPECKLE_MIN valid neighbours in the 3x3 az/range window,
     # wrapping in azimuth
-    try:
-        from scipy import ndimage as _ndi
-        valid = np.isfinite(ref).astype("uint8")
-        nb = _ndi.convolve(valid, np.ones((3, 3), dtype="uint8"), mode="wrap") - valid
-        ref[(valid == 1) & (nb < SPECKLE_MIN)] = np.nan
-    except Exception:
-        pass
+    if SPECKLE_MIN > 0:
+        try:
+            from scipy import ndimage as _ndi
+            valid = np.isfinite(ref).astype("uint8")
+            nb = _ndi.convolve(valid, np.ones((3, 3), dtype="uint8"), mode="wrap") - valid
+            ref[(valid == 1) & (nb < SPECKLE_MIN)] = np.nan
+        except Exception:
+            pass
     return {"az": az, "ref": ref, "gate_first": gate_first, "gate_w": gate_w, "ngates": ngates}
 
 
@@ -205,26 +212,25 @@ def grid(polar: dict, rlat: float, rlon: float, bounds: list, px: int):
 
 
 def _png(comp, dest: Path) -> None:
-    """AWIPS ramp via core.radar_l2.render_png (matplotlib imshow);
-    falls back to a plain palette if that module cannot import."""
-    try:
-        from core import radar_l2 as L2
-        L2.render_png(comp, str(dest))
-        return
-    except Exception:
-        pass
+    """Raw write: the AWIPS 5 dBZ steps (core.radar_l2 table), one
+    colour per gate, nothing smoothed. Row 0 = south, so the array is
+    flipped for the image (top row = north)."""
     import numpy as np
     from PIL import Image
-    levels = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75]
-    cols = [(4, 233, 231), (1, 159, 244), (3, 0, 244), (2, 253, 2), (1, 197, 1), (0, 142, 0),
-            (253, 248, 2), (229, 188, 0), (253, 149, 0), (253, 0, 0), (212, 0, 0), (188, 0, 0),
-            (248, 0, 253), (152, 84, 198), (255, 255, 255)]
+    try:
+        from core import radar_l2 as L2
+        levels, hexes = list(L2.AWIPS_LEVELS), list(L2.AWIPS_COLORS)
+    except Exception:
+        levels = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75]
+        hexes = ["#04E9E7", "#019FF4", "#0300F4", "#02FD02", "#01C501", "#008E00", "#FDF802",
+                 "#E5BC00", "#FD9500", "#FD0000", "#D40000", "#BC0000", "#F800FD", "#9854C6", "#FDFDFD"]
+    cols = [tuple(int(h.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)) for h in hexes]
     rgba = np.zeros(comp.shape + (4,), dtype="uint8")
     for lo, c in zip(levels, cols):
         m = comp >= lo
         rgba[m, :3] = c
         rgba[m, 3] = 255
-    Image.fromarray(rgba, "RGBA").save(dest, optimize=True)
+    Image.fromarray(rgba[::-1], "RGBA").save(dest, optimize=True)
 
 
 def _man_path(outdir, site):

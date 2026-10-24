@@ -113,6 +113,9 @@ const LABELS = {json.dumps(labels)};
 const STYLE = {json.dumps(style_url)};
 const TIP = {json.dumps(tip)};
 const RADAR_AT = {radar_index};
+// raw radar tiles (23 Oct): sample the texture nearest-neighbour so a
+// gate stays a crisp block when magnified instead of a blurred blob
+const RAWTEX = {{10240: 9728, 10241: 9728, 10242: 33071, 10243: 33071}};  // MAG/MIN_FILTER NEAREST, CLAMP_TO_EDGE
 const LIVE = {json.dumps(live_url)};
 const DECLUTTER = {json.dumps(bool(declutter))};
 const KEY = 'bm_scope_view_' + {json.dumps(icao)};
@@ -135,7 +138,8 @@ function radarLayers() {{
   // ({{inner_url, inner_bounds}}, 23 Oct) drawn over the wide one.
   const inner = FRAMES.map((f, k) => f.inner_url
     ? new deck.BitmapLayer({{id: 'l3i_' + k, image: f.inner_url, bounds: f.inner_bounds,
-        opacity: k === i ? radarOp : 0, visible: true, parameters: {{depthTest: false}}}}) : null).filter(Boolean);
+        opacity: k === i ? radarOp : 0, visible: true, parameters: {{depthTest: false}},
+        textureParameters: RAWTEX}}) : null).filter(Boolean);
   return FRAMES.map((f, k) => f.tiles
     ? new deck.TileLayer({{id: 'sat_' + k, data: f.tiles, minZoom: 0, maxZoom: f.maxZoom || 7,
         tileSize: 256, opacity: k === i ? (f.opacity != null ? f.opacity : 1) * radarOp : 0, visible: true,
@@ -146,7 +150,8 @@ function radarLayers() {{
             bounds: [west, south, east, north], parameters: {{depthTest: false}}}});
         }}}})
     : new deck.BitmapLayer({{id: 'l3_' + k, image: f.url, bounds: f.bounds,
-        opacity: k === i ? radarOp : 0, visible: true, parameters: {{depthTest: false}}}})).concat(inner);
+        opacity: k === i ? radarOp : 0, visible: true, parameters: {{depthTest: false}},
+        textureParameters: f.raw ? RAWTEX : undefined}})).concat(inner);
 }}
 // ---- selected aircraft: panel + dotted track (3 Oct) ----
 let sel = null;

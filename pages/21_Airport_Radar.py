@@ -146,7 +146,7 @@ def _scope():
                   if (now - datetime.strptime(f["stamp"], "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)).total_seconds() < 5400]
         if _fresh and man.get("bounds"):
             man = dict(man, frames=_fresh)
-            frames = [{"url": f"{base}/app/static/{f['name']}", "bounds": man["bounds"], "label": f["valid"],
+            frames = [{"url": f"{base}/app/static/{f['name']}", "bounds": man["bounds"], "label": f["valid"], "raw": True,
                        **({"inner_url": f"{base}/app/static/{f['inner'][icao]['name']}",
                            "inner_bounds": f["inner"][icao]["bounds"]}
                           if (f.get("inner") or {}).get(icao) else {})}
