@@ -113,7 +113,7 @@ def _peaks(vals, lats, lons) -> list:
     m = blk.max(axis=(1, 3))             # max-pool to 0.05 deg
     # where in each block the max sits, for a tag on the cell itself
     arg = blk.reshape(nj2, POOL, ni2, POOL).transpose(0, 2, 1, 3).reshape(nj2, ni2, -1).argmax(-1)
-    thresh = MIN_FL * KM_PER_FL
+    thresh = (MIN_FL - (30 if BLEND else 0)) * KM_PER_FL   # candidates a bit lower; the blend decides
     # local maximum: >= all 8 neighbours
     pad = np.pad(m, 1, mode="constant", constant_values=-1)
     is_max = np.ones_like(m, dtype=bool)
@@ -173,6 +173,103 @@ def _separate(cands: list) -> list:
 
 # -------------------------------------------------------------- pass
 
+# BLEND WITH THE RADAR'S OWN ECHO TOPS (24 Oct). MRMS EchoTop_18 samples
+# height in 1 km steps above 9 km and reports the highest cell, so its
+# peaks read 2-5 kft above what CoSPA and the 88D Enhanced Echo Tops
+# (EET, product 135, 1 km) show for the same storm. Each tag is now the
+# mean of the MRMS peak and the nearest radar's EET at that point,
+# floored to 10 FL; with no EET in reach the MRMS value is taken half
+# a vertical level down. ETOP_TAGS_BLEND=off restores MRMS alone.
+BLEND = os.environ.get("ETOP_TAGS_BLEND", "on").lower() != "off"
+EET_URL = ("https://tgftp.nws.noaa.gov/SL.us008001/DF.of/DC.radar/"
+           "DS.135et/SI.{site}/sn.last")
+EET_MAX_KM = 230.0           # EET reaches 346 km, but it thins out past this
+_eet_cache: dict = {}        # site -> (fetched_at, Level3File or None)
+
+
+def _eet_file(site: str):
+    """Level3File of the site's latest EET, cached for one pass."""
+    import io
+    import requests
+    from metpy.io import Level3File
+    now = time.time()
+    hit = _eet_cache.get(site)
+    if hit and now - hit[0] < 120:
+        return hit[1]
+    f = None
+    try:
+        r = requests.get(EET_URL.format(site=site.lower()), timeout=20,
+                         headers={"User-Agent": "bluemet.org ops"})
+        if r.status_code == 200 and len(r.content) > 200:
+            f = Level3File(io.BytesIO(r.content))
+    except Exception:
+        f = None
+    _eet_cache[site] = (now, f)
+    return f
+
+
+def _eet_kft(lat: float, lon: float):
+    """Nearest 88D's EET (kft MSL) within ~3 km of a point, or None."""
+    import numpy as np
+    try:
+        from core import nexrad_sites as NS
+        site, km = NS.nearest_site(lat, lon)
+    except Exception:
+        return None
+    if not site or km > EET_MAX_KM:
+        return None
+    f = _eet_file(site)
+    if f is None:
+        return None
+    try:
+        blk = f.sym_block[0][0]
+        data = np.asarray(blk["data"])
+        vals = np.asarray(f.map_data(data))
+        if vals.ndim == 3:                 # MetPy's EET mapper: (tops kft, topped flag)
+            vals = vals[0]
+        vals = np.where(np.isnan(vals), 0.0, vals)
+        rlat, rlon = f.prod_desc.lat / 1000.0, f.prod_desc.lon / 1000.0
+        k = 111.32
+        dx = (lon - rlon) * k * math.cos(math.radians(rlat))
+        dy = (lat - rlat) * k
+        rng_km = math.hypot(dx, dy)
+        brg = (math.degrees(math.atan2(dx, dy)) + 360.0) % 360.0
+        gate_km = 1.0                      # product 135: 1 km x 1 deg radials, 346 gates
+        gi = int(round(rng_km / gate_km))
+        if gi >= vals.shape[1] - 2:
+            return None
+        start = np.asarray(blk["start_az"]) % 360.0
+        ai = int(np.argmin(np.abs((start - brg + 180.0) % 360.0 - 180.0)))
+        rows = [(ai + d) % vals.shape[0] for d in (-2, -1, 0, 1, 2)]
+        g0, g1 = max(0, gi - 3), min(vals.shape[1], gi + 4)
+        v = float(np.max(vals[rows][:, g0:g1]))
+        return v if v > 0 else None
+    except Exception:
+        return None
+
+
+def _blend_fl(km: float, lat: float, lon: float) -> tuple:
+    """(fl, mrms_fl, eet_fl|None) for one peak."""
+    mrms_fl = km / KM_PER_FL
+    if not BLEND:
+        return int(round(mrms_fl / 10.0)) * 10, int(round(mrms_fl)), None
+    eet = _eet_kft(lat, lon)
+    if eet is not None:
+        # mean of the two, but never more than 5,000 ft above what the
+        # radar itself reports (an MRMS peak far above EET is a mosaic
+        # artefact - seen 24 Oct as 17 km "tops" over New Mexico
+        # against a 28 kft EET)
+        # Measured 24 Oct across 20 tags: MRMS ran 6-10 kft above EET
+        # everywhere, and EET matched CoSPA. So two-thirds EET, one-
+        # third MRMS, and never more than 3,000 ft above the radar.
+        fl = min((2.0 * eet * 10.0 + mrms_fl) / 3.0, eet * 10.0 + 30.0)
+    else:
+        # beyond EET reach (far range, Bahamas/Caribbean) the lowest beam
+        # is already high and MRMS inflates most: take 1.5 km off
+        fl = (km - (1.5 if km >= 9.0 else 0.5)) / KM_PER_FL
+    return int(math.floor(fl / 10.0)) * 10, int(round(mrms_fl)), (int(round(eet * 10)) if eet is not None else None)
+
+
 def run_once(static_dir) -> dict:
     import requests
     r = requests.get(URL, timeout=30,
@@ -190,16 +287,25 @@ def run_once(static_dir) -> dict:
     vals, lats, lons, how = _decode(raw)
     cands = _peaks(vals, lats, lons)
     tags = _separate(cands)
-    out = {"stamp": stamp, "n": len(tags), "min_fl": MIN_FL,
+    rows = []
+    n_eet = 0
+    for km, la, lo in tags:
+        fl, mfl, efl = _blend_fl(km, la, lo)
+        if fl < MIN_FL:
+            continue
+        if efl is not None:
+            n_eet += 1
+        rows.append({"lat": round(la, 3), "lon": round(lo, 3), "fl": fl,
+                     "km": round(km, 1), "mrms_fl": mfl, "eet_fl": efl})
+    out = {"stamp": stamp, "n": len(rows), "min_fl": MIN_FL,
            "sep_nm": MIN_SEP_NM, "decoder": how,
-           "tags": [{"lat": round(la, 3), "lon": round(lo, 3),
-                     "fl": int(round(km / KM_PER_FL / 10.0)) * 10,
-                     "km": round(km, 1)} for km, la, lo in tags]}
+           "blend": BLEND, "eet_used": n_eet, "tags": rows}
     p = Path(static_dir) / "etop_tags.json"
     tmp = p.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(out, separators=(",", ":")))
     tmp.replace(p)
-    _log(f"{len(cands)} peaks >= FL{MIN_FL}, {len(tags)} tagged ({how})")
+    _log(f"{len(cands)} peaks, {len(rows)} tagged >= FL{MIN_FL} "
+         f"({n_eet} blended with 88D EET, {how})")
     return out
 
 
