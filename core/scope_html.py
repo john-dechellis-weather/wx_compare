@@ -130,7 +130,8 @@ const RAWTEX = {{10240: 9728, 10241: 9728, 10242: 33071, 10243: 33071}};  // MAG
 // ({{bin_url, g0, gw, radar}}) instead of an image. Each gate is drawn
 // as the range/azimuth rectangle it is, so nothing is resampled or
 // blended; the legend's floor filters on the GPU.
-const AWIPS = [[5,'#04E9E7'],[10,'#019FF4'],[15,'#0300F4'],[20,'#02FD02'],[25,'#01C501'],[30,'#008E00'],[35,'#FDF802'],[40,'#E5BC00'],[45,'#FD9500'],[50,'#FD0000'],[55,'#D40000'],[60,'#BC0000'],[65,'#F800FD'],[70,'#9854C6'],[75,'#FDFDFD']];
+// greens 20-30 dBZ at 75 % lightness (24 Oct, user pick): #01BD01 #009300 #006A00
+const AWIPS = [[5,'#04E9E7'],[10,'#019FF4'],[15,'#0300F4'],[20,'#01BD01'],[25,'#009300'],[30,'#006A00'],[35,'#FDF802'],[40,'#E5BC00'],[45,'#FD9500'],[50,'#FD0000'],[55,'#D40000'],[60,'#BC0000'],[65,'#F800FD'],[70,'#9854C6'],[75,'#FDFDFD']];
 const AWRGB = AWIPS.map(([v, h]) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]);
 function awips(dbz) {{ let k = 0; for (let j = 0; j < AWIPS.length; j++) if (dbz >= AWIPS[j][0]) k = j; return AWRGB[k]; }}
 let floorDbz = {json.dumps(float(__import__('os').environ.get('ARADAR_DBZ_MIN', '10')))};
