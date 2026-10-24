@@ -208,6 +208,17 @@ try:
 except Exception as _exc:
     _warm_notes.append(f"NBM point warmer FAILED: {type(_exc).__name__}: {_exc}")
 
+# GLM lightning (24 Oct, core/glm.py): GOES-East/West flashes, last 15
+# min, for the Airport Radar scope. GLM_WARMER=off stops it.
+try:
+    import os as _os
+    if _os.environ.get("GLM_WARMER", "on").lower() != "off":
+        from core.glm import ensure_glm
+        if ensure_glm(_static_mrms):
+            _warm_notes.append("GLM lightning poller started")
+except Exception as _exc:
+    _warm_notes.append(f"GLM poller FAILED: {type(_exc).__name__}: {_exc}")
+
 # NOAA model layers for the Weather Mapping page (core/model_tiles.py):
 # REFS first, then RRFS / HRRR as MDL_MODELS enables them. Demand-
 # driven like the tomorrow.io layers; GRIB fetch + render per frame.

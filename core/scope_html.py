@@ -53,7 +53,7 @@ def scope_html(deck_json: dict, frames: list, style_url: str, icao: str,
                height: int = 560, tooltip: dict | None = None,
                radar_index: int | None = None, loop_ms: int = 500,
                live_url: str | None = None, declutter: bool = False,
-               autoplay: bool = True) -> str:
+               autoplay: bool = True, lightning_url: str | None = None) -> str:
     from core.airport_scope import AIRPORT_ZOOM as _AZ
     airport_zoom = _AZ
     """deck_json: json.loads(pdk.Deck(...).to_json()) WITHOUT the radar
@@ -107,7 +107,9 @@ def scope_html(deck_json: dict, frames: list, style_url: str, icao: str,
 <div id="m"></div><div class="tip" id="tip"></div>
 <div id="lg"><div>REFLECTIVITY dBZ</div><div class="sw" id="sw"></div>
   <div class="row"><span>show &ge;</span><input id="fl" type="range" min="5" max="40" step="1"><span><b id="flv"></b> dBZ</span></div>
-  <div class="row" style="margin-top:6px"><label style="cursor:pointer"><input id="cf" type="checkbox" style="accent-color:#00E5FF;vertical-align:-2px"> clutter filter <span style="color:#6E6E6E;font-weight:400">(RHO + texture)</span></label></div></div>
+  <div class="row" style="margin-top:6px"><label style="cursor:pointer"><input id="cf" type="checkbox" style="accent-color:#00E5FF;vertical-align:-2px"> clutter filter <span style="color:#6E6E6E;font-weight:400">(RHO + texture)</span></label></div>
+  <div class="row" id="ltgrow" style="margin-top:6px;display:none"><label style="cursor:pointer"><input id="lt" type="checkbox" style="accent-color:#FFD400;vertical-align:-2px"> lightning <span style="color:#6E6E6E;font-weight:400">GLM flashes, last 15 min</span></label>
+    <span style="margin-left:6px"><i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#FFFFA0"></i> 0-5 <i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#FFAA00;margin-left:6px"></i> 5-10 <i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#B45A00;margin-left:6px"></i> 10-15 min</span></div></div>
 <div id="ac"></div>
 <div class="bar">
   <button id="pp">Pause</button><button id="pv">&#9664;</button><button id="nx">&#9654;</button>
@@ -216,6 +218,7 @@ function legend() {{
 
 const LIVE = {json.dumps(live_url)};
 const DECLUTTER = {json.dumps(bool(declutter))};
+const LTG = {json.dumps(lightning_url)};
 const KEY = 'bm_scope_view_' + {json.dumps(icao)};
 const SPEEDS = [250, 500, 900];
 let ms = {loop_ms}, i = FRAMES.length - 1, playing = FRAMES.length > 1 && {json.dumps(bool(autoplay))}, tick = null;
@@ -375,6 +378,27 @@ function liveLayers() {{
       autoHighlight: false, parameters: P}});
   }}));
 }}
+// ---- LIGHTNING (24 Oct): GLM flashes from glm_flashes.json, polled
+// every 30 s, drawn as dots that fade with age (0-5 / 5-10 / 10-15 min)
+let ltg = null, ltgOn = true;
+try {{ const v = localStorage.getItem('bm_ltg'); if (v != null) ltgOn = v === '1'; }} catch (e) {{}}
+async function pollLtg() {{
+  if (!LTG) return;
+  try {{
+    const r = await fetch(LTG + (LTG.includes('?') ? '&' : '?') + 't=' + Date.now(), {{cache: 'no-store'}});
+    if (r.ok) {{ ltg = await r.json(); dk.setProps({{layers: allLayers()}}); }}
+  }} catch (e) {{}}
+}}
+function ltgLayers() {{
+  if (!LTG || !ltg || !ltgOn) return [];
+  const now = Date.now() / 1000;
+  const rows = (ltg.flashes || []).map(f => ({{position: [f[0], f[1]], age: (now - f[2]) / 60}})).filter(d => d.age <= 15);
+  const col = d => d.age < 5 ? [255, 255, 160, 235] : d.age < 10 ? [255, 170, 0, 210] : [180, 90, 0, 170];
+  return [new deck.ScatterplotLayer({{id: 'ltg', data: rows, getPosition: d => d.position, getFillColor: col,
+    getLineColor: [0, 0, 0, 160], stroked: true, lineWidthMinPixels: 1, getRadius: 1500,
+    radiusMinPixels: 3, radiusMaxPixels: 7, pickable: false, parameters: {{depthTest: false}},
+    updateTriggers: {{getFillColor: Math.floor(now / 30)}}}})];
+}}
 // DECLUTTER (20 Oct): ground aircraft come as two sets of layers -
 // ac_gnd_agg* (one glyph + count per airport) for the wide view and
 // ac_gnd_* (every aircraft) for the airport-scale view. Zoom decides.
@@ -390,7 +414,7 @@ function allLayers() {{
     if (id.startsWith('ac_gnd_')) return l.clone({{visible: close}});
     return l;
   }});
-  return b.slice(0, RADAR_AT).concat(radarLayers(), routeLayers(), b.slice(RADAR_AT), liveLayers());
+  return b.slice(0, RADAR_AT).concat(radarLayers(), ltgLayers(), routeLayers(), b.slice(RADAR_AT), liveLayers());
 }}
 let saved = null;
 try {{ saved = JSON.parse(sessionStorage.getItem(KEY) || 'null'); }} catch (e) {{}}
@@ -488,6 +512,8 @@ FRAMES.forEach((f, k) => {{ if (f.url) {{ const im = new Image(); im.src = f.url
 loadGates(i);
 legend();
 $('fl').oninput = e => {{ floorDbz = +e.target.value; try {{ localStorage.setItem('bm_radar_floor', floorDbz); }} catch (e2) {{}} legend(); dk.setProps({{layers: allLayers()}}); }};
+if (LTG) {{ $('ltgrow').style.display = 'flex'; $('lg').style.display = 'block'; $('lt').checked = ltgOn; pollLtg(); setInterval(pollLtg, 30000); }}
+$('lt').onchange = e => {{ ltgOn = e.target.checked; try {{ localStorage.setItem('bm_ltg', ltgOn ? '1' : '0'); }} catch (e2) {{}} dk.setProps({{layers: allLayers()}}); }};
 $('cf').onchange = e => {{ clutterOff = e.target.checked; try {{ localStorage.setItem('bm_radar_clutter', clutterOff ? '1' : '0'); }} catch (e2) {{}} dk.setProps({{layers: allLayers()}}); }};
 show(i); play(playing);
 if (LIVE) {{

@@ -32,12 +32,14 @@ check_password()
 from core import airport_radar as AR
 from core import airport_scope as AS
 from core import live_traffic as LT
+from core import glm as GLM
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
 _persistent = Path("/opt/render/project/src/cache")
 CACHE_ROOT = _persistent if _persistent.exists() else Path("/tmp/wx_compare_cache")
 CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 SCOPE_H = int(os.environ.get("BLUEMET_ARADAR_H", "1050"))
+GLM.ensure_glm(STATIC)
 NAV_NM = float(os.environ.get("BLUEMET_ARADAR_NAV_NM", "80"))     # VOR-class navaids drawn
 HOLD_NM = float(os.environ.get("BLUEMET_ARADAR_HOLD_NM", "30"))   # published holding fixes drawn
 _FONT = "'Roboto Mono', 'DejaVu Sans Mono', Menlo, Consolas, monospace"
@@ -266,7 +268,7 @@ def _scope():
                     map_style=None, map_provider=None, parameters={"clearColor": [0, 0, 0, 1]})
     html = scope_html(json.loads(deck.to_json()), frames, style, icao, height=SCOPE_H, tooltip=_tip,
                       live_url=f"{base}/app/static/{LT.path(STATIC, icao).name}", declutter=True,
-                      autoplay=False)
+                      autoplay=False, lightning_url=f"{base}/app/static/{GLM.path(STATIC).name}")
     name = f"aradar_scope_{icao}_{'tdwr' if use_tdwr else 'l2'}.html"
     v = hashlib.md5(html.encode()).hexdigest()[:10]
     p = STATIC / name
@@ -278,7 +280,14 @@ def _scope():
     _n_ac = _lst.get("n", len(ac)) if live_ok else len(ac)
     _src = (f"live {_lst.get('host', '')} every {LT.LIVE_S:.0f} s" if live_ok
             else ("live feed starting" if not _lst.get("err") else f"live feed: {_lst['err']}"))
-    st.caption(f"{rtxt} · {_n_ac} aircraft ({_src}) · {len(tags)} echo-top tags · "
+    try:
+        _ltg30 = GLM.near(STATIC, coords[0], coords[1], 30, 15)
+        _ltg_txt = (f"⚡ {_ltg30} flashes within 30 nm / 15 min" if _ltg30 else "no lightning within 30 nm")
+        if GLM.STATUS.get("lag_s") is not None:
+            _ltg_txt += f" (GLM {GLM.STATUS['lag_s']} s behind)"
+    except Exception:
+        _ltg_txt = "lightning: starting"
+    st.caption(f"{rtxt} · {_n_ac} aircraft ({_src}) · {len(tags)} echo-top tags · {_ltg_txt} · "
                f"{len(_navs)} navaids · {len(_holds)} holding fixes · "
                f"ATIS {cfg.get('code', '') or '-'} · {now:%H:%MZ}")
     components.iframe(f"{base}/app/static/{name}?v={v}", height=SCOPE_H + 44)
