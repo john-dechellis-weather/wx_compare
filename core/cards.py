@@ -70,6 +70,24 @@ REGIONAL = {
 PRIVATE = {"EJA", "XOJ", "LXJ", "FLX", "JTL", "VTE", "WUP", "EDG", "DCM",
            "GAJ", "TWY", "JAS", "PJS", "NJE", "FJO"}
 PRIVATE_COLOUR = "#9AA0A6"
+# International majors (24 Oct): one colour for all of them - lime,
+# the one hue nothing domestic uses - so "foreign carrier" reads at a
+# glance. By ICAO operator code; extend freely.
+INTERNATIONAL = {
+    # Europe / Middle East
+    "BAW", "VIR", "AFR", "DLH", "KLM", "IBE", "EIN", "SAS", "SWR", "AUA", "TAP", "ITY",
+    "FIN", "ICE", "LOT", "NAX", "NOZ", "EZY", "RYR", "BEL", "CFG", "EDW", "VLG", "AZA",
+    "UAE", "QTR", "ETD", "THY", "ELY", "SVA", "RJA", "MSR", "KAC",
+    # Canada
+    "ACA", "ROU", "WJA", "JZA", "TSC", "POE", "SWG",
+    # Latin America / Caribbean
+    "AMX", "SLI", "CMP", "AVA", "LAN", "LPE", "TAM", "AZU", "GLO", "ARG", "BWA", "CAY",
+    "BHS", "VOI", "VIV", "SLM", "IWD", "ICL",
+    # Asia-Pacific
+    "JAL", "ANA", "KAL", "AAR", "CPA", "CES", "CSN", "CCA", "EVA", "CAL", "SIA", "QFA",
+    "ANZ", "PAL", "HVN", "THA", "MAS", "GIA", "AIC", "VTI",
+}
+INTERNATIONAL_COLOUR = "#C8F03C"
 OTHER = "#6E7681"
 
 # ---------------------------------------------------- glyph by aircraft
@@ -136,6 +154,8 @@ def colour(callsign: str) -> str:
         return CARRIERS.get(REGIONAL[c], OTHER)
     if c in PRIVATE:
         return PRIVATE_COLOUR
+    if c in INTERNATIONAL:
+        return INTERNATIONAL_COLOUR
     return OTHER
 
 
