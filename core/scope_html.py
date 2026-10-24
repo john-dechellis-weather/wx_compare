@@ -137,6 +137,17 @@ function awips(dbz) {{ let k = 0; for (let j = 0; j < AWIPS.length; j++) if (dbz
 let floorDbz = {json.dumps(float(__import__('os').environ.get('ARADAR_DBZ_MIN', '10')))};
 try {{ const v = localStorage.getItem('bm_radar_floor'); if (v) floorDbz = Math.max(5, Math.min(40, +v)); }} catch (e) {{}}
 const GATES = {{}};   // frame index -> decoded buffers
+// Decoded frames are big (tens of MB each at 250 mi), so only the frame
+// on screen is decoded at first; stepping or playing decodes the rest
+// on demand and the cache keeps at most MAX_DECODED, farthest from
+// the current frame evicted first.
+const MAX_DECODED = 6;
+function evictGates() {{
+  const have = Object.keys(GATES).filter(k => GATES[k].n).map(Number);
+  if (have.length <= MAX_DECODED) return;
+  have.sort((a, b) => Math.abs(b - i) - Math.abs(a - i));
+  for (const k of have.slice(0, have.length - MAX_DECODED)) if (k !== i) delete GATES[k];
+}}
 function destPoint(lat, lon, brgDeg, distM) {{
   const R = 6371000, d = distM / R, b = brgDeg * Math.PI / 180, la1 = lat * Math.PI / 180, lo1 = lon * Math.PI / 180;
   const la2 = Math.asin(Math.sin(la1) * Math.cos(d) + Math.cos(la1) * Math.sin(d) * Math.cos(b));
@@ -178,6 +189,7 @@ async function loadGates(k) {{
       getPolygon: {{value: pos, size: 2}}, getFillColor: {{value: col, size: 4}},
       getFilterValue: {{value: val, size: 1}}}}}}}};
   }} catch (e) {{ GATES[k] = {{error: String(e)}}; }}
+  evictGates();
   dk.setProps({{layers: allLayers()}});
 }}
 function gateLayers() {{
@@ -444,12 +456,20 @@ function retone() {{
 setTimeout(retone, 300); setTimeout(retone, 2500);
 function show(k) {{
   i = Math.max(0, Math.min(FRAMES.length - 1, k)); $('sl').value = i;
+  if (FRAMES[i] && FRAMES[i].bin_url && !GATES[i]) loadGates(i);
   $('t').textContent = FRAMES.length ? LABELS[i] : (DJ.noFramesText || 'no radar');
   $('n').textContent = FRAMES.length ? 'frame ' + (i + 1) + '/' + FRAMES.length + (i === FRAMES.length - 1 ? ' (latest)' : '') : '';
   dk.setProps({{layers: allLayers()}});
 }}
 function step() {{ show((i + 1) % FRAMES.length); tick = setTimeout(step, i === FRAMES.length - 1 ? ms * 3 : ms); }}
-function play(on) {{ playing = on; $('pp').textContent = on ? 'Pause' : 'Play'; $('pp').classList.toggle('on', on); clearTimeout(tick); if (on && FRAMES.length > 1) tick = setTimeout(step, ms); }}
+function play(on) {{
+  playing = on; $('pp').textContent = on ? 'Pause' : 'Play'; $('pp').classList.toggle('on', on); clearTimeout(tick);
+  if (on && FRAMES.length > 1) {{
+    // decode the loop's frames (newest back) before it starts running
+    (async () => {{ for (let k = FRAMES.length - 1; k >= Math.max(0, FRAMES.length - MAX_DECODED); k--) await loadGates(k); }})();
+    tick = setTimeout(step, ms);
+  }}
+}}
 $('pp').onclick = () => play(!playing);
 $('pv').onclick = () => {{ play(false); show(i - 1); }};
 $('nx').onclick = () => {{ play(false); show(i + 1); }};
@@ -461,8 +481,8 @@ $('rv').onclick = () => {{ try {{ sessionStorage.removeItem(KEY); }} catch (e) {
 document.addEventListener('keydown', e => {{ if (e.key === 'ArrowLeft') $('pv').onclick(); if (e.key === 'ArrowRight') $('nx').onclick(); if (e.key === ' ') {{ e.preventDefault(); play(!playing); }} }});
 // Preload every frame so the first loop is already smooth.
 FRAMES.forEach((f, k) => {{ if (f.url) {{ const im = new Image(); im.src = f.url; }} if (f.inner_url) {{ const im2 = new Image(); im2.src = f.inner_url; }} }});
-// gate files: newest first so the latest frame is up quickest
-(async () => {{ for (let k = FRAMES.length - 1; k >= 0; k--) await loadGates(k); }})();
+// gate files: the frame on screen now; the rest when stepped to / played
+loadGates(i);
 legend();
 $('fl').oninput = e => {{ floorDbz = +e.target.value; try {{ localStorage.setItem('bm_radar_floor', floorDbz); }} catch (e2) {{}} legend(); dk.setProps({{layers: allLayers()}}); }};
 show(i); play(playing);

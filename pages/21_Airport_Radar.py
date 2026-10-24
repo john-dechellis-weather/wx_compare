@@ -253,7 +253,7 @@ def _scope():
     # view: whole radar box
     _vs = AS.view(coords[0], coords[1], width_px=1000, width_nm=120)
     import math as _m
-    _vs.min_zoom = round(_m.log2(156543.03 * _m.cos(_m.radians(coords[0])) * 1000 / (400 * 1609.34)), 2)
+    _vs.min_zoom = round(_m.log2(156543.03 * _m.cos(_m.radians(coords[0])) * 1000 / (600 * 1609.34)), 2)
     style = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
     from core.scope_html import scope_html
     _tip = {"html": "<b>{callsign}</b> {type}<br/>{alt} ft &middot; {gs} kt",

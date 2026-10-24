@@ -32,7 +32,10 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-BOX_KM = float(os.environ.get("ARADAR_BOX_KM", "150"))
+# 250 statute miles from the radar (24 Oct; was a 150 km box). Gates
+# are kept out to RANGE_KM; BOX_KM is the square that contains them.
+RANGE_KM = float(os.environ.get("ARADAR_RANGE_KM", str(round(250 * 1.609344, 1))))
+BOX_KM = float(os.environ.get("ARADAR_BOX_KM", str(RANGE_KM)))
 # Inner tile (23 Oct): a second raster centred on each airport looking
 # at this radar, INNER_KM half-width at INNER_PX, so the picture keeps
 # its detail at airport zoom (the wide tile is ~250 m/px; this is ~60).
@@ -259,9 +262,7 @@ def gate_bin(polar: dict, rlat: float, rlon: float, half_km: float, floor_dbz: f
         # cull to the box: gate centre within half_km of the radar in
         # both axes (flat-earth is fine for a yes/no at this scale)
         rng = g0 + gg * gw
-        a = np.radians(az[rr])
-        dx, dy = rng * np.sin(a), rng * np.cos(a)
-        keep = (np.abs(dx) <= half_km * 1000.0) & (np.abs(dy) <= half_km * 1000.0)
+        keep = rng <= half_km * 1000.0          # a circle of half_km around the radar
         rr, gg = rr[keep], gg[keep]
     dbz2 = np.clip(np.round(ref[rr, gg] * 2.0), 0, 65535).astype("<u2")
     head = np.concatenate([np.array([len(az)], dtype="<u2"),
@@ -296,7 +297,7 @@ def render_live(outdir, site: str) -> tuple:
         STATUS["busy"] = ""
         return stamp, f"waiting: sweep 0 incomplete ({exc})"
     bounds = box_bounds(rlat, rlon)
-    data, n = gate_bin(polar, rlat, rlon, BOX_KM)
+    data, n = gate_bin(polar, rlat, rlon, RANGE_KM)
     name = f"aradar_{site}_{stamp}.bin"
     tmp = outdir / f".{name}.tmp"
     tmp.write_bytes(data)
