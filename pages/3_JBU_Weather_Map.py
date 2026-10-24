@@ -2298,6 +2298,14 @@ if run_button or _auto:
                      "tops is the 18 dBZ top in thousands of feet.")
             radar_product = _RADAR_OPTS[_radar_lab]
             radar_on = radar_product is not None
+            # ECHO-TOP TAGS ON REFLECTIVITY (24 Oct): the same FL tags
+            # the echo-tops product draws, as an option over the
+            # reflectivity mosaic.
+            etop_tags_on = st.checkbox(
+                "Echo-top tags", value=False, key="etop_tags_refl",
+                disabled=radar_product != "REFL",
+                help="Tag every 18 dBZ echo top at or above FL320 "
+                     "(30 nm spacing) on top of the reflectivity.")
         with _ctl[2]:
             # 2 min is the default: the last leg only, enough to show
             # heading without lines across the Northeast.
@@ -2467,7 +2475,8 @@ if run_button or _auto:
                     # from core/etop_tags (a warmer, like the chunks);
                     # this only draws the file. Perfect rectangles:
                     # white, black text, thin orange outline.
-                    if radar_product == "ETOP":
+                    if radar_product == "ETOP" or (radar_product == "REFL"
+                                                   and etop_tags_on):
                         try:
                             from core import etop_tags as _ET
                             _tags = (_ET.read(_sd) or {}).get("tags") or []
