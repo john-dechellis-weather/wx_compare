@@ -270,6 +270,40 @@ def _blend_fl(km: float, lat: float, lon: float) -> tuple:
     return int(math.floor(fl / 10.0)) * 10, int(round(mrms_fl)), (int(round(eet * 10)) if eet is not None else None)
 
 
+# A TAG NEEDS A CORE UNDER IT (24 Oct). An 18 dBZ top with nothing
+# strong beneath is anvil, debris or a mosaic artefact. Keep a peak
+# only if the MRMS composite (the scan the MRMS warmer saved nearest
+# in time) reaches core_dbz within CORE_KM of it. With no saved scan
+# in reach the check is skipped rather than blanking the board.
+CORE_KM = float(os.environ.get("ETOP_TAGS_CORE_KM", "10"))
+
+
+def _core_filter(tags: list, static_dir, stamp: str) -> tuple:
+    """(kept tags, note) - tags without a >= CORE_DBZ cell nearby dropped."""
+    try:
+        import numpy as np
+        from core import mrms as M
+        grid, gst = M.core_grid(static_dir, stamp)
+    except Exception:
+        grid, gst = None, None
+    if grid is None:
+        return tags, "no composite scan to check cores against"
+    ny, nx = grid.shape
+    # MRMS grid: 0.01 deg, north row first, from 55N / 130W
+    r = int(round(CORE_KM / 1.11))           # cells (0.01 deg ~ 1.11 km)
+    kept, dropped = [], 0
+    for km, la, lo in tags:
+        i = int(round((55.0 - la) / 0.01)); j = int(round((lo + 130.0) / 0.01))
+        if not (0 <= i < ny and 0 <= j < nx):
+            kept.append((km, la, lo)); continue
+        win = grid[max(0, i - r):i + r + 1, max(0, j - r):j + r + 1]
+        if win.any():
+            kept.append((km, la, lo))
+        else:
+            dropped += 1
+    return kept, f"{dropped} dropped with no {M.CORE_DBZ:.0f} dBZ core within {CORE_KM:.0f} km (scan {gst})"
+
+
 def run_once(static_dir) -> dict:
     import requests
     r = requests.get(URL, timeout=30,
@@ -287,6 +321,7 @@ def run_once(static_dir) -> dict:
     vals, lats, lons, how = _decode(raw)
     cands = _peaks(vals, lats, lons)
     tags = _separate(cands)
+    tags, core_note = _core_filter(tags, static_dir, stamp)
     rows = []
     n_eet = 0
     for km, la, lo in tags:
@@ -304,8 +339,9 @@ def run_once(static_dir) -> dict:
     tmp = p.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(out, separators=(",", ":")))
     tmp.replace(p)
+    out["core_note"] = core_note
     _log(f"{len(cands)} peaks, {len(rows)} tagged >= FL{MIN_FL} "
-         f"({n_eet} blended with 88D EET, {how})")
+         f"({n_eet} blended with 88D EET, {how}); {core_note}")
     return out
 
 

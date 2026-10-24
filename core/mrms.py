@@ -549,6 +549,9 @@ def build(outdir, product: str = DEFAULT_PRODUCT) -> tuple:
 # of tops in hundreds of feet from ETOP), because the chunks keep
 # neither.
 TAG_DBZ = float(os.environ.get("MRMS_TAG_DBZ", "50"))
+# Echo-top tags (core/etop_tags.py) keep a peak only if the composite
+# reaches this within a few km of it (24 Oct).
+CORE_DBZ = float(os.environ.get("ETOP_TAGS_CORE_DBZ", "45"))
 # Floor for the saved echo mask (see _save_field).
 ECHO_DBZ = float(os.environ.get("MRMS_ECHO_DBZ", "5"))
 FIELD_KEEP = int(os.environ.get("MRMS_FIELD_KEEP", "30"))
@@ -594,6 +597,29 @@ def echo_mask(outdir, near_stamp: str, max_skew_s: int = 480):
     return grid.reshape(shape).astype(bool), best
 
 
+def core_grid(outdir, near_stamp: str, max_skew_s: float = 600.0):
+    """(bool grid of composite >= CORE_DBZ, stamp) from the REFL scan
+    nearest near_stamp, or (None, None)."""
+    import numpy as np
+
+    stamps = _field_stamps(outdir, "REFL")
+    if not stamps:
+        return None, None
+    t = _stamp_s(near_stamp)
+    best = min(stamps, key=lambda s: abs(_stamp_s(s) - t))
+    if abs(_stamp_s(best) - t) > max_skew_s:
+        return None, None
+    try:
+        with np.load(_field_path(outdir, "REFL", best)) as z:
+            if "core" not in z.files:
+                return None, None
+            shape = tuple(int(v) for v in z["shape"])
+            grid = np.unpackbits(z["core"])[:shape[0] * shape[1]]
+    except Exception:
+        return None, None
+    return grid.reshape(shape).astype(bool), best
+
+
 def _tags_path(outdir, stamp: str) -> Path:
     return Path(outdir) / f"mrmst{TAG_VERSION}_{stamp}.json"
 
@@ -611,8 +637,9 @@ def _save_field(outdir, product: str, stamp: str, vals) -> None:
         # core/radar_l3.py uses it to strip clutter, birds and clear-
         # air return from the single-site Level III picture.
         echo = v >= ECHO_DBZ
+        core = v >= CORE_DBZ
         np.savez_compressed(tmp, mask=np.packbits(mask),
-                            echo=np.packbits(echo),
+                            echo=np.packbits(echo), core=np.packbits(core),
                             shape=np.array(mask.shape))
     elif product == "ETOP":
         # Hundreds of feet, the unit the tag prints: 480 = 48,000 ft.
