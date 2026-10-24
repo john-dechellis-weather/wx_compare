@@ -106,7 +106,8 @@ def scope_html(deck_json: dict, frames: list, style_url: str, icao: str,
 </style></head><body>
 <div id="m"></div><div class="tip" id="tip"></div>
 <div id="lg"><div>REFLECTIVITY dBZ</div><div class="sw" id="sw"></div>
-  <div class="row"><span>show &ge;</span><input id="fl" type="range" min="5" max="40" step="1"><span><b id="flv"></b> dBZ</span></div></div>
+  <div class="row"><span>show &ge;</span><input id="fl" type="range" min="5" max="40" step="1"><span><b id="flv"></b> dBZ</span></div>
+  <div class="row" style="margin-top:6px"><label style="cursor:pointer"><input id="cf" type="checkbox" style="accent-color:#00E5FF;vertical-align:-2px"> clutter filter <span style="color:#6E6E6E;font-weight:400">(RHO + texture)</span></label></div></div>
 <div id="ac"></div>
 <div class="bar">
   <button id="pp">Pause</button><button id="pv">&#9664;</button><button id="nx">&#9654;</button>
@@ -136,6 +137,8 @@ const AWRGB = AWIPS.map(([v, h]) => [parseInt(h.slice(1, 3), 16), parseInt(h.sli
 function awips(dbz) {{ let k = 0; for (let j = 0; j < AWIPS.length; j++) if (dbz >= AWIPS[j][0]) k = j; return AWRGB[k]; }}
 let floorDbz = {json.dumps(float(__import__('os').environ.get('ARADAR_DBZ_MIN', '10')))};
 try {{ const v = localStorage.getItem('bm_radar_floor'); if (v) floorDbz = Math.max(5, Math.min(40, +v)); }} catch (e) {{}}
+let clutterOff = true;   // clutter filter on by default
+try {{ const v = localStorage.getItem('bm_radar_clutter'); if (v != null) clutterOff = v === '1'; }} catch (e) {{}}
 const GATES = {{}};   // frame index -> decoded buffers
 // Decoded frames are big (tens of MB each at 250 mi), so only the frame
 // on screen is decoded at first; stepping or playing decodes the rest
@@ -163,7 +166,7 @@ async function loadGates(k) {{
     const u16 = new Uint16Array(await r.arrayBuffer());
     const naz = u16[0], az = Array.from(u16.subarray(1, 1 + naz), v => v / 100);
     const body = u16.subarray(1 + naz), n = Math.floor(body.length / 3);
-    const pos = new Float32Array(n * 8), col = new Uint8Array(n * 16), val = new Float32Array(n * 4);
+    const pos = new Float32Array(n * 8), col = new Uint8Array(n * 16), val = new Float32Array(n * 8);  // [dBZ, clutter] per vertex
     const start = new Uint32Array(n + 1);
     const [rlat, rlon] = f.radar, g0 = f.g0, gw = f.gw;
     // half the step to each neighbouring ray, so bins tile the sweep
@@ -173,11 +176,11 @@ async function loadGates(k) {{
       return [Math.min(dp, 2) / 2, Math.min(dq, 2) / 2];
     }});
     for (let g = 0; g < n; g++) {{
-      const ri = body[3 * g], gi = body[3 * g + 1], dbz = body[3 * g + 2] / 2;
+      const w = body[3 * g + 2], ri = body[3 * g], gi = body[3 * g + 1], dbz = (w & 0x7FFF) / 2, cl = (w & 0x8000) ? 1 : 0;
       const a0 = az[ri] - half[ri][0], a1 = az[ri] + half[ri][1];
       const r0 = Math.max(0, g0 + gi * gw - gw / 2), r1 = r0 + gw;
       const c = [destPoint(rlat, rlon, a0, r0), destPoint(rlat, rlon, a1, r0), destPoint(rlat, rlon, a1, r1), destPoint(rlat, rlon, a0, r1)];
-      for (let v = 0; v < 4; v++) {{ pos[g * 8 + v * 2] = c[v][0]; pos[g * 8 + v * 2 + 1] = c[v][1]; val[g * 4 + v] = dbz; }}
+      for (let v = 0; v < 4; v++) {{ pos[g * 8 + v * 2] = c[v][0]; pos[g * 8 + v * 2 + 1] = c[v][1]; val[g * 8 + v * 2] = dbz; val[g * 8 + v * 2 + 1] = cl; }}
       const rgb = awips(dbz);
       for (let v = 0; v < 4; v++) {{ col.set([rgb[0], rgb[1], rgb[2], 255], g * 16 + v * 4); }}
       start[g + 1] = (g + 1) * 4;
@@ -187,7 +190,7 @@ async function loadGates(k) {{
     // gate twice a second (the drag lag of 23 Oct)
     GATES[k] = {{n, data: {{length: n, startIndices: start, attributes: {{
       getPolygon: {{value: pos, size: 2}}, getFillColor: {{value: col, size: 4}},
-      getFilterValue: {{value: val, size: 1}}}}}}}};
+      getFilterValue: {{value: val, size: 2}}}}}}}};
   }} catch (e) {{ GATES[k] = {{error: String(e)}}; }}
   evictGates();
   dk.setProps({{layers: allLayers()}});
@@ -199,7 +202,7 @@ function gateLayers() {{
     return new deck.SolidPolygonLayer({{id: 'l2g_' + k, visible: k === i, opacity: radarOp,
       data: gd.data,
       _normalize: false, positionFormat: 'XY', filled: true, extruded: false,
-      extensions: [new deck.DataFilterExtension({{filterSize: 1}})], filterRange: [floorDbz, 999],
+      extensions: [new deck.DataFilterExtension({{filterSize: 2}})], filterRange: [[floorDbz, 999], [0, clutterOff ? 0.5 : 1]],
       parameters: {{depthTest: false}}}});
   }}).filter(Boolean);
 }}
@@ -207,7 +210,7 @@ function legend() {{
   if (!FRAMES.some(f => f.bin_url)) return;
   const sw = $('sw');
   sw.innerHTML = AWIPS.map(([v, h]) => `<div style="background:${{h}}" class="${{v < floorDbz ? 'off' : ''}}"><span>${{v}}</span></div>`).join('');
-  $('fl').value = floorDbz; $('flv').textContent = floorDbz;
+  $('fl').value = floorDbz; $('flv').textContent = floorDbz; $('cf').checked = clutterOff;
   $('lg').style.display = 'block';
 }}
 
@@ -485,6 +488,7 @@ FRAMES.forEach((f, k) => {{ if (f.url) {{ const im = new Image(); im.src = f.url
 loadGates(i);
 legend();
 $('fl').oninput = e => {{ floorDbz = +e.target.value; try {{ localStorage.setItem('bm_radar_floor', floorDbz); }} catch (e2) {{}} legend(); dk.setProps({{layers: allLayers()}}); }};
+$('cf').onchange = e => {{ clutterOff = e.target.checked; try {{ localStorage.setItem('bm_radar_clutter', clutterOff ? '1' : '0'); }} catch (e2) {{}} dk.setProps({{layers: allLayers()}}); }};
 show(i); play(playing);
 if (LIVE) {{
   pollLive(); setInterval(pollLive, 6000);

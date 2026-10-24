@@ -132,6 +132,7 @@ def polar_sweep(f) -> dict:
     ngates = int(ref_hdr.num_gates)
     ref = np.full((len(sweep), ngates), np.nan, dtype="float32")
     rho = np.full((len(sweep), ngates), np.nan, dtype="float32")
+    zdr = np.full((len(sweep), ngates), np.nan, dtype="float32")
     for i, ray in enumerate(sweep):
         try:
             d = ray[4][b"REF"][1]
@@ -149,6 +150,15 @@ def polar_sweep(f) -> dict:
             rho[i, okr] = np.asarray(rd, dtype="float32")[idx[okr]]
         except Exception:
             pass
+        try:
+            zh = ray[4][b"ZDR"]
+            zd = zh[1]
+            zf, zw = float(zh[0].first_gate) * 1000.0, float(zh[0].gate_width) * 1000.0
+            idx = np.round((gate_first + np.arange(ngates) * gate_w - zf) / zw).astype("int32")
+            okz = (idx >= 0) & (idx < len(zd))
+            zdr[i, okz] = np.asarray(zd, dtype="float32")[idx[okz]]
+        except Exception:
+            pass
     ref[~np.isfinite(ref)] = np.nan
     # Clutter / non-met: the L3 rule - drop gates with correlation
     # coefficient under CC_MIN unless the echo is strong (>= 40 dBZ)
@@ -157,7 +167,7 @@ def polar_sweep(f) -> dict:
         clutter = rho_known & (rho < CC_MIN) & (ref < 40.0)
         ref[clutter] = np.nan
     order = np.argsort(az)
-    az, ref = az[order], ref[order]
+    az, ref, rho, zdr = az[order], ref[order], rho[order], zdr[order]
     # A live volume arrives in chunks; sweep 0 is only usable once it
     # has gone all the way round. Fewer rays, or an azimuth gap wider
     # than a few degrees, means the radar is mid-sweep: say so (the
@@ -179,7 +189,74 @@ def polar_sweep(f) -> dict:
             ref[(valid == 1) & (nb < SPECKLE_MIN)] = np.nan
         except Exception:
             pass
-    return {"az": az, "ref": ref, "gate_first": gate_first, "gate_w": gate_w, "ngates": ngates}
+    clutter = clutter_mask(ref, rho, zdr)
+    return {"az": az, "ref": ref, "rho": rho, "zdr": zdr, "clutter": clutter,
+            "gate_first": gate_first, "gate_w": gate_w, "ngates": ngates}
+
+
+# Clutter classifier (24 Oct). Clutter - ground returns, insects, birds,
+# sea clutter, anomalous propagation - is almost always weak and
+# speckled; rain is coherent and, on a dual-pol radar, has a high
+# correlation coefficient. A gate is flagged when ANY of:
+#   1. RHO  < CL_RHO and dBZ < CL_RHO_DBZ  (non-meteorological echo)
+#   2. dBZ  < CL_LOW and the 5x5 ray/gate window around it is less
+#      than CL_FILL filled with echo (isolated speckle)
+#   3. dBZ  < CL_LOW and the dBZ texture (std dev) in that window
+#      exceeds CL_TEX (salt-and-pepper, not a rain field)
+#   4. it belongs to a connected patch of fewer than CL_PATCH gates
+#      whose strongest gate is under CL_LOW (a small weak blob)
+# Nothing is deleted: the flag rides along with each gate and the
+# viewer's "clutter filter" switch hides flagged gates.
+CL_RHO = float(os.environ.get("ARADAR_CL_RHO", "0.90"))
+CL_RHO_WEAK = float(os.environ.get("ARADAR_CL_RHO_WEAK", "0.95"))
+CL_WEAK = float(os.environ.get("ARADAR_CL_WEAK", "20"))
+CL_ZDR = float(os.environ.get("ARADAR_CL_ZDR", "3.0"))
+CL_RHO_DBZ = float(os.environ.get("ARADAR_CL_RHO_DBZ", "35"))
+CL_LOW = float(os.environ.get("ARADAR_CL_LOW", "30"))
+CL_FILL = float(os.environ.get("ARADAR_CL_FILL", "0.45"))
+CL_TEX = float(os.environ.get("ARADAR_CL_TEX", "9"))
+CL_PATCH = int(os.environ.get("ARADAR_CL_PATCH", "15"))
+
+
+def clutter_mask(ref, rho, zdr=None):
+    import numpy as np
+    try:
+        from scipy import ndimage as ndi
+    except Exception:
+        return np.zeros(ref.shape, dtype=bool)
+    valid = np.isfinite(ref)
+    low = valid & (ref < CL_LOW)
+    flag = np.zeros(ref.shape, dtype=bool)
+    # 1. correlation coefficient (stricter for the weakest gates)
+    rk = np.isfinite(rho)
+    flag |= valid & rk & (rho < CL_RHO) & (ref < CL_RHO_DBZ)
+    flag |= valid & rk & (rho < CL_RHO_WEAK) & (ref < CL_WEAK)
+    # 1b. differential reflectivity
+    if zdr is not None:
+        flag |= valid & np.isfinite(zdr) & (zdr > CL_ZDR) & (ref < CL_RHO_DBZ)
+    # 2. fill fraction in a 5x5 window of what survived 1 (wrap in
+    #    azimuth, not in range)
+    valid = valid & ~flag
+    v = valid.astype("float32")
+    fill = ndi.uniform_filter(v, size=5, mode="wrap")
+    flag |= low & (fill < CL_FILL)
+    # 3. texture: std dev of dBZ over the valid gates in the window
+    z = np.where(valid, ref, 0.0).astype("float32")
+    n = np.maximum(fill * 25.0, 1.0)
+    m1 = ndi.uniform_filter(z, size=5, mode="wrap") * 25.0 / n
+    m2 = ndi.uniform_filter(z * z, size=5, mode="wrap") * 25.0 / n
+    tex = np.sqrt(np.maximum(m2 - m1 * m1, 0.0))
+    flag |= low & (tex > CL_TEX)
+    # 4. small weak patches among what is left
+    keep = valid & ~flag
+    lab, nlab = ndi.label(keep, structure=np.ones((3, 3)))
+    if nlab:
+        sizes = ndi.sum(keep, lab, index=np.arange(1, nlab + 1))
+        peaks = ndi.maximum(np.where(keep, ref, -99.0), lab, index=np.arange(1, nlab + 1))
+        small = np.zeros(nlab + 1, dtype=bool)
+        small[1:] = (sizes < CL_PATCH) & (peaks < CL_LOW)
+        flag |= small[lab]
+    return flag
 
 
 def grid(polar: dict, rlat: float, rlon: float, bounds: list, px: int):
@@ -250,7 +327,7 @@ def manifest(outdir, site: str) -> dict:
 def gate_bin(polar: dict, rlat: float, rlon: float, half_km: float, floor_dbz: float = 5.0) -> tuple:
     """Pack every gate >= floor_dbz inside the box as a little-endian
     Uint16 stream the viewer turns into one rectangle per gate:
-        [n_az, az_0*100 ... az_{n-1}*100, then per gate: ray, gate, dbz*2]
+        [n_az, az_0*100 ... az_{n-1}*100, then per gate: ray, gate, dbz*2 | clutter<<15]
     Returns (bytes, n_gates). Each gate is drawn in the browser as the
     polar bin it is - range gate by azimuth step - so nothing is
     resampled, blended or smoothed (23 Oct)."""
@@ -264,7 +341,10 @@ def gate_bin(polar: dict, rlat: float, rlon: float, half_km: float, floor_dbz: f
         rng = g0 + gg * gw
         keep = rng <= half_km * 1000.0          # a circle of half_km around the radar
         rr, gg = rr[keep], gg[keep]
-    dbz2 = np.clip(np.round(ref[rr, gg] * 2.0), 0, 65535).astype("<u2")
+    dbz2 = np.clip(np.round(ref[rr, gg] * 2.0), 0, 32767).astype("<u2")
+    cl = polar.get("clutter")
+    if cl is not None:
+        dbz2 = dbz2 | (cl[rr, gg].astype("<u2") << 15)     # bit 15 = clutter flag
     head = np.concatenate([np.array([len(az)], dtype="<u2"),
                            np.round(az * 100.0).astype("<u2")])
     body = np.stack([rr.astype("<u2"), gg.astype("<u2"), dbz2], axis=1).ravel()
