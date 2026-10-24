@@ -163,7 +163,7 @@ def polar_sweep(f) -> dict:
     gaps = np.diff(np.concatenate([az, [az[0] + 360.0]]))
     if len(az) < 300 or gaps.max() > 4.0:
         raise IncompleteSweep(f"{len(az)} rays, largest gap {gaps.max():.1f} deg")
-    ref[ref <= DBZ_MIN] = np.nan
+    ref[ref < 5.0] = np.nan          # the display floor is the viewer's slider (>= DBZ_MIN default)
     # speckle in GATE space (23 Oct; was per pixel, which let single
     # gates through on the fine inner tile): drop gates with fewer
     # than SPECKLE_MIN valid neighbours in the 3x3 az/range window,
@@ -244,8 +244,34 @@ def manifest(outdir, site: str) -> dict:
         return {"site": site.upper(), "bounds": None, "frames": []}
 
 
+def gate_bin(polar: dict, rlat: float, rlon: float, half_km: float, floor_dbz: float = 5.0) -> tuple:
+    """Pack every gate >= floor_dbz inside the box as a little-endian
+    Uint16 stream the viewer turns into one rectangle per gate:
+        [n_az, az_0*100 ... az_{n-1}*100, then per gate: ray, gate, dbz*2]
+    Returns (bytes, n_gates). Each gate is drawn in the browser as the
+    polar bin it is - range gate by azimuth step - so nothing is
+    resampled, blended or smoothed (23 Oct)."""
+    import numpy as np
+    az, ref = polar["az"], polar["ref"]
+    g0, gw, ng = polar["gate_first"], polar["gate_w"], polar["ngates"]
+    rr, gg = np.nonzero(np.isfinite(ref) & (ref >= floor_dbz))
+    if len(rr):
+        # cull to the box: gate centre within half_km of the radar in
+        # both axes (flat-earth is fine for a yes/no at this scale)
+        rng = g0 + gg * gw
+        a = np.radians(az[rr])
+        dx, dy = rng * np.sin(a), rng * np.cos(a)
+        keep = (np.abs(dx) <= half_km * 1000.0) & (np.abs(dy) <= half_km * 1000.0)
+        rr, gg = rr[keep], gg[keep]
+    dbz2 = np.clip(np.round(ref[rr, gg] * 2.0), 0, 65535).astype("<u2")
+    head = np.concatenate([np.array([len(az)], dtype="<u2"),
+                           np.round(az * 100.0).astype("<u2")])
+    body = np.stack([rr.astype("<u2"), gg.astype("<u2"), dbz2], axis=1).ravel()
+    return head.tobytes() + body.tobytes(), int(len(rr))
+
+
 def render_live(outdir, site: str) -> tuple:
-    """Fetch the live volume for an 88D and render it if new.
+    """Fetch the live volume for an 88D and write its gate file if new.
     Returns (stamp, note)."""
     from core import radar_l2rt as RT
     outdir = Path(outdir)
@@ -256,10 +282,7 @@ def render_live(outdir, site: str) -> tuple:
     except Exception as exc:
         return None, f"chunk feed: {type(exc).__name__}: {exc}"
     stamp = start_t.strftime("%Y%m%d-%H%M%S")
-    have = next((fr for fr in man.get("frames", []) if fr["stamp"] == stamp), None)
-    centres = inner_centres(outdir, site)
-    missing = {k: v for k, v in centres.items() if k not in (have or {}).get("inner", {})}
-    if have is not None and not missing:
+    if any(fr["stamp"] == stamp and fr.get("bin") for fr in man.get("frames", [])):
         return stamp, "cached"
     STATUS["busy"] = f"{site} {stamp}"
     raw, info = RT.fetch_live_volume_bytes(site)
@@ -273,32 +296,18 @@ def render_live(outdir, site: str) -> tuple:
         STATUS["busy"] = ""
         return stamp, f"waiting: sweep 0 incomplete ({exc})"
     bounds = box_bounds(rlat, rlon)
-    name = f"aradar_{site}_{stamp}.png"
-    if have is None:
-        comp = grid(polar, rlat, rlon, bounds, PX)
-        tmp = outdir / f".{name}.tmp.png"
-        _png(comp, tmp)
-        os.replace(tmp, outdir / name)
-    # inner tiles, one per airport currently looking at this radar
-    # (only the missing ones when the wide frame already exists)
-    inner = dict((have or {}).get("inner") or {})
-    for icao, (alat, alon) in (missing if have is not None else centres).items():
-        try:
-            ib = box_bounds(alat, alon, INNER_KM)
-            ic = grid(polar, rlat, rlon, ib, INNER_PX)
-            iname = f"aradar_{site}_{icao}_{stamp}.png"
-            itmp = outdir / f".{iname}.tmp.png"
-            _png(ic, itmp)
-            os.replace(itmp, outdir / iname)
-            inner[icao] = {"name": iname, "bounds": ib}
-        except Exception:
-            continue
+    data, n = gate_bin(polar, rlat, rlon, BOX_KM)
+    name = f"aradar_{site}_{stamp}.bin"
+    tmp = outdir / f".{name}.tmp"
+    tmp.write_bytes(data)
+    os.replace(tmp, outdir / name)
     frames = [fr for fr in man.get("frames", []) if fr["stamp"] != stamp]
-    frames.append({"name": name, "stamp": stamp, "inner": inner,
+    frames.append({"name": name, "bin": True, "stamp": stamp, "n": n,
+                   "g0": polar["gate_first"], "gw": polar["gate_w"],
                    "valid": f"{stamp[9:11]}:{stamp[11:13]}Z", "age_s": info.get("age_s")})
     frames = sorted(frames, key=lambda x: x["stamp"])[-KEEP:]
-    keep = {fr["name"] for fr in frames} | {v["name"] for fr in frames for v in (fr.get("inner") or {}).values()}
-    for p in outdir.glob(f"aradar_{site}_*.png"):
+    keep = {fr["name"] for fr in frames}
+    for p in list(outdir.glob(f"aradar_{site}_*.png")) + list(outdir.glob(f"aradar_{site}_*.bin")):
         if p.name not in keep:
             try:
                 p.unlink()
@@ -312,9 +321,7 @@ def render_live(outdir, site: str) -> tuple:
     os.replace(tmpm, mp)
     STATUS["busy"] = ""
     STATUS["last"] = time.time()
-    if have is not None:
-        return stamp, f"inner tile added for {', '.join(missing)}"
-    return stamp, f"rendered ({info.get('n_used')} chunks, {info.get('age_s')}s old)"
+    return stamp, f"{n} gates ({info.get('n_used')} chunks, {info.get('age_s')}s old)"
 
 
 # ---------------------------------------------------------------- demand + warmer

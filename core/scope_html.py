@@ -95,8 +95,17 @@ def scope_html(deck_json: dict, frames: list, style_url: str, icao: str,
  #ac .leg .ap{{font-weight:700;color:#fff;font-size:13px}} #ac .leg .nm{{color:#9AA0A6;font-size:11px;margin-bottom:4px}}
  #ac .leg.dest{{border-left-color:#00E5FF}}
  #ac .ft{{padding:6px 12px 8px;color:#6E6E6E;font-size:10px}}
+ /* reflectivity legend (23 Oct): top left, AWIPS steps + floor slider */
+ #lg{{position:absolute;top:10px;left:10px;z-index:8;background:rgba(10,10,10,.82);border:1px solid #333;border-radius:6px;padding:6px 10px;display:none;font:bold 11px "DejaVu Sans Mono",monospace;color:#B8B8B8}}
+ #lg .sw{{display:flex;gap:0;margin:4px 0 2px}} #lg .sw div{{width:22px;height:12px;position:relative}}
+ #lg .sw div span{{position:absolute;left:-6px;top:13px;font-size:9px;color:#B8B8B8;width:22px;text-align:center}}
+ #lg .sw div.off{{opacity:.18}}
+ #lg .row{{display:flex;align-items:center;gap:8px;margin-top:16px}} #lg input[type=range]{{width:150px;accent-color:#00E5FF}}
+ #lg b{{color:#FFD400}}
 </style></head><body>
 <div id="m"></div><div class="tip" id="tip"></div>
+<div id="lg"><div>REFLECTIVITY dBZ</div><div class="sw" id="sw"></div>
+  <div class="row"><span>show &ge;</span><input id="fl" type="range" min="5" max="40" step="1"><span><b id="flv"></b> dBZ</span></div></div>
 <div id="ac"></div>
 <div class="bar">
   <button id="pp">Pause</button><button id="pv">&#9664;</button><button id="nx">&#9654;</button>
@@ -116,6 +125,75 @@ const RADAR_AT = {radar_index};
 // raw radar tiles (23 Oct): sample the texture nearest-neighbour so a
 // gate stays a crisp block when magnified instead of a blurred blob
 const RAWTEX = {{10240: 9728, 10241: 9728, 10242: 33071, 10243: 33071}};  // MAG/MIN_FILTER NEAREST, CLAMP_TO_EDGE
+// ---- POLAR GATES (23 Oct): a Level II frame may be a gate file
+// ({{bin_url, g0, gw, radar}}) instead of an image. Each gate is drawn
+// as the range/azimuth rectangle it is, so nothing is resampled or
+// blended; the legend's floor filters on the GPU.
+const AWIPS = [[5,'#04E9E7'],[10,'#019FF4'],[15,'#0300F4'],[20,'#02FD02'],[25,'#01C501'],[30,'#008E00'],[35,'#FDF802'],[40,'#E5BC00'],[45,'#FD9500'],[50,'#FD0000'],[55,'#D40000'],[60,'#BC0000'],[65,'#F800FD'],[70,'#9854C6'],[75,'#FDFDFD']];
+const AWRGB = AWIPS.map(([v, h]) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]);
+function awips(dbz) {{ let k = 0; for (let j = 0; j < AWIPS.length; j++) if (dbz >= AWIPS[j][0]) k = j; return AWRGB[k]; }}
+let floorDbz = {json.dumps(float(__import__('os').environ.get('ARADAR_DBZ_MIN', '10')))};
+try {{ const v = localStorage.getItem('bm_radar_floor'); if (v) floorDbz = Math.max(5, Math.min(40, +v)); }} catch (e) {{}}
+const GATES = {{}};   // frame index -> decoded buffers
+function destPoint(lat, lon, brgDeg, distM) {{
+  const R = 6371000, d = distM / R, b = brgDeg * Math.PI / 180, la1 = lat * Math.PI / 180, lo1 = lon * Math.PI / 180;
+  const la2 = Math.asin(Math.sin(la1) * Math.cos(d) + Math.cos(la1) * Math.sin(d) * Math.cos(b));
+  const lo2 = lo1 + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(la1), Math.cos(d) - Math.sin(la1) * Math.sin(la2));
+  return [lo2 * 180 / Math.PI, la2 * 180 / Math.PI];
+}}
+async function loadGates(k) {{
+  const f = FRAMES[k];
+  if (!f || !f.bin_url || GATES[k]) return;
+  GATES[k] = {{loading: true}};
+  try {{
+    const r = await fetch(f.bin_url, {{cache: 'force-cache'}});
+    const u16 = new Uint16Array(await r.arrayBuffer());
+    const naz = u16[0], az = Array.from(u16.subarray(1, 1 + naz), v => v / 100);
+    const body = u16.subarray(1 + naz), n = Math.floor(body.length / 3);
+    const pos = new Float32Array(n * 8), col = new Uint8Array(n * 16), val = new Float32Array(n * 4);
+    const start = new Uint32Array(n + 1);
+    const [rlat, rlon] = f.radar, g0 = f.g0, gw = f.gw;
+    // half the step to each neighbouring ray, so bins tile the sweep
+    const half = az.map((a, j) => {{
+      const p = az[(j - 1 + naz) % naz], q = az[(j + 1) % naz];
+      const dp = ((a - p) % 360 + 360) % 360, dq = ((q - a) % 360 + 360) % 360;
+      return [Math.min(dp, 2) / 2, Math.min(dq, 2) / 2];
+    }});
+    for (let g = 0; g < n; g++) {{
+      const ri = body[3 * g], gi = body[3 * g + 1], dbz = body[3 * g + 2] / 2;
+      const a0 = az[ri] - half[ri][0], a1 = az[ri] + half[ri][1];
+      const r0 = Math.max(0, g0 + gi * gw - gw / 2), r1 = r0 + gw;
+      const c = [destPoint(rlat, rlon, a0, r0), destPoint(rlat, rlon, a1, r0), destPoint(rlat, rlon, a1, r1), destPoint(rlat, rlon, a0, r1)];
+      for (let v = 0; v < 4; v++) {{ pos[g * 8 + v * 2] = c[v][0]; pos[g * 8 + v * 2 + 1] = c[v][1]; val[g * 4 + v] = dbz; }}
+      const rgb = awips(dbz);
+      for (let v = 0; v < 4; v++) {{ col.set([rgb[0], rgb[1], rgb[2], 255], g * 16 + v * 4); }}
+      start[g + 1] = (g + 1) * 4;
+    }}
+    GATES[k] = {{n, pos, col, val, start}};
+  }} catch (e) {{ GATES[k] = {{error: String(e)}}; }}
+  dk.setProps({{layers: allLayers()}});
+}}
+function gateLayers() {{
+  return FRAMES.map((f, k) => {{
+    const gd = GATES[k];
+    if (!f.bin_url || !gd || !gd.n) return null;
+    return new deck.SolidPolygonLayer({{id: 'l2g_' + k, visible: k === i, opacity: radarOp,
+      data: {{length: gd.n, startIndices: gd.start, attributes: {{
+        getPolygon: {{value: gd.pos, size: 2}}, getFillColor: {{value: gd.col, size: 4}},
+        getFilterValue: {{value: gd.val, size: 1}}}}}},
+      _normalize: false, positionFormat: 'XY', filled: true, extruded: false,
+      extensions: [new deck.DataFilterExtension({{filterSize: 1}})], filterRange: [floorDbz, 999],
+      parameters: {{depthTest: false}}}});
+  }}).filter(Boolean);
+}}
+function legend() {{
+  if (!FRAMES.some(f => f.bin_url)) return;
+  const sw = $('sw');
+  sw.innerHTML = AWIPS.map(([v, h]) => `<div style="background:${{h}}" class="${{v < floorDbz ? 'off' : ''}}"><span>${{v}}</span></div>`).join('');
+  $('fl').value = floorDbz; $('flv').textContent = floorDbz;
+  $('lg').style.display = 'block';
+}}
+
 const LIVE = {json.dumps(live_url)};
 const DECLUTTER = {json.dumps(bool(declutter))};
 const KEY = 'bm_scope_view_' + {json.dumps(icao)};
@@ -140,7 +218,7 @@ function radarLayers() {{
     ? new deck.BitmapLayer({{id: 'l3i_' + k, image: f.inner_url, bounds: f.inner_bounds,
         opacity: k === i ? radarOp : 0, visible: true, parameters: {{depthTest: false}},
         textureParameters: RAWTEX}}) : null).filter(Boolean);
-  return FRAMES.map((f, k) => f.tiles
+  return FRAMES.map((f, k) => f.bin_url ? null : f.tiles
     ? new deck.TileLayer({{id: 'sat_' + k, data: f.tiles, minZoom: 0, maxZoom: f.maxZoom || 7,
         tileSize: 256, opacity: k === i ? (f.opacity != null ? f.opacity : 1) * radarOp : 0, visible: true,
         maxRequests: 12, refinementStrategy: 'no-overlap',
@@ -151,7 +229,7 @@ function radarLayers() {{
         }}}})
     : new deck.BitmapLayer({{id: 'l3_' + k, image: f.url, bounds: f.bounds,
         opacity: k === i ? radarOp : 0, visible: true, parameters: {{depthTest: false}},
-        textureParameters: f.raw ? RAWTEX : undefined}})).concat(inner);
+        textureParameters: f.raw ? RAWTEX : undefined}})).filter(Boolean).concat(inner, gateLayers());
 }}
 // ---- selected aircraft: panel + dotted track (3 Oct) ----
 let sel = null;
@@ -272,7 +350,7 @@ function liveLayers() {{
   ].concat(['bizjet', 'regional', 'narrow', 'wide'].map(g => {{
     const px = (live.icon_px || {{}})[g] || 22;
     return new deck.IconLayer({{id: 'live_planes_' + g, data: rows.filter(d => (d.glyph || 'narrow') === g),
-      getPosition: d => d.position, getIcon: d => (live.icons || {{}})[d.ikey || d.colour],
+      getPosition: d => d.position, getIcon: d => {{ const ic = live.icons || {{}}; return ic[d.ikey] || ic['narrow:' + d.colour] || ic[d.colour] || Object.values(ic)[0]; }},
       getAngle: d => d.angle, getSize: 5000, sizeMinPixels: px, sizeMaxPixels: px, pickable: true,
       autoHighlight: false, parameters: P}});
   }}));
@@ -373,7 +451,11 @@ $('op').oninput = e => {{ radarOp = +e.target.value / 100; try {{ localStorage.s
 $('rv').onclick = () => {{ try {{ sessionStorage.removeItem(KEY); }} catch (e) {{}} dk.setProps({{initialViewState: Object.assign({{}}, vs0, {{transitionDuration: 300}})}}); }};
 document.addEventListener('keydown', e => {{ if (e.key === 'ArrowLeft') $('pv').onclick(); if (e.key === 'ArrowRight') $('nx').onclick(); if (e.key === ' ') {{ e.preventDefault(); play(!playing); }} }});
 // Preload every frame so the first loop is already smooth.
-FRAMES.forEach(f => {{ if (f.url) {{ const im = new Image(); im.src = f.url; }} if (f.inner_url) {{ const im2 = new Image(); im2.src = f.inner_url; }} }});
+FRAMES.forEach((f, k) => {{ if (f.url) {{ const im = new Image(); im.src = f.url; }} if (f.inner_url) {{ const im2 = new Image(); im2.src = f.inner_url; }} }});
+// gate files: newest first so the latest frame is up quickest
+(async () => {{ for (let k = FRAMES.length - 1; k >= 0; k--) await loadGates(k); }})();
+legend();
+$('fl').oninput = e => {{ floorDbz = +e.target.value; try {{ localStorage.setItem('bm_radar_floor', floorDbz); }} catch (e2) {{}} legend(); dk.setProps({{layers: allLayers()}}); }};
 show(i); play(playing);
 if (LIVE) {{
   pollLive(); setInterval(pollLive, 6000);

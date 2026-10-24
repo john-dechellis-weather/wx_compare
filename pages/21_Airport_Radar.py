@@ -146,10 +146,9 @@ def _scope():
                   if (now - datetime.strptime(f["stamp"], "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)).total_seconds() < 5400]
         if _fresh and man.get("bounds"):
             man = dict(man, frames=_fresh)
-            frames = [{"url": f"{base}/app/static/{f['name']}", "bounds": man["bounds"], "label": f["valid"], "raw": True,
-                       **({"inner_url": f"{base}/app/static/{f['inner'][icao]['name']}",
-                           "inner_bounds": f["inner"][icao]["bounds"]}
-                          if (f.get("inner") or {}).get(icao) else {})}
+            frames = [({"bin_url": f"{base}/app/static/{f['name']}", "g0": f["g0"], "gw": f["gw"],
+                        "radar": man["radar"], "label": f["valid"]} if f.get("bin") else
+                       {"url": f"{base}/app/static/{f['name']}", "bounds": man["bounds"], "label": f["valid"], "raw": True})
                       for f in man["frames"]]
             rtxt = f"{l2_site} Level II 0.5° · {len(frames)} frames · latest {man['frames'][-1]['valid']}"
         else:
