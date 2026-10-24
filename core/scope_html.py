@@ -109,7 +109,7 @@ def scope_html(deck_json: dict, frames: list, style_url: str, icao: str,
   <div class="row"><span>show &ge;</span><input id="fl" type="range" min="5" max="40" step="1"><span><b id="flv"></b> dBZ</span></div>
   <div class="row" style="margin-top:6px"><label style="cursor:pointer"><input id="cf" type="checkbox" style="accent-color:#00E5FF;vertical-align:-2px"> clutter filter <span style="color:#6E6E6E;font-weight:400">(RHO + texture)</span></label></div>
   <div class="row" id="ltgrow" style="margin-top:6px;display:none"><label style="cursor:pointer"><input id="lt" type="checkbox" style="accent-color:#FFD400;vertical-align:-2px"> lightning <span style="color:#6E6E6E;font-weight:400">GLM flashes, last 15 min</span></label>
-    <span style="margin-left:6px"><i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#FFFFA0"></i> 0-5 <i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#FFAA00;margin-left:6px"></i> 5-10 <i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#B45A00;margin-left:6px"></i> 10-15 min</span></div></div>
+    <span style="margin-left:6px"><b style="color:#FFFFFF">+</b> 0-5 <b style="color:#CFCFCF;margin-left:6px">+</b> 5-10 <b style="color:#A3A3A3;margin-left:6px">+</b> 10-15 min</span></div></div>
 <div id="ac"></div>
 <div class="bar">
   <button id="pp">Pause</button><button id="pv">&#9664;</button><button id="nx">&#9654;</button>
@@ -389,15 +389,24 @@ async function pollLtg() {{
     if (r.ok) {{ ltg = await r.json(); dk.setProps({{layers: allLayers()}}); }}
   }} catch (e) {{}}
 }}
+// plus-mark icons drawn on a canvas once: white when fresh, fading to
+// light grey by 10-15 min, with a dark outline so they hold on cores
+const LTG_COLS = ['#FFFFFF', '#CFCFCF', '#A3A3A3'];
+const LTG_ICONS = LTG_COLS.map(c => {{
+  const cv = document.createElement('canvas'); cv.width = cv.height = 32; const g = cv.getContext('2d');
+  g.lineCap = 'butt';
+  g.strokeStyle = 'rgba(0,0,0,0.85)'; g.lineWidth = 9; g.beginPath(); g.moveTo(16, 3); g.lineTo(16, 29); g.moveTo(3, 16); g.lineTo(29, 16); g.stroke();
+  g.strokeStyle = c; g.lineWidth = 4.5; g.beginPath(); g.moveTo(16, 3); g.lineTo(16, 29); g.moveTo(3, 16); g.lineTo(29, 16); g.stroke();
+  return {{url: cv.toDataURL(), width: 32, height: 32, anchorX: 16, anchorY: 16}};
+}});
 function ltgLayers() {{
   if (!LTG || !ltg || !ltgOn) return [];
   const now = Date.now() / 1000;
-  const rows = (ltg.flashes || []).map(f => ({{position: [f[0], f[1]], age: (now - f[2]) / 60}})).filter(d => d.age <= 15);
-  const col = d => d.age < 5 ? [255, 255, 160, 235] : d.age < 10 ? [255, 170, 0, 210] : [180, 90, 0, 170];
-  return [new deck.ScatterplotLayer({{id: 'ltg', data: rows, getPosition: d => d.position, getFillColor: col,
-    getLineColor: [0, 0, 0, 160], stroked: true, lineWidthMinPixels: 1, getRadius: 1500,
-    radiusMinPixels: 3, radiusMaxPixels: 7, pickable: false, parameters: {{depthTest: false}},
-    updateTriggers: {{getFillColor: Math.floor(now / 30)}}}})];
+  const rows = (ltg.flashes || []).filter(f => now - f[2] <= 900).map(f => ({{position: [f[0], f[1]], b: Math.min(2, Math.max(0, Math.floor((now - f[2]) / 300)))}}));
+  return [new deck.IconLayer({{id: 'ltg', data: rows.filter(d => d.b <= 2), getPosition: d => d.position,
+    getIcon: d => LTG_ICONS[d.b], getSize: 12, sizeUnits: 'pixels', sizeMinPixels: 12, sizeMaxPixels: 12,
+    getColor: d => [255, 255, 255, d.b === 0 ? 255 : d.b === 1 ? 225 : 190],
+    pickable: false, parameters: {{depthTest: false}}, updateTriggers: {{getIcon: Math.floor(now / 30), getColor: Math.floor(now / 30)}}}})];
 }}
 // DECLUTTER (20 Oct): ground aircraft come as two sets of layers -
 // ac_gnd_agg* (one glyph + count per airport) for the wide view and
