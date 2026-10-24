@@ -93,8 +93,12 @@ _codes = [s[0] for s in _stations]
 _default = _codes.index("KJFK") if "KJFK" in _codes else 0
 h1, h2, h3 = st.columns([1.2, 2.2, 2.6], gap="small", vertical_alignment="bottom")
 with h1:
-    icao = st.selectbox("Station", _codes, index=_default, key="ar_icao",
-                        format_func=lambda k: f"{k[1:] if k[0] == 'K' and len(k) == 4 else k}  ·  "
+    from core import airports as _APT
+    icao = st.selectbox("Airport", _codes, index=_default, key="ar_icao",
+                        help="JetBlue stations (marked B6) plus every US airport with annual "
+                             "enplanements at or above Lubbock's. Type to search.",
+                        format_func=lambda k: f"{k[1:] if k[0] == 'K' and len(k) == 4 else k}"
+                                              f"{'  B6' if _APT.is_station(k) else ''}  ·  "
                                               f"{next((s[1] for s in _stations if s[0] == k), k)[:28]}")
 rad = AR.radars_for(icao)
 l2_site, l2_km = rad.get("l2", ("", 0.0))

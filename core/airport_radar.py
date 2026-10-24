@@ -61,10 +61,11 @@ _started = False
 # ---------------------------------------------------------------- stations / radars
 
 def stations() -> list:
-    """[(icao, name, lat, lon)] JetBlue stations with a position."""
+    """[(icao, name, lat, lon)]: JetBlue stations plus every major US
+    airport (enplanements >= KLBB), with a position."""
     from core import airports as _AP
     out = []
-    for k in _AP.stations():
+    for k in _AP.all_airports():
         a = _AP.get(k)
         if a.get("lat") is not None:
             out.append((k, a.get("name") or k, float(a["lat"]), float(a["lon"])))

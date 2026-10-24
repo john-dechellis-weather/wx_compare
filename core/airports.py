@@ -29,8 +29,14 @@ import threading
 from pathlib import Path
 
 _TABLE = Path(__file__).resolve().parent.parent / "static" / "jbu_airports.json"
+# Major US airports beyond the JetBlue network (24 Oct): FAA primary
+# airports with annual enplanements at or above Lubbock's. Same schema,
+# built from OurAirports. stations() stays JetBlue-only (every page
+# that lists "the network" reads it); get()/centre()/runway_ends()
+# fall back to this table, and all_airports() returns the union.
+_TABLE_US = Path(__file__).resolve().parent.parent / "static" / "us_airports.json"
 _LOCK = threading.Lock()
-_DATA = {"stations": None}
+_DATA = {"stations": None, "us": None}
 
 # One airport, two identifiers: KPBI was renamed KDJT. Anything asked
 # for under the old code resolves to the new one, and the surface is
@@ -48,6 +54,27 @@ def _load() -> dict:
         return _DATA["stations"]
 
 
+def _load_us() -> dict:
+    with _LOCK:
+        if _DATA["us"] is None:
+            try:
+                _DATA["us"] = json.loads(_TABLE_US.read_text())["stations"]
+            except Exception:
+                _DATA["us"] = {}
+        return _DATA["us"]
+
+
+def all_airports() -> list:
+    """JetBlue stations plus the major-US table, each ICAO once,
+    sorted by ICAO."""
+    keys = set(stations()) | set(_load_us())
+    return sorted(keys)
+
+
+def is_station(icao: str) -> bool:
+    return canonical(icao) in _load()
+
+
 def canonical(icao: str) -> str:
     i = (icao or "").strip().upper()
     return ALIASES.get(i, i)
@@ -59,7 +86,8 @@ def stations() -> list:
 
 
 def get(icao: str) -> dict:
-    return _load().get(canonical(icao)) or {}
+    c = canonical(icao)
+    return _load().get(c) or _load_us().get(c) or {}
 
 
 def centre(icao: str):
