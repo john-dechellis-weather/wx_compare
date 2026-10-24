@@ -131,7 +131,11 @@ function radarLayers() {{
   // A frame is either one image ({{url, bounds}}: Level III) or a tile
   // template ({{tiles, maxZoom}}: GOES visible from NASA GIBS, 5 Oct).
   // Every frame stays mounted at opacity 0/1 so each has its tiles
-  // before the loop reaches it.
+  // before the loop reaches it. A frame may carry a finer inner tile
+  // ({{inner_url, inner_bounds}}, 23 Oct) drawn over the wide one.
+  const inner = FRAMES.map((f, k) => f.inner_url
+    ? new deck.BitmapLayer({{id: 'l3i_' + k, image: f.inner_url, bounds: f.inner_bounds,
+        opacity: k === i ? radarOp : 0, visible: true, parameters: {{depthTest: false}}}}) : null).filter(Boolean);
   return FRAMES.map((f, k) => f.tiles
     ? new deck.TileLayer({{id: 'sat_' + k, data: f.tiles, minZoom: 0, maxZoom: f.maxZoom || 7,
         tileSize: 256, opacity: k === i ? (f.opacity != null ? f.opacity : 1) * radarOp : 0, visible: true,
@@ -142,7 +146,7 @@ function radarLayers() {{
             bounds: [west, south, east, north], parameters: {{depthTest: false}}}});
         }}}})
     : new deck.BitmapLayer({{id: 'l3_' + k, image: f.url, bounds: f.bounds,
-        opacity: k === i ? radarOp : 0, visible: true, parameters: {{depthTest: false}}}}));
+        opacity: k === i ? radarOp : 0, visible: true, parameters: {{depthTest: false}}}})).concat(inner);
 }}
 // ---- selected aircraft: panel + dotted track (3 Oct) ----
 let sel = null;
@@ -364,7 +368,7 @@ $('op').oninput = e => {{ radarOp = +e.target.value / 100; try {{ localStorage.s
 $('rv').onclick = () => {{ try {{ sessionStorage.removeItem(KEY); }} catch (e) {{}} dk.setProps({{initialViewState: Object.assign({{}}, vs0, {{transitionDuration: 300}})}}); }};
 document.addEventListener('keydown', e => {{ if (e.key === 'ArrowLeft') $('pv').onclick(); if (e.key === 'ArrowRight') $('nx').onclick(); if (e.key === ' ') {{ e.preventDefault(); play(!playing); }} }});
 // Preload every frame so the first loop is already smooth.
-FRAMES.forEach(f => {{ if (f.url) {{ const im = new Image(); im.src = f.url; }} }});
+FRAMES.forEach(f => {{ if (f.url) {{ const im = new Image(); im.src = f.url; }} if (f.inner_url) {{ const im2 = new Image(); im2.src = f.inner_url; }} }});
 show(i); play(playing);
 if (LIVE) {{
   pollLive(); setInterval(pollLive, 6000);

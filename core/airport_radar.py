@@ -33,13 +33,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 BOX_KM = float(os.environ.get("ARADAR_BOX_KM", "150"))
+# Inner tile (23 Oct): a second raster centred on each airport looking
+# at this radar, INNER_KM half-width at INNER_PX, so the picture keeps
+# its detail at airport zoom (the wide tile is ~250 m/px; this is ~60).
+INNER_KM = float(os.environ.get("ARADAR_INNER_KM", "36"))
+INNER_PX = int(os.environ.get("ARADAR_INNER_PX", "1200"))
 PX = int(os.environ.get("ARADAR_PX", "1200"))
 KEEP = int(os.environ.get("ARADAR_KEEP", "12"))
 DEMAND_S = int(os.environ.get("ARADAR_DEMAND_S", "900"))     # keep warming 15 min after the last view
 PERIOD_S = int(os.environ.get("ARADAR_PERIOD_S", "45"))
-DBZ_MIN = float(os.environ.get("ARADAR_DBZ_MIN", "8"))
+DBZ_MIN = float(os.environ.get("ARADAR_DBZ_MIN", "10"))
 CC_MIN = float(os.environ.get("ARADAR_CC_MIN", "0.92"))
-SPECKLE_MIN = int(os.environ.get("ARADAR_SPECKLE_MIN", "5"))
+SPECKLE_MIN = int(os.environ.get("ARADAR_SPECKLE_MIN", "6"))
 STATUS: dict = {"started": False, "busy": "", "err": None, "last": None}
 _lock = threading.Lock()
 _started = False
@@ -88,9 +93,10 @@ def _inv_merc_y(y):
     return math.degrees(2 * math.atan(math.exp(y)) - math.pi / 2)
 
 
-def box_bounds(rlat: float, rlon: float) -> list:
-    dlon = BOX_KM / (111.32 * math.cos(math.radians(rlat)))
-    dy = BOX_KM / 6371.0 / math.cos(math.radians(rlat))   # Mercator y spacing ~ 1/cos(lat)
+def box_bounds(rlat: float, rlon: float, half_km: float = None) -> list:
+    half_km = BOX_KM if half_km is None else half_km
+    dlon = half_km / (111.32 * math.cos(math.radians(rlat)))
+    dy = half_km / 6371.0 / math.cos(math.radians(rlat))   # Mercator y spacing ~ 1/cos(lat)
     y0 = _merc_y(rlat)
     return [rlon - dlon, _inv_merc_y(y0 - dy), rlon + dlon, _inv_merc_y(y0 + dy)]
 
@@ -101,7 +107,14 @@ class IncompleteSweep(RuntimeError):
 
 def rasterise(f, rlat: float, rlon: float):
     """metpy Level2File -> (comp dBZ float32 [PX, PX], bounds). Sweep 0,
-    REF moment, nearest gate per pixel, max where gates overlap."""
+    REF moment, nearest gate per pixel."""
+    polar = polar_sweep(f)
+    bounds = box_bounds(rlat, rlon)
+    return grid(polar, rlat, rlon, bounds, PX), bounds
+
+
+def polar_sweep(f) -> dict:
+    """Sweep 0 REF as a clutter-filtered polar array, sorted by azimuth."""
     import numpy as np
     sweep = f.sweeps[0]
     az = np.array([ray[0].az_angle for ray in sweep], dtype="float32")
@@ -144,14 +157,32 @@ def rasterise(f, rlat: float, rlon: float):
     gaps = np.diff(np.concatenate([az, [az[0] + 360.0]]))
     if len(az) < 300 or gaps.max() > 4.0:
         raise IncompleteSweep(f"{len(az)} rays, largest gap {gaps.max():.1f} deg")
-    # pixel grid in Mercator metres around the radar
-    bounds = box_bounds(rlat, rlon)
+    ref[ref < DBZ_MIN] = np.nan
+    # speckle in GATE space (23 Oct; was per pixel, which let single
+    # gates through on the fine inner tile): drop gates with fewer
+    # than SPECKLE_MIN valid neighbours in the 3x3 az/range window,
+    # wrapping in azimuth
+    try:
+        from scipy import ndimage as _ndi
+        valid = np.isfinite(ref).astype("uint8")
+        nb = _ndi.convolve(valid, np.ones((3, 3), dtype="uint8"), mode="wrap") - valid
+        ref[(valid == 1) & (nb < SPECKLE_MIN)] = np.nan
+    except Exception:
+        pass
+    return {"az": az, "ref": ref, "gate_first": gate_first, "gate_w": gate_w, "ngates": ngates}
+
+
+def grid(polar: dict, rlat: float, rlon: float, bounds: list, px: int):
+    """Nearest-gate sample of the polar sweep onto a px x px Mercator
+    grid covering bounds [w, s, e, n]. Row 0 = SOUTH: radar_l2.render_png
+    draws with origin="lower" (found 22 Oct - the first cut built
+    north-first and the image came out mirrored)."""
+    import numpy as np
+    az, ref = polar["az"], polar["ref"]
+    gate_first, gate_w, ngates = polar["gate_first"], polar["gate_w"], polar["ngates"]
     w, s, e, n = bounds
-    xs = np.linspace(w, e, PX, dtype="float64")
-    # row 0 = SOUTH: radar_l2.render_png draws with origin="lower"
-    # (found 22 Oct - the first cut built north-first and the image
-    # came out mirrored, so cells looked to move the wrong way)
-    ys = np.array([_inv_merc_y(v) for v in np.linspace(_merc_y(s), _merc_y(n), PX)])
+    xs = np.linspace(w, e, px, dtype="float64")
+    ys = np.array([_inv_merc_y(v) for v in np.linspace(_merc_y(s), _merc_y(n), px)])
     lon_g, lat_g = np.meshgrid(xs, ys)
     k = 111320.0
     dx = (lon_g - rlon) * k * math.cos(math.radians(rlat))
@@ -170,17 +201,7 @@ def rasterise(f, rlat: float, rlon: float):
     ok = (gi >= 0) & (gi < ngates) & (d_ray <= 1.5)
     comp = np.full(brg.shape, np.nan, dtype="float32")
     comp[ok] = ref[ai[ok], gi[ok]]
-    comp[comp < DBZ_MIN] = np.nan
-    # speckle: drop pixels with fewer than SPECKLE_MIN valid neighbours
-    # (isolated biological / residual clutter dots)
-    try:
-        from scipy import ndimage as _ndi
-        valid = np.isfinite(comp).astype("uint8")
-        nb = _ndi.convolve(valid, np.ones((3, 3), dtype="uint8"), mode="constant") - valid
-        comp[(valid == 1) & (nb < SPECKLE_MIN)] = np.nan
-    except Exception:
-        pass
-    return comp, bounds
+    return comp
 
 
 def _png(comp, dest: Path) -> None:
@@ -229,7 +250,10 @@ def render_live(outdir, site: str) -> tuple:
     except Exception as exc:
         return None, f"chunk feed: {type(exc).__name__}: {exc}"
     stamp = start_t.strftime("%Y%m%d-%H%M%S")
-    if any(fr["stamp"] == stamp for fr in man.get("frames", [])):
+    have = next((fr for fr in man.get("frames", []) if fr["stamp"] == stamp), None)
+    centres = inner_centres(outdir, site)
+    missing = {k: v for k, v in centres.items() if k not in (have or {}).get("inner", {})}
+    if have is not None and not missing:
         return stamp, "cached"
     STATUS["busy"] = f"{site} {stamp}"
     raw, info = RT.fetch_live_volume_bytes(site)
@@ -238,19 +262,36 @@ def render_live(outdir, site: str) -> tuple:
     rlat = float(f.sweeps[0][0][1].lat)
     rlon = float(f.sweeps[0][0][1].lon)
     try:
-        comp, bounds = rasterise(f, rlat, rlon)
+        polar = polar_sweep(f)
     except IncompleteSweep as exc:
         STATUS["busy"] = ""
         return stamp, f"waiting: sweep 0 incomplete ({exc})"
+    bounds = box_bounds(rlat, rlon)
     name = f"aradar_{site}_{stamp}.png"
-    tmp = outdir / f".{name}.tmp.png"
-    _png(comp, tmp)
-    os.replace(tmp, outdir / name)
+    if have is None:
+        comp = grid(polar, rlat, rlon, bounds, PX)
+        tmp = outdir / f".{name}.tmp.png"
+        _png(comp, tmp)
+        os.replace(tmp, outdir / name)
+    # inner tiles, one per airport currently looking at this radar
+    # (only the missing ones when the wide frame already exists)
+    inner = dict((have or {}).get("inner") or {})
+    for icao, (alat, alon) in (missing if have is not None else centres).items():
+        try:
+            ib = box_bounds(alat, alon, INNER_KM)
+            ic = grid(polar, rlat, rlon, ib, INNER_PX)
+            iname = f"aradar_{site}_{icao}_{stamp}.png"
+            itmp = outdir / f".{iname}.tmp.png"
+            _png(ic, itmp)
+            os.replace(itmp, outdir / iname)
+            inner[icao] = {"name": iname, "bounds": ib}
+        except Exception:
+            continue
     frames = [fr for fr in man.get("frames", []) if fr["stamp"] != stamp]
-    frames.append({"name": name, "stamp": stamp,
+    frames.append({"name": name, "stamp": stamp, "inner": inner,
                    "valid": f"{stamp[9:11]}:{stamp[11:13]}Z", "age_s": info.get("age_s")})
     frames = sorted(frames, key=lambda x: x["stamp"])[-KEEP:]
-    keep = {fr["name"] for fr in frames}
+    keep = {fr["name"] for fr in frames} | {v["name"] for fr in frames for v in (fr.get("inner") or {}).values()}
     for p in outdir.glob(f"aradar_{site}_*.png"):
         if p.name not in keep:
             try:
@@ -265,6 +306,8 @@ def render_live(outdir, site: str) -> tuple:
     os.replace(tmpm, mp)
     STATUS["busy"] = ""
     STATUS["last"] = time.time()
+    if have is not None:
+        return stamp, f"inner tile added for {', '.join(missing)}"
     return stamp, f"rendered ({info.get('n_used')} chunks, {info.get('age_s')}s old)"
 
 
@@ -274,14 +317,20 @@ def _demand_path(outdir):
     return Path(outdir) / "aradar_demand.json"
 
 
-def request(outdir, site: str) -> None:
-    """A page is looking at this 88D: keep it warm."""
+def request(outdir, site: str, icao: str = None, lat: float = None, lon: float = None) -> None:
+    """A page is looking at this 88D (from airport icao at lat/lon):
+    keep it warm, and an inner tile centred on that airport."""
     p = _demand_path(outdir)
     try:
         d = json.loads(p.read_text())
     except Exception:
         d = {}
-    d[site.upper()] = time.time()
+    cur = d.get(site.upper())
+    cur = cur if isinstance(cur, dict) else {"inner": {}}
+    cur["t"] = time.time()
+    if icao and lat is not None:
+        cur.setdefault("inner", {})[icao.upper()] = [float(lat), float(lon), time.time()]
+    d[site.upper()] = cur
     try:
         tmp = p.with_suffix(".tmp")
         tmp.write_text(json.dumps(d))
@@ -296,7 +345,23 @@ def demanded(outdir) -> list:
     except Exception:
         return []
     now = time.time()
-    return [s for s, t in d.items() if now - float(t) < DEMAND_S]
+    return [s for s, v in d.items() if now - _dt(v) < DEMAND_S]
+
+
+def _dt(v) -> float:
+    return float(v["t"]) if isinstance(v, dict) else float(v)
+
+
+def inner_centres(outdir, site: str) -> dict:
+    """{ICAO: (lat, lon)} for airports that asked for this radar lately."""
+    try:
+        v = json.loads(_demand_path(outdir).read_text()).get(site.upper())
+    except Exception:
+        return {}
+    if not isinstance(v, dict):
+        return {}
+    now = time.time()
+    return {k: (a[0], a[1]) for k, a in (v.get("inner") or {}).items() if now - a[2] < DEMAND_S}
 
 
 def _log(outdir, msg):
