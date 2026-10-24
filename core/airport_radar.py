@@ -315,7 +315,7 @@ def _png(comp, dest: Path) -> None:
 
 
 def _man_path(outdir, site):
-    return Path(outdir) / f"aradar_{site.upper()}.json"
+    return Path(outdir) / f"aradar_{site.upper().replace(':', '')}.json"
 
 
 def manifest(outdir, site: str) -> dict:
@@ -406,6 +406,104 @@ def render_live(outdir, site: str) -> tuple:
     return stamp, f"{n} gates ({info.get('n_used')} chunks, {info.get('age_s')}s old)"
 
 
+# ---------------------------------------------------------------- TDWR (raw polar, 24 Oct)
+# The TDWR's long-range base reflectivity (Level III product TZL: 300 m
+# gates, 1 deg radials, 416 km, every ~6 min, Unidata bucket) goes
+# through the same gate-file path as the 88D volumes, so the scope
+# draws it bin for bin. No dual-pol on a TDWR, so the clutter flag
+# comes from the coherence / texture / patch tests only.
+TDWR_KEEP = int(os.environ.get("ARADAR_TDWR_KEEP", "10"))
+
+
+def _tdwr_polar(raw: bytes) -> tuple:
+    """(polar dict, rlat, rlon, stamp) from TZL bytes."""
+    import numpy as np
+    from core import radar_l3 as L3
+    sc = L3.decode(raw)
+    codes, start_az = sc["codes"], sc["start_az"]
+    ref = sc["dbz_of_code"][codes].astype("float32")
+    nray, ngates = ref.shape
+    gate_w = sc["max_range_km"] * 1000.0 / ngates
+    az = (np.asarray(start_az, dtype="float32") + 0.5) % 360.0   # bin centre
+    order = np.argsort(az)
+    az, ref = az[order], ref[order]
+    ref[ref < 5.0] = np.nan
+    rho = np.full(ref.shape, np.nan, dtype="float32")
+    polar = {"az": az, "ref": ref, "rho": rho, "zdr": None,
+             "clutter": clutter_mask(ref, rho, None),
+             "gate_first": gate_w / 2.0, "gate_w": gate_w, "ngates": ngates}
+    t = sc.get("time")
+    stamp = t.strftime("%Y%m%d-%H%M%S") if t else datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return polar, float(sc["lat"]), float(sc["lon"]), stamp
+
+
+def _fname(site: str) -> str:
+    return site.upper().replace(":", "")
+
+
+def render_tdwr(outdir, site: str) -> tuple:
+    """Gate files for a TDWR ('T:FLL'): every TZL scan of the last
+    TDWR_KEEP not yet on disk. Returns (stamp, note)."""
+    from core import radar_l3 as L3
+    outdir = Path(outdir)
+    site = site.upper()
+    bsite = L3.bucket_site(site)
+    man = manifest(outdir, site)
+    have = {fr["stamp"] for fr in man.get("frames", [])}
+    try:
+        keys = L3.recent_keys(bsite, TDWR_KEEP, "TZL")
+    except Exception as exc:
+        return None, f"{site}: bucket list {type(exc).__name__}"
+    if not keys:
+        return None, f"{site}: no TZL scans"
+    frames = list(man.get("frames", []))
+    n_new, rlat, rlon, last = 0, None, None, None
+    for key in keys:
+        if any(fr.get("key") == key for fr in frames):
+            continue
+        STATUS["busy"] = f"{site} {L3.key_stamp(key)}"
+        try:
+            polar, rlat, rlon, stamp = _tdwr_polar(L3.fetch(key))
+        except Exception as exc:
+            _log(outdir, f"{site} {key}: {type(exc).__name__}: {exc}")
+            continue
+        if stamp in have:
+            continue
+        data, n = gate_bin(polar, rlat, rlon, RANGE_KM)
+        name = f"aradar_{_fname(site)}_{stamp}.bin"
+        tmp = outdir / f".{name}.tmp"
+        tmp.write_bytes(data)
+        os.replace(tmp, outdir / name)
+        frames = [fr for fr in frames if fr["stamp"] != stamp]
+        frames.append({"name": name, "bin": True, "stamp": stamp, "n": n, "key": key,
+                       "g0": polar["gate_first"], "gw": polar["gate_w"],
+                       "valid": f"{stamp[9:11]}:{stamp[11:13]}Z"})
+        have.add(stamp)
+        n_new += 1
+        last = stamp
+    frames = sorted(frames, key=lambda x: x["stamp"])[-TDWR_KEEP:]
+    keep = {fr["name"] for fr in frames}
+    for p in outdir.glob(f"aradar_{_fname(site)}_*.bin"):
+        if p.name not in keep:
+            try:
+                p.unlink()
+            except Exception:
+                pass
+    if rlat is None:
+        rlat, rlon = tuple(man.get("radar") or L3.RADAR_POS.get(site) or (None, None))
+    man = {"site": site, "bounds": box_bounds(rlat, rlon) if rlat is not None else None,
+           "radar": [rlat, rlon], "tdwr": True,
+           "built": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "frames": frames}
+    mp = _man_path(outdir, site)
+    tmpm = mp.with_suffix(".tmp")
+    tmpm.write_text(json.dumps(man))
+    os.replace(tmpm, mp)
+    STATUS["busy"] = ""
+    STATUS["last"] = time.time()
+    return last or (frames[-1]["stamp"] if frames else None), ("cached" if not n_new else f"{n_new} TZL scans")
+
+
+
 # ---------------------------------------------------------------- demand + warmer
 
 def _demand_path(outdir):
@@ -482,7 +580,8 @@ def _loop(outdir):
         try:
             for site in demanded(outdir):
                 try:
-                    stamp, note = render_live(outdir, site)
+                    stamp, note = (render_tdwr(outdir, site) if site.startswith("T:")
+                                   else render_live(outdir, site))
                     if note != "cached" and not note.startswith("waiting"):
                         _log(outdir, f"{site} {stamp}: {note}")
                     STATUS["err"] = None

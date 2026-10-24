@@ -120,8 +120,7 @@ coords = (rad.get("lat"), rad.get("lon"))
 if coords[0] is None:
     st.error(f"No position for {icao}.")
     st.stop()
-if not use_tdwr:
-    AR.request(STATIC, l2_site, icao, coords[0], coords[1])
+AR.request(STATIC, tdwr if use_tdwr else l2_site, icao, coords[0], coords[1])
 
 
 # ------------------------------------------------------------- the scope
@@ -129,21 +128,20 @@ if not use_tdwr:
 def _scope():
     now = datetime.now(timezone.utc)
     base = _origin()
-    if not use_tdwr:
-        AR.request(STATIC, l2_site, icao, coords[0], coords[1])
-    # frames
+    AR.request(STATIC, tdwr if use_tdwr else l2_site, icao, coords[0], coords[1])
+    # frames: 88D volumes or TDWR TZL scans, both as raw gate files
+    # (24 Oct) drawn bin for bin by the viewer
     frames, rtxt = [], ""
-    if use_tdwr and L3 is not None:
-        dom = L3.station_domain(icao) if icao.upper() in L3.STATION_RADAR else None
-        if dom:
-            try:
-                L3.build(dom, STATIC, wait=False, site=tdwr)
-            except Exception:
-                pass
-            fr = [f for f in L3.frames(STATIC, dom) if L3.age_s(f["stamp"]) < 4800]
-            frames = [{"url": f"{base}/app/static/{f['name']}", "bounds": f["bounds"],
-                       "label": f"{f['stamp'][9:11]}:{f['stamp'][11:13]}Z"} for f in fr]
-            rtxt = f"TDWR {tdwr[2:]} · {len(frames)} frames" if frames else f"TDWR {tdwr[2:]}: no frames yet"
+    if use_tdwr:
+        man = AR.manifest(STATIC, tdwr)
+        _fresh = [f for f in man.get("frames", []) if f.get("bin")
+                  and (now - datetime.strptime(f["stamp"], "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)).total_seconds() < 5400]
+        if _fresh and man.get("radar") and man["radar"][0] is not None:
+            frames = [{"bin_url": f"{base}/app/static/{f['name']}", "g0": f["g0"], "gw": f["gw"],
+                       "radar": man["radar"], "label": f["valid"]} for f in _fresh]
+            rtxt = f"TDWR {tdwr[2:]} (TZL, 300 m) · {len(frames)} scans · latest {_fresh[-1]['valid']}"
+        else:
+            rtxt = f"TDWR {tdwr[2:]}: first scans loading (about a minute)"
     else:
         man = AR.manifest(STATIC, l2_site)
         # frames older than 90 min are history, not a loop (the warmer
