@@ -265,7 +265,8 @@ def _scope():
                                                                   "inertia": True})],
                     map_style=None, map_provider=None, parameters={"clearColor": [0, 0, 0, 1]})
     html = scope_html(json.loads(deck.to_json()), frames, style, icao, height=SCOPE_H, tooltip=_tip,
-                      live_url=f"{base}/app/static/{LT.path(STATIC, icao).name}", declutter=True)
+                      live_url=f"{base}/app/static/{LT.path(STATIC, icao).name}", declutter=True,
+                      autoplay=False)
     name = f"aradar_scope_{icao}_{'tdwr' if use_tdwr else 'l2'}.html"
     v = hashlib.md5(html.encode()).hexdigest()[:10]
     p = STATIC / name

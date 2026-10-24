@@ -52,7 +52,8 @@ def _clean(obj):
 def scope_html(deck_json: dict, frames: list, style_url: str, icao: str,
                height: int = 560, tooltip: dict | None = None,
                radar_index: int | None = None, loop_ms: int = 500,
-               live_url: str | None = None, declutter: bool = False) -> str:
+               live_url: str | None = None, declutter: bool = False,
+               autoplay: bool = True) -> str:
     from core.airport_scope import AIRPORT_ZOOM as _AZ
     airport_zoom = _AZ
     """deck_json: json.loads(pdk.Deck(...).to_json()) WITHOUT the radar
@@ -198,7 +199,7 @@ const LIVE = {json.dumps(live_url)};
 const DECLUTTER = {json.dumps(bool(declutter))};
 const KEY = 'bm_scope_view_' + {json.dumps(icao)};
 const SPEEDS = [250, 500, 900];
-let ms = {loop_ms}, i = FRAMES.length - 1, playing = FRAMES.length > 1, tick = null;
+let ms = {loop_ms}, i = FRAMES.length - 1, playing = FRAMES.length > 1 && {json.dumps(bool(autoplay))}, tick = null;
 // radar opacity (23 Oct): slider in the bar, remembered per browser
 let radarOp = 0.85;
 try {{ const v = localStorage.getItem('bm_radar_op'); if (v) radarOp = Math.max(0.1, Math.min(1, +v)); }} catch (e) {{}}
@@ -408,7 +409,10 @@ function retone() {{
         // DECLUTTER (22 Oct, Airport Radar): minor roads, buildings,
         // rail, road names, POIs and small place names go; motorways,
         // trunks, water, boundaries, towns and cities stay.
-        if (DECLUTTER && /service|minor|_sec_|_pri_|path|rail|tunnel|bridge|building|roadname|housenumber|poi_|place_hamlet|place_suburbs|place_villages|landuse|park_|watername_lake|waterway/.test(l.id)) {{
+        // (24 Oct) every road, tunnel, bridge and rail layer goes too -
+        // an aviation scope wants water, coastlines, boundaries, place
+        // names and runways, not the highway network
+        if (DECLUTTER && /road|tunnel|bridge|rail|path|building|housenumber|poi_|place_hamlet|place_suburbs|place_villages|landuse|park_|watername_lake|waterway/.test(l.id)) {{
           m.setLayoutProperty(l.id, 'visibility', 'none'); continue;
         }}
         if (l.type === 'background') m.setPaintProperty(l.id, 'background-color', '#2A2C30');
