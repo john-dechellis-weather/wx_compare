@@ -171,7 +171,12 @@ async function loadGates(k) {{
       for (let v = 0; v < 4; v++) {{ col.set([rgb[0], rgb[1], rgb[2], 255], g * 16 + v * 4); }}
       start[g + 1] = (g + 1) * 4;
     }}
-    GATES[k] = {{n, pos, col, val, start}};
+    // one data object per frame, built once: deck.gl compares `data` by
+    // reference, so a fresh object on every redraw re-uploaded every
+    // gate twice a second (the drag lag of 23 Oct)
+    GATES[k] = {{n, data: {{length: n, startIndices: start, attributes: {{
+      getPolygon: {{value: pos, size: 2}}, getFillColor: {{value: col, size: 4}},
+      getFilterValue: {{value: val, size: 1}}}}}}}};
   }} catch (e) {{ GATES[k] = {{error: String(e)}}; }}
   dk.setProps({{layers: allLayers()}});
 }}
@@ -180,9 +185,7 @@ function gateLayers() {{
     const gd = GATES[k];
     if (!f.bin_url || !gd || !gd.n) return null;
     return new deck.SolidPolygonLayer({{id: 'l2g_' + k, visible: k === i, opacity: radarOp,
-      data: {{length: gd.n, startIndices: gd.start, attributes: {{
-        getPolygon: {{value: gd.pos, size: 2}}, getFillColor: {{value: gd.col, size: 4}},
-        getFilterValue: {{value: gd.val, size: 1}}}}}},
+      data: gd.data,
       _normalize: false, positionFormat: 'XY', filled: true, extruded: false,
       extensions: [new deck.DataFilterExtension({{filterSize: 1}})], filterRange: [floorDbz, 999],
       parameters: {{depthTest: false}}}});
@@ -361,7 +364,7 @@ function liveLayers() {{
 // ac_gnd_agg* (one glyph + count per airport) for the wide view and
 // ac_gnd_* (every aircraft) for the airport-scale view. Zoom decides.
 const AIRPORT_ZOOM = {airport_zoom};
-let curZoom = null, zoomMode = null;
+let curZoom = null, zoomMode = null, dragging = false;
 function allLayers() {{
   const z = curZoom == null ? (DJ.initialViewState || {{}}).zoom : curZoom;
   const close = z != null && z >= AIRPORT_ZOOM;
@@ -387,6 +390,7 @@ const dk = new deck.DeckGL({{
   // hidden (found 5 Oct). Transparent clear lets the map show through.
   parameters: Object.assign({{}}, DJ.parameters || {{}}, {{clearColor: [0, 0, 0, 0]}}),
   layers: allLayers(),
+  onDragStart: () => {{ dragging = true; }}, onDragEnd: () => {{ dragging = false; }},
   onViewStateChange: ({{viewState}}) => {{
     try {{ sessionStorage.setItem(KEY, JSON.stringify({{longitude: viewState.longitude, latitude: viewState.latitude, zoom: viewState.zoom}})); }} catch (e) {{}}
     curZoom = viewState.zoom;
@@ -466,6 +470,6 @@ if (LIVE) {{
   pollLive(); setInterval(pollLive, 6000);
   // redraw at 2 Hz: positions are dead-reckoned, so this is movement
   // between fixes, not a server round trip
-  setInterval(() => {{ if (live) dk.setProps({{layers: allLayers()}}); }}, 500);
+  setInterval(() => {{ if (live && !dragging) dk.setProps({{layers: allLayers()}}); }}, 500);
 }}
 </script></body></html>"""
