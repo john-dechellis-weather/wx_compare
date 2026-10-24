@@ -2336,8 +2336,9 @@ if run_button or _auto:
         with _ctl[6]:
             show_routes = st.checkbox(
                 "Routes", value=False, key="show_routes",
-                help="The 58 ATS routes on the map: 42 domestic J and Q "
-                     "routes and 16 oceanic L-routes, as exported.")
+                help="The 64 ATS routes on the map: 42 domestic J and Q "
+                     "routes, 16 oceanic L-routes and 6 Atlantic Routes "
+                     "(AR3, AR8, AR15, AR17, AR18, AR24).")
         chip_tier, chip_hub = 0, "JFK"
         if _STATION_CHIPS:
             with _ctl[7]:
@@ -2591,6 +2592,8 @@ if run_button or _auto:
                         t = (r.get("type") or "").upper()
                         if t == "OCEAN":
                             return [70, 85, 120, 200]
+                        if t == "AR" or r["id"].startswith("AR"):
+                            return [40, 150, 175, 210]      # Atlantic Routes: teal
                         if t == "RNAV" or r["id"].startswith("Q"):
                             return [110, 110, 30, 200]
                         return [150, 60, 40, 200]

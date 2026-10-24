@@ -1781,7 +1781,7 @@ def map_html(man: dict, base: str, stations: dict, height: int = 860,
   <button id="bst" class="on">Stations</button><button id="balt" class="on">CA alternates</button>
   <button id="bfit">Fit</button><button id="b2" title="Map + meteogram of the layers that are on, for a station you click">2-panel</button>
   <span style="color:#333">|</span>
-  <button class="ov" data-o="routes" title="{(' · '.join(routes_only) + ' at full NASR length') if routes_only else 'The 58 ATS routes the JetBlue Live System Map draws: 42 domestic J and Q, 16 oceanic L'}">Jet routes</button>
+  <button class="ov" data-o="routes" title="{(' · '.join(routes_only) + ' at full NASR length') if routes_only else 'The 64 ATS routes the JetBlue Live System Map draws: 42 domestic J and Q, 16 oceanic L, 6 Atlantic Routes (AR)'}">Jet routes</button>
   <button class="ov" data-o="n90" title="N90 TRACON lateral boundary (FAA 2012 map; the Newark area went to PHL in 2024)">N90</button>
   <button class="ov" data-o="stars" title="JFK arrivals: CAMRN, LENDY/IGN, PARCH/ROBER, PWL, coloured by gate">JFK STARs</button>
   <button class="ov" data-o="fixes" title="N90 arrival / departure gates and coordination fixes">Fixes</button>
@@ -2244,8 +2244,8 @@ const OV = {{
       // by the page from the navdata cache
       const ROUTES_ONLY = {json.dumps(list(routes_only or []))};
       const feats = ROUTES_ONLY.length ? j.features.filter(f => ROUTES_ONLY.includes(f.properties.ident)) : j.features;
-      map.addSource('ov-routes', {{type:'geojson', data: lineFC(feats.map(f => [f.geometry.coordinates, {{ident:f.properties.ident, rnav:f.properties.type === 'RNAV', ocean:f.properties.type === 'OCEAN'}}]))}});
-      map.addLayer({{id:'ov-routes', type:'line', source:'ov-routes', paint:{{'line-color':['case', ['get','rnav'], '#22D3EE', ['get','ocean'], '#6B7FB3', '#9AA0A6'], 'line-width':1.1, 'line-opacity':0.85}}}}, 'st-dot');
+      map.addSource('ov-routes', {{type:'geojson', data: lineFC(feats.map(f => [f.geometry.coordinates, {{ident:f.properties.ident, rnav:f.properties.type === 'RNAV', ocean:f.properties.type === 'OCEAN', ar:f.properties.type === 'AR'}}]))}});
+      map.addLayer({{id:'ov-routes', type:'line', source:'ov-routes', paint:{{'line-color':['case', ['get','rnav'], '#22D3EE', ['get','ar'], '#2896AF', ['get','ocean'], '#6B7FB3', '#9AA0A6'], 'line-width':1.1, 'line-opacity':0.85}}}}, 'st-dot');
       map.addLayer({{id:'ov-routes-lab', type:'symbol', source:'ov-routes', layout:{{'symbol-placement':'line', 'text-field':['get','ident'], 'text-size':10, 'text-font':['Open Sans Bold'], 'symbol-spacing':900}},
         paint:{{'text-color':['case', ['get','rnav'], '#22D3EE', '#C8CCD2'], 'text-halo-color':'#000', 'text-halo-width':1.2}}}}, 'st-dot');
       return ['ov-routes', 'ov-routes-lab']; }} }},

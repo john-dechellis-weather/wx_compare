@@ -70,7 +70,7 @@ ARTCC_IDS = set(x.strip().upper() for x in os.environ.get(
 # cache for a cycle is rebuilt when its stored version is older —
 # without this, a deploy that adds routes or more centres appears to
 # do nothing until the next 28-day cycle.
-DATA_VERSION = 8      # 8: EXTRA_ROUTES (J174) tagged "extra"
+DATA_VERSION = 9      # 9: Atlantic Routes (AR) from AIS; 8: EXTRA_ROUTES tagged "extra"
 
 _lock = threading.Lock()
 _started = set()
@@ -403,8 +403,9 @@ def build(cache_root, cycle: date = None, log=None) -> dict:
     # geometry, so a network failure degrades to the previous map
     # rather than to a blank one. The log says which happened.
     bundled = bundled_routes(log)
-    want_dom = {r["id"] for r in bundled if r["type"] != "OCEAN"}
-    want_oc = {r["id"] for r in bundled if r["type"] == "OCEAN"}
+    # OCEAN (L) and AR (Atlantic Routes, 24 Oct) both come from AIS
+    want_dom = {r["id"] for r in bundled if r["type"] not in ("OCEAN", "AR")}
+    want_oc = {r["id"] for r in bundled if r["type"] in ("OCEAN", "AR")}
     full_dom = {r["id"]: r for r in parse_awy(
         got["AWY"], fixes, nav_pos, want_dom, log)}
     try:
@@ -418,9 +419,9 @@ def build(cache_root, cycle: date = None, log=None) -> dict:
         if r["id"] in seen:
             continue                 # export split some routes in two
         seen.add(r["id"])
-        if r["type"] == "OCEAN" and r["id"] in full_oc:
+        if r["type"] in ("OCEAN", "AR") and r["id"] in full_oc:
             routes.append({**r, "path": full_oc[r["id"]]}); n_full += 1
-        elif r["type"] != "OCEAN" and r["id"] in full_dom:
+        elif r["type"] not in ("OCEAN", "AR") and r["id"] in full_dom:
             routes.append({**r, "path": full_dom[r["id"]]["path"],
                            "fixes": full_dom[r["id"]]["fixes"]})
             n_full += 1
