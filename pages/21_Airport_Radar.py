@@ -394,7 +394,7 @@ def _scope():
     try:
         _lv = json.loads(LT.path(STATIC, icao).read_text())
         for a in _lv.get("ac") or []:
-            if a.get("ground") or not a.get("airline") or (a.get("dest") or "").upper() != icao.upper():
+            if a.get("ground") or not a.get("jbu") or (a.get("dest") or "").upper() != icao.upper():
                 continue
             gs = a.get("gs") or 0
             if gs < 60:
@@ -427,62 +427,16 @@ def _scope():
                            "src": "RadarBox", "colour": _CC.colour(key)}
     except Exception:
         pass
-    # ALL-CARRIER SCHEDULE, ON DEMAND (24 Oct): the button below runs
-    # one RadarBox schedules call for every airline (about a credit a
-    # flight); the answer is cached an hour for everyone and merged in.
-    _all_note = ""
-    try:
-        from core import radarbox as RBX
-        from core import cards as _CC
-        if st.session_state.pop("ar_all_fetch", False):
-            _alldoc, _all_note = RBX.fetch_all(icao, 3)
-        else:
-            _alldoc = RBX.cached_all(icao)
-        if _alldoc and RBX.age_min(_alldoc) < RBX.ALL_TTL_MIN * 6:
-            for rr in RBX.rows(_alldoc):
-                if rr["phase"] == "landed" or not rr["eta"]:
-                    continue
-                if rr["eta"] > _nowt + timedelta(hours=3) or rr["eta"] < _nowt - timedelta(minutes=10):
-                    continue
-                key = rr.get("callsign") or rr["flight"]
-                if key in _board:
-                    if _board[key]["sta"] is None:
-                        _board[key].update({"sta": rr["sta"], "delta": rr["delta_min"], "src": _board[key]["src"] + " + RadarBox"})
-                    continue
-                _board[key] = {"flight": rr["flight"] or key, "from": rr["from"], "type": rr["type"], "eta": rr["eta"],
-                               "sta": rr["sta"], "delta": rr["delta_min"], "phase": rr["phase"], "nm": None,
-                               "src": "RadarBox", "colour": _CC.colour(key)}
-            _all_age = f"all-carrier schedule fetched {RBX.age_min(_alldoc):.0f} min ago ({_alldoc.get('cost', 0)} credits)"
-        else:
-            _all_age = ""
-        _bud = RBX.budget()
-    except Exception:
-        _all_age, _bud = "", None
-    _rows = sorted(_board.values(), key=lambda x: x["eta"])
+    # JetBlue only, the next 10 by ETA (24 Oct)
+    _rows = sorted((x for x in _board.values() if x["flight"].upper().startswith(("JBU", "B6"))),
+                   key=lambda x: x["eta"])[:10]
     with st.container(border=True):
         n_air = sum(1 for x in _rows if x["phase"] == "airborne")
-        pod_title(f"Arrivals {icao[1:] if icao[0] == 'K' and len(icao) == 4 else icao} · next 3 h",
-                  f"{n_air} airborne · {len(_rows) - n_air} scheduled / departed · "
-                  "live ADS-B routes (all carriers, ~25 min out) + RadarBox JetBlue schedule"
-                  + (f" · {_all_age}" if _all_age else ""))
-        _bc1, _bc2 = st.columns([1.3, 4], gap="small", vertical_alignment="center")
-        with _bc1:
-            if st.button("Fetch all-carrier schedule (3 h)", key="ar_all_btn", type="secondary",
-                         help="One RadarBox schedules call for every airline due here in the next 3 h. "
-                              "Costs about one credit per flight - 300 or more at a hub."):
-                st.session_state["ar_all_fetch"] = True
-                st.rerun()
-        with _bc2:
-            st.markdown(
-                f'<div style="color:#FFB300;-webkit-text-fill-color:#FFB300;font-size:11px">⚠ Limited supply: '
-                f'RadarBox credits are a fixed monthly allowance shared by every page'
-                + (f' — {_bud["used"]:,} of {_bud["cap"]:,} used this month' if _bud else "")
-                + '. Each all-carrier fetch costs roughly a credit per flight; the answer is cached for an hour, '
-                'so fetch once and re-use.</div>', unsafe_allow_html=True)
-        if _all_note:
-            st.caption(_all_note)
+        pod_title(f"JetBlue arrivals {icao[1:] if icao[0] == 'K' and len(icao) == 4 else icao} · next 10",
+                  f"{n_air} airborne · {len(_rows) - n_air} scheduled / departed · next 3 h · "
+                  "live ADS-B + RadarBox schedule")
         if not _rows:
-            st.caption("Nothing due in the next 3 hours from either source.")
+            st.caption("No JetBlue arrivals due in the next 3 hours.")
         cells = []
         for x in _rows:
             eta = x["eta"].strftime("%H:%MZ")
