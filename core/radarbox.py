@@ -245,6 +245,56 @@ def rows(doc: dict) -> list[dict]:
     return out
 
 
+# ------------------------------------------- all carriers, on demand (24 Oct)
+# Every airline's arrivals for an airport over the next `hours`: one
+# schedules call, roughly a credit per flight (300+ at a hub), so this
+# is only ever run from the Airport Radar board's button, never on a
+# timer, and the answer is cached ALL_TTL_MIN for everyone.
+ALL_TTL_MIN = int(os.environ.get("RBX_ALL_TTL_MIN", "60"))
+
+
+def _all_cache_path(icao: str) -> Path:
+    CACHE.mkdir(parents=True, exist_ok=True)
+    return CACHE / f"arrivals_all_{icao}.json"
+
+
+def cached_all(icao: str) -> dict | None:
+    try:
+        return json.loads(_all_cache_path(icao.upper()).read_text())
+    except Exception:
+        return None
+
+
+def fetch_all(icao: str, hours: int = 3) -> tuple[dict | None, str]:
+    """(doc, note) - all-carrier arrivals, next `hours`. Spends credits."""
+    icao = icao.upper()
+    doc = cached_all(icao)
+    if not token():
+        return doc, "RADARBOX_TOKEN is not set"
+    b = budget()
+    if b["left"] < 50:
+        return doc, (f"RadarBox month cap reached ({b['used']:,} / {b['cap']:,} credits);"
+                     " showing the last fetch")
+    now = datetime.now(timezone.utc)
+    try:
+        sched = _get("/flights/schedules", {
+            "toAirport": icao,
+            "arrivalFromDate": _iso(now - timedelta(minutes=15)),
+            "arrivalToDate": _iso(now + timedelta(hours=hours))})
+    except Exception as exc:
+        return doc, f"RadarBox fetch failed: {type(exc).__name__}: {exc}"
+    cost = int(sched.get("cost") or 0)
+    _add_usage(cost, icao)
+    flights = [_slim(f) for f in sched.get("flights") or []]
+    doc = {"fetched_iso": _iso(now), "icao": icao, "cost": cost, "hours": hours,
+           "flights": sorted(flights, key=lambda f: f.get("estimatedArrival") or f.get("scheduledArrival") or "")}
+    p = _all_cache_path(icao)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(doc))
+    os.replace(tmp, p)
+    return doc, ""
+
+
 # ------------------------------------------------- one aircraft (card)
 CARD_TTL_MIN = int(os.environ.get("RBX_CARD_TTL_MIN", "10"))
 _card_cache: dict = {}      # callsign -> (time.time(), record | None)
