@@ -99,7 +99,21 @@ _GLYPHS = {
     "narrow": _PLANE,
     "wide": _ROOT / "icons" / "plane_wide.png",
 }
-ICON_PX = {"bizjet": 17, "regional": 19, "narrow": 22, "wide": 27}
+# 24 Oct: 75% of the first sizes (17/19/22/27) and a narrower widebody.
+ICON_PX = {"bizjet": 13, "regional": 14, "narrow": 17, "wide": 19}
+# Icon tint: carrier colour muted 25% (saturation x0.75) and 70% opaque,
+# so the weather shows through the aircraft but the aircraft still
+# holds its own on any echo colour (24 Oct, "row 5").
+MUTE_SAT = 0.75
+ICON_ALPHA = 0.70
+
+
+def muted(hex_colour: str) -> str:
+    import colorsys
+    r, g, b = (int(hex_colour.lstrip("#")[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+    h, l, s = colorsys.rgb_to_hls(r, g, b)
+    r, g, b = colorsys.hls_to_rgb(h, l, s * MUTE_SAT)
+    return "#%02X%02X%02X" % (int(r * 255), int(g * 255), int(b * 255))
 WIDE_TYPES = ("A33", "A34", "A35", "A38", "B74", "B76", "B77", "B78",
               "MD11", "DC10", "A306", "A310", "IL96", "B703", "A124", "C5M",
               "C17", "K35R", "B52", "E3", "E6")
@@ -173,9 +187,10 @@ def plane_icon(hex_colour: str, glyph: str = "narrow") -> dict:
     from PIL import Image
 
     base = Image.open(_GLYPHS.get(glyph, _PLANE)).convert("RGBA")
-    r, g, b = (int(hex_colour.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+    mc = muted(hex_colour)
+    r, g, b = (int(mc.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
     tinted = Image.new("RGBA", base.size, (r, g, b, 255))
-    tinted.putalpha(base.getchannel("A"))
+    tinted.putalpha(base.getchannel("A").point(lambda v: int(v * ICON_ALPHA)))
     buf = io.BytesIO()
     tinted.save(buf, format="PNG", optimize=True)
     url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()

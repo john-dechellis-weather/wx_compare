@@ -146,7 +146,7 @@ def build_rows(raw: list, lat: float, lon: float) -> list:
                      "origin": r.get("o") or "", "dest": r.get("d") or "",
                      "origin_name": r.get("on") or "", "dest_name": r.get("dn") or "",
                      "oll": r.get("oll"), "dll": r.get("dll"),
-                     "colour": col, "rgb": AS._rgb(col), "glyph": glyph, "ikey": f"{glyph}:{col}",
+                     "colour": col, "rgb": AS._rgb(C.muted(col)), "glyph": glyph, "ikey": f"{glyph}:{col}",
                      "trail": [] if ground else AS.trail_t(cs, TRAIL_S)})
     if F is not None:
         try:
