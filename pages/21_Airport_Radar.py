@@ -239,6 +239,36 @@ def _scope():
                                 get_pixel_offset=[11, 0], get_text_anchor='"start"',
                                 get_alignment_baseline='"center"', font_family=_FONT, font_weight=700,
                                 pickable=False))
+    # RADAR SITE (24 Oct): an "R" badge where the selected radar stands
+    # (its own reported position from the manifest; the site table
+    # otherwise), with the ident beside it.
+    _rpos = None
+    try:
+        _rman = AR.manifest(STATIC, tdwr if use_tdwr else l2_site)
+        if _rman.get("radar") and _rman["radar"][0] is not None:
+            _rpos = (float(_rman["radar"][0]), float(_rman["radar"][1]))
+    except Exception:
+        _rpos = None
+    if _rpos is None and not use_tdwr:
+        try:
+            from core import nexrad_sites as _NSX
+            _rpos = _NSX.NEXRAD_SITES.get(l2_site)
+        except Exception:
+            _rpos = None
+    if _rpos is None and use_tdwr and L3 is not None:
+        _rpos = L3.RADAR_POS.get(tdwr)
+    if _rpos:
+        import base64 as _b64
+        _badge = (STATIC / "icons" / "radar_badge.png").read_bytes()
+        _rrow = [{"position": [_rpos[1], _rpos[0]], "name": (tdwr[2:] if use_tdwr else l2_site),
+                  "icon": {"url": "data:image/png;base64," + _b64.b64encode(_badge).decode(),
+                           "width": 64, "height": 64, "anchorX": 32, "anchorY": 32}}]
+        layers.append(pdk.Layer("IconLayer", _rrow, id="radar_site", get_position="position", get_icon="icon",
+                                get_size=5000, size_min_pixels=18, size_max_pixels=18, pickable=False))
+        layers.append(pdk.Layer("TextLayer", _rrow, id="radar_site_lab", get_position="position", get_text="name",
+                                get_color=[255, 255, 255, 240], get_size=3000, size_min_pixels=0, size_max_pixels=12,
+                                get_pixel_offset=[13, 0], get_text_anchor='"start"', get_alignment_baseline='"center"',
+                                font_family=_FONT, font_weight=700, pickable=False))
     # echo-top tags
     tags = []
     try:
