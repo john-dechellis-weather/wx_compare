@@ -43,3 +43,5 @@ static/mdl_*.png
 static/mdl_*.webp
 static/aradar_*
 static/glm_flashes.json
+mac/site_stats.json
+mac/site_stats.tmp

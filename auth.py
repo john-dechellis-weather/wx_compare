@@ -121,11 +121,21 @@ def check_password() -> bool:
         if _ok(password):
             st.session_state["password_correct"] = True
             try:
+                from core import site_stats as _SS
+                _SS.bump("logins_ok")
+            except Exception:
+                pass
+            try:
                 st.query_params[_PARAM] = tok
             except Exception:
                 pass
             st.rerun()
         else:
+            try:
+                from core import site_stats as _SS
+                _SS.bump("logins_fail")
+            except Exception:
+                pass
             st.error("Incorrect password.")
 
     st.stop()

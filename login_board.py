@@ -573,9 +573,20 @@ def render(after_password=None) -> str | None:
             st.markdown(
                 f'<div style="color:{T.TEXT_2};font-size:12px;margin-top:-6px">'
                 f'[Press Enter to continue]</div>', unsafe_allow_html=True)
+        # site counters (24 Oct): one view per browser session
+        try:
+            from core import site_stats as _SS
+            if not st.session_state.get("_view_counted"):
+                st.session_state["_view_counted"] = True
+                _SS.bump("views")
+            _stats = _SS.line()
+        except Exception:
+            _stats = ""
         st.markdown(
             f'<div style="color:{T.MUTED};font-size:12px;margin-top:18px">'
-            f'bluemet.org</div>', unsafe_allow_html=True)
+            f'bluemet.org</div>'
+            f'<div style="color:{T.MUTED};font-size:11px;margin-top:4px">{_stats}</div>',
+            unsafe_allow_html=True)
 
     with right:
         # MRMS and the live fleet are OFF on the login map (21 Sep):
