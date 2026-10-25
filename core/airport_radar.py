@@ -72,24 +72,49 @@ def stations() -> list:
     return out
 
 
+RADAR_REACH_MI = float(os.environ.get("ARADAR_REACH_MI", "100"))
+_TDWR_TABLE = Path(__file__).resolve().parent.parent / "static" / "tdwr_sites.json"
+_tdwr_cache: dict = {}
+
+
+def tdwr_sites() -> dict:
+    """{"T:JFK": (lat, lon), ...} - every TDWR, positions from the
+    sites' own TZL headers (static/tdwr_sites.json)."""
+    if not _tdwr_cache:
+        try:
+            for k, v in json.loads(_TDWR_TABLE.read_text())["sites"].items():
+                _tdwr_cache[k] = (float(v[0]), float(v[1]))
+        except Exception:
+            pass
+    return _tdwr_cache
+
+
+def _hav_km(lat1, lon1, lat2, lon2) -> float:
+    p = math.pi / 180
+    a = (math.sin((lat2 - lat1) * p / 2) ** 2
+         + math.cos(lat1 * p) * math.cos(lat2 * p) * math.sin((lon2 - lon1) * p / 2) ** 2)
+    return 2 * 6371.0 * math.asin(math.sqrt(a))
+
+
 def radars_for(icao: str) -> dict:
-    """{"l2": (site, km), "tdwr": "T:JFK" | None, "lat", "lon"}."""
+    """{"l2": (nearest site, km), "l2_all": [(site, km), ...] every
+    WSR-88D within RADAR_REACH_MI (nearest always), "tdwrs":
+    [("T:JFK", km), ...] every TDWR within reach, "tdwr": nearest TDWR
+    or None, "lat", "lon"}. (24 Oct: all radars in reach, not one.)"""
     from core import airports as _AP
     from core import nexrad_sites as _NS
     c = _AP.centre(icao)
     if not c:
         return {}
-    site, km = _NS.nearest_site(c[0], c[1])
-    tdwr = None
-    try:
-        from core import radar_l3 as L3
-        for cand in L3.STATION_RADAR.get(icao.upper(), []):
-            if L3.is_tdwr(cand):
-                tdwr = cand
-                break
-    except Exception:
-        pass
-    return {"l2": (site, km), "tdwr": tdwr, "lat": c[0], "lon": c[1]}
+    reach_km = RADAR_REACH_MI * 1.609344
+    l2 = sorted(((s, _hav_km(c[0], c[1], la, lo)) for s, (la, lo) in _NS.NEXRAD_SITES.items()),
+                key=lambda x: x[1])
+    l2_all = [x for x in l2 if x[1] <= reach_km] or l2[:1]
+    td = sorted(((s, _hav_km(c[0], c[1], la, lo)) for s, (la, lo) in tdwr_sites().items()),
+                key=lambda x: x[1])
+    tdwrs = [x for x in td if x[1] <= reach_km]
+    return {"l2": l2_all[0], "l2_all": l2_all, "tdwrs": tdwrs,
+            "tdwr": tdwrs[0][0] if tdwrs else None, "lat": c[0], "lon": c[1]}
 
 
 # ---------------------------------------------------------------- render

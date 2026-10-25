@@ -88,32 +88,50 @@ def _origin() -> str:
 
 
 # ------------------------------------------------------------- controls
-_stations = AR.stations()
-_codes = [s[0] for s in _stations]
-_default = _codes.index("KJFK") if "KJFK" in _codes else 0
-h1, h2, h3 = st.columns([1.2, 2.2, 2.6], gap="small", vertical_alignment="bottom")
+from core import airports as _APT
+_known = set(AR.stations_codes()) if hasattr(AR, "stations_codes") else {s[0] for s in AR.stations()}
+h1, h2, h3 = st.columns([0.9, 3.0, 2.1], gap="small", vertical_alignment="bottom")
 with h1:
-    from core import airports as _APT
-    icao = st.selectbox("Airport", _codes, index=_default, key="ar_icao",
-                        help="JetBlue stations (marked B6) plus every US airport with annual "
-                             "enplanements at or above Lubbock's. Type to search.",
-                        format_func=lambda k: f"{k[1:] if k[0] == 'K' and len(k) == 4 else k}"
-                                              f"{'  B6' if _APT.is_station(k) else ''}  ·  "
-                                              f"{next((s[1] for s in _stations if s[0] == k), k)[:28]}")
+    # ICAO typed in (24 Oct), K prefix optional for US fields
+    _typed = st.text_input("Airport (ICAO)", value=st.session_state.get("ar_icao_ok", "KJFK"),
+                           key="ar_icao_in", max_chars=4,
+                           help="Type the ICAO (e.g. KJFK, PHNL, TJSJ). Three letters are taken "
+                                "as a US field (FLL = KFLL). Any US airport with annual enplanements "
+                                "at or above Lubbock's, plus every JetBlue station.").strip().upper()
+    _cand = _typed if len(_typed) == 4 else ("K" + _typed if len(_typed) == 3 else "")
+    _cand = _APT.canonical(_cand) if _cand else ""
+    if _cand in _known:
+        st.session_state["ar_icao_ok"] = _cand
+    elif _typed:
+        st.caption(f"{_typed}: not in the airport table")
+icao = st.session_state.get("ar_icao_ok", "KJFK")
 rad = AR.radars_for(icao)
-l2_site, l2_km = rad.get("l2", ("", 0.0))
-tdwr = rad.get("tdwr")
-opts = [f"Level II · {l2_site} (WSR-88D, {l2_km * 0.539957:.0f} nm)"]
-if tdwr:
-    opts.append(f"TDWR · {tdwr[2:]} (Level III TZL)")
+# every radar within reach, one selectable at a time (24 Oct): the
+# 88Ds nearest first, then the TDWRs nearest first
+_ropts, _rsite = [], {}
+for s, km in rad.get("l2_all", []):
+    lab = f"{s} · 88D {km * 0.539957:.0f} nm"
+    _ropts.append(lab); _rsite[lab] = s
+for s, km in rad.get("tdwrs", []):
+    lab = f"{s[2:]} · TDWR {km * 0.539957:.0f} nm"
+    _ropts.append(lab); _rsite[lab] = s
 with h2:
-    pick = st.radio("Radar", opts, horizontal=True, key=f"ar_radar_{icao}", label_visibility="visible")
-use_tdwr = pick.startswith("TDWR")
+    pick = st.radio("Radar", _ropts or ["none"], horizontal=True, key=f"ar_radar_{icao}",
+                    label_visibility="visible",
+                    help="Every WSR-88D and TDWR within 100 miles of the field, nearest first.")
+_site = _rsite.get(pick, rad.get("l2", ("", 0.0))[0])
+use_tdwr = _site.startswith("T:")
+tdwr = _site if use_tdwr else rad.get("tdwr")
+l2_site = rad.get("l2", ("", 0.0))[0] if use_tdwr else _site
+l2_km = next((km for s, km in rad.get("l2_all", []) if s == l2_site), rad.get("l2", ("", 0.0))[1])
 with h3:
+    _apname = _APT.get(icao).get("name") or icao
     st.markdown(
-        f'<div style="font-size:16px;font-weight:700;color:{INK};-webkit-text-fill-color:{INK}">AIRPORT RADAR</div>'
-        f'<div style="font-size:11px;color:{INK2};-webkit-text-fill-color:{INK2}">live Level II from the nearest WSR-88D '
-        '(TDWR where the airport has one) · aircraft, holding and diversion alerts, echo tops</div>',
+        f'<div style="font-size:16px;font-weight:700;color:{INK};-webkit-text-fill-color:{INK}">AIRPORT RADAR'
+        f' <span style="font-weight:400;color:{INK2};-webkit-text-fill-color:{INK2};font-size:13px">{_apname[:40]}'
+        f'{" · B6" if _APT.is_station(icao) else ""}</span></div>'
+        f'<div style="font-size:11px;color:{INK2};-webkit-text-fill-color:{INK2}">raw Level II / TDWR bins · '
+        'aircraft, holding and diversion alerts, echo tops, lightning</div>',
         unsafe_allow_html=True)
 
 coords = (rad.get("lat"), rad.get("lon"))

@@ -355,7 +355,9 @@ function liveLayers() {{
   if (!live) return [];
   const z = curZoom == null ? (DJ.initialViewState || {{}}).zoom : curZoom;
   const close = z != null && z >= AIRPORT_ZOOM;
-  const rows = (live.ac || []).filter(a => close || !a.ground)
+  // parked and taxiing aircraft are not drawn (24 Oct); ground traffic
+  // appears only on a takeoff / landing roll (gs >= 30 kt)
+  const rows = (live.ac || []).filter(a => !a.ground || (!a.parked && a.gs >= 30))
     .map(a => Object.assign({{}}, a, {{position: drPos(a), angle: (360 - (a.hdg || 0)) % 360}}));
   const tcut = Date.now() / 1000 - trailMin * 60;
   const trails = trailMin > 0 ? rows.filter(a => !a.ground && a.trail && a.trail.length > 0)
@@ -425,6 +427,7 @@ function allLayers() {{
   const close = z != null && z >= AIRPORT_ZOOM;
   const b = baseLayers().map(l => {{
     const id = l.id || '';
+    if (LIVE && id.startsWith('ac_gnd')) return l.clone({{visible: false}});
     if (id.startsWith('ac_gnd_agg')) return l.clone({{visible: !close}});
     if (live && (id.startsWith('ac_') || id.startsWith('hold_'))) return l.clone({{visible: false}});
     if (id.startsWith('ac_gnd_')) return l.clone({{visible: close}});

@@ -28,6 +28,7 @@ LIVE_S = float(os.environ.get("BLUEMET_LIVE_S", "10"))
 EXPIRE_S = float(os.environ.get("BLUEMET_LIVE_EXPIRE_S", "300"))
 TRAIL_S = float(os.environ.get("BLUEMET_LIVE_TRAIL_S", "3900"))   # an hour; the viewer trims
 RADIUS_NM = 150
+ROLL_KT = float(os.environ.get("BLUEMET_ROLL_KT", "30"))   # ground speed that counts as a takeoff / landing roll
 
 STATUS: dict = {}            # icao -> {"last", "n", "err", "host"}
 _demand: dict = {}           # icao -> last demand time
@@ -126,6 +127,9 @@ def build_rows(raw: list, lat: float, lon: float) -> list:
         except (TypeError, ValueError):
             alt = None
         ground = (gs < AS.GROUND_KT) if gs is not None else (alt is None or alt < 1500)
+        # parked / taxiing (24 Oct): on the ground under ROLL_KT. Not
+        # drawn on the scope; only aircraft rolling on a runway are.
+        parked = bool(ground and (gs is None or gs < ROLL_KT))
         col = C.colour(cs)
         glyph = C.kind(cs, a.get("type", ""))
         r = {}
@@ -137,7 +141,7 @@ def build_rows(raw: list, lat: float, lon: float) -> list:
         rows.append({"callsign": cs, "position": a["position"], "hdg": a.get("hdg") or 0.0,
                      "alt": alt if alt is not None else ("ground" if ground else None),
                      "gs": gs, "type": a.get("type", ""), "jbu": bool(a.get("jbu")),
-                     "airline": bool(a.get("airline")), "ground": bool(ground),
+                     "airline": bool(a.get("airline")), "ground": bool(ground), "parked": parked,
                      "age": seen.get(cs, 0.0),
                      "origin": r.get("o") or "", "dest": r.get("d") or "",
                      "origin_name": r.get("on") or "", "dest_name": r.get("dn") or "",
