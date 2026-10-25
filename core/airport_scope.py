@@ -260,7 +260,10 @@ def _remember(rows) -> None:
             h = _HIST.setdefault(cs, [])
             if not h or now - h[-1][0] > 5:
                 h.append((now, a["position"][0], a["position"][1]))
-            del h[:-60]
+            # an hour of history (24 Oct): every fix for the last 3 min,
+            # one per 30 s beyond, nothing past 65 min
+            if len(h) > 400:
+                del h[:len(h) - 400]
         for cs in [c for c, h in _HIST.items() if now - h[-1][0] > 900]:
             _HIST.pop(cs, None)
 
@@ -269,6 +272,22 @@ def trail(callsign: str, seconds: float = TRAIL_S) -> list:
     cut = _time.time() - seconds
     with _HIST_LOCK:
         return [[lo, la] for t, lo, la in _HIST.get(callsign, []) if t >= cut]
+
+
+def trail_t(callsign: str, seconds: float = 3900.0) -> list:
+    """[[lon, lat, t], ...] thinned: every fix in the last 3 min, one
+    per 30 s before that."""
+    now = _time.time()
+    cut = now - seconds
+    out, last_t = [], None
+    with _HIST_LOCK:
+        pts = [(t, lo, la) for t, lo, la in _HIST.get(callsign, []) if t >= cut]
+    for t, lo, la in pts:
+        if now - t > 180 and last_t is not None and t - last_t < 29:
+            continue
+        out.append([lo, la, round(t, 1)])
+        last_t = t
+    return out
 
 
 def inbound_eta(rows, lat, lon, max_min: float = 60.0) -> list:

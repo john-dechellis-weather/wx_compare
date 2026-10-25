@@ -26,7 +26,7 @@ from pathlib import Path
 
 LIVE_S = float(os.environ.get("BLUEMET_LIVE_S", "10"))
 EXPIRE_S = float(os.environ.get("BLUEMET_LIVE_EXPIRE_S", "300"))
-TRAIL_S = float(os.environ.get("BLUEMET_LIVE_TRAIL_S", "180"))
+TRAIL_S = float(os.environ.get("BLUEMET_LIVE_TRAIL_S", "3900"))   # an hour; the viewer trims
 RADIUS_NM = 150
 
 STATUS: dict = {}            # icao -> {"last", "n", "err", "host"}
@@ -143,7 +143,7 @@ def build_rows(raw: list, lat: float, lon: float) -> list:
                      "origin_name": r.get("on") or "", "dest_name": r.get("dn") or "",
                      "oll": r.get("oll"), "dll": r.get("dll"),
                      "colour": col, "rgb": AS._rgb(col), "glyph": glyph, "ikey": f"{glyph}:{col}",
-                     "trail": [] if ground else AS.trail(cs, TRAIL_S)})
+                     "trail": [] if ground else AS.trail_t(cs, TRAIL_S)})
     if F is not None:
         try:
             F.request_routes([r["callsign"] for r in rows if r["airline"]])

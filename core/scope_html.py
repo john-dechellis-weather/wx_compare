@@ -97,7 +97,7 @@ def scope_html(deck_json: dict, frames: list, style_url: str, icao: str,
  #ac .leg.dest{{border-left-color:#00E5FF}}
  #ac .ft{{padding:6px 12px 8px;color:#6E6E6E;font-size:10px}}
  /* reflectivity legend (23 Oct): top left, AWIPS steps + floor slider */
- #lg{{position:absolute;top:10px;left:10px;z-index:8;background:rgba(10,10,10,.82);border:1px solid #333;border-radius:6px;padding:6px 10px;display:none;font:bold 11px "DejaVu Sans Mono",monospace;color:#B8B8B8}}
+ #lg{{position:absolute;top:10px;left:10px;z-index:8;min-width:470px;background:rgba(10,10,10,.82);border:1px solid #333;border-radius:6px;padding:6px 10px;display:none;font:bold 11px "DejaVu Sans Mono",monospace;color:#B8B8B8}}
  #lg .sw{{display:flex;gap:0;margin:4px 0 2px}} #lg .sw div{{width:22px;height:12px;position:relative}}
  #lg .sw div span{{position:absolute;left:-6px;top:13px;font-size:9px;color:#B8B8B8;width:22px;text-align:center}}
  #lg .sw div.off{{opacity:.18}}
@@ -108,6 +108,9 @@ def scope_html(deck_json: dict, frames: list, style_url: str, icao: str,
 <div id="lg"><div>REFLECTIVITY dBZ</div><div class="sw" id="sw"></div>
   <div class="row"><span>show &ge;</span><input id="fl" type="range" min="5" max="40" step="1"><span><b id="flv"></b> dBZ</span></div>
   <div class="row" style="margin-top:6px"><label style="cursor:pointer"><input id="cf" type="checkbox" style="accent-color:#00E5FF;vertical-align:-2px"> clutter filter <span style="color:#6E6E6E;font-weight:400">(RHO + texture)</span></label></div>
+  <div class="row" id="acrow" style="margin-top:6px;display:none"><span>trails</span><select id="trw" style="font:bold 11px 'DejaVu Sans Mono',monospace;background:#1C1C22;color:#fff;border:1px solid #333;border-radius:4px;padding:1px 4px">
+      <option value="0">off</option><option value="3">3 min</option><option value="15">15 min</option><option value="30">30 min</option><option value="45">45 min</option><option value="60">60 min</option></select>
+    <span style="margin-left:10px">aircraft size</span><input id="acs" type="range" min="70" max="150" step="5" style="width:90px"><span><b id="acsv"></b>%</span></div>
   <div class="row" id="ltgrow" style="margin-top:6px;display:none"><label style="cursor:pointer"><input id="lt" type="checkbox" style="accent-color:#FFD400;vertical-align:-2px"> lightning <span style="color:#6E6E6E;font-weight:400">GLM flashes, last 15 min</span></label>
     <span style="margin-left:6px"><b style="color:#FFFFFF">+</b> 0-5 <b style="color:#CFCFCF;margin-left:6px">+</b> 5-10 <b style="color:#A3A3A3;margin-left:6px">+</b> 10-15 min</span></div></div>
 <div id="ac"></div>
@@ -209,11 +212,10 @@ function gateLayers() {{
   }}).filter(Boolean);
 }}
 function legend() {{
-  if (!FRAMES.some(f => f.bin_url)) return;
   const sw = $('sw');
   sw.innerHTML = AWIPS.map(([v, h]) => `<div style="background:${{h}}" class="${{v < floorDbz ? 'off' : ''}}"><span>${{v}}</span></div>`).join('');
   $('fl').value = floorDbz; $('flv').textContent = floorDbz; $('cf').checked = clutterOff;
-  $('lg').style.display = 'block';
+  if (FRAMES.some(f => f.bin_url) || LIVE || LTG) $('lg').style.display = 'block';
 }}
 
 const LIVE = {json.dumps(live_url)};
@@ -312,6 +314,9 @@ function select(a) {{ sel = a; showPanel(a); dk.setProps({{layers: allLayers()}}
 // of jumping once a sweep. When live data is in hand the server-drawn
 // ac_* and hold_* layers are hidden and these take their place.
 let live = null, liveAt = 0;
+// trail window (minutes, 0 = off) and aircraft size (percent), 24 Oct
+let trailMin = 3, acScale = 100;
+try {{ const v = localStorage.getItem('bm_trail_min'); if (v != null) trailMin = +v; const w = localStorage.getItem('bm_ac_scale'); if (w) acScale = Math.max(70, Math.min(150, +w)); }} catch (e) {{}}
 async function pollLive() {{
   if (!LIVE) return;
   try {{
@@ -352,8 +357,10 @@ function liveLayers() {{
   const close = z != null && z >= AIRPORT_ZOOM;
   const rows = (live.ac || []).filter(a => close || !a.ground)
     .map(a => Object.assign({{}}, a, {{position: drPos(a), angle: (360 - (a.hdg || 0)) % 360}}));
-  const trails = rows.filter(a => !a.ground && a.trail && a.trail.length > 0)
-    .map(a => ({{path: smooth(a.trail.concat([a.position]), 6), color: a.rgb.concat([140])}}));
+  const tcut = Date.now() / 1000 - trailMin * 60;
+  const trails = trailMin > 0 ? rows.filter(a => !a.ground && a.trail && a.trail.length > 0)
+    .map(a => ({{path: smooth(a.trail.filter(p => p.length < 3 || p[2] >= tcut).map(p => [p[0], p[1]]).concat([a.position]), 6), color: a.rgb.concat([140])}}))
+    .filter(t => t.path.length > 1) : [];
   const holdSet = new Set(live.hold || []);
   const holds = rows.filter(a => holdSet.has(a.callsign));
   const P = {{depthTest: false}};
@@ -371,7 +378,7 @@ function liveLayers() {{
       getTextAnchor: 'start', getAlignmentBaseline: 'top', fontFamily: live.font || 'monospace', fontWeight: 700,
       pickable: false, parameters: P}}),
   ].concat(['bizjet', 'regional', 'narrow', 'wide'].map(g => {{
-    const px = (live.icon_px || {{}})[g] || 22;
+    const px = Math.round(((live.icon_px || {{}})[g] || 22) * acScale / 100);
     return new deck.IconLayer({{id: 'live_planes_' + g, data: rows.filter(d => (d.glyph || 'narrow') === g),
       getPosition: d => d.position, getIcon: d => {{ const ic = live.icons || {{}}; return ic[d.ikey] || ic['narrow:' + d.colour] || ic[d.colour] || Object.values(ic)[0]; }},
       getAngle: d => d.angle, getSize: 5000, sizeMinPixels: px, sizeMaxPixels: px, pickable: true,
@@ -521,6 +528,9 @@ FRAMES.forEach((f, k) => {{ if (f.url) {{ const im = new Image(); im.src = f.url
 loadGates(i);
 legend();
 $('fl').oninput = e => {{ floorDbz = +e.target.value; try {{ localStorage.setItem('bm_radar_floor', floorDbz); }} catch (e2) {{}} legend(); dk.setProps({{layers: allLayers()}}); }};
+if (LIVE) {{ $('acrow').style.display = 'flex'; $('lg').style.display = 'block'; $('trw').value = String(trailMin); $('acs').value = acScale; $('acsv').textContent = acScale; }}
+$('trw').onchange = e => {{ trailMin = +e.target.value; try {{ localStorage.setItem('bm_trail_min', trailMin); }} catch (e2) {{}} dk.setProps({{layers: allLayers()}}); }};
+$('acs').oninput = e => {{ acScale = +e.target.value; $('acsv').textContent = acScale; try {{ localStorage.setItem('bm_ac_scale', acScale); }} catch (e2) {{}} dk.setProps({{layers: allLayers()}}); }};
 if (LTG) {{ $('ltgrow').style.display = 'flex'; $('lg').style.display = 'block'; $('lt').checked = ltgOn; pollLtg(); setInterval(pollLtg, 30000); }}
 $('lt').onchange = e => {{ ltgOn = e.target.checked; try {{ localStorage.setItem('bm_ltg', ltgOn ? '1' : '0'); }} catch (e2) {{}} dk.setProps({{layers: allLayers()}}); }};
 $('cf').onchange = e => {{ clutterOff = e.target.checked; try {{ localStorage.setItem('bm_radar_clutter', clutterOff ? '1' : '0'); }} catch (e2) {{}} dk.setProps({{layers: allLayers()}}); }};
