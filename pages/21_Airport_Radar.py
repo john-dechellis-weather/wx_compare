@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pydeck as pdk
@@ -381,6 +381,83 @@ def _scope():
                             f'font-family:DejaVu Sans Mono,monospace">⚠ {cs} {dep} → {arr or "?"} '
                             f'<span style="color:{INK2};-webkit-text-fill-color:{INK2};font-weight:400">{stt.replace("_", " ").title()}</span></div>',
                             unsafe_allow_html=True)
+
+    # ------------------------------------------------------------ arrival board
+    # ARRIVALS, NEXT 3 H (24 Oct): two sources merged, sorted by ETA.
+    #   * live ADS-B: every airline aircraft in the feed whose resolved
+    #     route ends here, ETA from range over ground speed (any carrier,
+    #     within the 150 nm feed radius - the last ~25 min)
+    #   * RadarBox: the JetBlue schedule for this station (cached 3 h,
+    #     credit-capped) - fills the rest of the 3 h for JBU flights
+    _board = {}
+    _nowt = datetime.now(timezone.utc)
+    try:
+        _lv = json.loads(LT.path(STATIC, icao).read_text())
+        for a in _lv.get("ac") or []:
+            if a.get("ground") or not a.get("airline") or (a.get("dest") or "").upper() != icao.upper():
+                continue
+            gs = a.get("gs") or 0
+            if gs < 60:
+                continue
+            nm = AS.distance_nm(coords[0], coords[1], a["position"][1], a["position"][0])
+            mins = nm / gs * 60.0
+            _board[a["callsign"]] = {"flight": a["callsign"], "from": a.get("origin") or "", "type": a.get("type") or "",
+                                     "eta": _nowt + timedelta(minutes=mins), "sta": None, "delta": None,
+                                     "phase": "airborne", "nm": nm, "src": "ADS-B", "colour": a.get("colour") or "#9AA0A6"}
+    except Exception:
+        pass
+    try:
+        from core import radarbox as RBX
+        from core import cards as _CC
+        _doc = RBX.cached(icao) if _APT.is_station(icao) else None
+        if _doc is None and _APT.is_station(icao):
+            _doc, _ = RBX.fetch(icao)
+        for rr in RBX.rows(_doc or {}):
+            if rr["phase"] == "landed" or not rr["eta"]:
+                continue
+            if rr["eta"] > _nowt + timedelta(hours=3) or rr["eta"] < _nowt - timedelta(minutes=10):
+                continue
+            key = rr.get("callsign") or rr["flight"]
+            if key in _board:
+                _board[key].update({"sta": rr["sta"], "delta": rr["delta_min"], "flight": rr["flight"] or key,
+                                    "src": "ADS-B + RadarBox"})
+                continue
+            _board[key] = {"flight": rr["flight"] or key, "from": rr["from"], "type": rr["type"], "eta": rr["eta"],
+                           "sta": rr["sta"], "delta": rr["delta_min"], "phase": rr["phase"], "nm": None,
+                           "src": "RadarBox", "colour": _CC.colour(key)}
+    except Exception:
+        pass
+    _rows = sorted(_board.values(), key=lambda x: x["eta"])
+    with st.container(border=True):
+        n_air = sum(1 for x in _rows if x["phase"] == "airborne")
+        pod_title(f"Arrivals {icao[1:] if icao[0] == 'K' and len(icao) == 4 else icao} · next 3 h",
+                  f"{n_air} airborne · {len(_rows) - n_air} scheduled / departed · "
+                  "live ADS-B routes (all carriers, ~25 min out) + RadarBox JetBlue schedule")
+        if not _rows:
+            st.caption("Nothing due in the next 3 hours from either source.")
+        cells = []
+        for x in _rows:
+            eta = x["eta"].strftime("%H:%MZ")
+            sta = x["sta"].strftime("%H:%MZ") if x["sta"] else "--"
+            mins = round((x["eta"] - _nowt).total_seconds() / 60)
+            col = "#00E5FF" if x["phase"] == "airborne" else ("#FFD400" if x["phase"] == "taxiing" else "#B8B8B8")
+            tag = (f"in {max(mins, 0)} min" + (f" · {x['nm']:.0f} nm" if x.get("nm") is not None else "")
+                   if x["phase"] == "airborne" else ("departed" if x["phase"] == "taxiing" else "scheduled"))
+            d = x["delta"]
+            dtxt = ("" if d is None or x["phase"] == "scheduled"
+                    else (f' <span style="color:#FF8A00">+{d}</span>' if d > 5
+                          else f' <span style="color:#00FF7F">{d:+d}</span>' if d < -5
+                          else f' <span style="color:#6E6E6E">{d:+d}</span>'))
+            cells.append(
+                f'<div style="border:1px solid #2D3957;border-left:3px solid {x["colour"]};padding:4px 8px;'
+                f'font-family:DejaVu Sans Mono,monospace;font-size:11px;color:{INK};background:#05070B">'
+                f'<b>{x["flight"]}</b> <span style="color:{INK2}">{x["from"]}</span>'
+                f'{" &middot; " + x["type"] if x["type"] else ""}<br>'
+                f'<span style="color:{INK2}">STA</span> {sta} &rarr; <b>{eta}</b>{dtxt}<br>'
+                f'<span style="color:{col}">{tag}</span> <span style="color:#6E6E6E">{x["src"]}</span></div>')
+        if cells:
+            st.markdown('<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));'
+                        'gap:6px;margin:6px 0 2px">' + "".join(cells) + '</div>', unsafe_allow_html=True)
 
 
 _scope()
