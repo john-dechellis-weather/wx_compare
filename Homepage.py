@@ -312,9 +312,8 @@ PAGES = {
         # Flight Conditions: both plots, the NBM and LAMP grids, the
         # METAR/TAF, a radar snapshot and the JetBlue movement board
         # for one station on one page.
-        # DEFAULT: the login lands here. There is no Home page.
         st.Page("pages/2_Station_Forecast.py",
-                title="Station Forecast", default=True),
+                title="Station Forecast"),
         st.Page("pages/4_MOS_Tables.py",
                 title="MOS Tables"),
         # 15 Oct: tomorrow.io -> TAF (G. Delanjian's taf_maker),
@@ -330,9 +329,10 @@ PAGES = {
                 title="JetBlue Live System Map"),
         st.Page("pages/15_Large_Scale_Map.py",
                 title="Model Weather Map"),
-        # 22 Oct: one big live Level II scope for any JBU station
+        # 22 Oct: one big live Level II scope for any JBU station.
+        # DEFAULT since 24 Oct: the login lands here.
         st.Page("pages/21_Airport_Radar.py",
-                title="Airport Radar"),
+                title="Airport Radar", default=True),
         # 5 Oct: split the screen into panels, each showing any page
         st.Page("pages/17_Map_Splitter.py",
                 title="Map Splitter"),

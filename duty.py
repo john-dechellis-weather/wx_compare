@@ -25,7 +25,12 @@ from datetime import datetime, timezone
 
 import streamlit as st
 
-LANDING = "pages/3_JBU_Weather_Map.py"
+LANDING = "pages/21_Airport_Radar.py"      # 24 Oct: was the System Map
+# The role / shift / X-shift prompts after the password are OFF by
+# default since 24 Oct (password alone signs in). DUTY_PROMPTS=on
+# brings them back.
+import os as _os
+PROMPTS_ON = _os.environ.get("DUTY_PROMPTS", "off").lower() == "on"
 _PANEL_PARAMS = ("embed", "table", "layer", "ts", "panel")
 #: URL param carrying the answers, so a reload / new tab does not ask
 #: again (15 Oct): "M" for MetExpert, "S-AM-Y-N" for SOC MET.
@@ -166,6 +171,8 @@ def _prompts() -> None:
 def gate() -> None:
     """Draw the login board with the prompts until answered; then land
     on the CONUS map. Returns silently when nothing is needed."""
+    if not PROMPTS_ON:
+        return
     if answered():
         _keep_param()
         return

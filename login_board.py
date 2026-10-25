@@ -570,6 +570,9 @@ def render(after_password=None) -> str | None:
         else:
             pw = st.text_input("Password", type="password",
                                key="password_input")
+            st.markdown(
+                f'<div style="color:{T.TEXT_2};font-size:12px;margin-top:-6px">'
+                f'[Press Enter to continue]</div>', unsafe_allow_html=True)
         st.markdown(
             f'<div style="color:{T.MUTED};font-size:12px;margin-top:18px">'
             f'bluemet.org</div>', unsafe_allow_html=True)
